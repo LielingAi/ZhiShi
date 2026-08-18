@@ -12,10 +12,10 @@
   "homepage": "https://zhishi.help",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ZhiShi.git"
+    "url": "git+https://github.com/LielingAi/ZhiShi.git"
   },
   "bugs": {
-    "url": "https://github.com/J0hnFFFF/ZhiShi/issues"
+    "url": "https://github.com/LielingAi/ZhiShi/issues"
   },
   "keywords": [
     "claude",
