@@ -72,6 +72,7 @@ import { getInteractionScenario } from '../agent-session';
 import { makeBoundaryHook } from './boundary';
 import { makeCompactionTransform } from './compaction';
 import { runLoop } from './loop';
+import { buildMcpTools } from './mcp-bridge';
 import { makeOutputGuardHook } from './output-guard';
 import { parseChatRefs, resolveChatRefs } from './refs';
 import { firePostTurnTitleHook } from '../turn-hooks';
@@ -644,12 +645,19 @@ async function runPiTurn(
       },
     }));
   }
-  const baseBoundary = makeBoundaryHook(env, { allowedTools: toolNames });
+  // M4d — MCP 工具(宿主侧能力,不依赖 env)。tools 数组每 turn 重建,
+  // mcp/reload 重连后下一 turn 自动用新工具集(热重载零成本)。
+  const mcpTools = buildMcpTools();
+  tools.push(...mcpTools);
+  // 结构性白名单同步扩进 MCP 工具名——否则 boundary 会把真实 MCP 工具
+  // 当幻觉工具 deny(缺口埋点逻辑同样据此区分)。
+  const effectiveToolNames = [...toolNames, ...mcpTools.map((t) => t.name)];
+  const baseBoundary = makeBoundaryHook(env, { allowedTools: effectiveToolNames });
   // 包装 boundary:记录幻觉工具(白名单外被拦)供 turn 完成点的缺口埋点。
   const blockedToolNames: string[] = [];
   const beforeToolCall: typeof baseBoundary = async (ctx, signal) => {
     const r = await baseBoundary(ctx, signal);
-    if (r?.block && !toolNames.includes(ctx.toolCall.name)) {
+    if (r?.block && !effectiveToolNames.includes(ctx.toolCall.name)) {
       blockedToolNames.push(ctx.toolCall.name);
     }
     return r;

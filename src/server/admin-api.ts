@@ -106,6 +106,7 @@ import { resolve, basename, isAbsolute } from 'path';
 
 import { setMcpServers, setAgents, getMcpServers, getSidecarPort, getSessionId } from './agent-session';
 import { getPiAgentState, sendPiChatMessage } from './loop/chat-engine';
+import { getMcpStatus, initMcpBridge, reloadMcpBridge } from './loop/mcp-bridge';
 
 import { loadEnabledAgents } from './agents/agent-loader';
 
@@ -1046,6 +1047,66 @@ export async function handleMcpDisable(payload: { id: string; scope?: string }):
   notifyMcpChange('disable', id);
 
   return { success: true, data: { id } };
+
+}
+
+
+
+/**
+
+ * M4d — MCP bridge 连接状态。惰性兜底:若 sidecar 启动的 deferred init
+
+ * 尚未跑完(或从未跑),先触发桥初始化再取状态——状态永远反映真实连接
+
+ * (已初始化时 initMcpBridge 是幂等 no-op)。
+
+ */
+
+export async function handleMcpListStatus(): Promise<AdminResponse> {
+
+  await initMcpBridge();
+
+  return { success: true, data: { servers: getMcpStatus() } };
+
+}
+
+
+
+/**
+
+ * M4d — MCP bridge 热重载:断开全部连接 → 重读磁盘配置(权威来源)→ 重连。
+
+ * 单个 server 失败不抛(记入状态),只有配置读取失败才返回 success:false。
+
+ */
+
+export async function handleMcpReload(): Promise<AdminResponse> {
+
+  try {
+
+    const servers = await reloadMcpBridge();
+
+    return { success: true, data: { servers } };
+
+  } catch (err) {
+
+    return {
+
+      success: false,
+
+      error: err instanceof Error ? err.message : String(err),
+
+      recoveryHint: {
+
+        recoveryCommand: 'zhishi mcp list',
+
+        message: '检查 MCP 配置(config.json)后重试。',
+
+      },
+
+    };
+
+  }
 
 }
 

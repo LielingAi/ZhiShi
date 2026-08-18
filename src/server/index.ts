@@ -1053,6 +1053,8 @@ import {
 
 } from './loop/chat-engine';
 
+import { initMcpBridge } from './loop/mcp-bridge';
+
 import { pendingBoundaryAsks, respondBoundaryAsk } from './loop/boundary-ask';
 
 import { resolveBundledDir } from './domains/manifest';
@@ -2388,6 +2390,10 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'mcp/oauth/status') return await api.handleMcpOAuthStatus(payload as Parameters<typeof api.handleMcpOAuthStatus>[0]);
 
   if (route === 'mcp/oauth/revoke') return await api.handleMcpOAuthRevoke(payload as Parameters<typeof api.handleMcpOAuthRevoke>[0]);
+
+  if (route === 'mcp/list-status') return await api.handleMcpListStatus();
+
+  if (route === 'mcp/reload') return await api.handleMcpReload();
 
 
 
@@ -12828,6 +12834,34 @@ async function main() {
       console.log(`[startup] loop engine: ${isPiEngine() ? 'pi (M4c 默认)' : 'sdk (default)'}`);
 
       emitDeferredPhaseDone('sdk-init');
+
+
+
+      // M4d — MCP bridge:连接全部启用的 MCP server 供 loop 工具集使用。
+
+      // 单个 server 连接失败不抛(记入桥状态),整段非致命——桥挂了只影响
+
+      // MCP 工具可用性,sidecar 其余能力不受影响。
+
+      currentInitPhase = 'mcp-bridge';
+
+      setDeferredInitPhase(currentInitPhase);
+
+      initPhaseStarted = nowMs();
+
+      try {
+
+        await initMcpBridge();
+
+        console.log('[startup] MCP bridge ready');
+
+      } catch (err) {
+
+        console.warn(`[startup] MCP bridge init failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+
+      }
+
+      emitDeferredPhaseDone('mcp-bridge');
 
 
 

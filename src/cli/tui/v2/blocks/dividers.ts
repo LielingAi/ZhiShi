@@ -23,7 +23,10 @@ export function interruptLabel(): string {
 /** Centered divider: `──── label ────` filling the width. */
 export function renderDivider(block: DividerBlock, width: number): Span[][] {
   const label = block.follow ? `${block.label} · ${block.follow}` : block.label;
-  const tone: SemanticColor = block.tone === 'interrupt' ? 'amber' : 'faint';
+  const tone: SemanticColor =
+    block.tone === 'interrupt' ? 'amber' :
+    block.tone === 'ok' ? 'green' :
+    block.tone === 'fail' ? 'red' : 'faint';
   const labelW = stringWidth(label);
   const side = Math.max(2, Math.floor((width - labelW - 2) / 2));
   const fillL = '─'.repeat(side);
