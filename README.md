@@ -19,6 +19,8 @@
 >
 > 定位（D30）：**实战为主** —— 0day 挖掘、1day 复现、漏洞验证与武器化；CTF 是补充场景，任何环境按需适配。
 
+> **免责声明**：本工具仅面向**合法授权**的安全研究（漏洞挖掘、复现、渗透测试）。禁止对未授权目标使用；使用者须遵守当地法律法规，作者不承担任何非法使用产生的后果。
+
 ---
 
 ## 它是什么
@@ -207,6 +209,10 @@ npm run test         # 全量测试
 ## 致谢
 
 zhishi 的 loop 引擎以 [pi](https://github.com/earendil-works/pi)（`@earendil-works/pi-agent-core`，MIT）为底座——感谢 pi 提供传输抽象、状态管理与附件支持等通用能力，安全研究定制层建立在它之上。
+
+---
+
+喜欢 zhishi？[点个 star](https://github.com/LielingAi/ZhiShi/stargazers)，让研究被看见。有发现就开 issue，想动手，欢迎 PR。
 
 ## License
 
