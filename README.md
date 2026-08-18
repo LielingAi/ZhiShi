@@ -55,7 +55,7 @@ CTF 通关明细（部分知名平台）：
 
 ### 浏览器漏洞
 
-- 多起 Chrome / Firefox 漏洞分析与复现
+- 多个 Chrome / Firefox 漏洞分析与复现
 
 ---
 
