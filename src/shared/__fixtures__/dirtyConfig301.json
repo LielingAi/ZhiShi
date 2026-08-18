@@ -1,0 +1,41 @@
+{
+  "agents": [
+    {
+      "id": "agent-dirty",
+      "name": "Dirty Agent",
+      "enabled": true,
+      "workspacePath": "/tmp/ws-dirty",
+      "permissionMode": "plan",
+      "providerEnvJson": {
+        "baseUrl": "https://api.example.com",
+        "apiKey": "sk-agent-test",
+        "authType": "auth_token"
+      },
+      "mcpServersJson": [
+        { "id": "playwright", "command": "npx" }
+      ],
+      "channels": [
+        {
+          "id": "ch-openclaw",
+          "type": "openclaw:openclaw-lark",
+          "enabled": true,
+          "overrides": {
+            "providerEnvJson": {
+              "baseUrl": "https://override.example.com",
+              "apiKey": "sk-override-test"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "agent-clean",
+      "name": "Clean Agent",
+      "enabled": true,
+      "workspacePath": "/tmp/ws-clean",
+      "permissionMode": "plan",
+      "providerEnvJson": "{\"baseUrl\":\"https://clean.example.com\",\"apiKey\":\"sk-clean\"}",
+      "channels": []
+    }
+  ]
+}

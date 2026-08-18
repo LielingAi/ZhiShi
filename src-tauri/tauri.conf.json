@@ -1,0 +1,110 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "ZhiShi",
+  "version": "1.0.0",
+  "identifier": "com.zhishi.app",
+  "build": {
+    "frontendDist": "./placeholder",
+    "beforeBuildCommand": "npm run build:server && npm run build:cli"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self' ipc: tauri: asset: http://ipc.localhost; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' ipc: tauri: asset: http://ipc.localhost http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https://ticket.zhishi.help; img-src 'self' data: blob: asset: https://asset.localhost https://ticket.zhishi.help https:; media-src 'self' blob: asset: http://asset.localhost https://asset.localhost;",
+      "dangerousDisableAssetCspModification": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "dmg",
+      "app",
+      "nsis",
+      "appimage",
+      "deb"
+    ],
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../src-tauri/resources/server-dist.js": "server-dist.js",
+      "../src-tauri/resources/sharp-runtime": "sharp-runtime",
+      "../src-tauri/resources/sqlite-runtime": "sqlite-runtime",
+      "../src-tauri/resources/tsx-runtime": "tsx-runtime",
+      "../src-tauri/resources/nodejs": "nodejs",
+      "../src/shared": "shared",
+      "../bundled-skills": "bundled-skills",
+      "../bundled-environments": "bundled-environments",
+      "../bundled-agents": "bundled-agents",
+      "../src-tauri/resources/cli": "cli",
+      "../novo": "novo",
+      "infoplist/en.lproj/InfoPlist.strings": "en.lproj/InfoPlist.strings",
+      "infoplist/zh-Hans.lproj/InfoPlist.strings": "zh-Hans.lproj/InfoPlist.strings"
+    },
+    "externalBin": [
+      "binaries/cuse",
+      "binaries/terminator-mcp-agent",
+      "binaries/zhishi-updater"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "entitlements": "Entitlements.plist",
+      "exceptionDomain": "",
+      "frameworks": [],
+      "providerShortName": null,
+      "signingIdentity": null,
+      "dmg": {
+        "appPosition": {
+          "x": 180,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 170
+        },
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        }
+      }
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "timestampUrl": null,
+      "allowDowngrades": true,
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "template": "nsis/installer.nsi",
+        "installerHooks": "nsis/hooks.nsh",
+        "installerIcon": "icons/icon.ico",
+        "headerImage": null,
+        "sidebarImage": null,
+        "installMode": "currentUser",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "displayLanguageSelector": false,
+        "customLanguageFiles": {
+          "SimpChinese": "nsis/languages/SimpChinese.nsh",
+          "English": "nsis/languages/English.nsh"
+        }
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXkgQkIzMEFEQjE3NjVGRjEzNQ0KUldRMThWOTJzYTB3dXdRMnhXRW1qb2RwYzNtOWxiZ3BMczloUVVTQ0tnR05GZnhxTmlBUEdPaEUNCg==",
+      "endpoints": [
+        "https://ticket.zhishi.help/update/{{target}}.json"
+      ]
+    }
+  }
+}

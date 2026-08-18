@@ -1,0 +1,8 @@
+/* Chinese (Simplified) localization — enables macOS to use Chinese for native UI */
+
+CFBundleDisplayName = "ZhiShi";
+
+CFBundleName = "ZhiShi";
+
+NSAppleEventsUsageDescription = "ZhiShi 需要控制其他应用，以便智能体为你激活窗口、运行 AppleScript 并完成桌面自动化任务。";
+

@@ -1,0 +1,68 @@
+name: Test
+
+# Regression gate. The whole point of the test suite is to catch regressions
+# during fast iteration — so it MUST run automatically on every PR and push,
+# not just locally. Required check: a PR that fails this cannot merge.
+on:
+  pull_request:
+  push:
+    branches: [main, 'dev/**']
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # JS/TS gate: typecheck + lint + the fast parallel `unit` project.
+  #
+  # We run `test:unit` (not the full `npm test`) because the `stateful` project
+  # contains credentialed real-SDK / network E2E tests (provider-*, sdk-smoke,
+  # mcp-oauth) that need secrets this public repo's CI doesn't have — including
+  # them would make the gate flaky. New regression tests land in the `unit`
+  # pool, so this gate grows with them. TODO: a follow-up credentialed job (or
+  # self-skip-without-secrets) to bring the credential-free `stateful` tests in.
+  js:
+    name: typecheck · lint · unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test:unit
+
+  # Rust gate: cargo test for the Tauri crate's unit tests (path_safety,
+  # proxy_config, cron_task, wake_lock, workspace_files, …). `npm test` never
+  # touches Rust, so without this the 100+ Rust #[test] cases gate nothing.
+  rust:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            build-essential \
+            file
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      # clippy 红线门禁（clippy.toml 的 disallowed-methods/macros）：2026-08-06
+      # 审计发现 trust.rs 裸 reqwest 连 localhost 等违规能存活多年，根因就是
+      # CI 从不跑 clippy——「CI 强制」曾名存实亡。存量警告已清零，此后 -D
+      # warnings 让任何新红线违规在 PR 阶段直接红灯。
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --lib -- -D warnings

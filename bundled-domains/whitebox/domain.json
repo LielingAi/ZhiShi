@@ -1,0 +1,16 @@
+{
+  "kind": "whitebox",
+  "name": "白盒审计",
+  "recipes": ["code-audit"],
+  "skills": ["whitebox-audit"],
+  "subagents": ["vuln-hunter", "hypothesis-tester", "critic"],
+  "signals": [
+    { "re": "(\\d+)\\s+findings?", "label": "审计发现", "appendMatch": true },
+    { "re": "severity\\s*[=:]\\s*(error|warning)", "label": "严重告警", "appendMatch": true },
+    { "re": "CWE-\\d+", "label": "CWE 命中", "appendMatch": true }
+  ],
+  "acceptance": [
+    "对已知 CVE 的开源项目:审计→定位→复现,全程 research_log(kind=whitebox) 留痕",
+    "semgrep 基线扫描→告警分级→数据流手工追→CWE 映射 全链路走通"
+  ]
+}

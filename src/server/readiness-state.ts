@@ -1,0 +1,135 @@
+/**
+ * Pattern 4 — Readiness state machine for the Sidecar's deferred init.
+ *
+ * Splits the single "healthy" signal into three orthogonal probes:
+ *  - /health/live      — process bound to TCP, route handler running
+ *  - /health/ready     — deferred init (migrations / skill seed / SDK init / ...) done
+ *  - /health/functional — core feature can actually serve a request (sidecar mirrors live)
+ *
+ * Liveness is implicit (handler running). This module owns Readiness.
+ *
+ * Why a state machine and not just a Promise?
+ *  - The bare Promise lets callers `await` for "ready" but tells you nothing
+ *    while it's pending — no phase, no error reason.
+ *  - On rejection the awaiter gets a thrown error, which the route gate
+ *    historically rethrew as a 500. We need a structured 503.
+ *  - Multiple endpoints (/health/ready) need to *peek* at the state without
+ *    awaiting it.
+ *
+ * The existing `__zhishiDeferredInit` Promise stays alongside (other parts
+ * of the codebase await it). This module is the new source of truth for
+ * health endpoints and the route gate.
+ */
+
+export type DeferredInitState =
+  | { kind: 'pending' }
+  | { kind: 'phase'; phase: string }
+  | { kind: 'ready' }
+  | { kind: 'failed'; phase: string; error: string; retryable: boolean };
+
+let state: DeferredInitState = { kind: 'pending' };
+
+/** Read the current state (cheap; no awaits). */
+export function getDeferredInitState(): DeferredInitState {
+  return state;
+}
+
+/** Mark a new phase entered. Idempotent — same phase string is a no-op. */
+export function setDeferredInitPhase(phase: string): void {
+  if (state.kind === 'failed' || state.kind === 'ready') {
+    // Don't overwrite a terminal state.
+    return;
+  }
+  if (state.kind === 'phase' && state.phase === phase) return;
+  state = { kind: 'phase', phase };
+}
+
+/** Mark deferred init complete. Idempotent. */
+export function markDeferredInitReady(): void {
+  if (state.kind === 'failed') {
+    // Failed is sticky until a retry resets it.
+    return;
+  }
+  state = { kind: 'ready' };
+}
+
+/**
+ * Mark deferred init as failed. `phase` is whatever phase was running when
+ * the throw happened (or 'unknown' if we couldn't capture it).
+ */
+export function markDeferredInitFailed(phase: string, error: unknown, retryable = false): void {
+  const message = error instanceof Error ? error.message : String(error);
+  state = { kind: 'failed', phase, error: message, retryable };
+}
+
+/**
+ * Reset to pending — used by the optional /health/ready/retry endpoint.
+ * Caller is responsible for actually re-running deferred init afterwards.
+ */
+export function resetDeferredInitForRetry(): void {
+  state = { kind: 'pending' };
+}
+
+/**
+ * Build the JSON body for /health/ready.
+ *  - 200 + { state: 'ready' } when ready
+ *  - 503 + structured payload otherwise
+ */
+export function buildReadyResponseBody(): { status: number; body: Record<string, unknown> } {
+  const s = state;
+  switch (s.kind) {
+    case 'ready':
+      return { status: 200, body: { state: 'ready' } };
+    case 'pending':
+      return { status: 503, body: { state: 'pending', message: 'sidecar warming up' } };
+    case 'phase':
+      return {
+        status: 503,
+        body: { state: 'phase', phase: s.phase, message: 'sidecar warming up' },
+      };
+    case 'failed':
+      return {
+        status: 503,
+        body: {
+          state: 'failed',
+          phase: s.phase,
+          error: s.error,
+          retryable: s.retryable,
+        },
+      };
+  }
+}
+
+/**
+ * Build the JSON body the route gate returns when a non-health route arrives
+ * before deferred init has finished. Mirrors /health/ready except the message
+ * mentions the route is gated.
+ */
+export function buildGateResponseBody(): { status: number; body: Record<string, unknown> } | null {
+  const s = state;
+  if (s.kind === 'ready') return null; // pass-through
+  if (s.kind === 'pending') {
+    return { status: 503, body: { state: 'pending', message: 'sidecar warming up' } };
+  }
+  if (s.kind === 'phase') {
+    return {
+      status: 503,
+      body: { state: 'phase', phase: s.phase, message: 'sidecar warming up' },
+    };
+  }
+  // failed
+  return {
+    status: 503,
+    body: {
+      state: 'failed',
+      phase: s.phase,
+      error: s.error,
+      retryable: s.retryable,
+    },
+  };
+}
+
+/** Test-only reset. Not exported via the barrel. */
+export function __resetReadinessForTests(): void {
+  state = { kind: 'pending' };
+}

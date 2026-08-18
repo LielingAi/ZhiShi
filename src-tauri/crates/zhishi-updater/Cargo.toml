@@ -1,0 +1,12 @@
+[package]
+name = "zhishi-updater"
+version = "0.2.32"
+edition = "2021"
+rust-version = "1.81"
+
+[dependencies]
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+chrono = "0.4"
+
+[build-dependencies]
+embed-resource = "3"

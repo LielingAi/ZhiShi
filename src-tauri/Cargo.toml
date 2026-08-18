@@ -1,0 +1,95 @@
+[workspace]
+members = ["crates/zhishi-updater"]
+resolver = "2"
+
+[package]
+name = "zhishi"
+version = "1.0.0"
+default-run = "zhishi"
+description = "住在你电脑里的桌面智能体，本地能干活，远程能协作，把繁琐接过去。"
+authors = ["ZhiShi Team <xunzhaonn@126.com>"]
+license = "AGPL-3.0"
+repository = "https://github.com/J0hnFFFF/ZhiShi"
+homepage = "https://zhishi.help"
+edition = "2021"
+# MSRV note: 1.81 documents `std::fs::rename` as atomic replace-on-existing
+# across all platforms (Windows uses MoveFileExW(REPLACE_EXISTING) under the
+# hood). Pre-1.81 toolchains keep the historical Windows behavior of failing
+# when the destination exists, which corrupts every tmp+rename path in this
+# crate (config.json, cron tasks, Task Center storage, IM bot state, —.
+# Tauri 2.9 already requires ≥1.78, so this bump only formalizes reality.
+rust-version = "1.81"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.6", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+semver = "1.0"
+log = "0.4"
+tauri = { version = "=2.10.1", features = ["tray-icon", "image-png"] }
+tauri-plugin-log = "2"
+which = "8.0.0"
+libc = "0.2.180"
+tauri-plugin-updater = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+reqwest = { version = "0.13.1", features = ["stream", "json", "blocking", "multipart", "socks"] }
+futures-util = "0.3.31"
+tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+dirs = "6.0"
+uuid = { version = "1.11", features = ["v4"] }
+axum = { version = "0.8", default-features = false, features = ["json", "tokio", "query", "http1"] }
+cron = "0.15"
+portable-pty = "0.8"
+# OS locale detection for i18n `system` language resolution (spec §1);
+# LC_ALL/LC_MESSAGES/LANG env fallback lives in src/i18n.rs.
+sys-locale = "0.3"
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+# Portable update package download + extraction
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
+hex = "0.4"
+
+# Pattern 5: stale-lock recovery needs `kill(pid, 0)` for liveness probing on Unix.
+# The `signal` feature pulls in just `nix::sys::signal::kill` + `nix::unistd::Pid`,
+# nothing else.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", default-features = false, features = ["signal"] }
+
+# Pattern 5: Windows pid-liveness + start-time probe via OpenProcess +
+# GetProcessTimes (PROCESS_QUERY_LIMITED_INFORMATION). Minimal feature set —
+# version 0.59 is already pulled transitively, so no new lock entry.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    # `wake_lock::windows::PlatformImpl` calls `PowerCreateRequest` +
+    # `PowerSetRequest` (PowerRequestSystemRequired | PowerRequestAwayModeRequired)
+    # to keep the OS from idle-sleeping during long-running cron tasks.
+    # HANDLE-based on purpose —`SetThreadExecutionState` is per-thread and
+    # silently leaks the assertion across Tokio worker resumption; see
+    # `src/wake_lock/windows.rs` for the trade-off.
+    "Win32_System_Power",
+] }
+# WinRT toast notifications with click activation. `tauri-plugin-notification`
+# wraps this same crate but doesn't expose the `on_activated` callback we need
+# to bring the app to the foreground when the user clicks a toast. Promoting
+# it to a direct dependency lets `notification::show_with_navigation` register
+# the callback ourselves while still sharing the version locked in the dep
+# graph (notify-rust pulls 0.7.x transitively).
+tauri-winrt-notification = "0.7"
+
+[dev-dependencies]
+tempfile = "3.10"
+

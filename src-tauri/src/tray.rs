@@ -1,0 +1,90 @@
+// System tray implementation for ZhiShi
+// Windowless host: the tray carries only the Exit entry (plus the
+// single-instance lock, which lives in lib.rs). The Open/Settings entries
+// were removed in the W6 subtraction — there is no window to raise or
+// settings page to navigate to.
+
+use tauri::{
+    tray::TrayIconBuilder,
+    menu::{MenuBuilder, MenuItemBuilder},
+    Manager, Runtime,
+};
+#[cfg(target_os = "macos")]
+use tauri::image::Image;
+
+use crate::ulog_info;
+// `ulog_warn` is only used inside the macOS template-icon load fallback.
+#[cfg(target_os = "macos")]
+use crate::ulog_warn;
+
+/// Menu item IDs for tray right-click menu
+const MENU_EXIT: &str = "exit";
+
+/// Initialize the system tray with icon and menu
+pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
+    // Build the tray menu, labelled for the locale resolved from the
+    // persisted uiLanguage + OS locale (i18n §1; default zh for legacy
+    // configs on zh systems).
+    let locale = crate::i18n::current_locale();
+    let exit_item = MenuItemBuilder::with_id(MENU_EXIT, crate::i18n::t("tray.exit", locale)).build(app)?;
+
+    let menu = MenuBuilder::new(app)
+        .item(&exit_item)
+        .build()?;
+
+    // Load tray icon - use template icon on macOS for proper menu bar appearance
+    #[cfg(target_os = "macos")]
+    let tray_icon = {
+        // Load template icon from embedded bytes (22x22 for best menu bar appearance)
+        let icon_bytes = include_bytes!("../icons/trayIconTemplate@2x.png");
+        Image::from_bytes(icon_bytes).unwrap_or_else(|_| {
+            ulog_warn!("[Tray] Failed to load template icon, using default");
+            app.default_window_icon().unwrap().clone()
+        })
+    };
+
+    #[cfg(not(target_os = "macos"))]
+    let tray_icon = app.default_window_icon().unwrap().clone();
+
+    // Build the tray icon
+    let tray_builder = TrayIconBuilder::new()
+        .icon(tray_icon)
+        .menu(&menu)
+        .tooltip("ZhiShi")
+        .show_menu_on_left_click(false);
+
+    // On macOS, mark as template image so system can adjust colors for light/dark mode
+    #[cfg(target_os = "macos")]
+    let tray_builder = tray_builder.icon_as_template(true);
+
+    let tray = tray_builder
+        .on_menu_event(move |app, event| {
+            match event.id().as_ref() {
+                MENU_EXIT => {
+                    ulog_info!("[Tray] Exit menu clicked");
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
+        .build(app)?;
+
+    // Pin the tray in managed state so the icon outlives this function.
+    app.manage(tray);
+
+    ulog_info!("[Tray] System tray initialized successfully");
+    Ok(())
+}
+
+/// Show the main window (and focus it).
+///
+/// Single canonical "bring to foreground" routine, kept for the callers that
+/// remain in the windowless host (single-instance callback, notification
+/// click handler). With no `main` window this is a deliberate no-op.
+pub fn show_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}

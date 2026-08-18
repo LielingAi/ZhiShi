@@ -1,0 +1,303 @@
+/**
+ * Unified system prompt assembly for ZhiShi.
+ *
+ * Three-layer prompt architecture:
+ *   L1 — Base identity (always included)
+ *   L2 — Interaction channel (desktop vs IM, mutually exclusive)
+ *   L3 — Scenario instructions (cron-task / heartbeat, stacked as needed)
+ *
+ * Template content is inlined below (not loaded from filesystem) because
+ * bun build hardcodes __dirname at compile time, breaking production builds.
+ */
+
+import type { BoundApp } from '../shared/config-types';
+import type { RuntimeType } from '../shared/types/runtime';
+import type { DistilledMemory } from './memory/distill';
+import { parseActiveReminders } from './memory/distill';
+import type { ResearchDistilledMemory } from './memory/distill-research';
+import { buildCliToolsAppend, buildWidgetSection } from './system-prompt-cli-tools';
+import {
+  buildNativeCodeSection,
+  buildResearchLogSection,
+  buildResearchMemorySection,
+  buildSecurityCapabilitiesSection,
+  buildSecurityKernelSection,
+  type SecurityCapabilitiesData,
+} from './system-prompt-security';
+import { buildSkillsSection, type SkillPack } from './loop/skills';
+
+// ===== Scenario types =====
+
+export type InteractionScenario =
+  | { type: 'desktop' }
+  | { type: 'cron'; taskId: string; intervalMinutes: number; aiCanExit: boolean }
+  /**
+   * 安全研究员版 P1 S1 — `zhishi agent` CLI 会话场景。注入五段安全语境
+   * （kernel / capabilities / native-code / research-log / research-memory，
+   * 见 system-prompt-security.ts）。
+   * 场景标记落在会话元数据（SessionMetadata.interactionScenario），由
+   * agent-session 的 startStreamingSession 按元数据恢复——不落全局
+   * currentScenario，避免与 cron 的 set/reset 时序互相覆盖。
+   */
+  | { type: 'security' };
+
+// ===== Runtime display name =====
+// Maps internal runtime ids to human-readable names injected into the L1 base identity
+// so the AI can correctly answer "what runtime am I running on?" questions regardless
+// of which CLI is driving it.
+function getRuntimeDisplayName(runtime: RuntimeType | undefined): string {
+  switch (runtime) {
+    case 'claude-code': return 'Anthropic Claude Code CLI';
+    case 'codex':       return 'OpenAI Codex CLI';
+    case 'gemini':      return 'Google Gemini CLI';
+    case 'builtin':
+    default:
+      return 'ZhiShi 内置 Claude 智能体 SDK';
+  }
+}
+
+// ===== Inline templates =====
+
+const TMPL_BASE_IDENTITY = `<zhishi-identity>
+你正运行在 ZhiShi —— 一款通用的桌面智能体应用中。用户通过 ZhiShi 调用你,
+ZhiShi 负责会话管理、工具权限、定时任务、工作区文件访问等能力,
+你则负责理解和执行用户的请求。
+
+当前执行 Runtime: {{runtimeName}}
+
+用户全局配置目录: ~/.zhishi
+当对话涉及日期、时间或星期时,先用 Bash 执行 \`date\` 获取准确的当前时间再作判断——系统信息中的日期可能已过期。
+</zhishi-identity>`;
+
+const TMPL_CHANNEL_DESKTOP = `<zhishi-interaction-channel>
+用户正通过 ZhiShi 桌面客户端与你对话。
+</zhishi-interaction-channel>`;
+
+const TMPL_CRON_TASK = `<zhishi-cron-task-instructions>
+你正处于心跳循环任务模式 (Task ID: {{taskId}})。每隔 {{intervalText}} 系统触发唤醒你一次。{{#if aiCanExit}}
+
+如果任务目标已完全达成、或继续执行无意义/有害，请按下方 \`<zhishi-cli-cron-exit>\` 段落给出的 \`zhishi cron exit\` 命令结束任务。{{/if}}
+</zhishi-cron-task-instructions>`;
+
+// ===== AppCraft bound apps (PRD 0.2.36 §6.1) =====
+
+/**
+ * Build the `<zhishi-bound-apps>` context section for workspaces with enabled
+ * bound applications. Returns '' when the list is empty — callers MUST treat
+ * that as zero injection (no section, no trailing whitespace).
+ */
+export function buildBoundAppsSection(boundApps: BoundApp[] | undefined): string {
+  if (!boundApps || boundApps.length === 0) return '';
+  const lines = boundApps.map((app) => {
+    const parts = [`名称: ${app.name}`, `id: ${app.id}`, `程序: ${app.exe}`, `窗口标题: ${app.windowTitle}`];
+    if (app.dataDir) parts.push(`数据目录: ${app.dataDir}`);
+    return `- ${parts.join(' | ')}`;
+  });
+  return `<zhishi-bound-apps>
+本工作区绑定了以下应用（AppCraft）。操作这些应用时的规则：
+1. 首选 terminator 工具（UIA 语义通道）：用 get_window_tree（process 参数限定为该应用的进程名）观察窗口，
+   用 invoke_element / click_element / set_value / type_into_element / press_key 操作控件（selector 如 role:Button && name:保存）。
+   动作走 UIA pattern，不需要也不要移动真实鼠标。
+2. 仅当控件树拿不到目标（Electron/自绘 UI）才退回 cuse 视觉工具（screenshot / click / type / key）。
+3. 所有操作必须锚定到对应应用的窗口，不要退回全屏搜索或全屏截图。
+4. 应用的「数据目录」已纳入你可读写的范围，导入导出文件请落在对应数据目录。
+${lines.join('\n')}
+</zhishi-bound-apps>`;
+}
+
+// ===== 全局人格层（乙方案：一个灵魂，注入直读 db） =====
+
+// ===== Distilled memory (工作生命宪章 §4.1 蒸馏层) =====
+
+/**
+ * Build the `<zhishi-distilled-memory>` context section — the constant-size
+ * distillation layer produced by the 蒸馏弧 (§4.2). Returns '' when no
+ * distilled files exist yet — callers MUST treat that as zero injection.
+ * Total size is bounded: each of the four files is hard-capped at 2000
+ * chars by the distill pipeline, so this section never exceeds ~8KB no
+ * matter how long the raw work history grows.
+ *
+ * reminders（P4 主动记忆，宪章 §7.3）注入前经 parseActiveReminders 确定性
+ * 过滤：过期的、缺来源标注的一律不进上下文（红线：不许编造、过期自动清理）。
+ */
+export function buildDistilledMemorySection(distilled: DistilledMemory | undefined): string {
+  if (!distilled) return '';
+  const parts: string[] = [];
+  if (distilled.userModel.trim()) parts.push(`## 它眼中的你\n${distilled.userModel.trim()}`);
+  if (distilled.selfModel.trim()) parts.push(`## 它眼中的自己\n${distilled.selfModel.trim()}`);
+  if (distilled.routines.trim()) parts.push(`## 老规矩\n${distilled.routines.trim()}`);
+  const activeReminders = parseActiveReminders(distilled.reminders ?? '');
+  if (activeReminders.length > 0) {
+    parts.push(
+      `## 主动提醒\n${activeReminders.join('\n')}\n\n` +
+      '（以上是蒸馏弧从真实工作史里维护的提醒，每条都附来源。会话开始或任务触发前，' +
+      '若其中某条与当前情境相关，主动说给用户听并附上来源——“上次这里栽过”“这个月底要交”；' +
+      '不相关就保持沉默，不要逐条宣读。）',
+    );
+  }
+  if (parts.length === 0) return '';
+  return `<zhishi-distilled-memory>
+以下是蒸馏记忆（工作生命宪章 §4.1 三层心智的蒸馏层）——由「蒸馏弧」定期从你们的共同工作史中压出，尺寸恒定。它是你眼中的搭档、你眼中的自己、你们的老规矩与主动提醒；据此校准你的判断与分寸。这里只有蒸馏后的认知；需要回忆更具体的偏好、决定、踩坑细节时，运行「zhishi memory search <关键词>」（可选 --kind reminder 过滤）检索长期记忆库——命中会被记录，遭用户纠正的记忆会自动降权，所以放心引用、如实使用，不确定就说来自记忆。
+${parts.join('\n\n')}
+</zhishi-distilled-memory>`;
+}
+
+const TMPL_BROWSER_STORAGE_STATE = `<zhishi-browser-storage-instructions>
+当你在浏览器中执行了登录操作或用户帮你完成了登录（输入账号密码、OAuth 授权、扫码登录等），必须在登录成功后**立即**调用 browser_storage_state 工具将登录状态保存到 ~/.zhishi/browser-storage-state.json，然后再继续执行后续任务。这样即使后续任务中断或会话异常终止，登录态也不会丢失，后续对话可以复用。
+</zhishi-browser-storage-instructions>`;
+
+// ===== Variable replacement =====
+// Supports {{varName}} simple substitution + {{#if varName}}...{{else}}...{{/if}} conditional blocks
+
+function renderTemplate(template: string, vars: Record<string, string>): string {
+  let result = template;
+  // Conditional blocks: {{#if key}}...{{else}}...{{/if}} or {{#if key}}...{{/if}}
+  result = result.replace(
+    /\{\{#if (\w+)\}\}([\s\S]*?)(?:\{\{else\}\}([\s\S]*?))?\{\{\/if\}\}/g,
+    (_, key, ifBlock, elseBlock) => vars[key] ? ifBlock : (elseBlock ?? '')
+  );
+  // Simple variable substitution
+  result = result.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? '');
+  return result;
+}
+
+// ===== Main entry =====
+
+export interface SystemPromptOptions {
+  /** Whether Playwright MCP with storage capability is enabled in this session */
+  playwrightStorageEnabled?: boolean;
+  /**
+   * Current runtime driving this session, used to render a runtime-accurate
+   * identity line in L1. Defaults to 'builtin' (Claude Agent SDK) if omitted.
+   */
+  runtime?: RuntimeType;
+  /**
+   * Append the `zhishi` CLI capability hints (cron / IM media) to the
+   * prompt. Set by ALL runtime paths in v0.2.11+ — builtin and external —
+   * because the corresponding in-process MCP servers (`cron-tools` /
+   * `im-cron` / `im-media`) were retired in favour of the CLI surface, so
+   * builtin sessions need the same prompt guidance to discover those
+   * capabilities. Single CLI source of truth across builtin / Codex /
+   * Gemini / Claude Code runtimes. See prd_0.1.67 for the original (then
+   * external-only) introduction; current state described here.
+   *
+   * Note: generative-UI widget guidance is universal across runtimes (no MCP
+   * equivalent — the CLI is the only path) and is emitted unconditionally for
+   * desktop scenarios via `buildWidgetSection()`.
+   */
+  cliToolsEnabled?: boolean;
+  /**
+   * AppCraft (PRD 0.2.36 §6.1) — enabled apps bound to this session's
+   * workspace. When non-empty, a `<zhishi-bound-apps>` section is appended
+   * telling the agent what it may operate via the cuse MCP and which data
+   * directories are in scope. Omit/empty = zero injection.
+   */
+  boundApps?: BoundApp[];
+  /**
+   * 蒸馏记忆（工作生命宪章 §4.1 蒸馏层 / §4.2 蒸馏弧）。调用方从
+   * ~/.zhishi/memory/distilled/ 读入（loadDistilledMemoryForPrompt），
+   * 三个文件全空时传 undefined = 零注入。总量恒定 ≤6000 字符。
+   */
+  distilledMemory?: DistilledMemory;
+  /**
+   * 安全研究员版 P1 S1 — security 场景的能力清单数据源（仅
+   * scenario.type === 'security' 时消费）。调用方在会话启动时经
+   * collectSecurityCapabilities 采集（E1 引擎探测 30s 缓存 + E4 配方 +
+   * E3 注册表 + T4 现场选择）；undefined = 能力清单段零注入（kernel 与
+   * native-code 静态段不受其影响）。
+   */
+  securityCapabilities?: SecurityCapabilitiesData;
+  /**
+   * 安全研究员版 P1 D4 — security 场景的研究记忆反喂数据源（仅
+   * scenario.type === 'security' 时消费）。调用方在会话启动时经
+   * collectResearchMemory 采集（安全蒸馏弧 D3 的 keyed 产物：成功路径 /
+   * 失败根因 / 工具组合）；undefined 或三分节全空 = <zhishi-research-memory>
+   * 段零注入。
+   */
+  securityResearchMemory?: ResearchDistilledMemory;
+  /**
+   * 已启用的 skills（提示词级能力包）——调用方在会话启动时经
+   * collectEnabledSkills() 采集（bundled + 用户库合并、禁用表过滤）。
+   * undefined/空数组 = <skills> 段零注入。SKILL.md 全文直给是结构性
+   * 必然：研究环境边界下模型读不到宿主文件，惰性索引不成立。
+   */
+  skills?: SkillPack[];
+}
+
+export function buildSystemPromptAppend(scenario: InteractionScenario, options?: SystemPromptOptions): string {
+  const parts: string[] = [];
+
+  // L1: Base identity (always) — rendered with current runtime's display name.
+  parts.push(renderTemplate(TMPL_BASE_IDENTITY, {
+    runtimeName: getRuntimeDisplayName(options?.runtime),
+  }));
+
+  // L2: Interaction channel (desktop and cron both use the desktop channel)
+  parts.push(TMPL_CHANNEL_DESKTOP);
+
+  // L3: Scenario instructions (stacked as needed)
+  if (scenario.type === 'cron') {
+    const intervalText = scenario.intervalMinutes >= 60
+      ? `${Math.floor(scenario.intervalMinutes / 60)} 小时${scenario.intervalMinutes % 60 > 0 ? ` ${scenario.intervalMinutes % 60} 分钟` : ''}`
+      : `${scenario.intervalMinutes} 分钟`;
+    parts.push(renderTemplate(TMPL_CRON_TASK, {
+      taskId: scenario.taskId,
+      intervalText,
+      aiCanExit: scenario.aiCanExit ? 'true' : '',  // non-empty = truthy for {{#if}}
+    }));
+  }
+
+  // L3: Generative UI widget guidance — universal across runtimes for desktop
+  // scenarios. Both builtin SDK and external CLIs load the design contract via
+  // `zhishi widget readme <module>` invoked through their shell tool.
+  const widgetSection = buildWidgetSection(scenario);
+  if (widgetSection) parts.push(widgetSection);
+
+  // L3: AppCraft bound apps — workspace has applications the agent operates
+  // via the cuse computer-use MCP (window-anchored UIA / screenshot).
+  const boundAppsSection = buildBoundAppsSection(options?.boundApps);
+  if (boundAppsSection) parts.push(boundAppsSection);
+
+  // L3: Distilled memory (宪章 §4.1) — constant-size cognitive layer,
+  // same injection tier as boundApps. Zero injection when no distilled
+  // files exist yet (first-run installs, fresh workspaces).
+  const distilledMemorySection = buildDistilledMemorySection(options?.distilledMemory);
+  if (distilledMemorySection) parts.push(distilledMemorySection);
+
+  // L3: security 场景段（安全研究员版 P1 S1 + D1 + D4）——认知内核 + 动态能力
+  // 清单 + 代码原生通道 + 研究成败信号教学 + 研究记忆反喂（蒸馏闭环的最后
+  // 一环）。全部零注入语义 + 每段硬字符上限（见 system-prompt-security.ts）。
+  if (scenario.type === 'security') {
+    const kernelSection = buildSecurityKernelSection();
+    if (kernelSection) parts.push(kernelSection);
+    const capabilitiesSection = buildSecurityCapabilitiesSection(options?.securityCapabilities);
+    if (capabilitiesSection) parts.push(capabilitiesSection);
+    const nativeCodeSection = buildNativeCodeSection();
+    if (nativeCodeSection) parts.push(nativeCodeSection);
+    const researchLogSection = buildResearchLogSection();
+    if (researchLogSection) parts.push(researchLogSection);
+    const researchMemorySection = buildResearchMemorySection(options?.securityResearchMemory);
+    if (researchMemorySection) parts.push(researchMemorySection);
+  }
+
+  // L3: skills(提示词级能力包)——harness 的扩展面,全场景注入,零注入语义。
+  const skillsSection = buildSkillsSection(options?.skills);
+  if (skillsSection) parts.push(skillsSection);
+
+  // L3: Browser storage state save instruction (when Playwright with --caps=storage is active)
+  if (options?.playwrightStorageEnabled) {
+    parts.push(TMPL_BROWSER_STORAGE_STATE);
+  }
+
+  // L4: CLI-backed capability hints (external runtimes only)
+  // — bridges ZhiShi-specific capabilities (cron / IM media) to runtimes
+  //   that can't see the in-process SDK MCP servers.
+  if (options?.cliToolsEnabled) {
+    const cliTools = buildCliToolsAppend(scenario);
+    if (cliTools) parts.push(cliTools);
+  }
+
+  return parts.join('\n\n');
+}
+
+

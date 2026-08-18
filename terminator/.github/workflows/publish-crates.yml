@@ -1,0 +1,79 @@
+name: Publish Rust crates to crates.io
+
+# Publishes the workspace's crates.io crates whenever a release tag is pushed.
+# The `terminator release` CLI pushes a `v*` tag (see crates/terminator-cli),
+# so this hooks crate publishing into that existing release flow. Crates are
+# Windows-only (uiautomation), so this must run on windows-latest.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  RUST_BACKTRACE: short
+
+jobs:
+  publish:
+    name: Publish crates in dependency order
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish crates
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Shared workspace version (all crates inherit version.workspace = true).
+          VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')"
+          echo "Workspace version: ${VERSION}"
+
+          # Returns the latest version of a crate currently on the crates.io index,
+          # or empty if the crate is unknown.
+          latest_published() {
+            cargo search "$1" --limit 1 2>/dev/null \
+              | sed -nE "s/^$1 = \"([^\"]+)\".*/\1/p"
+          }
+
+          publish_in_order() {
+            local crate="$1"
+            local current
+            current="$(latest_published "$crate")"
+            if [ "$current" = "$VERSION" ]; then
+              echo "✅ ${crate}@${VERSION} already on crates.io, skipping"
+              return 0
+            fi
+            echo "📦 Publishing ${crate}@${VERSION} (latest on index: ${current:-none})"
+            cargo publish -p "$crate"
+            # Wait for the index to surface the new version so the next dependent
+            # crate can resolve it during its own verification build.
+            for i in $(seq 1 36); do
+              if [ "$(latest_published "$crate")" = "$VERSION" ]; then
+                echo "✅ ${crate}@${VERSION} is live on the index"
+                return 0
+              fi
+              echo "⏳ waiting for crates.io index to update (${i}/36)..."
+              sleep 10
+            done
+            echo "❌ Timed out waiting for ${crate}@${VERSION} to appear on the index"
+            exit 1
+          }
+
+          # Dependency order: computer-use has no internal deps, terminator-rs
+          # depends on computer-use, workflow-recorder depends on terminator-rs.
+          publish_in_order terminator-computer-use
+          publish_in_order terminator-rs
+          publish_in_order terminator-workflow-recorder

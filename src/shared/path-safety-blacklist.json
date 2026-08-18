@@ -1,0 +1,9 @@
+{
+  "_comment": "SINGLE SOURCE OF TRUTH for the path-safety blacklist shared by Node (src/server/utils/path-safety.ts) and Rust (src-tauri/src/commands.rs::validate_file_path). Both sides keep their own compiled-in copies (Node can't invoke Rust; Rust shouldn't read a file at runtime for a security list), and each has a test asserting its in-code list equals this fixture: Node path-safety-crosscheck.unit.test.ts, Rust commands.rs::path_safety_crosscheck_tests. To change the blacklist: edit BOTH code sites AND this file — any drift between a code site and this fixture fails that side's test. (PRD 0.2.15 §7.2.)",
+  "systemDirsPosix": ["/etc", "/var", "/usr", "/bin", "/sbin", "/boot", "/root", "/sys", "/proc", "/dev"],
+  "systemDirsMacosExtra": ["/private/etc", "/private/var"],
+  "systemDirsWindows": ["C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)", "C:\\ProgramData", "C:\\Recovery", "C:\\$Recycle.Bin"],
+  "credentialSubdirs": [".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config/op"],
+  "macSensitiveSubdirs": ["Library/Keychains", "Library/Cookies", "Library/Mail", "Library/Messages", "Library/Safari"],
+  "winSensitiveSubdirs": ["AppData/Local/Microsoft"]
+}

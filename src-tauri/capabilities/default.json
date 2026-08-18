@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimal permissions for the windowless ZhiShi host (no windows/webviews remain; kept so plugin ACL generation has a capability to attach to)",
+  "windows": [],
+  "permissions": [
+    "core:default",
+    "updater:default",
+    "notification:allow-is-permission-granted",
+    "autostart:default"
+  ]
+}

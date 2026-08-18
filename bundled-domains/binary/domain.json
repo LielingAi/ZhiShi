@@ -1,0 +1,17 @@
+{
+  "kind": "binary",
+  "name": "二进制",
+  "recipes": ["pwn", "pwn-vm", "fuzz", "fuzz-vm", "rev"],
+  "skills": ["binary-exploit", "vuln-triage", "native-code-loop"],
+  "subagents": ["fuzz-runner", "crash-triager", "vuln-hunter", "hypothesis-tester", "critic"],
+  "signals": [
+    { "re": "(SIG(?:SEGV|ABRT|BUS|ILL|FPE|TRAP)(?:[^\\n]*?at\\s*0x[0-9a-fA-F]+)?)", "label": "崩溃信号", "appendMatch": true },
+    { "re": "flag\\{[^}]*\\}", "label": "flag 命中" },
+    { "re": "core dumped", "label": "core dump" }
+  ],
+  "acceptance": [
+    "ret2win 全流程 dogfood(环境内编译→溢出分析→exp→flag)",
+    "fuzz 长跑能起、能看、能停(env_bg)",
+    "崩溃样本分拣(crash-triager)出结论"
+  ]
+}

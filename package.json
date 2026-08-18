@@ -1,0 +1,97 @@
+{
+  "name": "zhishi",
+  "description": "安全研究员专属智能体：zhishi CLI + agent，无窗口，把研究环境接进终端。",
+  "type": "module",
+  "version": "1.0.0",
+  "license": "AGPL-3.0",
+  "packageManager": "npm@10.8.2",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "author": "ZhiShi Team <xunzhaonn@126.com>",
+  "homepage": "https://zhishi.help",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZhiShi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/J0hnFFFF/ZhiShi/issues"
+  },
+  "keywords": [
+    "claude",
+    "ai",
+    "agent",
+    "desktop",
+    "tauri",
+    "productivity",
+    "anthropic"
+  ],
+  "scripts": {
+    "build:server": "node scripts/esbuild-bundle.mjs server",
+    "build:cli": "node scripts/esbuild-bundle.mjs cli",
+    "build:tsx-runtime": "node scripts/setup-tsx-runtime.mjs",
+    "sync:bundled-skills": "node scripts/build/sync-bundled-skills.cjs",
+    "server": "node --import tsx/esm src/server/index.ts",
+    "start": "npm run server",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --cache --cache-location .eslintcache --max-warnings=0 && npm run lint:deps",
+    "lint:deps": "depcruise --config .dependency-cruiser.cjs src",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:changed": "vitest run --changed",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "format": "prettier --experimental-cli --write .",
+    "format:check": "prettier --experimental-cli --check --log-level warn .",
+    "clean": "rm -rf node_modules dist .turbo .eslintcache *.tsbuildinfo src-tauri/target",
+    "version": "node scripts/sync-version.js && git add src-tauri/tauri.conf.json src-tauri/Cargo.toml"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.84.2",
+    "@earendil-works/pi-ai": "0.84.2",
+    "@hono/node-server": "^2.0.0",
+    "adm-zip": "^0.5.16",
+    "js-yaml": "^4.1.1",
+    "sharp": "0.34.5",
+    "socks": "^2.8.7",
+    "undici": "^8.1.0",
+    "zod": "^4.1.12"
+  },
+  "optionalDependencies": {
+    "@img/sharp-darwin-arm64": "*",
+    "@img/sharp-darwin-x64": "*",
+    "@img/sharp-linux-arm64": "*",
+    "@img/sharp-linux-x64": "*",
+    "@img/sharp-linuxmusl-arm64": "*",
+    "@img/sharp-linuxmusl-x64": "*",
+    "@img/sharp-win32-arm64": "*",
+    "@img/sharp-win32-x64": "*"
+  },
+  "devDependencies": {
+    "@eslint/compat": "^2.0.0",
+    "@eslint/js": "^9.39.0",
+    "@ianvs/prettier-plugin-sort-imports": "^4.7.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@tauri-apps/cli": "^2.10.1",
+    "@types/adm-zip": "^0.5.7",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^24.10.1",
+    "@vitest/coverage-v8": "^3.2.4",
+    "better-sqlite3": "^12.11.1",
+    "dependency-cruiser": "^16.10.4",
+    "eslint": "^9.39.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-eslint-comments": "^3.2.0",
+    "prettier": "^3.6.2",
+    "tsx": "4.21.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.48.0",
+    "vitest": "^3.2.4"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "kind": "ai-security",
+  "name": "AI 安全",
+  "recipes": ["ai-security"],
+  "skills": ["ai-security"],
+  "subagents": [],
+  "signals": [
+    { "re": "\\b(\\d+)\\s+FAIL\\b", "label": "探针失败", "appendMatch": true },
+    { "re": "jailbreak[^\\n]*(success|hit)|(success|hit)[^\\n]*jailbreak", "label": "越狱命中" }
+  ],
+  "acceptance": [
+    "对自有/授权模型端点跑 garak 扫描 + promptfoo 自定义 eval,产出风险分级报告",
+    "research_log(kind=ai-security) 留痕:确认的越狱/注入类问题挂 bug_class"
+  ]
+}

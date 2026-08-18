@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  ZhiShi Hardened Runtime Entitlements
+
+  NOTE: The allow-jit, allow-unsigned-executable-memory, and disable-library-validation
+  entitlements are REQUIRED for any JavaScript runtime to function under macOS
+  Hardened Runtime — specifically:
+    - bundled Node.js (Sidecar + Plugin Bridge + MCP servers + AI Bash)
+    - embedded Bun inside the Claude Agent SDK native binary (SDK team's
+      internal impl; we can't opt out)
+  V8/JSC both JIT-compile JavaScript to native code at runtime, which the OS
+  forbids without these entitlements. The app is still notarized by Apple,
+  which provides Gatekeeper protection.
+-->
+<dict>
+    <!-- Allow the app to make network connections (required for API calls) -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    
+    <!-- Allow the app to act as a network server (required for local sidecar) -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+    
+    <!-- Allow JIT compilation (required for JavaScript engine) -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    
+    <!-- Allow unsigned executable memory (required for Node.js + embedded JS runtimes) -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    
+    <!-- Disable library validation (required for loading external binaries) -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

@@ -1,0 +1,68 @@
+# ZhiShi Rust lint policy
+#
+# Pit-of-success rule: ALL async tasks created in src-tauri MUST use
+# `tauri::async_runtime::spawn`. Calling `tokio::spawn` directly works in most
+# call sites — but silently aborts when the caller chain reaches Tauri's
+# `.setup()` callback or any tao ObjC FFI boundary (the runtime context is
+# absent there, the panic cannot unwind across the FFI border, and the process
+# aborts via `panic_cannot_unwind` in `did_finish_launching`).
+#
+# `tauri::async_runtime::spawn` lazy-inits the global runtime + enters its
+# context before delegating to `tokio::spawn`, so it works regardless of where
+# it's called from. Cost: one OnceLock check + a no-op enter when already in
+# context. Negligible.
+#
+# History: bitten twice. First time fixed `search/mod.rs::start_background_indexing`
+# (April 2025, see comment there). Second time fixed `logger.rs::init_buffered_writer`
+# (April 2026, see commit da8a08b). After the second hit, the rule moved from
+# "documented in two places" to "enforced by clippy".
+disallowed-methods = [
+    { path = "tokio::spawn", reason = "Use `tauri::async_runtime::spawn` — works regardless of caller context (.setup() callback / ObjC FFI boundary). See ARCHITECTURE.md `async runtime spawning` pit-of-success module." },
+    { path = "tokio::task::spawn", reason = "Same as `tokio::spawn` — use `tauri::async_runtime::spawn`." },
+
+    # localhost reqwest must go through `crate::local_http` so the system
+    # proxy never intercepts 127.0.0.1 traffic (CLAUDE.md red-line table).
+    # Wrappers in `local_http.rs` are the single legitimate caller — they
+    # carry `#[allow(clippy::disallowed_methods)]` on the construction line.
+    { path = "reqwest::Client::new", reason = "Use `crate::local_http::builder()` / `json_client()` / `sse_client()` — system proxy intercepts localhost otherwise (502 on dev). CLAUDE.md red-line." },
+    { path = "reqwest::Client::builder", reason = "Use `crate::local_http::builder()` — same pit-of-success rule. External-host builders (R2 / weixin / updater) MUST carry `#[allow(clippy::disallowed_methods)]` per call site so the localhost trap stays banned for everyone else." },
+    { path = "reqwest::ClientBuilder::new", reason = "Use `crate::local_http::builder()` — same pit-of-success rule." },
+    { path = "reqwest::blocking::Client::new", reason = "Use `crate::local_http::blocking_builder()` — same pit-of-success rule." },
+    { path = "reqwest::blocking::Client::builder", reason = "Use `crate::local_http::blocking_builder()` — same pit-of-success rule. External-host builders MUST carry `#[allow(clippy::disallowed_methods)]` per call site." },
+    { path = "reqwest::blocking::ClientBuilder::new", reason = "Use `crate::local_http::blocking_builder()` — same pit-of-success rule." },
+
+    # System binary lookup — Finder-launched Tauri apps don't inherit a full
+    # PATH so bare `which::which()` returns None even when the binary exists.
+    # `crate::system_binary::find()` searches a known list of brew/system dirs
+    # in addition to PATH. CLAUDE.md red-line table.
+    { path = "which::which", reason = "Use `crate::system_binary::find()` — Finder-launched Tauri apps have a stripped PATH. CLAUDE.md red-line." },
+
+    # Subprocess spawn — `crate::process_cmd::new()` sets CREATE_NO_WINDOW on
+    # Windows so background children (sidecar, plugin-bridge, bun init) don't
+    # flash a console. The wrapper itself carries
+    # `#[allow(clippy::disallowed_methods)]` on its `Command::new` line.
+    # CLAUDE.md red-line table.
+    { path = "std::process::Command::new", reason = "Use `crate::process_cmd::new()` — sets CREATE_NO_WINDOW on Windows so background processes don't flash a console window. CLAUDE.md red-line." },
+]
+
+# `spawn_blocking` is intentionally NOT banned — both `tokio::task::spawn_blocking`
+# and `tauri::async_runtime::spawn_blocking` are equally safe outside an async
+# context (they just dispatch to the blocking thread pool, no reactor needed).
+# Existing call sites using `tokio::task::spawn_blocking` continue to work.
+
+# Unified logging macros: `log::*` macros only write to stdout / env_logger.
+# They bypass the unified log file at `~/.zhishi/logs/unified-{date}.log`
+# which is the source of truth for Sidecar / React / Rust correlation.
+# `ulog_*!` macros (defined in `logger.rs`) write to stdout AND the unified
+# file AND emit to the React log panel. CLAUDE.md red-line table.
+#
+# `logger.rs` itself uses `log::*` internally (the unified path delegates to
+# stdout via `log::*` to keep env_logger compat). Those call sites carry
+# `#[allow(clippy::disallowed_macros)]` per-line.
+disallowed-macros = [
+    { path = "log::info", reason = "Use `ulog_info!` — `log::*` bypasses the unified log file. Allowed only inside `logger.rs` (per-line allow). CLAUDE.md red-line." },
+    { path = "log::warn", reason = "Use `ulog_warn!` — same as `log::info`." },
+    { path = "log::error", reason = "Use `ulog_error!` — same as `log::info`." },
+    { path = "log::debug", reason = "Use `ulog_debug!` — same as `log::info`." },
+    { path = "log::trace", reason = "Use `ulog_debug!` — `ulog_trace!` does not exist; map to debug." },
+]

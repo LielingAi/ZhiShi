@@ -1,0 +1,8 @@
+/* English localization */
+
+CFBundleDisplayName = "ZhiShi";
+
+CFBundleName = "ZhiShi";
+
+NSAppleEventsUsageDescription = "ZhiShi needs to control other apps so the intelligent agent can activate windows, run AppleScript, and perform desktop automation on your behalf.";
+

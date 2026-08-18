@@ -1,0 +1,206 @@
+# Dependencies
+
+node_modules/
+
+
+
+# Build outputs
+
+dist/
+
+*.tsbuildinfo
+
+
+
+# Lockfiles — v0.2.0+ uses npm (package-lock.json is committed).
+
+# Any residual bun.lock from pre-0.2.0 checkout is ignored so local installs
+
+# don't leave stray files in the tree.
+
+bun.lock
+
+
+
+# Vite
+
+.vite/
+
+
+
+# ESLint & Prettier
+
+.eslintcache
+
+.prettiercache
+
+
+
+# Logs
+
+logs/
+
+*.log
+
+npm-debug.log*
+
+
+
+# IDE
+
+.idea/
+
+.vscode/
+
+*.swp
+
+*.swo
+
+*.code-workspace
+
+
+
+# macOS
+
+.DS_Store
+
+._*
+
+
+
+# Environment variables
+
+.env
+
+.env.*
+
+!.env.example
+
+
+
+# Turbo
+
+.turbo/
+
+
+
+# Claude Code (user-specific settings)
+
+.claude/settings.json
+
+.claude/settings.local.json
+
+
+
+# Codex CLI
+
+.context/
+
+.agents/
+
+
+
+# Tauri / Rust
+
+src-tauri/target/
+
+src-tauri/binaries/
+
+src-tauri/resources/server-dist.js
+
+src-tauri/resources/server-dist.js.map
+
+src-tauri/resources/plugin-bridge-dist.mjs
+
+src-tauri/resources/plugin-bridge-dist.mjs.map
+
+src-tauri/resources/claude-agent-sdk
+
+src-tauri/resources/cli/zhishi.js
+
+src-tauri/resources/cli/zhishi.cmd
+
+src-tauri/resources/agent-browser-cli
+
+src-tauri/resources/sharp-runtime
+
+src-tauri/resources/tsx-runtime
+
+src-tauri/resources/nodejs/*
+
+!src-tauri/resources/nodejs/.gitkeep
+
+src-tauri/resources/nodejs-cache/
+
+src-tauri/resources/vcruntime140.dll
+
+src-tauri/resources/vcruntime140_1.dll
+
+src-tauri/nsis/Git-Installer.exe
+src-tauri/resources/MicrosoftEdgeWebView2Setup.exe
+
+
+
+# Test coverage
+
+coverage/
+
+
+
+# Misc
+
+*.pem
+
+*.local
+
+
+
+.agent/
+
+/.claude/
+
+.playwright-mcp/
+
+# specs/prd/
+
+specs/research/
+
+specs/playground/
+
+specs/issues/
+
+
+
+scripts/dev/start_dev.sh
+
+
+
+# Default workspace (cloned by scripts/setup/setup.sh)
+
+/mino/
+
+node_modules
+dist-usb/
+dist-usb.zip
+dist-usb.zip
+
+# Local test install / build artifacts
+tmp/
+test-install*/
+stop
+src-tauri/tauri.conf.json.bak-template
+zhishi_files/
+
+# AppCraft 工作区运行时数据（录制/回放账本/关键帧，不属于源码）
+.appcraft/
+
+
+# 话题弧生成的工地经验文件（运行时产物，不属于源码）
+memory/topics/*.md
+
+
+src-tauri/tauri.windows.generated.conf.json
+src-tauri/resources/novo/
+src-tauri/nsis/installer.nsi.bak
+# 本地凭据,不迁移
+.env
