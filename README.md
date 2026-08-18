@@ -1,7 +1,7 @@
 # ZhiShi — 安全研究 Harness
 
 <p align="center">
-  <img src="output/zhishi-landing/logo-glow.png" alt="zhishi 执失" width="96">
+  <img src="src-tauri/icons/icon.png" alt="zhishi 执失" width="96">
 </p>
 
 **安全研究领域的 agent harness：环境融合、原生工具、原生代码。**
