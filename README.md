@@ -26,8 +26,14 @@
 ## 实战成果
 
 <div align="center">
-  <h3>🏆 9 个 CVE &nbsp;·&nbsp; 🔍 200+ 白盒审计发现 &nbsp;·&nbsp; 🎯 90% CTF 通关率 &nbsp;·&nbsp; 🌐 Chrome / Firefox 漏洞分析</h3>
+  <strong>🏆 9 个 CVE &nbsp;·&nbsp; 🔍 200+ 白盒审计发现 &nbsp;·&nbsp; 🎯 90% CTF 通关率 &nbsp;·&nbsp; 🌐 Chrome / Firefox 漏洞分析</strong>
 </div>
+
+CTF 通关明细（部分知名平台）：
+
+| Pwnable.kr | Hacker101 CTF | HackThisSite | ROP Emporium | VulnHub |
+|---|---|---|---|---|
+| 100% | 98% | 96% | 91% | 90% |
 
 ### 完整复现
 
