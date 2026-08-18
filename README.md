@@ -34,7 +34,7 @@
 | [CVE-2025-1164](https://www.cve.org/CVERecord?id=CVE-2025-1164) | 提报 | Police FIR Record Management System 1.0（CVSS 4.8） |
 | [CVE-2025-1163](https://www.cve.org/CVERecord?id=CVE-2025-1163) | 提报 | Vehicle Parking Management System 1.0（CVSS 4.8） |
 | [CVE-2025-1162](https://www.cve.org/CVERecord?id=CVE-2025-1162) | 提报 | Job Recruitment 1.0（CVSS 5.3） |
-| CVE-2026-66319 | 提报 | 详情待公开 |
+| CVE-2026-66319 | 提报 | Microsoft · 详情待公开 |
 
 在途：**微软漏洞审核中 ×7**。另有白盒审计发现漏洞 **200+**、知名 CTF（二进制）通关率 **90%**、多起 Chrome / Firefox 漏洞分析与复现。
 
