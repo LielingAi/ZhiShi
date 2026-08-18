@@ -25,10 +25,6 @@
 
 ## 实战成果
 
-<div align="center">
-  <strong>🏆 9 个 CVE &nbsp;·&nbsp; 🔍 200+ 白盒审计发现 &nbsp;·&nbsp; 🎯 90% CTF 通关率 &nbsp;·&nbsp; 🌐 Chrome / Firefox 漏洞分析</strong>
-</div>
-
 CTF 通关明细（部分知名平台）：
 
 | Pwnable.kr | Hacker101 CTF | HackThisSite | ROP Emporium | VulnHub |
@@ -56,6 +52,10 @@ CTF 通关明细（部分知名平台）：
 
 - **7 个漏洞**在微软审核流程中
 - 白盒审计发现的 200+ 中，部分漏洞正在提报 CVE
+
+### 浏览器漏洞
+
+- 多起 Chrome / Firefox 漏洞分析与复现
 
 ---
 
