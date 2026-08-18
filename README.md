@@ -14,8 +14,7 @@
 [![Node](https://img.shields.io/badge/Node-%3E%3D22-green.svg)]()
 [![Homepage](https://img.shields.io/badge/Homepage-zhishi.help-blue)](https://zhishi.help)
 
-> 不是调度器，不是套壳第三方 agent。模型可换，**harness 是常量**。
-> 定位实战：0day 挖掘、1day 复现、漏洞验证与武器化——CTF 是补充，任何环境按需适配。
+> 以实战出发的**漏洞研究专用 harness**。
 
 > **免责声明**：本工具仅面向**合法授权**的安全研究（漏洞挖掘、复现、渗透测试）。禁止对未授权目标使用；使用者须遵守当地法律法规，作者不承担任何非法使用产生的后果。
 
