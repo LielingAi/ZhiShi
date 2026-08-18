@@ -23,6 +23,23 @@
 
 ---
 
+## 实战成果
+
+| 编号 | 角色 | 目标 |
+|---|---|---|
+| [CVE-2026-34621](https://www.cve.org/CVERecord?id=CVE-2026-34621) | 完整复现 | Adobe Acrobat Reader · 原型污染（CVSS 8.6） |
+| [CVE-2026-0961](https://www.cve.org/CVERecord?id=CVE-2026-0961) | 提报 | Wireshark · BLF 文件解析崩溃 DoS（CVSS 5.5） |
+| [CVE-2025-1171](https://www.cve.org/CVERecord?id=CVE-2025-1171) | 提报 | Real Estate Property Management System 1.0（CVSS 5.1） |
+| [CVE-2025-1170](https://www.cve.org/CVERecord?id=CVE-2025-1170) | 提报 | Real Estate Property Management System 1.0（CVSS 5.1） |
+| [CVE-2025-1164](https://www.cve.org/CVERecord?id=CVE-2025-1164) | 提报 | Police FIR Record Management System 1.0（CVSS 4.8） |
+| [CVE-2025-1163](https://www.cve.org/CVERecord?id=CVE-2025-1163) | 提报 | Vehicle Parking Management System 1.0（CVSS 4.8） |
+| [CVE-2025-1162](https://www.cve.org/CVERecord?id=CVE-2025-1162) | 提报 | Job Recruitment 1.0（CVSS 5.3） |
+| CVE-2026-66319 | 提报 | 详情待公开 |
+
+在途：**微软漏洞审核中 ×7**。另有白盒审计发现漏洞 **200+**、知名 CTF（二进制）通关率 **90%**、多起 Chrome / Firefox 漏洞分析与复现。
+
+---
+
 ## 它是什么
 
 ZhiShi 是给安全研究员的工作台：二进制利用、渗透测试、白盒审计、AI 安全四个主战场。
