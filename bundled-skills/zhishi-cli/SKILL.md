@@ -16,7 +16,7 @@ description: >-
 
   "接个 X 工具进来"（→ mcp）、"配 X 模型/Provider"（→ model）、
 
-  "装个 X 插件 / 装个 X skill"（→ plugin / skill）、"做个图表/仪表盘"
+  "装个 X skill"（→ skill）、"做个图表/仪表盘"
 
   （→ widget readme）、"看下我有啥任务/定时/版本"（→ list / status / version）、"改下应用设置"（→ config）。
 
@@ -88,7 +88,7 @@ CLI 通过 `~/.zhishi/bin/zhishi` 暴露，你的 SDK 子进程 PATH 已注入�
 
 - **MCP 工具变更**（增删改 / 启禁用 / 环境变量 / OAuth）：磁盘立即写入，但工具在**下一轮对话**才能调用——MCP server 在 session 创建时绑定。当前轮配完后告诉用户："发条新消息我就能用了"
 
-- **其他配置**（Provider / Agent / task / skill / plugin / config）：写入即时生效
+- **其他配置**（Provider / Agent / task / skill / config）：写入即时生效
 
 
 
@@ -459,47 +459,6 @@ zhishi memory search '<关键词>' [--kind reminder --limit N] [--json]
 
 
 **验证与恢复**：输出会打印 `overridesRequested` vs `overridden`，传了 override 但没落到持久化态会明确提示 drift。
-
-
-
-### Claude 插件（cc-plugin） — PRD 0.2.17
-
-
-
-```bash
-
-zhishi cc-plugin list                                 # 已装 Claude 插件 + 启停状态
-
-zhishi cc-plugin install <source>                     # 来源：owner/repo / GitHub URL / 直链 zip / file:///abs
-
-zhishi cc-plugin uninstall <name> [--purgeData]       # 卸载（数据目录默认保留）
-
-zhishi cc-plugin enable <name>                        # 启用（下次 session 生效）
-
-zhishi cc-plugin disable <name>                       # 禁用
-
-zhishi cc-plugin show <id|name>                       # 详情（含 manifest + 组件清单）
-
-```
-
-
-
-`cc-plugin` 是 Anthropic 官方的 Claude Plugin 协议（自带 skills/agents/MCP/hooks 的目录），落在 `~/.zhishi/plugins/<name>/`；启用后由 SDK 自动装载组件。
-
-
-
-**何时用：**
-
-- "粘个 GitHub URL 装个插件" → `cc-plugin install owner/repo`
-
-- "装本地正在调的插件" → `cc-plugin install file:///path/to/plugin`
-
-- "禁掉 X 插件" → `cc-plugin disable X`
-
-
-
-启停 / 安装 / 卸载后会触发 SDK 柔性重启（500ms 防抖），下一次发消息时 plugin 内组件才生效。
-
 
 
 

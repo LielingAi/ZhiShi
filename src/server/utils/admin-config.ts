@@ -195,10 +195,6 @@ export interface AgentConfigSlim {
 
   channels?: ChannelConfigSlim[];
 
-  /** PRD 0.2.17 — plugins this Agent enables (subset of globally-visible). */
-
-  enabledPluginIds?: string[];
-
   [key: string]: unknown;
 
 }

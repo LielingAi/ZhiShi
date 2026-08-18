@@ -12,7 +12,7 @@
 
 ### 能力补齐（1.2）
 
-- [ ] **TUI 接入面补完（MCP / 插件）**：当前 TUI 只接了 skills；`zhishi mcp` / `zhishi plugin`（.zsp）在 CLI 已可用，TUI 侧入口与状态展示待补。验收：TUI 帮助面板可见 MCP/插件配置入口，配置后工具在会话可用。
+- [ ] **TUI 接入面补完（MCP）**：当前 TUI 只接了 skills；`zhishi mcp` 在 CLI 已可用，TUI 侧入口与状态展示待补。验收：TUI 帮助面板可见 MCP 配置入口，配置后工具在会话可用。
 - [ ] **各域 skills 实战深化**：binary 域最强（ret2win 验证过）；pentest / whitebox / ai-security 的 skills 属「声明齐、实战未验证」——每个域至少一次真实任务跑通，按结果修正对应 skill。验收：三域各一条 dogfood 成功记录落 `research_events`。
 - [ ] **情报横切最小落地**：每个研究域的侦察阶段接一条情报通道（D29 已定调「横切」）。验收：至少一个域的任务中情报被实际消费并体现在结论里。
 

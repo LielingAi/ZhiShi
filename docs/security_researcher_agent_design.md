@@ -52,15 +52,15 @@ LLM   = 思维能力（推理、判断、决策、生成代码思路）
 
 ## 2. 扩展机制与人协作
 
-### 2.1 插件（唯一扩展入口）= 外挂工具 + skills + subagent
+### 2.1 扩展入口 = MCP 外挂工具 + skills + subagent
 
-"原生"之外的一切扩展，**统一收口到插件**——研究员自己加的、别人造的现成插件，都走这一个机制。给 LLM 加能力，**不需要 UI**：
+"原生"之外的一切扩展，**统一收口到 MCP + skills**——研究员自己加的、别人造的现成 MCP server 和 skills，都走这两个机制。给 LLM 加能力，**不需要 UI**：
 
 - **外挂工具**：非原生内置的新 MCP / CLI tool。
 - **skills**：新的编排/方法，教 LLM 做某件新事。
 - **subagent**：子智能体，独立跑某类任务。
 
-研究员可**自造插件**（保留做插件能力，具体入口随 P 阶段定）；对应 ZhiShi 现有插件体系（OpenClaw / `.zsp`），在安全场景下收窄定性为这三样。
+研究员可**自造扩展**（MCP server / skills，具体入口随 P 阶段定）；不再有独立插件体系（加密插件已随开源转型移除）。
 
 ### 2.2 人协作（人在回路才需要，极少）
 
@@ -210,9 +210,9 @@ IDA / Wireshark / Burp / 调试器 GUI —— 研究员在自己熟悉的 GUI �
 - 多模型 Provider、gemini-image/edge-tts、需求单、Team Hub 残留
 - 造能力（capability-forge）、技能市场/安装/skill-creator、MCP 配置面板、想法收集
 
-**砍掉后统一收口：** 扩展机制 = 原生 + 插件两层；技能 / 工具扩展的散落功能砍掉，统一走插件（研究员可自造插件）。
+**砍掉后统一收口：** 扩展机制 = 原生 + MCP / skills；技能 / 工具扩展的散落功能砍掉，统一走 MCP server 与 skills（研究员可自造）。
 
-**留：** 多 Tab、终端、浏览器、任务中心、记忆（含蒸馏弧）、定时任务、搭子、Panel API、`.zsp` 加密插件、做插件能力；download-anything、github、AppCraft（terminator/cuse）。
+**留：** 多 Tab、终端、浏览器、任务中心、记忆（含蒸馏弧）、定时任务、搭子、Panel API；download-anything、github、AppCraft（terminator/cuse）。
 
 ### 模型
 

@@ -52,9 +52,6 @@ import {
 } from '../server/memory/store';
 
 
-import { runZspLocal } from './zsp-local';
-
-
 
 import { runAgentLoop } from './tui/v2/entry';
 
@@ -109,10 +106,6 @@ function parseArgs(args: string[]): { positional: string[]; flags: Record<string
   const shortFlagAliases: Record<string, string> = {
 
     'p': 'prompt',
-
-    // `plugin keygen -n 10`（加密插件工具链，spec §5）→ --count
-
-    'n': 'count',
 
     // Add more here if PRD documents additional short flags.
 
@@ -449,7 +442,6 @@ Commands:
   widget    Generative UI widget design guidelines (readme)
 
 
-  cc-plugin Manage Claude plugins (PRD 0.2.17 — Anthropic plugin protocol)
 
   config    Read/write application config
 
@@ -629,22 +621,6 @@ Examples:
 
   zhishi term close <terminalId>
 
-
-  zhishi plugin init --publisher <name>      # 本地工具链（不走 sidecar）：初始化发布者身份
-
-  zhishi plugin pack [--dir <path>] [--new-dek] [--out <path>]   # 打包加密 .zsp
-
-  zhishi plugin keygen --plugin <id> [-n N]  # 签发许可串
-
-  zhishi plugin verify <pkg.zsp> --license <串>   # 发布者自检（验签+解密）
-
-  zhishi cc-plugin list
-
-  zhishi cc-plugin install anthropics/example-plugin
-
-  zhishi cc-plugin install file:///path/to/dev-plugin
-
-  zhishi cc-plugin enable my-plugin
 
   zhishi version
 
@@ -887,14 +863,6 @@ function printResult(group: string, action: string, result: Record<string, unkno
   if (group === 'agent' && action === 'list') {
 
     printAgentList(result.data as Array<Record<string, unknown>>);
-
-    return;
-
-  }
-
-  if (group === 'cc-plugin' && action === 'list') {
-
-    printCcPluginList(result.data as Array<Record<string, unknown>>);
 
     return;
 
@@ -2171,50 +2139,6 @@ function printStatus(data: Record<string, unknown>): void {
 
 
 
-function printCcPluginList(plugins: Array<Record<string, unknown>>): void {
-
-  if (!plugins || plugins.length === 0) {
-
-    console.log('No Claude plugins installed.');
-
-    return;
-
-  }
-
-  const pad = (s: string, n: number) => s.padEnd(n);
-
-  console.log(pad('STATUS', 10) + pad('NAME', 24) + pad('VERSION', 12) + pad('SOURCE', 24) + 'DESCRIPTION');
-
-  for (const p of plugins) {
-
-    const enabled = p.enabled === true;
-
-    const status = p.status as string;
-
-    const statusLabel = status === 'ok'
-
-      ? (enabled ? '✓ enabled' : '· disabled')
-
-      : `! ${status}`;
-
-    const name = String(p.name ?? '?').slice(0, 22);
-
-    const version = String(p.version ?? '?').slice(0, 10);
-
-    const source = String(p.sourceUrl ?? '').slice(0, 22);
-
-    const desc = String(p.description ?? '');
-
-    console.log(pad(statusLabel, 10) + pad(name, 24) + pad(version, 12) + pad(source, 24) + desc);
-
-  }
-
-  console.log(`\n${plugins.length} plugin(s) installed`);
-
-}
-
-
-
 function printSkillList(skills: Array<Record<string, unknown>>): void {
 
   if (!skills || skills.length === 0) {
@@ -2801,28 +2725,6 @@ async function main(): Promise<void> {
 
 
 
-  // Plugin *authoring* commands (encrypted .zsp toolchain, spec
-
-  // specs/tech_docs/encrypted_plugins_t1.md §5.1) are pure local crypto —
-
-  // key material lives in ~/.zspack/ and must work with the app NOT running,
-
-  // so they run before the ZHISHI_PORT check and never touch the Sidecar.
-
-  // Boundary: the OpenClaw channel-plugin sidecar commands were removed with
-
-  // the IM channels; .zsp authoring (init/pack/keygen/verify) stays local.
-
-  if (positional[0] === 'plugin' && ['init', 'pack', 'keygen', 'verify'].includes(positional[1] ?? '')) {
-
-    await runZspLocal(positional[1], positional.slice(2), flags);
-
-    return;
-
-  }
-
-
-
   // Resolve port: --port flag overrides env
 
   PORT = (flags.port as string) || PORT;
@@ -2856,7 +2758,7 @@ async function main(): Promise<void> {
   if (positional[0] === 'agent' && positional.length === 1 && !flags.help) {
 
     // P1-T4（D17）: --env <id> / --new-env <recipe> 跳过首屏选择器直通对应
-    // 路径。--env 在 parseArgs 里是 repeatable flag（plugin 组共用），取值数组
+    // 路径。--env 在 parseArgs 里是 repeatable flag（env 组共用），取值数组
     // 的最后一项；--new-env → camelCase newEnv 是普通字符串 flag。
     const envFlag = Array.isArray(flags.env) ? (flags.env as string[]).filter(Boolean).pop() : undefined;
 
@@ -3921,74 +3823,6 @@ function buildRequestBody(
       : candidates;
 
     return { modules };
-
-  }
-
-
-
-  // Plugin commands
-
-  if (group === 'plugin') {
-
-
-
-    return {};
-
-  }
-
-
-
-  // Claude Plugin commands (PRD 0.2.17). Separate group from the OpenClaw
-
-  // channel-plugin `plugin` above — different concept, different storage.
-
-  if (group === 'cc-plugin') {
-
-    if (action === 'install') {
-
-      return {
-
-        sourceUrl: rest[0] || flags.sourceUrl || flags.url,
-
-      };
-
-    }
-
-    if (action === 'uninstall') {
-
-      return {
-
-        // Allow either positional name or full id via flag
-
-        id: flags.id,
-
-        name: rest[0],
-
-        purgeData: !!flags.purgeData,
-
-      };
-
-    }
-
-    if (action === 'enable' || action === 'disable') {
-
-      return { id: flags.id, name: rest[0] };
-
-    }
-
-    if (action === 'show') {
-
-      return { id: rest[0] || flags.id };
-
-    }
-
-    if (action === 'list') {
-
-      return {};
-
-    }
-
-    return {};
 
   }
 

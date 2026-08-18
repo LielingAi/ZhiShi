@@ -22,7 +22,7 @@ use std::process::{Command, Stdio};
 /// designed to avoid for AI callers.
 const CLI_COMMANDS: &[&str] = &[
     "mcp", "model", "agent", "runtime", "config", "status", "reload", "version",
-    "plugin", "cc-plugin", "skill", "task", "widget",
+    "skill", "task", "widget",
     // Issue #194 — `zhishi diagnose runtime <type>` sugar. Without this, the
     // packaged Tauri binary launches the GUI when invoked with just `diagnose ...`.
     // `runtime diagnose <type>` still works via the "runtime" entry above.
