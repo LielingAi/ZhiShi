@@ -204,3 +204,11 @@ src-tauri/resources/novo/
 src-tauri/nsis/installer.nsi.bak
 # 本地凭据,不迁移
 .env
+
+# ===== 不进仓库(迁移约定) =====
+# 官网独立部署
+output/zhishi-landing/
+output/zhishi-landing.zip
+# IDE/agent 本地私有配置
+.codebuddy/
+.workbuddy/
