@@ -5,6 +5,13 @@
 
 ---
 
+## 1.1.4 —— 情报体验 + 横切扩域（进行中）
+
+- [ ] **intel update 进度输出**：update 长回填时 CLI 端实时显示「已入库 N 条」（简单版，不做百分比估算——拉取前总量未知）。实现：sync 进度状态进 `intel/status`，CLI 轮询展示；同时加 update 并发互斥（第二个 update 返回「已有更新在跑」）。
+- [ ] **情报横切扩 pentest 域**：nuclei 模板清单索引（**只存目录不存正文**——与 exploit-db 同原则，模板内容给 GitHub 链接）。新表 `nuclei_templates`（id/名称/severity/CVE 关联/标签/链接）+ 同步进 `zhishi intel update` + `intel_search` 扩展「查 CVE 的现成检测模板」（**只做 CVE→模板这一个查询维度**，关键字搜模板以后需要再加）。
+
+---
+
 ## 1.1.1 —— 能力补齐：扩展面收敛（已完成）
 
 - [x] **TUI 接入面补完（MCP / 插件）**：原规划「TUI 只接了 skills，MCP / 插件在 CLI 已可用，TUI 侧入口与状态展示待补」。
