@@ -4,7 +4,8 @@
  * 与 research_log 同类：harness 原生能力，不依赖 env、不依赖外部 MCP，
  * chat-engine 的 runPiTurn 无条件注册（宿主侧能力）。执行体读 intel.db
  * （sidecar 进程持有的本地索引）：
- * - CVE 编号 → 主表精确查询；
+ * - CVE 编号 → 主表精确查询（1.1.4 起联查 nuclei 检测模板目录，给
+ *   GitHub blob 链接）；
  * - 产品/关键字 → FTS5 模糊（零命中再 LIKE 兜底）；
  * - 未命中且配置允许在线回源（intel.onlineFallback，缺省 true）→ NVD
  *   keywordSearch 单发，5s 超时，失败静默降级为「未找到」。
@@ -24,6 +25,7 @@ import {
   openIntelStore,
   searchCves,
   type IntelHit,
+  type NucleiTemplateList,
 } from '../intel/store';
 import { NVD_BASE_URL } from '../intel/sync';
 import type { IntelFetchFn } from '../intel/sync';
@@ -105,7 +107,24 @@ export function formatIntelHit(hit: IntelHit): string {
   return line.length > 200 ? `${line.slice(0, 197)}…` : line;
 }
 
-/** 结果文本：头（索引新鲜度）+ 命中行；空命中给明确指引。 */
+/** nuclei 模板路径 → GitHub blob 链接。路径按段 URL 编码（空格/特殊字符
+ *  编码后 GitHub 才能正确定位；`/` 保留作层级分隔）。 */
+export function nucleiTemplateUrl(templatePath: string): string {
+  const encoded = templatePath.split('/').map((seg) => encodeURIComponent(seg)).join('/');
+  return `https://github.com/projectdiscovery/nuclei-templates/blob/main/${encoded}`;
+}
+
+/** 检测模板小节（精确 CVE 命中时追加在结果行下）。total=0 返回 null。
+ *  链接截断在 store 层完成（listNucleiTemplates limit），paths 不足 total
+ *  时补省略号。 */
+export function formatNucleiTemplates(templates: NucleiTemplateList): string | null {
+  if (templates.total <= 0) return null;
+  const links = templates.paths.map(nucleiTemplateUrl).join(' ');
+  const truncated = templates.paths.length < templates.total ? ' …' : '';
+  return `检测模板: ${templates.total} 个（${links}${truncated}）`;
+}
+
+/** 结果文本：头（索引新鲜度）+ 命中行（精确 CVE 命中带检测模板小节）；空命中给明确指引。 */
 export function formatIntelResult(args: {
   query: string;
   hits: IntelHit[];
@@ -121,7 +140,13 @@ export function formatIntelResult(args: {
     const degraded = args.indexUnavailable ? '\n（本地索引不可用，且在线回源未命中/失败）' : '';
     return `${header}\n未找到与 "${args.query}" 匹配的 CVE 情报。${degraded}`;
   }
-  return `${header} 命中 ${args.hits.length} 条${source}:\n${args.hits.map(formatIntelHit).join('\n')}`;
+  const lines: string[] = [];
+  for (const hit of args.hits) {
+    lines.push(formatIntelHit(hit));
+    const templates = hit.nucleiTemplates ? formatNucleiTemplates(hit.nucleiTemplates) : null;
+    if (templates) lines.push(`  ${templates}`);
+  }
+  return `${header} 命中 ${args.hits.length} 条${source}:\n${lines.join('\n')}`;
 }
 
 /** 构造 intel_search 工具（宿主侧能力，与 research_log 并列无条件注册）。 */
@@ -139,12 +164,12 @@ export function createIntelSearchTool(
   });
   return {
     name: INTEL_SEARCH_TOOL_NAME,
-    label: '检索 CVE 情报（NVD + exploit-db 本地索引）',
+    label: '检索 CVE 情报（NVD + exploit-db + nuclei 检测模板本地索引）',
     description:
-      '检索本地情报索引（NVD CVE + exploit-db）：query 传 CVE 编号精确查询（如 CVE-2024-1234）' +
-      '或产品/关键字模糊查询（如 apache log4j）。返回 CVE 摘要（CVSS / 描述 / 受影响产品 / 公开 exploit）。' +
-      '使用纪律：复现或验证漏洞前先核实受影响版本与公开 PoC；情报是线索不是结论；不要每步都查——' +
-      '只在真正需要外部事实时调用。',
+      '检索本地情报索引（NVD CVE + exploit-db + nuclei 检测模板）：query 传 CVE 编号精确查询（如 CVE-2024-1234，'
+      + '附检测模板链接）或产品/关键字模糊查询（如 apache log4j）。返回 CVE 摘要（CVSS / 描述 / 受影响产品 / 公开 exploit）。'
+      + '使用纪律：复现或验证漏洞前先核实受影响版本与公开 PoC；情报是线索不是结论；不要每步都查——'
+      + '只在真正需要外部事实时调用。',
     parameters: intelSearchParameters,
     execute: async (_toolCallId, params): Promise<AgentToolResult<IntelSearchToolDetails>> => {
       const query = (params.query ?? '').trim();

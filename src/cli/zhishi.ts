@@ -55,6 +55,8 @@ import {
 
 import { runAgentLoop } from './tui/v2/entry';
 
+import { INTEL_POLL_INTERVAL_MS, startIntelProgressPolling } from './intel-progress';
+
 
 
 // ---------------------------------------------------------------------------
@@ -1416,7 +1418,7 @@ function printResult(group: string, action: string, result: Record<string, unkno
 
       const pruned = (Number(r.prunedByWindow) || 0) + (Number(r.prunedBySize) || 0);
 
-      console.log(`✓ 情报索引已更新 mode=${String(r.mode)} nvd+${String(r.nvdAdded)} exploits=${String(r.exploitCount)} pruned=${pruned} 更新于 ${String(r.lastUpdateAt ?? '').slice(0, 10)}`);
+      console.log(`✓ 情报索引已更新 mode=${String(r.mode)} nvd+${String(r.nvdAdded)} exploits=${String(r.exploitCount)} nuclei=${String(r.nucleiCount)} pruned=${pruned} 更新于 ${String(r.lastUpdateAt ?? '').slice(0, 10)}`);
 
       const warnings = Array.isArray(r.warnings) ? (r.warnings as string[]) : [];
 
@@ -1440,7 +1442,7 @@ function printResult(group: string, action: string, result: Record<string, unkno
 
       const mb = Number(s.dbFileSizeBytes) > 0 ? ` ${(Number(s.dbFileSizeBytes) / 1024 / 1024).toFixed(1)}MB` : '';
 
-      console.log(`mode=${String(s.mode)}  更新于 ${String(s.lastUpdateAt ?? '?').slice(0, 10)}  cves=${String(s.cveCount)}  exploits=${String(s.exploitCount)}${mb}`);
+      console.log(`mode=${String(s.mode)}  更新于 ${String(s.lastUpdateAt ?? '?').slice(0, 10)}  cves=${String(s.cveCount)}  exploits=${String(s.exploitCount)}  nuclei=${String(s.nucleiCount)}${mb}`);
 
       console.log(`nvdWatermark=${String(s.nvdWatermark ?? '（无——下次 update 做全量回填）')}`);
 
@@ -2974,7 +2976,25 @@ async function main(): Promise<void> {
 
 
 
-    result = await callApi(route, body);
+    // `intel update` 是分钟级长任务：发请求后并发每 3s 轮询 intel/status，
+    // 实时刷一行进度（⏳ 情报更新中…）；update 响应回来（成功/失败）打断
+    // 轮询并清掉进度行，随后 printResult 打印最终结果。json 模式不轮询
+    // （stdout 要留纯 JSON）。
+    if (group === 'intel' && action === 'update' && !jsonMode) {
+      const updatePromise = callApi(route, body);
+      const poller = startIntelProgressPolling({
+        statusFn: () => callApi('intel/status', {}),
+        intervalMs: INTEL_POLL_INTERVAL_MS,
+        write: (line) => process.stdout.write(`\r${line}\x1b[K`),
+      });
+      try {
+        result = await updatePromise;
+      } finally {
+        poller.stop(); // 打断轮询；曾写过进度行时补一个空写 → \r\x1b[K 清行
+      }
+    } else {
+      result = await callApi(route, body);
+    }
 
 
 

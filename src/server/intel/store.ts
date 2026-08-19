@@ -14,9 +14,11 @@
  *   cve_refs 是 `;` 分隔的大写 CVE 编号（写入时归一），配合
  *   `(';'||cve_refs||';') LIKE '%;'||?||';%'` 做精确命中（防 CVE-1234
  *   误匹配 CVE-12345）；
+ * - nuclei_templates(cve_id, template_path) 复合主键 + WITHOUT ROWID——
+ *   pentest 域（1.1.4）nuclei 检测模板索引，只存目录不存正文；
  * - cves_fts：FTS5 虚拟表（description 全文）+ 触发器随 cves 增删改同步；
  * - meta(key PK, value)：lastUpdateAt / mode / cveCount / exploitCount /
- *   nvdWatermark（增量水位）/ nvdBackfillEnd（首次全量回填断点）。
+ *   nucleiCount / nvdWatermark（增量水位）/ nvdBackfillEnd（首次全量回填断点）。
  *
  * 并发模型：WAL 模式——update 长事务期间查询照常（设计红线）。
  * 写函数不带事务，调用方用 runInTransaction 组合
@@ -29,6 +31,7 @@ import { dirname, join } from 'path';
 import { getBundledSqliteEntryPoint } from '../utils/runtime';
 import type { ParsedCve, IntelProduct } from './nvd-parser';
 import type { ParsedExploit } from './exploitdb-parser';
+import type { ParsedNucleiTemplate } from './nuclei-parser';
 
 // ===== better-sqlite3 驱动加载（同 memory/store.ts 模式） =====
 
@@ -135,6 +138,11 @@ export function openIntelStore(baseDir: string): IntelDb {
       cve_refs TEXT,
       date TEXT
     );
+    CREATE TABLE IF NOT EXISTS nuclei_templates (
+      cve_id TEXT NOT NULL,
+      template_path TEXT NOT NULL,
+      PRIMARY KEY (cve_id, template_path)
+    ) WITHOUT ROWID;
     CREATE VIRTUAL TABLE IF NOT EXISTS cves_fts USING fts5(description, id UNINDEXED);
     -- 触发器用 DROP+CREATE 而非 CREATE IF NOT EXISTS：FTS5 的 'delete' 特殊
     -- 命令只支持 contentless/external-content 表（本版本 SQLite 实测对普通
@@ -235,7 +243,39 @@ export function replaceExploits(db: IntelDb, exploits: ParsedExploit[]): number 
   return exploits.length;
 }
 
+/** 整体替换 nuclei_templates（拉取即替换语义；解析出 0 条时调用方不要调它）。
+ *  INSERT OR IGNORE：复合主键兜住解析层去重漏网的行（重复 CVE+路径不炸）。 */
+export function replaceNucleiTemplates(db: IntelDb, entries: ParsedNucleiTemplate[]): number {
+  db.raw.prepare('DELETE FROM nuclei_templates').run();
+  const ins = db.raw.prepare('INSERT OR IGNORE INTO nuclei_templates (cve_id, template_path) VALUES (?, ?)');
+  for (const e of entries) ins.run(e.cveId, e.templatePath);
+  return entries.length;
+}
+
+export function countNucleiTemplates(db: IntelDb): number {
+  return (db.raw.prepare('SELECT COUNT(*) AS n FROM nuclei_templates').get() as { n: number }).n;
+}
+
+/** 某 CVE 的检测模板：total 为全量条数，paths 为按路径升序截断 limit 条。 */
+export interface NucleiTemplateList {
+  total: number;
+  paths: string[];
+}
+
+export function listNucleiTemplates(db: IntelDb, cveId: string, limit: number): NucleiTemplateList {
+  const total = (
+    db.raw.prepare('SELECT COUNT(*) AS n FROM nuclei_templates WHERE cve_id = ?').get(cveId) as { n: number }
+  ).n;
+  const rows = db.raw
+    .prepare('SELECT template_path FROM nuclei_templates WHERE cve_id = ? ORDER BY template_path LIMIT ?')
+    .all(cveId, limit) as Array<{ template_path: string }>;
+  return { total, paths: rows.map((r) => r.template_path) };
+}
+
 // ===== 查询 =====
+
+/** intel_search 精确 CVE 查询返回的检测模板链接截断数（1.1.4 定稿）。 */
+export const NUCLEI_TEMPLATE_LINK_LIMIT = 5;
 
 /** 命中结果（工具侧渲染原料）。exploitCount < 0 表示未知（在线回源）。 */
 export interface IntelHit {
@@ -247,6 +287,8 @@ export interface IntelHit {
   modified: string | null;
   products: IntelProduct[];
   exploitCount: number;
+  /** 精确 CVE 查询时联查的 nuclei 检测模板（模糊查询/在线回源不填）。 */
+  nucleiTemplates?: NucleiTemplateList;
 }
 
 interface CveRow {
@@ -304,14 +346,18 @@ export function buildFtsQuery(query: string): string {
 }
 
 /**
- * 检索：CVE 编号 → 精确主表查询；否则 FTS5 模糊，FTS 零命中再 LIKE 兜底
- * （中文/符号场景 unicode61 分词命中差，兜底保召回）。limit 由调用方钳制。
+ * 检索：CVE 编号 → 精确主表查询（联查 nuclei 检测模板）；否则 FTS5 模糊，
+ * FTS 零命中再 LIKE 兜底（中文/符号场景 unicode61 分词命中差，兜底保召回）。
+ * limit 由调用方钳制。
  */
 export function searchCves(db: IntelDb, query: string, limit: number): IntelHit[] {
   const cveId = extractCveId(query);
   if (cveId) {
     const hit = getCveById(db, cveId);
-    return hit ? [hit] : [];
+    if (!hit) return [];
+    // 只有精确 CVE 查询才联查模板（1.1.4：模糊关键字不查，保持简单）
+    hit.nucleiTemplates = listNucleiTemplates(db, hit.id, NUCLEI_TEMPLATE_LINK_LIMIT);
+    return [hit];
   }
   let ids: string[] = [];
   const ftsQuery = buildFtsQuery(query);
@@ -392,6 +438,7 @@ export interface IntelStatus {
   mode: string | null;
   cveCount: number;
   exploitCount: number;
+  nucleiCount: number;
   nvdWatermark: string | null;
   dbFileSizeBytes: number;
 }
@@ -404,6 +451,7 @@ export function getIntelStatus(db: IntelDb): IntelStatus {
     mode: getMeta(db, 'mode'),
     cveCount: countCves(db),
     exploitCount: countExploits(db),
+    nucleiCount: countNucleiTemplates(db),
     nvdWatermark: getMeta(db, 'nvdWatermark'),
     dbFileSizeBytes: getDbFileSize(db),
   };

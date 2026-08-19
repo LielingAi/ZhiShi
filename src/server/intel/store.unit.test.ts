@@ -15,17 +15,20 @@ import {
   buildFtsQuery,
   countCves,
   countExploits,
+  countNucleiTemplates,
   extractCveId,
   getCveById,
   getDbFileSize,
   getIntelStatus,
   getMeta,
   hasIntelDb,
+  listNucleiTemplates,
   openIntelStore,
   pruneBySize,
   pruneByWindow,
   removeMeta,
   replaceExploits,
+  replaceNucleiTemplates,
   resetIntelStoreForTest,
   runInTransaction,
   searchCves,
@@ -237,5 +240,56 @@ describe('状态快照', () => {
       nvdWatermark: null,
     });
     expect(status.dbFileSizeBytes).toBeGreaterThan(0);
+  });
+});
+
+describe('nuclei 模板（1.1.4）', () => {
+  const entries = (paths: string[]): Array<{ cveId: string; templatePath: string }> =>
+    paths.map((p) => ({ cveId: 'CVE-2024-0001', templatePath: p }));
+
+  it('整体替换幂等：重复替换同数据计数不变；替换覆盖旧数据；INSERT OR IGNORE 兜重复', () => {
+    runInTransaction(db, () => replaceNucleiTemplates(db, entries(['http/a.yaml', 'http/b.yaml'])));
+    expect(countNucleiTemplates(db)).toBe(2);
+    // 同数据再替换：不变
+    runInTransaction(db, () => replaceNucleiTemplates(db, entries(['http/a.yaml', 'http/b.yaml'])));
+    expect(countNucleiTemplates(db)).toBe(2);
+    // 复合主键兜底：解析层漏网的重复行不炸、不重复计数
+    runInTransaction(db, () => replaceNucleiTemplates(db, entries(['http/a.yaml', 'http/a.yaml'])));
+    expect(countNucleiTemplates(db)).toBe(1);
+    // 整体替换语义：旧数据被清
+    runInTransaction(db, () => replaceNucleiTemplates(db, entries(['http/c.yaml'])));
+    expect(countNucleiTemplates(db)).toBe(1);
+  });
+
+  it('listNucleiTemplates：total 全量 + paths 升序截断；无命中 → 0/空', () => {
+    runInTransaction(db, () => replaceNucleiTemplates(
+      db,
+      entries(['http/c.yaml', 'http/a.yaml', 'http/b.yaml', 'http/d.yaml', 'http/e.yaml', 'http/f.yaml']),
+    ));
+    const list = listNucleiTemplates(db, 'CVE-2024-0001', 3);
+    expect(list.total).toBe(6);
+    expect(list.paths).toEqual(['http/a.yaml', 'http/b.yaml', 'http/c.yaml']);
+    expect(listNucleiTemplates(db, 'CVE-1999-0001', 3)).toEqual({ total: 0, paths: [] });
+  });
+
+  it('searchCves：精确 CVE（含混在文本中的编号）联查模板；模糊关键字不联查', () => {
+    runInTransaction(db, () => {
+      upsertCves(db, [cve('CVE-2024-0001', '2024-01-01')]);
+      replaceNucleiTemplates(db, entries(['http/a.yaml', 'http/b.yaml']));
+    });
+    const exact = searchCves(db, 'CVE-2024-0001', 5);
+    expect(exact).toHaveLength(1);
+    expect(exact[0].nucleiTemplates).toEqual({ total: 2, paths: ['http/a.yaml', 'http/b.yaml'] });
+    // 查询串里带 CVE 编号 → extractCveId 判精确路径（同样联查）
+    const mixed = searchCves(db, 'apache CVE-2024-0001', 5);
+    expect(mixed[0].nucleiTemplates).toBeDefined();
+    // 纯关键字模糊 → 不联查
+    const keyword = searchCves(db, 'description', 5);
+    expect(keyword[0].nucleiTemplates).toBeUndefined();
+  });
+
+  it('getIntelStatus 带 nucleiCount', () => {
+    runInTransaction(db, () => replaceNucleiTemplates(db, entries(['http/a.yaml'])));
+    expect(getIntelStatus(db).nucleiCount).toBe(1);
   });
 });

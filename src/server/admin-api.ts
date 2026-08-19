@@ -162,7 +162,7 @@ import type { AppcraftRunStats } from './appcraft/run-log';
 import { parseActiveReminders, parseReminderMeta, readDistilled } from './memory/distill';
 import { findByContent, listActive, listResearchEvents, logRecallEvents, MEMORY_KINDS, recordResearchEvent, searchEntries, touchEntry, type MemoryKind, type ResearchBugClass, type ResearchOutcome, type ResearchTaskKind } from './memory/store';
 // 1.1.2 情报横切：intel.db 更新/状态（sidecar 进程内直连,不经网络）。
-import { runIntelUpdate } from './intel/sync';
+import { runIntelUpdate, getIntelProgress } from './intel/sync';
 import { getIntelStatus, hasIntelDb, openIntelStore } from './intel/store';
 import {
   importTrustBuffer,
@@ -4604,15 +4604,28 @@ export async function handleIntelUpdate(payload: { mode?: string }): Promise<Adm
 }
 
 
-/** 情报索引状态（zhishi intel status）。未初始化返回 dbExists=false 不建库。 */
+/** 情报索引状态（zhishi intel status）。未初始化返回 dbExists=false 不建库。
+ *  progress 段来自 sync 模块的进度快照（1.1.4）：update 未跑时 inProgress=false；
+ *  与 update 的并发互斥同源（inProgress）。 */
 export function handleIntelStatus(): AdminResponse {
   try {
     const baseDir = getZhiShiDataDir();
     const cfg = resolveIntelConfig((loadConfig() as { intel?: IntelConfig }).intel);
     const dbExists = hasIntelDb(baseDir);
+    const progress = getIntelProgress();
     const status = dbExists
-      ? getIntelStatus(openIntelStore(baseDir))
-      : { dbExists: false, lastUpdateAt: null, mode: null, cveCount: 0, exploitCount: 0, nvdWatermark: null, dbFileSizeBytes: 0 };
+      ? { ...getIntelStatus(openIntelStore(baseDir)), progress }
+      : {
+          dbExists: false,
+          lastUpdateAt: null,
+          mode: null,
+          cveCount: 0,
+          exploitCount: 0,
+          nucleiCount: 0,
+          nvdWatermark: null,
+          dbFileSizeBytes: 0,
+          progress,
+        };
     return { success: true, data: { status, config: cfg } };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
