@@ -151,15 +151,14 @@ interface RetryContext {
   log: (msg: string) => void;
 }
 
-/** 429/5xx 指数退避重试（尊重 Retry-After，封顶 60s）；网络错误/超时同样退避重试。 */
-async function fetchWithRetry(ctx: RetryContext, url: string, label: string): Promise<IntelFetchResponse> {
+/** 429/5xx 指数退避重试（尊重 Retry-After，封顶 60s）；网络错误/超时/响应体读取失败同样退避重试。
+ *  返回已读取的响应文本——body 读取必须在重试循环内，NVD 大页（6MB+）慢网络下读取超时是常态。 */
+async function fetchWithRetry(ctx: RetryContext, url: string, label: string): Promise<{ resp: IntelFetchResponse; text: string }> {
   for (let attempt = 0; ; attempt++) {
     let resp: IntelFetchResponse;
     try {
       resp = await fetchWithTimeout(ctx.fetchImpl, url, ctx.requestTimeoutMs);
     } catch (err) {
-      // NVD 大响应在慢网络下超时是常态——网络错误与超时同样退避重试，
-      // 不能只重试 HTTP 状态码（否则一次抖动直接杀死整次 update）。
       if (attempt >= ctx.maxRetries) {
         throw new Error(
           `${label} 请求失败（网络/超时）重试 ${ctx.maxRetries} 次后仍失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -170,15 +169,30 @@ async function fetchWithRetry(ctx: RetryContext, url: string, label: string): Pr
       await ctx.sleepMs(delay);
       continue;
     }
-    if (resp.ok) return resp;
-    const retryable = resp.status === 429 || resp.status >= 500;
-    if (!retryable) throw new Error(`${label} HTTP ${resp.status}: ${url}`);
-    if (attempt >= ctx.maxRetries) {
-      throw new Error(`${label} HTTP ${resp.status} 重试 ${ctx.maxRetries} 次后仍失败: ${url}`);
+    if (!resp.ok) {
+      const retryable = resp.status === 429 || resp.status >= 500;
+      if (!retryable) throw new Error(`${label} HTTP ${resp.status}: ${url}`);
+      if (attempt >= ctx.maxRetries) {
+        throw new Error(`${label} HTTP ${resp.status} 重试 ${ctx.maxRetries} 次后仍失败: ${url}`);
+      }
+      const delay = retryAfterMs(resp) ?? backoffDelayMs(attempt);
+      ctx.log(`${label} HTTP ${resp.status}，${delay}ms 后退避重试（第 ${attempt + 1} 次）`);
+      await ctx.sleepMs(delay);
+      continue;
     }
-    const delay = retryAfterMs(resp) ?? backoffDelayMs(attempt);
-    ctx.log(`${label} HTTP ${resp.status}，${delay}ms 后退避重试（第 ${attempt + 1} 次）`);
-    await ctx.sleepMs(delay);
+    try {
+      const text = await resp.text();
+      return { resp, text };
+    } catch (err) {
+      if (attempt >= ctx.maxRetries) {
+        throw new Error(
+          `${label} 响应读取失败重试 ${ctx.maxRetries} 次后仍失败: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      const delay = backoffDelayMs(attempt);
+      ctx.log(`${label} 响应读取失败（${err instanceof Error ? err.message : String(err)}），${delay}ms 后退避重试（第 ${attempt + 1} 次）`);
+      await ctx.sleepMs(delay);
+    }
   }
 }
 
@@ -222,18 +236,11 @@ async function fetchNvdWindow(
       ...dateParams,
     });
     const url = `${NVD_BASE_URL}?${params.toString()}`;
-    const resp = await fetchWithRetry(ctx, url, 'NVD');
-    // body 读取（网络中断在此暴露）与 JSON 解析分开归类——超时/断流是
-    // 「读取失败」不是「解析失败」，报错信息要能指引排查方向。
-    let bodyText: string;
-    try {
-      bodyText = await resp.text();
-    } catch (err) {
-      throw new Error(`NVD 响应读取失败: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    const { text } = await fetchWithRetry(ctx, url, 'NVD');
+    // body 已在重试循环内读取完毕——此处只剩 JSON 解析失败归类。
     let page;
     try {
-      page = parseNvdPage(JSON.parse(bodyText));
+      page = parseNvdPage(JSON.parse(text));
     } catch (err) {
       throw new Error(`NVD 响应解析失败: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -339,7 +346,7 @@ export async function runIntelUpdate(opts: IntelUpdateOptions): Promise<IntelUpd
   const now = opts.now ?? (() => new Date());
   const log = opts.log ?? ((msg: string) => console.log(`[intel] ${msg}`));
   const maxRetries = opts.maxRetries ?? 3;
-  const requestTimeoutMs = opts.requestTimeoutMs ?? 30_000;
+  const requestTimeoutMs = opts.requestTimeoutMs ?? 120_000;
   const warnings: string[] = [];
   const nowIso = now().toISOString();
   const result: IntelUpdateResult = {
@@ -408,8 +415,7 @@ export async function runIntelUpdate(opts: IntelUpdateOptions): Promise<IntelUpd
 
   // ===== exploit-db 阶段（失败保留旧数据，不致命） =====
   try {
-    const resp = await fetchWithRetry(ctx, EXPLOITDB_CSV_URL, 'exploit-db');
-    const text = await resp.text();
+    const { text } = await fetchWithRetry(ctx, EXPLOITDB_CSV_URL, 'exploit-db');
     const exploits = parseExploitDbCsv(text);
     if (exploits.length === 0) {
       warnings.push('exploit-db 解析出 0 条，保留旧数据');
