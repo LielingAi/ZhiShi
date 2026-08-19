@@ -2,11 +2,17 @@
  * env_bg — 环境内长驻进程通道（docs/env-bg-design.md）。
  *
  * 稳定性红线：
- *   - 真相在环境内：/tmp/zhishi-bg/<tag>.{log,pid,exit,cmd}，宿主零持久状态；
+ *   - 真相在环境内：/tmp/zhishi-bg/<tag>.{log,pid,exit,cmd}；宿主侧只有
+ *     一张可弃的登记表（bg-registry.ts，Phase 3），丢了不致命；
  *   - 薄编排层：全部动作都是一次性命令，复用 execInEnvironment 的 ssh/docker
  *     通道——本模块零 spawn、零连接管理；
  *   - 注入安全：command base64 编码进远端（不做自定义转义）；tag 严格白名单
  *     [A-Za-z0-9_-]{1,64}（会拼进路径与 kill/cat 参数）。
+ *
+ * Phase 3（稳定性闭环，docs/env-bg-design.md §8）新增：
+ *   - buildBgProbeRemote / envBgPoll knownPid：存活探测（kill -0 级 +
+ *     .pid 一致性校验），探测通道失败保守报 running+probeFailed 不误杀；
+ *   - buildBgReapRemote / envBgReap：回收 kill（按登记 pid + 一致性校验）。
  *
  * guest-exec（断网 VM）后台通道 v1 不做——调用时返回清晰错误。
  */
@@ -27,6 +33,13 @@ export interface BgExecOptions {
   exec?: EnvExec;
   /** 单操作超时（默认 30s——start/poll/log/kill 都是快命令）。 */
   timeoutMs?: number;
+  /**
+   * Phase 3 存活探测：登记表里记的 pid。提供时 poll 走探测通道
+   * （buildBgProbeRemote，kill -0 级 + .pid 一致性校验，与 start 拿
+   * pid 同一条通道）；不提供时走远端 .pid/.exit 现场判定。探测命令
+   * 本身失败（ssh 断流）→ 保守报 running+probeFailed，绝不误杀。
+   */
+  knownPid?: number;
 }
 
 export interface BgStartResult {
@@ -40,6 +53,12 @@ export interface BgPollResult {
   status: 'running' | 'exited' | 'dead' | 'missing';
   pid?: number;
   exitCode?: number;
+  /**
+   * Phase 3：true = 探测命令本身失败（环境不可达/超时），结果保守地
+   * 报 running——这不是「进程活着」的证据，是「没法证伪」。调用方
+   * 必须保留登记、不广播 finished、不回收杀掉。
+   */
+  probeFailed?: boolean;
 }
 
 export interface BgLogResult {
@@ -68,18 +87,21 @@ function b64(command: string): string {
   return Buffer.from(command, 'utf8').toString('base64');
 }
 
-/** start 的远端一次性命令。返回 stdout = 后台 shell 的 pid。
- *  两个稳定性陷阱已钉（活体实测）：
+/** start 的远端一次性命令。返回 stdout = 后台进程组长的 pid。
+ *  稳定性陷阱（活体实测钉过，Phase 3 再钉一条）：
  *   ① 后台进程必须 `< /dev/null` 重定向 stdin——否则它继承 ssh 通道的
  *      stdin,ssh 会等它结束才返回,start 表现为超时假死;
  *   ② 全程绝对路径 + mkdir 前置到前台(`;` 而非 `&&` 接后台段)——`cd` 若被
- *      `&&` 卷进后台子壳,前台 `echo $! > pid` 会落到 $HOME 而非 BG_DIR。 */
+ *      `&&` 卷进后台子壳,前台 `echo $! > pid` 会落到 $HOME 而非 BG_DIR。
+ *   ③ 用 `setsid` 建独立进程组(组长 pid = 登记 pid)——回收时按组杀才
+ *      杀得干净。旧的 nohup 方案只登记外层 shell,内层 sh → sleep 的孙
+ *      进程在回收时被 reparent 残留(活体实测:sleep 600 回收后仍存活)。 */
 export function buildBgStartRemote(command: string, tag: string, family: OsFamily = 'linux'): string {
   if (family === 'windows') return buildBgStartRemoteWin(command, tag);
   const encoded = b64(command);
   return (
     `mkdir -p ${BG_DIR}; ` +
-    `nohup sh -c 'echo ${encoded} | base64 -d | sh; echo $? > ${BG_DIR}/${tag}.exit' < /dev/null > ${BG_DIR}/${tag}.log 2>&1 & ` +
+    `setsid sh -c 'echo ${encoded} | base64 -d | sh; echo $? > ${BG_DIR}/${tag}.exit' < /dev/null > ${BG_DIR}/${tag}.log 2>&1 & ` +
     `echo $! > ${BG_DIR}/${tag}.pid; cat ${BG_DIR}/${tag}.pid`
   );
 }
@@ -125,6 +147,37 @@ export function buildBgPollRemote(tag: string, family: OsFamily = 'linux'): stri
   );
 }
 
+/**
+ * Phase 3 存活探测（登记表 pid 专用）：kill -0 级检查 + .pid 一致性校验。
+ * 输出语法与 buildBgPollRemote 完全同构（missing / running:<pid> /
+ * exited:<code> / dead:<pid>），直接复用 parseBgPoll。
+ *
+ * 为什么要 .pid 一致性校验：环境重启/快照回滚后 /tmp 清空，登记表里的
+ * 旧 pid 可能已被系统回收给别的进程——直接 kill -0 <旧pid> 会把别人的
+ * 进程误判成「还活着」。先核对 .pid 文件仍是登记的那个 pid 再探测。
+ */
+export function buildBgProbeRemote(tag: string, pid: number, family: OsFamily = 'linux'): string {
+  if (family === 'windows') {
+    const d = BG_DIR_WIN;
+    return (
+      `$t='${d}\\${tag}'; $p=${pid}; ` +
+      `if((Test-Path "$t.pid") -and ((Get-Content "$t.pid" -Raw).Trim() -eq "$p")){` +
+      `if(Get-Process -Id $p -ErrorAction SilentlyContinue){"running:$p"}` +
+      `elseif(Test-Path "$t.exit"){'exited:'+((Get-Content "$t.exit" -Raw).Trim())}` +
+      `else{"dead:$p"}}else{'missing'}`
+    );
+  }
+  const t = `${BG_DIR}/${tag}`;
+  return (
+    `t=${t}; p=${pid}; ` +
+    `if [ -f $t.pid ] && [ "$(cat $t.pid)" = "$p" ]; then ` +
+    `if kill -0 $p 2>/dev/null; then echo "running:$p"; ` +
+    `elif [ -f $t.exit ]; then echo "exited:$(cat $t.exit)"; ` +
+    `else echo "dead:$p"; fi; ` +
+    `else echo missing; fi`
+  );
+}
+
 /** log：offset=0 → 尾部 limit 字节；offset>0 → 从 offset 起 limit 字节。 */
 export function buildBgLogRemote(tag: string, offset: number, limit: number, family: OsFamily = 'linux'): string {
   if (family === 'windows') {
@@ -162,6 +215,38 @@ export function buildBgKillRemote(tag: string, family: OsFamily = 'linux'): stri
     `if [ ! -f $t.pid ]; then echo missing; ` +
     `elif ps -p "$(cat $t.pid)" >/dev/null 2>&1; then kill "$(cat $t.pid)" && echo killed:$(cat $t.pid) || echo kill-failed; ` +
     `else echo not-running; fi`
+  );
+}
+
+/**
+ * Phase 3 回收 kill（turn 结束 / 会话 reset 清场专用，envBgReap 的远端
+ * 命令）：按登记表 pid 杀，带 .pid 一致性校验——tag 复用（下一个 turn
+ * 同名重起）或环境重启导致 pid 失效时**不杀任何东西**，报 pid-mismatch。
+ *
+ * 与用户主动 env_bg kill（buildBgKillRemote，按 .pid 现场取值）的区别：
+ * 回收是异步清场，杀的对象是登记时刻的 pid，绝不能误杀复用 tag 的新
+ * 进程。杀主进程 + linux 附带 pkill -P 直接子进程（sh -c 的孩子——
+ * fuzz 本体通常是它）；不做进程组杀（后台进程与 ssh 会话同组，组杀会
+ * 波及其它正在执行的命令）。Windows 用 taskkill /T /F 树杀。
+ */
+export function buildBgReapRemote(tag: string, pid: number, family: OsFamily = 'linux'): string {
+  if (family === 'windows') {
+    const d = BG_DIR_WIN;
+    return (
+      `$t='${d}\\${tag}'; $p=${pid}; ` +
+      `if((Test-Path "$t.pid") -and ((Get-Content "$t.pid" -Raw).Trim() -eq "$p")){` +
+      `taskkill /PID $p /T /F 2>$null | Out-Null; "reaped:$p"` +
+      `}else{'pid-mismatch'}`
+    );
+  }
+  const t = `${BG_DIR}/${tag}`;
+  return (
+    `t=${t}; p=${pid}; ` +
+    `if [ -f $t.pid ] && [ "$(cat $t.pid)" = "$p" ]; then ` +
+    // 组杀优先(setsid 启动后 $p 即组长,`kill -- -$p` 杀全组,孙进程不漏);
+    // 兼容旧 nohup 残留(非组长,组杀 ESRCH):pkill 子进程 + kill 自身兜底。
+    `kill -TERM -- -$p 2>/dev/null; pkill -TERM -P $p 2>/dev/null; kill -TERM $p 2>/dev/null; echo "reaped:$p"; ` +
+    `else echo pid-mismatch; fi`
   );
 }
 
@@ -217,7 +302,7 @@ function bgEntryOk(entry: EnvironmentEntry): { channel: 'ssh' | 'docker' } | { e
   const resolved = resolveExecTarget(entry);
   if (!resolved.ok) return { error: resolved.error };
   if (resolved.execTarget.channel === 'guest') {
-    return { error: 'env_bg 后台通道暂不支持 guest-exec（断网 VM），见 docs/env-bg-design.md Phase 3' };
+    return { error: 'env_bg 后台通道暂不支持 guest-exec（断网 VM），见 docs/env-bg-design.md §5 三通道矩阵' };
   }
   return { channel: resolved.execTarget.channel };
 }
@@ -258,6 +343,23 @@ export async function envBgPoll(
   if (badTag) return { ok: false, error: badTag };
   const gate = bgEntryOk(entry);
   if ('error' in gate) return { ok: false, error: gate.error };
+
+  // Phase 3 存活探测：登记表有 pid → 探测通道（kill -0 + .pid 一致性）。
+  // 探测命令本身失败（ssh 断流/超时）→ 保守报 running+probeFailed：
+  // 这是「没法证伪」，不是「证据说活着」——调用方不得据此广播 finished
+  // 或回收杀掉。探测成功 → 活/死/退/丢 如实解析（语法复用 parseBgPoll）。
+  const knownPid = options.knownPid;
+  if (knownPid !== undefined && Number.isInteger(knownPid) && knownPid > 0) {
+    const probe = await execInEnvironment(entry, buildBgProbeRemote(tag, knownPid, osFamilyOf(entry)), {
+      exec: options.exec,
+      timeoutMs: options.timeoutMs ?? 30_000,
+    });
+    if (!probe.ok) {
+      return { ok: true, tag, status: 'running', pid: knownPid, probeFailed: true };
+    }
+    return { ok: true, ...parseBgPoll(probe.stdout, tag) };
+  }
+
   const r = await execInEnvironment(entry, buildBgPollRemote(tag, osFamilyOf(entry)), {
     exec: options.exec,
     timeoutMs: options.timeoutMs ?? 30_000,
@@ -300,6 +402,30 @@ export async function envBgKill(
   const r = await execInEnvironment(entry, buildBgKillRemote(tag, osFamilyOf(entry)), {
     exec: options.exec,
     timeoutMs: options.timeoutMs ?? 30_000,
+  });
+  if (!r.ok) return { ok: false, error: r.error };
+  return { ok: true, outcome: r.stdout.trim() || 'done' };
+}
+
+/**
+ * Phase 3 回收 kill（turn 结束 / 会话 reset 清场专用；用户主动杀仍走
+ * envBgKill）。按登记表 pid 杀 + .pid 一致性校验——tag 复用或环境重启
+ * 导致 pid 失效时不杀任何东西，报 pid-mismatch。返回 outcome：
+ * `reaped:<pid>` | `pid-mismatch`。
+ */
+export async function envBgReap(
+  entry: EnvironmentEntry,
+  tag: string,
+  pid: number,
+  options: BgExecOptions = {},
+): Promise<{ ok: true; outcome: string } | { ok: false; error: string }> {
+  const badTag = validateTag(tag);
+  if (badTag) return { ok: false, error: badTag };
+  const gate = bgEntryOk(entry);
+  if ('error' in gate) return { ok: false, error: gate.error };
+  const r = await execInEnvironment(entry, buildBgReapRemote(tag, pid, osFamilyOf(entry)), {
+    exec: options.exec,
+    timeoutMs: options.timeoutMs ?? 15_000,
   });
   if (!r.ok) return { ok: false, error: r.error };
   return { ok: true, outcome: r.stdout.trim() || 'done' };

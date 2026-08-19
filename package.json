@@ -33,6 +33,7 @@
     "sync:bundled-skills": "node scripts/build/sync-bundled-skills.cjs",
     "server": "node --import tsx/esm src/server/index.ts",
     "start": "npm run server",
+    "smoke": "node scripts/smoke.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",

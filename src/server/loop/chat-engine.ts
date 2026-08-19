@@ -90,7 +90,9 @@ import { createDelegateTaskTool, DELEGATE_TASK_TOOL_NAME } from './subagent';
 import { collectEnabledSkills } from './skills';
 import { createEnvBgTool, createEnvExecTool, createResearchLogTool, ENV_EXEC_TOOL_NAME, RESEARCH_LOG_TOOL_NAME } from './tools';
 import { createIntelSearchTool, INTEL_SEARCH_TOOL_NAME } from './intel';
-import { ENV_BG_TOOL_NAME } from './bg-exec';
+import { ENV_BG_TOOL_NAME, envBgReap } from './bg-exec';
+import { getBgRegistry, initBgRegistry } from './bg-registry';
+import { reapAllBgProcesses } from './bg-reap';
 import { loadBundledAgents } from '../agents/bundled-agents';
 
 // ---------------------------------------------------------------------------
@@ -173,6 +175,11 @@ function broadcastChatStatus(): void {
 export async function initPiChatEngine(dir: string): Promise<void> {
   agentDir = dir;
   await restorePiSession();
+  // Phase 3:bg 登记表落盘恢复(restore 内部读盘;文件缺失/损坏不抛错)。
+  // 恢复的条目不清不杀——只是重新纳入回收链,下一次 turn 结束/reset
+  // 仍能按 tag+pid 回收,不会变孤儿。不重播 chat:bg-started(TUI 侧
+  // 状态行有自己的内存登记,重复广播反而制造重影)。
+  initBgRegistry(dir);
 }
 
 export function getPiAgentState(): { agentDir: string; sessionState: string; hasInitialPrompt: boolean; loopEngine: string } {
@@ -532,6 +539,11 @@ function startPiTurn(input: PiSendInput, resolution: LoopModelResolution, ground
       broadcast('chat:message-error', err instanceof Error ? err.message : String(err));
     })
     .finally(() => {
+      // Phase 3:turn 结束(含 Esc 中断——abort 后 runPiTurn 正常走到这)
+      // 回收所有仍在跑的 bg 进程。暂定决策,理由与后续方向见 bg-reap.ts
+      // 模块头注释。放在最前:回收的快照同步取,防紧接的 promote 竞态;
+      // fire-and-forget,kill 失败绝不阻塞收尾(reapAllBgProcesses 不抛)。
+      void reapBgOnLifecyclePoint('turn-end');
       busy = false;
       streamingAssistantId = null;
       currentAbort = null;
@@ -804,6 +816,31 @@ function recordGapEvents(failed: string | null, blockedToolNames: string[]): voi
 /** turn 完成计数(cron/headless 等待点;每个 turn 收尾 +1)。 */
 let turnSeq = 0;
 
+// ---------------------------------------------------------------------------
+// Phase 3 — bg 进程回收挂载点(turn 结束 / 会话 reset)
+// ---------------------------------------------------------------------------
+
+/**
+ * 回收登记表里全部 bg 进程(turn 结束 / 会话 reset 两处挂载)。
+ * 决策性质、潜在问题与后续方向见 bg-reap.ts 模块头注释(暂定决策底稿)。
+ * 这里是薄包装:把真实依赖(登记表单例 / config 环境解析 / envBgReap /
+ * SSE 广播)接进可注入的 reapAllBgProcesses——编排本体在 bg-reap.ts 里
+ * 被单测钉死,本函数只剩接线,不另测。
+ */
+async function reapBgOnLifecyclePoint(reason: 'turn-end' | 'reset'): Promise<void> {
+  const registry = getBgRegistry();
+  if (!registry) return;
+  const envList = listEnvironments(loadConfig());
+  await reapAllBgProcesses({
+    registry,
+    findEnv: (envId) => findEnvironmentEntry(envList, envId) ?? null,
+    reap: (entry, tag, pid) => envBgReap(entry, tag, pid),
+    onFinished: (tag, status) => broadcast('chat:bg-finished', { tag, status }),
+    onWarn: (msg) => console.warn(`[pi-engine] ${msg}`),
+    onLog: (msg) => console.log(`[pi-engine] ${msg}(${reason})`),
+  });
+}
+
 /**
  * cron 定时任务等 headless 调用(M4c 自 SDK enqueueUserMessage 迁移):
  * 发消息并等 turn 完成(含排队轮次),返回最终 assistant 文本。
@@ -957,6 +994,10 @@ export function resetPiChat(): void {
   systemInitInfo = null;
   busy = false;
   currentAbort = null;
+  // Phase 3:reset 同样回收 bg 进程。与上面 abort 触发的 turn 收尾
+  // finally 钩子幂等——turn-end 回收先跑一轮,这里只处理残留(通道
+  // 失败被保留的登记)。fire-and-forget,不阻塞 reset 返回。
+  void reapBgOnLifecyclePoint('reset');
   // W1 — reset 后状态回 idle。
   broadcast('chat:status', { sessionState: 'idle' });
 }
