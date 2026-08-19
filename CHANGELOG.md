@@ -20,6 +20,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.1.3] - 2026-08-19
+
+
+
+> 引擎深化：升级回归一键化、后台长驻进程稳定性闭环、经验反喂评估框架。
+
+
+
+### Added
+
+
+
+- **升级回归一键入口 `npm run smoke`**：顺序跑 m1→m3 活体（loop/会话持久化/boundary/压缩/delegate）+ m4 客户端（需 :3199 sidecar）；先打印当前 pi 版本，任一失败 exit 1（升级阻断语义）；`--only` 单跑。m4a-sdk-observe 除名（SDK 引擎已随 D25 删除）。
+- **env_bg Phase 3 稳定性闭环**：登记表落盘（`~/.zhishi/bg-procs/`，哈希隔离工作区、原子写、失败不致命、启动恢复）；poll 存活探测（`kill -0` + .pid 一致性校验，防 pid 回收假活/误杀，探测失败不误杀）；**turn 结束/reset 回收杀掉**（暂定决策——理由与「保留续跑+认领」替代方向见 `bg-reap.ts` 模块头底稿与 `docs/env-bg-design.md` §8）；回收**组杀**（start 改 setsid 建组——活体实测 nohup 方案孙进程回收后残留）。
+- **经验反喂评估框架 `docs/distill-eval.md`**：重复踩坑率/回合数等度量口径、每域 ≥10 组可比任务的数据要求、判定标准；当前 3 条样本暂缓量化。
+
+
+
 ## [1.1.2] - 2026-08-19
 
 
