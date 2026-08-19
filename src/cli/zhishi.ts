@@ -605,11 +605,19 @@ Examples:
 
   zhishi research list [--task-kind binary] [--outcome stuck] [--limit N]
 
-  zhishi intel update [--mode minimal|window|full]
+  zhishi intel update [--mode minimal|window|full] [--nuclei-file <本地 cves.json 路径>]
 
 
 
     # 更新本地情报索引（NVD 全量/增量 + exploit-db 整体替换）。
+
+
+
+    # nuclei 阶段数据源鲁棒：本地文件（--nuclei-file）→ raw.githubusercontent
+
+    # → jsdelivr CDN → api.github.com contents（网络不通时在宿主机 curl 下载
+
+    # cves.json 后喂进来手动导入）。
 
 
 
@@ -3410,7 +3418,7 @@ function buildRequestBody(
 
       }
 
-      return { mode };
+      return { mode, nucleiFile: flags.nucleiFile ? String(flags.nucleiFile) : undefined };
 
     }
 

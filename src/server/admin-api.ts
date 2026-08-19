@@ -4580,7 +4580,7 @@ export async function handleResearchList(payload: {
 /** 情报索引更新（zhishi intel update）。mode 旗标 > config.json::intel.mode
  *  > INTEL_DEFAULTS；windowYears/maxSizeMb 恒取 config（无旗标）。长任务
  *  （首次全量回填）同步执行——CLI 侧等待期间 WAL 保证查询不受影响。 */
-export async function handleIntelUpdate(payload: { mode?: string }): Promise<AdminResponse> {
+export async function handleIntelUpdate(payload: { mode?: string; nucleiFile?: string }): Promise<AdminResponse> {
   const intelCfg = (loadConfig() as { intel?: IntelConfig }).intel;
   const cfg = resolveIntelConfig(intelCfg);
   const requested = typeof payload?.mode === 'string' && payload.mode.trim() ? payload.mode.trim() : undefined;
@@ -4588,11 +4588,15 @@ export async function handleIntelUpdate(payload: { mode?: string }): Promise<Adm
     return { success: false, error: `intel/update: 非法 mode "${requested}"（允许 minimal / window / full）` };
   }
   const mode = requested ?? cfg.mode;
+  // nuclei 本地导入（zhishi intel update --nuclei-file）：网络不通时喂宿主机
+  // curl 下载好的 cves.json；路径透传给 sync 的 nuclei 阶段（优先读，失败进 warnings）。
+  const nucleiFile = typeof payload?.nucleiFile === 'string' && payload.nucleiFile.trim() ? payload.nucleiFile.trim() : undefined;
   try {
     const result = await runIntelUpdate({
       mode,
       windowYears: cfg.windowYears,
       maxSizeMb: cfg.maxSizeMb,
+      ...(nucleiFile ? { nucleiFile } : {}),
     });
     if (!result.ok) {
       return { success: false, error: result.error ?? 'intel update 失败', data: { result } };

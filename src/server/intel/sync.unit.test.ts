@@ -4,9 +4,10 @@
  * 覆盖：首次全量回填（倒序分窗 + 水位=回填起点）、增量续传（120 天分窗）、
  * 429 退避（尊重 Retry-After，睡眠注入收集）、中断可续（断点 meta 保留、
  * 跨运行水位不丢）、窗口事务回滚（半窗口数据不落库）、exploit-db 失败保留
- * 旧数据、window 模式写时过滤 + 裁剪。
+ * 旧数据、window 模式写时过滤 + 裁剪、nuclei 多源 fallback / 源 3 base64
+ * contents 解码 / 本地文件导入（1.1.4）。
  */
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -454,6 +455,91 @@ describe('nuclei 同步（1.1.4）', () => {
     const r = await runIntelUpdate(opts(empty.fetchImpl));
     expect(r.ok).toBe(true);
     expect(r.warnings.some((w) => w.includes('nuclei cves.json 解析出 0 条'))).toBe(true);
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+  });
+
+  it('多源 fallback：源 1 抛错 → 源 2 成功入库（不再请求源 3）', async () => {
+    const { fetchImpl, calls } = makeFetch(happyHandler(), {
+      nuclei: (url) => {
+        if (url.includes('raw.githubusercontent')) return Promise.reject(new Error('raw 超时'));
+        if (url.includes('cdn.jsdelivr.net')) return textResponse(NUCLEI_TEXT);
+        throw new Error(`不该请求源 3: ${url}`);
+      },
+    });
+    const r = await runIntelUpdate(opts(fetchImpl, { maxRetries: 0 }));
+    expect(r.ok).toBe(true);
+    expect(r.warnings).toEqual([]);
+    expect(r.nucleiCount).toBe(2);
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+    // 源 1 失败 → 源 2 成功即止，源 3 不请求
+    const nucleiCalls = calls.filter((c) => c.includes('cves.json'));
+    expect(nucleiCalls).toEqual([
+      expect.stringContaining('raw.githubusercontent.com'),
+      expect.stringContaining('cdn.jsdelivr.net'),
+    ]);
+  });
+
+  it('三源全败 → 一条 warning（含失败摘要）且旧数据保留', async () => {
+    await runIntelUpdate(opts(makeFetch(happyHandler()).fetchImpl));
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+
+    const bad = makeFetch(happyHandler(), { nuclei: () => textResponse('boom', 500) });
+    const r = await runIntelUpdate(opts(bad.fetchImpl, { maxRetries: 0 }));
+    expect(r.ok).toBe(true);
+    const nucWarnings = r.warnings.filter((w) => w.includes('nuclei') && w.includes('保留旧数据'));
+    expect(nucWarnings).toHaveLength(1); // 一条 warning 汇总，别太长/别刷屏
+    expect(nucWarnings[0]).toContain('nuclei 源1');
+    expect(nucWarnings[0]).toContain('nuclei 源2');
+    expect(nucWarnings[0]).toContain('nuclei 源3');
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+    expect(getMeta(openIntelStore(dir), 'nucleiCount')).toBe('2');
+  });
+
+  it('源 3 base64 contents JSON：源 1/2 失败 → api.github.com 解码入库', async () => {
+    const b64 = Buffer.from(NUCLEI_TEXT, 'utf8').toString('base64');
+    const { fetchImpl, calls } = makeFetch(happyHandler(), {
+      nuclei: (url) => {
+        if (url.includes('raw.githubusercontent') || url.includes('cdn.jsdelivr.net')) {
+          return Promise.reject(new Error('down'));
+        }
+        return jsonResponse({ content: b64, encoding: 'base64' });
+      },
+    });
+    const r = await runIntelUpdate(opts(fetchImpl, { maxRetries: 0 }));
+    expect(r.ok).toBe(true);
+    expect(r.warnings).toEqual([]);
+    expect(r.nucleiCount).toBe(2);
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+    expect(calls.some((c) => c.includes('api.github.com'))).toBe(true);
+  });
+
+  it('nucleiFile 本地导入优先：临时文件成功入库（不发 cves.json 网络请求）', async () => {
+    const filePath = join(dir, 'cves.json');
+    writeFileSync(filePath, NUCLEI_TEXT, 'utf8');
+    const { fetchImpl, calls } = makeFetch(happyHandler(), {
+      nuclei: () => Promise.reject(new Error('不该发网络请求')),
+    });
+    const r = await runIntelUpdate(opts(fetchImpl, { nucleiFile: filePath }));
+    expect(r.ok).toBe(true);
+    expect(r.warnings).toEqual([]);
+    expect(r.nucleiCount).toBe(2);
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+    expect(calls.some((c) => c.includes('cves.json'))).toBe(false);
+  });
+
+  it('nucleiFile 路径不存在 → 按源失败处理进 warnings（网络也失败时）', async () => {
+    await runIntelUpdate(opts(makeFetch(happyHandler()).fetchImpl));
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+
+    const bad = makeFetch(happyHandler(), { nuclei: () => textResponse('boom', 500) });
+    const r = await runIntelUpdate(opts(bad.fetchImpl, {
+      maxRetries: 0,
+      nucleiFile: join(dir, 'not-exists.json'),
+    }));
+    expect(r.ok).toBe(true);
+    const nucWarnings = r.warnings.filter((w) => w.includes('nuclei') && w.includes('保留旧数据'));
+    expect(nucWarnings).toHaveLength(1);
+    expect(nucWarnings[0]).toContain('文件不存在');
     expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
   });
 });
