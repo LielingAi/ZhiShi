@@ -986,6 +986,9 @@ export class App {
       case 'model':
         await this.runModel(arg);
         break;
+      case 'mcp':
+        await this.runMcp(arg);
+        break;
       case 'help':
         this.toggleHelp();
         break;
@@ -1081,6 +1084,62 @@ export class App {
       this.pushBlock({ kind: 'divider', label: `模型已切换：${res.model ?? arg}`, tone: 'info' });
     } else {
       this.pushBlock({ kind: 'error', text: res.error ?? '切换模型失败' });
+    }
+  }
+
+  /** /mcp — MCP bridge 状态展示;-r/--reload 先重连再展示。 */
+  private async runMcp(arg: string): Promise<void> {
+    interface McpStatusRow {
+      id: string;
+      name: string;
+      status: 'connected' | 'failed';
+      toolCount?: number;
+      error?: string;
+    }
+    const reload = /(^|\s)(-r|--reload)(\s|$)/.test(arg.trim());
+    if (reload) {
+      this.pushBlock({ kind: 'divider', label: 'MCP 重连中…', tone: 'info' });
+    }
+    const res = await this.client
+      .adminPost<{ success?: boolean; error?: string; data?: { servers?: McpStatusRow[] } }>(
+        reload ? 'mcp/reload' : 'mcp/list-status',
+        {},
+      )
+      .catch((): { success?: boolean; error?: string; data?: { servers?: McpStatusRow[] } } => ({
+        success: false,
+        error: '无法连接 sidecar',
+      }));
+    if (res.success === false) {
+      this.pushBlock({ kind: 'error', text: res.error ?? 'MCP 状态获取失败' });
+      return;
+    }
+    const servers = res.data?.servers ?? [];
+    if (servers.length === 0) {
+      this.pushBlock({ kind: 'divider', label: 'MCP 服务器状态', follow: '0 台(无已启用服务器)', tone: 'info' });
+      return;
+    }
+    this.pushBlock({
+      kind: 'divider',
+      label: reload ? 'MCP 已重载' : 'MCP 服务器状态',
+      follow: `${servers.length} 台`,
+      tone: 'info',
+    });
+    for (const s of servers) {
+      if (s.status === 'connected') {
+        this.pushBlock({
+          kind: 'divider',
+          label: `${s.id} · ${s.name}`,
+          follow: `connected · ${s.toolCount ?? 0} 工具`,
+          tone: 'ok',
+        });
+      } else {
+        this.pushBlock({
+          kind: 'divider',
+          label: `${s.id} · ${s.name}`,
+          follow: `failed · ${s.error ?? '未知错误'}`,
+          tone: 'fail',
+        });
+      }
     }
   }
 

@@ -97,7 +97,8 @@ export interface DividerBlock extends BaseBlock {
   label: string;
   /** Optional follower line, e.g. "N 个工具结果已保留". */
   follow?: string;
-  tone: 'interrupt' | 'info';
+  /** interrupt=amber 中断 / info=faint 提示 / ok=green 成功 / fail=red 失败。 */
+  tone: 'interrupt' | 'info' | 'ok' | 'fail';
 }
 
 export interface ErrorBlock extends BaseBlock {

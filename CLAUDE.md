@@ -32,15 +32,13 @@
 
 - `src/server/appcraft/` — AppCraft 桌面自动化（terminator-client / replay-engine / recorder，见 PRD 0.2.36）
 
-- `src/server/plugins/` — .zsp 加密插件体系（签名 / 验签解密）
-
 - `src/cli/` — `zhishi` CLI（同步到 `~/.zhishi/bin/`），产品能力的统一入口
 
 - `src/shared/` — 共享类型（server / cli 等消费）
 
 - `src-tauri/` — Tauri Rust 层（无窗口；`tauri.conf.json` 的 frontendDist 指向 `src-tauri/placeholder/` 极简占位页）
 
-- `bundled-skills/` — 14 个内置技能：agent-browser / ai-security / app-automation / binary-exploit / download-anything / native-code-loop / pentest / plugin-assistant / range-ops / task-alignment / task-implement / vuln-triage / whitebox-audit / zhishi-cli
+- `bundled-skills/` — 13 个内置技能：agent-browser / ai-security / app-automation / binary-exploit / download-anything / native-code-loop / pentest / range-ops / task-alignment / task-implement / vuln-triage / whitebox-audit / zhishi-cli
 
 - `bundled-environments/` — 环境类型（P1 E4 起）：ai-security / code-audit / dev / fuzz / fuzz-vm / pentest / pwn / pwn-vm / rev（docker / VM）。新增环境类型 = 建目录 + bump `ENVIRONMENT_RECIPES_VERSION`（src-tauri/src/commands.rs）
 
@@ -266,18 +264,6 @@ Rust `CronTaskManager` 统一管理所有定时任务（独立创建 / AI 工具
 
 
 
-### 加密插件（.zsp）
-
-spec：旧 `specs/tech_docs/encrypted_plugins_t1.md` 已随 specs/ 目录删除（2026-08-01 定案；威胁模型：防分发渠道与无授权使用，不防已激活本机）。密码学原语唯一来源 `src/shared/zsp-crypto.ts`——制作侧与安装侧的签名 / 许可串构造逐字节一致。
-
-- **制作 = CLI 首个本地模式命令族**：`zhishi plugin init/pack/keygen/verify`（`src/cli/zsp-local.ts`）**不走 sidecar**——纯本地密码学（密钥材料在 `~/.zspack/<publisher>/`，不进任何服务器），app 不运行也必须能用，所以 CLI 在 ZHISHI_PORT 检查之前就拦截到本模块。
-
-- **安装 = sidecar 验签解密**：`src/server/plugins/zsp.ts` + 路由 `cc-plugin/install-zsp`；管理已装插件走 `zhishi cc-plugin`（原 OpenClaw `plugin list|install|remove` 命令已随 IM / Plugin Bridge 删除）。
-
-- 配套系统技能 `plugin-assistant`（插件制作向导：编写 / 打包 / 加密 / 发布）。
-
-
-
 ### 工作区路径安全（path_safety）
 
 W6 减法后 `cmd_workspace_*` invoke 命令层已整体删除（无 renderer 消费方），`src-tauri/src/workspace_files/` 只剩 `path_safety`——它是 sidecar / panel_api 共享的路径校验核心：
@@ -298,7 +284,7 @@ W6 减法后 `cmd_workspace_*` invoke 命令层已整体删除（无 renderer �
 
 ### 记忆系统（memory.db 唯一事实源 + 蒸馏弧 + 土匪回路）
 
-SQLite `~/.zhishi/memory.db` 是唯一事实源（`memories` / `archive` / `trust_events` / `recall_events` / `research_events` / `plugin_licenses` 表，存取见 `src/server/memory/store.ts`）。灵魂/认知层零 md——旧 md 文件只作一次性迁移源，导入 db 后不再读。
+SQLite `~/.zhishi/memory.db` 是唯一事实源（`memories` / `archive` / `trust_events` / `recall_events` / `research_events` 表，存取见 `src/server/memory/store.ts`）。灵魂/认知层零 md——旧 md 文件只作一次性迁移源，导入 db 后不再读。
 
 - **蒸馏弧**（说人话：定时跑的系统任务，把最近的原始工作史压成恒定尺寸的认知摘要——工作史无限长，注入永远 ~6KB）：两条并行弧、均用户不可见——**认知弧**每小时压全局工作史（`memory.distill.enabled=false` 时不播种，纯逻辑 `src/server/memory/distill.ts`）；**安全蒸馏弧**每 6 小时把研究成败信号（`research_events` 表，由 `research_log` 研究留痕写入）按研究域（task_kind）分隔蒸馏、经验不跨域（纯逻辑 `src/server/memory/distill-research.ts`）。LLM 调用 / cron 路由 / 写盘外壳均在 `distill-runner.ts`；两条弧的蒸馏产物逐 turn 反喂进 system prompt（`chat-engine.ts`）。
 
@@ -578,8 +564,6 @@ CI（`.github/workflows/test.yml`）在 PR + push 到 `dev/*`/`main` 时自动�
 
 - 修改 `src/cli/zhishi.ts` 或 `src/cli/zhishi.cmd` → MUST bump `CLI_VERSION`，并同步更新 `bundled-skills/zhishi-cli/SKILL.md`（CLI surface 变化必须在 skill 文档里反映出来）+ bump `SYSTEM_SKILLS_VERSION`
 
-- 修改 `src/cli/zsp-local.ts`（.zsp 本地命令族 init/pack/keygen/verify）→ 同样算 CLI surface 变化：MUST bump `CLI_VERSION`，并同步更新 `bundled-skills/plugin-assistant/SKILL.md`（SKILL.md 变动按上面规则连带 bump `SYSTEM_SKILLS_VERSION`）
-
 - 修改 `bundled-skills/` 中 system skill（清单见 `SYSTEM_SKILLS`） → MUST bump `SYSTEM_SKILLS_VERSION`
 
 - 新增 system skill：(1) 放入 `bundled-skills/<name>/`；(2) 加入 Rust `SYSTEM_SKILLS` 和 Node `src/server/index.ts::SYSTEM_SKILLS` 两个清单；(3) bump 版本
@@ -612,7 +596,7 @@ Team Hub 服务端（`zhishi-hub/`）从未随本仓库分发，且已被确认�
 
 - **renderer GUI 全家**：`src/renderer/`（React / Vite / Tailwind / xterm / monaco 等 40+ 前端依赖）、`npm run dev` / `dev:web` / `build:web` / `test:dom`、桌宠（pet.rs）。Tauri 不再创建任何窗口（保留 sidecar Owner、Panel API（仅 term）、Management API、CronTaskManager、托盘 exit、updater、统一日志；W6 减法进一步删除 SearchEngine / browser / sse_proxy / global_shortcut / 全部 IPC invoke 命令），`tauri.conf.json` 的 frontendDist 指向 `src-tauri/placeholder/` 极简占位页。
 
-- **IM 全家**：`src-tauri/src/im/`、`src-tauri/src/inbox/`、`src/server/inbox/`、`src/server/plugin-bridge/`（OpenClaw Plugin Bridge）、im 工具三件套、CLI `im` / `session send` / `agent channel` / `agent runtime-status` / OpenClaw `plugin list|install|remove`。注意 `src/server/plugins/`（.zsp 插件体系，含签名）与本地 .zsp 命令族 `plugin init/pack/keygen/verify`、`cc-plugin` **保留**，勿混淆。
+- **IM 全家**：`src-tauri/src/im/`、`src-tauri/src/inbox/`、`src/server/inbox/`、`src/server/plugin-bridge/`（OpenClaw Plugin Bridge）、im 工具三件套、CLI `im` / `session send` / `agent channel` / `agent runtime-status` / OpenClaw `plugin list|install|remove`。OpenClaw 渠道插件桥已随 IM 删除。
 
 - **需求单（support/requirement）全链路**：admin-api handler、webhook、CLI 命令、`supportUserToken` 配置字段。
 
@@ -626,7 +610,7 @@ Team Hub 服务端（`zhishi-hub/`）从未随本仓库分发，且已被确认�
 
 
 
-保留核心能力：`plugins/`（.zsp 插件体系含签名）、MCP enable 管线、AppCraft / cuse / terminator、memory 全套、task / cron 系统、CLI、panel_api.rs（仅 term 路由）/ terminal.rs、provider-probe / verify。（browser.rs 已在 W6 减法删除；openai-bridge 已随 D25/M4c 删除，OpenAI 协议 provider 由 pi 原生直连。）
+保留核心能力：MCP enable 管线、AppCraft / cuse / terminator、memory 全套、task / cron 系统、CLI、panel_api.rs（仅 term 路由）/ terminal.rs、provider-probe / verify。（browser.rs 已在 W6 减法删除；openai-bridge 已随 D25/M4c 删除，OpenAI 协议 provider 由 pi 原生直连。）
 
 
 

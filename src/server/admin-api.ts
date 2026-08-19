@@ -75,16 +75,6 @@ import { managementApi } from './utils/management-api';
 
 const ADMIN_LOOPBACK_TIMEOUT_MS = 10_000;
 
-
-
-// Long-running sidecar operations need their own budget. Anchored to the
-
-// sidecar's internal `FETCH_TIMEOUT_MS` (300s for tarball download) plus a
-
-// 30s buffer so the inner timeout always wins. Used by skill install routes.
-
-const SKILL_INSTALL_LOOPBACK_TIMEOUT_MS = 330_000;
-
 import { existsSync , writeFileSync, unlinkSync, readFileSync, readdirSync, statSync } from 'fs';
 
 import { ensureDirSync, isDirEntry } from './utils/fs-utils';
@@ -116,6 +106,7 @@ import { resolve, basename, isAbsolute } from 'path';
 
 import { setMcpServers, setAgents, getMcpServers, getSidecarPort, getSessionId } from './agent-session';
 import { getPiAgentState, sendPiChatMessage } from './loop/chat-engine';
+import { getMcpStatus, initMcpBridge, reloadMcpBridge } from './loop/mcp-bridge';
 
 import { loadEnabledAgents } from './agents/agent-loader';
 
@@ -1056,6 +1047,66 @@ export async function handleMcpDisable(payload: { id: string; scope?: string }):
   notifyMcpChange('disable', id);
 
   return { success: true, data: { id } };
+
+}
+
+
+
+/**
+
+ * M4d — MCP bridge 连接状态。惰性兜底:若 sidecar 启动的 deferred init
+
+ * 尚未跑完(或从未跑),先触发桥初始化再取状态——状态永远反映真实连接
+
+ * (已初始化时 initMcpBridge 是幂等 no-op)。
+
+ */
+
+export async function handleMcpListStatus(): Promise<AdminResponse> {
+
+  await initMcpBridge();
+
+  return { success: true, data: { servers: getMcpStatus() } };
+
+}
+
+
+
+/**
+
+ * M4d — MCP bridge 热重载:断开全部连接 → 重读磁盘配置(权威来源)→ 重连。
+
+ * 单个 server 失败不抛(记入状态),只有配置读取失败才返回 success:false。
+
+ */
+
+export async function handleMcpReload(): Promise<AdminResponse> {
+
+  try {
+
+    const servers = await reloadMcpBridge();
+
+    return { success: true, data: { servers } };
+
+  } catch (err) {
+
+    return {
+
+      success: false,
+
+      error: err instanceof Error ? err.message : String(err),
+
+      recoveryHint: {
+
+        recoveryCommand: 'zhishi mcp list',
+
+        message: '检查 MCP 配置(config.json)后重试。',
+
+      },
+
+    };
+
+  }
 
 }
 
@@ -2778,72 +2829,6 @@ Examples:
 
 
 
-  plugin: `zhishi plugin — Manage OpenClaw channel plugins (IM adapters from npm)
-
-
-
-Commands:
-
-  list                     List installed plugins
-
-  install <npm-spec>       Install a plugin from npm
-
-  remove <plugin-id>       Uninstall a plugin
-
-
-
-Note: for Claude plugins (Anthropic plugin protocol — skills + agents + MCP
-
-+ hooks bundled as a directory), use 'zhishi cc-plugin' instead.`,
-
-
-
-  'cc-plugin': `zhishi cc-plugin — Manage Claude plugins (PRD 0.2.17)
-
-
-
-Commands:
-
-  list                                       List installed plugins + enabled state
-
-  install <source>                           Install from owner/repo, github URL,
-
-                                             .zip URL, or file:///abs/path
-
-  uninstall <name|--id ID> [--purgeData]     Remove plugin; data dir kept unless --purgeData
-
-  enable <name|--id ID>                      Enable an installed plugin
-
-  disable <name|--id ID>                     Disable without uninstalling
-
-  show <name|--id ID>                        Show manifest + component inventory
-
-
-
-Examples:
-
-  zhishi cc-plugin install anthropics/example-plugin
-
-  zhishi cc-plugin install https://github.com/foo/bar/tree/v1.0/sub/plugin
-
-  zhishi cc-plugin install file:///Users/me/dev/my-plugin
-
-  zhishi cc-plugin enable my-plugin
-
-  zhishi cc-plugin show my-plugin
-
-  zhishi cc-plugin uninstall my-plugin --purgeData
-
-
-
-Plugins land in ~/.zhishi/plugins/<name>/ and are activated on next session
-
-pre-warm (~1s). Different concept from OpenClaw channel plugins above —
-
-unrelated storage, unrelated semantics.`,
-
-
-
   env: `zhishi env — Inspect execution-environment engines (P1 E1)
 
 
@@ -3169,7 +3154,7 @@ export function handleHelp(payload: { path?: string[] }): AdminResponse {
 
   // are added (issue #205 gap #5: the previous hardcoded list claimed only
 
-  // 8 groups existed and omitted task / runtime / cc-plugin,
+  // 8 groups existed and omitted task / runtime and several newer groups,
 
   // turning `zhishi task --help` into a misleading "use one of these
 
@@ -3918,204 +3903,6 @@ export function handleReadme(payload: { topic?: string; modules?: string[] }): A
     error: `Unknown readme topic "${payload.topic}". Available: widget.`,
 
   };
-
-}
-
-
-
-// ---------------------------------------------------------------------------
-
-// Claude Plugin handlers (PRD 0.2.17) — thin wrappers over the Node Sidecar's
-
-// /api/cc-plugin/* routes. Named "cc-plugin" END-TO-END (admin command, HTTP
-
-// path, store module): Claude plugins are the Anthropic-spec directories
-
-// containing skills/agents/MCP/hooks. (The legacy OpenClaw channel-plugin
-
-// forwarding to the Rust Management API /api/plugin/* was removed in the W6
-
-// subtraction — that Rust route never existed; the handlers were dead.)
-
-//
-
-//
-
-// Read paths (list / detail) call the store module directly — same process,
-
-// no need for the HTTP loopback hop. Write paths (install / uninstall /
-
-// toggle) go through sidecarSelf so the existing route handler can
-
-// broadcast SSE progress / trigger pre-warm restart; they get the
-
-// skill-tier 330s timeout because a github tarball can easily exceed the
-
-// default 10s.
-
-// ---------------------------------------------------------------------------
-
-
-
-export async function handleCcPluginList(): Promise<AdminResponse> {
-
-  const { listInstalledPlugins } = await import('./plugins/store');
-
-  return { success: true, data: listInstalledPlugins() };
-
-}
-
-
-
-export async function handleCcPluginShow(payload: { id?: string; name?: string }): Promise<AdminResponse> {
-  const { listInstalledPlugins, getPluginDetail } = await import('./plugins/store');
-  let id = payload.id;
-  if (!id && payload.name) {
-    const found = listInstalledPlugins().find(p => p.name === payload.name);
-    if (found) id = found.id;
-  }
-  if (!id) return { success: false, error: 'id or name is required' };
-  const item = getPluginDetail(id);
-  if (!item) return { success: false, error: '插件未安装' };
-  return { success: true, data: item };
-}
-
-
-
-export async function handleCcPluginInstall(payload: { sourceUrl?: string; url?: string }): Promise<AdminResponse> {
-  const sourceUrl = payload.sourceUrl ?? payload.url;
-  if (!sourceUrl) return { success: false, error: 'sourceUrl is required' };
-  const { json } = await sidecarSelf(
-    '/api/cc-plugin/install',
-    'POST',
-    { sourceUrl },
-    { timeoutMs: SKILL_INSTALL_LOOPBACK_TIMEOUT_MS },
-  );
-  if (json.success) {
-    return { success: true, data: json.entry, hint: 'Plugin installed. Active after the next session pre-warm.' };
-  }
-  return { success: false, error: typeof json.error === 'string' ? json.error : 'Failed to install plugin' };
-}
-
-
-
-/**
-
- * 加密插件（.zsp）安装 + 许可激活。走 sidecarSelf 到 /api/cc-plugin/install-zsp，
-
- * 由 HTTP 路由统一做 broadcast('plugins:changed') + 预温重启（与明文 install 一致）。
-
- * ZspError 的机器可读 code 原样透传——UI 按 code 分行中文文案。
-
- */
-
-export async function handleCcPluginInstallZsp(payload: { filePath?: string; license?: string }): Promise<AdminResponse> {
-
-  if (!payload.filePath) return { success: false, error: 'filePath is required' };
-
-  if (!payload.license) return { success: false, error: 'license is required' };
-
-  const { json } = await sidecarSelf(
-
-    '/api/cc-plugin/install-zsp',
-
-    'POST',
-
-    { filePath: payload.filePath, license: payload.license },
-
-    { timeoutMs: SKILL_INSTALL_LOOPBACK_TIMEOUT_MS },
-
-  );
-
-  if (json.success) {
-
-    return { success: true, data: json.plugin, hint: 'Plugin installed and activated. Active after the next session pre-warm.' };
-
-  }
-
-  return {
-
-    success: false,
-
-    error: typeof json.error === 'string' ? json.error : 'Failed to install encrypted plugin',
-
-    ...(typeof json.code === 'string' ? { code: json.code } : {}),
-
-  };
-
-}
-
-
-
-export async function handleCcPluginUninstall(payload: { id?: string; name?: string; purgeData?: boolean }): Promise<AdminResponse> {
-
-  const { listInstalledPlugins } = await import('./plugins/store');
-
-  let id = payload.id;
-
-  if (!id && payload.name) {
-
-    const found = listInstalledPlugins().find(p => p.name === payload.name);
-
-    if (found) id = found.id;
-
-  }
-
-  if (!id) return { success: false, error: 'id or name is required' };
-
-  const { json } = await sidecarSelf(
-
-    '/api/cc-plugin/uninstall',
-
-    'POST',
-
-    { id, purgeData: !!payload.purgeData },
-
-    // Bumped to skill-tier so directory removal on slow disks (e.g. spinning
-
-    // rust with large node_modules data dirs) doesn't abort half-way.
-
-    { timeoutMs: SKILL_INSTALL_LOOPBACK_TIMEOUT_MS },
-
-  );
-
-  if (json.success) {
-
-    return { success: true, data: json.removed, hint: 'Plugin removed.' };
-
-  }
-
-  return { success: false, error: typeof json.error === 'string' ? json.error : 'Failed to uninstall plugin' };
-
-}
-
-
-
-export async function handleCcPluginToggle(payload: { id?: string; name?: string; enabled: boolean }): Promise<AdminResponse> {
-
-  const { listInstalledPlugins } = await import('./plugins/store');
-
-  let id = payload.id;
-
-  if (!id && payload.name) {
-
-    const found = listInstalledPlugins().find(p => p.name === payload.name);
-
-    if (found) id = found.id;
-
-  }
-
-  if (!id) return { success: false, error: 'id or name is required' };
-
-  const { json } = await sidecarSelf('/api/cc-plugin/toggle', 'POST', { id, enabled: payload.enabled });
-
-  if (json.success) {
-
-    return { success: true, data: json.entry, hint: payload.enabled ? 'Plugin enabled.' : 'Plugin disabled.' };
-
-  }
-
-  return { success: false, error: typeof json.error === 'string' ? json.error : 'Failed to toggle plugin' };
 
 }
 

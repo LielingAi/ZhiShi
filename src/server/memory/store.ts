@@ -273,14 +273,6 @@ function openDb(baseDir: string): SqliteDatabase {
       distilled_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_research_events_query ON research_events(task_kind, outcome, ts);
-    CREATE TABLE IF NOT EXISTS plugin_licenses (
-      plugin_id TEXT PRIMARY KEY,
-      publisher TEXT NOT NULL,
-      publisher_pubkey TEXT NOT NULL,
-      dek BLOB NOT NULL,
-      license_hash TEXT NOT NULL,
-      activated_at INTEGER NOT NULL
-    );
     INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', '1');
   `);
   // D3：research_events 加蒸馏结算列——老库（D1 时期建的表）走 ALTER，新库 CREATE 已含。幂等。
@@ -1117,69 +1109,6 @@ export function openTrustDb(baseDir: string = getZhiShiDataDir()): SqliteDatabas
 }
 
 export type { SqliteDatabase };
-
-// ===== 加密插件许可（.zsp，specs/tech_docs/encrypted_plugins_t1.md） =====
-
-/**
- * plugin_licenses 行——.zsp 验签解密安装成功时一次写入（zsp.ts），
- * 卸载插件时由调用方删除（重装需重新激活）。DEK 明文 BLOB：威胁模型
- * 不防本机高权限，不做 DPAPI 伪安全（spec §7）。
- */
-export interface PluginLicenseRecord {
-  pluginId: string;
-  publisher: string;
-  publisherPubkey: string;
-  dek: Buffer;
-  licenseHash: string;
-  activatedAt: number;
-}
-
-interface PluginLicenseRow {
-  plugin_id: string;
-  publisher: string;
-  publisher_pubkey: string;
-  dek: Buffer;
-  license_hash: string;
-  activated_at: number;
-}
-
-function rowToPluginLicense(r: PluginLicenseRow): PluginLicenseRecord {
-  return {
-    pluginId: r.plugin_id,
-    publisher: r.publisher,
-    publisherPubkey: r.publisher_pubkey,
-    dek: r.dek,
-    licenseHash: r.license_hash,
-    activatedAt: r.activated_at,
-  };
-}
-
-export function putPluginLicense(rec: PluginLicenseRecord, baseDir: string = getZhiShiDataDir()): void {
-  db(baseDir)
-    .prepare(
-      `INSERT OR REPLACE INTO plugin_licenses (plugin_id, publisher, publisher_pubkey, dek, license_hash, activated_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    )
-    .run(rec.pluginId, rec.publisher, rec.publisherPubkey, rec.dek, rec.licenseHash, rec.activatedAt);
-}
-
-export function getPluginLicense(pluginId: string, baseDir: string = getZhiShiDataDir()): PluginLicenseRecord | undefined {
-  const row = db(baseDir)
-    .prepare('SELECT * FROM plugin_licenses WHERE plugin_id = ?')
-    .get(pluginId) as PluginLicenseRow | undefined;
-  return row ? rowToPluginLicense(row) : undefined;
-}
-
-export function deletePluginLicense(pluginId: string, baseDir: string = getZhiShiDataDir()): void {
-  db(baseDir).prepare('DELETE FROM plugin_licenses WHERE plugin_id = ?').run(pluginId);
-}
-
-export function listPluginLicenses(baseDir: string = getZhiShiDataDir()): PluginLicenseRecord[] {
-  const rows = db(baseDir)
-    .prepare('SELECT * FROM plugin_licenses ORDER BY activated_at DESC')
-    .all() as PluginLicenseRow[];
-  return rows.map(rowToPluginLicense);
-}
 
 function migrateLegacy(baseDir: string, db: SqliteDatabase): void {
   // entries.jsonl → memories

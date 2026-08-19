@@ -143,11 +143,6 @@ export interface AgentConfig {
   mcpEnabledServers?: string[];
   /** Resolved MCP server definitions JSON (persisted for auto-start, rebuilt on manual start) */
   mcpServersJson?: string;
-  /** PRD 0.2.17 — Claude plugins enabled for this Agent (subset of globally
-   *  visible plugins; gated by AppConfig.enabledPlugins). Sessions started from
-   *  this Agent inherit this list as their initial selection; per-Tab UI can
-   *  override transiently. Mirrors mcpEnabledServers semantics exactly. */
-  enabledPluginIds?: string[];
 
   // Heartbeat (Agent-level, shared across channels)
   heartbeat?: HeartbeatConfig;
@@ -176,7 +171,6 @@ export function resolveEffectiveConfig(agent: AgentConfig, channel: ChannelConfi
     model: channel.overrides?.model ?? agent.model,
     permissionMode: channel.overrides?.permissionMode ?? agent.permissionMode,
     mcpEnabledServers: agent.mcpEnabledServers,      // Channel cannot override
-    enabledPluginIds: agent.enabledPluginIds,        // Channel cannot override (mirrors MCP)
     toolsDeny: channel.overrides?.toolsDeny ?? [],
     workspacePath: agent.workspacePath,               // Always Agent's
     heartbeat: agent.heartbeat,                       // Always Agent's

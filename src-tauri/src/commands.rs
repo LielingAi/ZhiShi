@@ -36,7 +36,7 @@ use crate::{ulog_info, ulog_warn};
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "33";
+const SYSTEM_SKILLS_VERSION: &str = "34";
 
 /// Skills that ship with the app and MUST stay at the bundled version —
 /// the app's flows depend on them, users are not meant to customise.
@@ -59,21 +59,18 @@ const SYSTEM_SKILLS: &[&str] = &[
     // v9: zhishi-cli promoted from helper-bundled skill (now removed)
     // to a global system skill. Every AI session inside ZhiShi — Chat / IM Bot
     // / Cron — should be able to drive the product's own
-    // capabilities (cron, task center, MCP, Provider, channels, plugins,
+    // capabilities (cron, task center, MCP, Provider, channels,
     // skills, widgets) through the CLI. SKILL.md changes track CLI surface
     // changes, so it must force-overwrite on version bumps.
     "zhishi-cli",
     // v19: app-automation — AppCraft（PRD 0.2.36）录制→沉淀→回放→自愈工作流。
     // SKILL.md 引用 zhishi appcraft CLI 与 trace schema，须随版本强制覆盖。
     "app-automation",
-    // v26: plugin-assistant — 插件制作向导（编写/打包/加密/发布）。引用
-    // zhishi plugin init/pack/keygen/verify 本地子命令（加密插件 T1，
-    // specs/tech_docs/encrypted_plugins_t1.md），CLI 工具链落地时必须同步。
-    "plugin-assistant",
     // v29: capability-forge 与通用生产力 skills（docx/pdf/pptx/xlsx/
     // skill-creator）随安全研究员版减法删除（设计 docs/
     // security_researcher_agent_design.md §9）。已 seed 的老目录留在
     // ~/.zhishi/skills/ 由用户自处（无孤儿清理逻辑，同 v10 惯例）。
+    // 注：plugin-assistant 随加密插件体系整体移除而删除。
     // v30: 安全研究员版 P1 S2 —— 首批 4 个安全方法 skills
     // （技术方案 docs/security_researcher_agent_tech_plan.md §2.2）：
     // native-code-loop（编译-运行-调试闭环）、binary-exploit（二进制利用实战）、

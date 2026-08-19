@@ -51,7 +51,7 @@
 |---|---|---|
 | §1.1 原生安全（与工具协作的能力） | **本体是协作面，不是工具仓库**（2026-08-14 纠偏）：LLM 原生调用已有通道（env_exec/env_bg 环境工具 / 共享终端 / MCP；SDK Bash 已随 D25 删除）；cuse/terminator 哨兵管线是有状态工具的现成模板；LLM 自装工具的 PATH 落点已有 npm 先例 | **已落地**：发现-描述-调用-教会-反馈协作层（能力清单段注入 + system skills + research_events，§1.5）；打包收窄为环境基座 |
 | §1.2 原生代码（编译-运行-调试闭环） | 传输层完整存在：Panel API `term open/write/read`（cursor 增量读 + closed 语义 + attachOnly 共享）+ Rust ConPTY；宿主无工具链——**按扶正后的定位也不需要**：工具链在环境类型里（§1.1） | **已落地**：闭环在环境内跑（env_exec / `docker exec`），宿主零安全工具；`native-code-loop` skill 已接通（§11 议题 A） |
-| §2.1 插件 = 外挂工具 + skills + subagent | Claude Plugin 协议原先由 SDK `Options.plugins` 原生接线（SDK 已随 D25 删除）；`.zsp` 加密分发 + `cc-plugin` 安装全链路已落地 | **首批不提供**（2026-08-14 拍板）：能力全部内置交付；插件机制存量保留、后续阶段再开放（见 §2） |
+| §2.1 扩展 = MCP 外挂工具 + skills + subagent | 插件机制已整体移除（AGPL 开源转型后由 MCP + skills 承担扩展职责） | **已移除**：能力全部内置交付，扩展走 MCP / skills（见 §2） |
 | §3 内核（能力空间 + 通用循环认知语言） | system prompt 三层组装（`system-prompt.ts`）有现成注入挂点（零注入语义）；`InteractionScenario` 现为 desktop|cron（W2 收窄），security 场景已落地 | **已落地**：security 场景五段注入（认知内核/能力清单/代码原生通道/research-log 教学/研究记忆反喂） |
 | §5 隔离执行（环境层：Docker/VM/靶场） | **环境层已落地**（`zhishi env` 族 + docker/VM 三驱动 + guest-exec + SSH 靶场，§11 议题 A 续二/续三）；SSH 靶场经 `env add --kind ssh` 纳管 | **已落地**：terminal create 参数化 + 环境配置管理 + 环境标记权限锚点（§1.3）；不造编排层、不建自有沙箱 |
 | §7 harness 双向循环 | 组织上下文/精准执行的挂点全齐（systemPrompt.append / 边界门控 / output-guard）；蒸馏反馈的管线骨架完整在转（蒸馏弧） | **已落地**：安全语境注入（五段）+ 安全轨迹蒸馏弧（§1.4 D1–D4） |
@@ -262,21 +262,17 @@ bundled-environments/<name>/
 
 ---
 
-## 2. 内置能力交付形态（设计 §2；首批不提供插件）
+## 2. 内置能力交付形态（设计 §2；扩展 = MCP + skills）
 
-> 2026-08-14 拍板：**首批只有内置能力**——bundled 工具（§1.5）+ system skills（§2.2）+ harness 内建（§3）。插件是后续阶段的扩展入口，首批不交付、不做安全场景适配。
+> 2026-08-14 拍板：**首批只有内置能力**——bundled 工具（§1.5）+ system skills（§2.2）+ harness 内建（§3）。扩展入口 = MCP + skills，不做插件机制。
 
-### 2.1 插件机制：存量保留，首批不开放
+### 2.1 插件机制：整体移除（AGPL 开源转型后）
 
-代码库现状（后续开放时零新增可用）：Claude Plugin 协议由 SDK `Options.plugins`（`agent-session.ts:17796-17824`）原生接线，一个插件 = 一个含 `.claude-plugin/plugin.json` 的目录，`.mcp.json`（外挂工具）/ `skills/`（方法）/ `agents/`（subagent）/ `hooks/`（事件钩子）全部由 SDK 自动加载；安装管线（`plugins/url-resolver.ts` 三源 + `installer.ts` + `store.ts`）、三层 enable 语义、`.zsp` 加密 + 许可串、`plugin-assistant` + `zhishi plugin init/pack/keygen/verify` 全链路已落地。
+Claude Plugin 协议与加密分发体系已随开源转型整体移除——目录协议、安装管线、三层 enable 语义、加密打包 / 许可串、本地打包命令族与插件管理命令组全部删除，许可表随 memory.db schema 一并清理。扩展职责由 MCP（外挂工具）与 skills（方法 / subagent）承担。`~/.zhishi/plugins/` 仅为历史用户数据目录，代码不再读写。
 
 首批的处理：
 
-- **不交付任何插件形态的能力**——设计 §2.1 的三样扩展（外挂工具/skills/subagent）在首批全部以内置等价物交付：工具走 §1.5 统一管线、skills 走 §2.2 system skill、subagent 走 §3.4 内置 agents 目录（不走插件打包）。
-- **机制不下线、不宣传**：`Options.plugins` 注入链路和 `.zsp` 体系留在代码库（P4 减法也不砍），但首批产品面对研究员不开放「安装插件」作为能力获取方式；开放时机随后续阶段对齐。
-- **已知限制（后续开放时再处理）**：插件内 agents/skills 由 SDK 整包加载，不能细粒度启停（`agent-session.ts:490` 注释：SDK 无过滤 API）。
-
-**⚠️ 命名陷阱（P4 执行时必读）**：`src/server/plugin-bridge/` 是 **OpenClaw IM channel 插件桥**（随 IM 一起砍），`.zsp`/cc-plugin 体系在 `src/server/plugins/`（保留）。两者名字像、命不同。
+- **不交付任何插件形态的能力**——设计 §2.1 的三样扩展（外挂工具/skills/subagent）全部以内置等价物交付：工具走 §1.5 统一管线、skills 走 §2.2 system skill、subagent 走 §3.4 内置 agents 目录。
 
 ### 2.2 安全 skills：首批能力的主交付通道
 
@@ -410,20 +406,19 @@ harness 的安全定制落在它必须承受的三个场景特征上：**长时*
 | gemini-image / edge-tts | 2 工具 + ~1k 行散落 | 中 | builtin media → 一等附件通道要留（codex 图像生成也用） |
 | 需求单 | ~1k 行 | 低 | `admin-api.ts:8060-8455` + webhook + SSE 白名单一处 |
 | capability-forge / skill-creator | 2 目录 + Chat 输入区注入 | 中 | `Chat.tsx:2432-2440` 造能力模式 |
-| 技能市场/安装 | ~2.9k 行 | 中 | 砍 `skills/url-resolver.ts`，**留 `plugins/url-resolver.ts` 的 GitHub 源**（github 保留项依赖） |
-| MCP 配置面板 | UI 为主 | 中高 | **只能砍皮**：`/api/mcp/enable` + 哨兵解析管线是 AppCraft/插件/.zsp 的依赖 |
+| 技能市场/安装 | ~2.9k 行 | 中 | 砍 `skills/url-resolver.ts`（原 `plugins/url-resolver.ts` 的 GitHub 源已随插件体系移除） |
+| MCP 配置面板 | UI 为主 | 中高 | **只能砍皮**：`/api/mcp/enable` + 哨兵解析管线是 AppCraft 的依赖 |
 | 想法收集 | ~1.7k 行 | 中高 | `ThoughtPanel` 长在任务中心目录里，「派发想法为任务」入口要去留决策 |
 
 ### 6.2 耦合风险点（按危险度排序，探查实测）
 
-1. **`plugin_licenses` 表寄居 memory.db**（`memory/store.ts:246`）——记忆（留）与 .zsp 许可（留）互相寄居，清理 schema 时双向误伤风险。
-2. **搭子 pet.rs 监听 IM 审批事件**（`pet.rs:87-125` + `DesktopPet.tsx:62` 轮询）——砍 IM 后变死监听，需从搭子剥离；同时搭子按设计 §8.5 重定位为「场景 × 循环状态」。
-3. **定时任务的 IM 派发字段**：`notificationBotChannelId`（`shared/types/task.ts:167`）、`ImCronContext`（`agent-session.ts:87-89`）——`SessionCronContext` 必须保留，只清 IM 部分。
-4. **SSE 三方对账测试**：`sse-whitelist-crosscheck.unit.test.ts` 强制 broadcast 字面量 = `SseConnection.ts` 白名单 = `sse.ts` 优先级三方一致，删事件必须三处同步，否则 CI 红。
-5. **scenario 'im'/'agent-channel' 贯穿 7 处**：system-prompt 拼装、agent-session、index、各 external runtime——砍 scenario 逐处验。
-6. **Settings.tsx 是 12007 行巨石**：providers/capabilities/feedback/partner 全堆一个文件 + `VALID_SECTIONS` 路由表 + i18n——每个 section 删除牵动导航深链。
-7. **SYSTEM_SKILLS 双注册**（`index.ts:1886` ↔ `commands.rs:1240`）：删 skill 两边同步 + bump 版本 + 老用户残留目录策略。
-8. **想法/需求单的数据残留**：`thought.rs`（1269 行 Rust 存储）、`supportUserToken`——删除后老用户数据迁移策略要定。
+1. **搭子 pet.rs 监听 IM 审批事件**（`pet.rs:87-125` + `DesktopPet.tsx:62` 轮询）——砍 IM 后变死监听，需从搭子剥离；同时搭子按设计 §8.5 重定位为「场景 × 循环状态」。
+2. **定时任务的 IM 派发字段**：`notificationBotChannelId`（`shared/types/task.ts:167`）、`ImCronContext`（`agent-session.ts:87-89`）——`SessionCronContext` 必须保留，只清 IM 部分。
+3. **SSE 三方对账测试**：`sse-whitelist-crosscheck.unit.test.ts` 强制 broadcast 字面量 = `SseConnection.ts` 白名单 = `sse.ts` 优先级三方一致，删事件必须三处同步，否则 CI 红。
+4. **scenario 'im'/'agent-channel' 贯穿 7 处**：system-prompt 拼装、agent-session、index、各 external runtime——砍 scenario 逐处验。
+5. **Settings.tsx 是 12007 行巨石**：providers/capabilities/feedback/partner 全堆一个文件 + `VALID_SECTIONS` 路由表 + i18n——每个 section 删除牵动导航深链。
+6. **SYSTEM_SKILLS 双注册**（`index.ts:1886` ↔ `commands.rs:1240`）：删 skill 两边同步 + bump 版本 + 老用户残留目录策略。
+7. **想法/需求单的数据残留**：`thought.rs`（1269 行 Rust 存储）、`supportUserToken`——删除后老用户数据迁移策略要定。
 
 ---
 
@@ -432,7 +427,7 @@ harness 的安全定制落在它必须承受的三个场景特征上：**长时*
 | # | 决策点 | 结论 | 影响阶段 |
 |---|---|---|---|
 | ~~D-T1~~ | ~~工具链/大工具分发策略~~ | **已解除**（2026-08-14 不考虑便携/U 盘场景；随后 §1.1 扶正进一步取消宿主工具链打包——工具链进环境配方，宿主零安全工具） | — |
-| ~~D-T2~~ | ~~工具下载签名校验~~ | **已定（2026-08-14）：加签名，分层用各层已有信任根**——自分发 MCP 二进制（R2）加 ed25519 签名（复用 `zsp-crypto.ts` 原语，密钥离线保管）；Docker Desktop 安装包依赖微软 Authenticode + 官方哈希对照，不自签；环境配方镜像 Dockerfile 固定 digest（`@sha256:`），官方镜像优先。不自建签名体系 | P1 |
+| ~~D-T2~~ | ~~工具下载签名校验~~ | **已定（2026-08-14）：加签名，分层用各层已有信任根**——自分发 MCP 二进制（R2）加 ed25519 签名（密钥离线保管）；Docker Desktop 安装包依赖微软 Authenticode + 官方哈希对照，不自签；环境配方镜像 Dockerfile 固定 digest（`@sha256:`），官方镜像优先。不自建签名体系 | P1 |
 | ~~D-T3~~ | ~~后台 agent PermissionRequest 竞态（task_started 与 hook 无序）修复时机~~ | **已修复（2026-08-15，P1 第一项）**：PermissionRequest hook 查 `startedBackgroundTasks` 未命中时，有界等待注册（`waitForBackgroundRegistration`，500ms/25ms 轮询，`background-agent-permission.ts`）；确认前台的 agent_id 进负缓存（`confirmedForegroundAgentIds`），同步 subagent 每个 agent 最多付一次等待。兜底不变：真未注册仍 passthrough → SDK auto-deny（fail-deny 安全侧）。4 个新单测钉死行为 | ~~P1/P2~~ 已执行 |
 | ~~D-T4~~ | ~~环境配置（`environments`）的凭据形态~~ | **已定（2026-08-14）：keyPath 为主 + passwordRef 外部引用，自己不保管**——首选只存私钥路径引用（材料不进我们的存储）+ 尊重系统 ssh-agent；密码场景支持 `passwordRef`（Windows Credential Manager 条目 / 环境变量 / 1Password CLI 引用），用时现场取不落盘；环境内凭据（VM 账号、容器服务密码）属研究材料，落工作区笔记，不进配置体系 | P1 |
 | ~~D-T5~~ | ~~external runtime（CC/Codex/Gemini）在安全版的去留~~ | **已拍板（2026-08-15，D20）：锁定 builtin 唯一，external runtime 随 P4 减法删除**——边界门控/环境层/蒸馏弧全挂 builtin 链路，external runtime 是纯兼容税；D16 否决「进入其他 harness」后连互操作价值都不成立。runtime list/describe/diagnose 命令族同步收窄，external-session 注入路径随删 | P4 |
@@ -473,7 +468,7 @@ harness 的安全定制落在它必须承受的三个场景特征上：**长时*
 |---|---|---|---|
 | W1a | bundled-skills 13→7（删 docx/pdf/pptx/xlsx/capability-forge/skill-creator），SYSTEM_SKILLS_VERSION 28→29 | 6 目录 | ✅ |
 | W1b | **删 `src/renderer/` 整目录**（562 文件）+ Tauri 无窗口化（lib.rs -424 行不建窗口、pet.rs -283 行、托盘保留、frontendDist 指 placeholder 占位页）+ 前端基建清除（vite/tailwind/tsconfig paths/eslint react 规则/40+ npm 依赖，lockfile -9069 行/CI 去 test:dom） | ~10w+ 行 | ✅ |
-| W2 | **删 IM 全家**：`src-tauri/src/im/`（2.2w 行）+ inbox（双侧）+ `plugin-bridge/`（1.7w 行，.zsp `plugins/` 零误伤）+ im 工具三件套 + CLI im/session send/agent channel/OpenClaw plugin 命令族；7 条耦合暗线全处理（SessionCronContext 捞出保留、scenario 收窄 desktop\|cron、task IM 投递管线拆除、Cargo.toml 删 4 crate） | 443 文件 / ~4.25w 行 | ✅ |
+| W2 | **删 IM 全家**：`src-tauri/src/im/`（2.2w 行）+ inbox（双侧）+ `plugin-bridge/`（1.7w 行，`plugins/` 零误伤）+ im 工具三件套 + CLI im/session send/agent channel/OpenClaw plugin 命令族；7 条耦合暗线全处理（SessionCronContext 捞出保留、scenario 收窄 desktop\|cron、task IM 投递管线拆除、Cargo.toml 删 4 crate） | 443 文件 / ~4.25w 行 | ✅ |
 | W3a | 需求单全链路（admin-api 4 handler + webhook + 路由 + CLI + `supportUserToken` 字段） | ~1.5k 行 | ✅ |
 | W3b | LLM preset 16→2（留 anthropic-api/deepseek；3 搜索 preset 保留；provider-probe/verify 经引用面调查保留）；删 gemini-image/edge-tts；删技能安装管线（`src/server/skills/` 整目录，插件依赖的 fetch 助手迁移为 `plugins/tarball-fetcher.ts` 自包含）；CLI skill 只留 list/info/remove/enable/disable | ~3k 行 | ✅ |
 | W3c | 删 thought 全家（thought.rs 1269 行 + management_api 路由 + CLI + prompt 注入）；**pet.rs 整删**（694 行，顺带消除了 W1 后 `pet_pos_path()` 缺失导致的存量 Rust 编译错误）；清 IM 死命令（wecom_qr/bot_workspace） | ~3.5k 行 | ✅ |

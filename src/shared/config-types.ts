@@ -596,12 +596,6 @@ export interface Project {
 
   mcpEnabledServers?: string[];
 
-  /** PRD 0.2.17 — Claude plugins enabled for this workspace (subset of globally
-
-   *  visible plugins). Mirrors mcpEnabledServers semantics exactly. */
-
-  enabledPluginIds?: string[];
-
   /** Internal projects (e.g. ~/.zhishi diagnostic workspace) hidden from Launcher */
 
   internal?: boolean;
@@ -1030,10 +1024,6 @@ export interface AppConfig {
 
     mcpEnabledServers?: string[];
 
-    /** PRD 0.2.17 — last-selected plugin set in Launcher, restored on next open. */
-
-    enabledPluginIds?: string[];
-
   };
 
 
@@ -1041,52 +1031,6 @@ export interface AppConfig {
   // ===== Agent Configuration (v0.1.41) =====
 
   agents?: import('./types/agent').AgentConfig[];
-
-
-
-  // ===== Claude Plugin Configuration (PRD 0.2.17) =====
-
-  /** Installed Claude plugins. Each entry's installPath points at a directory
-
-   *  under ~/.zhishi/plugins/<name>/ containing .claude-plugin/plugin.json.
-
-   *  Disk is the source of truth; this is the index. */
-
-  plugins?: import('./types/plugin').PluginEntry[];
-
-  /** Global VISIBILITY gate keyed by PluginEntry.id ("<name>@local").
-
-   *  - `true`  → plugin appears in workspace/Agent plugin selectors as a candidate.
-
-   *  - missing / `false` → plugin is hidden from every workspace (effectively
-
-   *    "installed but quarantined"). Toggle lives in Settings → Plugins.
-
-   *
-
-   *  This is the OUTER layer of the two-layer model (mirrors MCP):
-
-   *  - Layer 1 (this field): "globally visible / quarantined"
-
-   *  - Layer 2 (Agent.enabledPluginIds / Project.enabledPluginIds / Tab session
-
-   *    state): "actually enabled for this specific context"
-
-   *
-
-   *  Format matches Claude Code's settings.json::enabledPlugins so future
-
-   *  marketplace support / cross-import doesn't drift. */
-
-  enabledPlugins?: Record<string, boolean>;
-
-  /** Reserved for future plugin.json::userConfig values (v0.2.18+). v0.2.17
-
-   *  does not collect these via UI but the field is persisted so power users
-
-   *  can hand-edit and survive upgrades. */
-
-  pluginConfigs?: Record<string, { options?: Record<string, unknown> }>;
 
 
 
