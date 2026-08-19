@@ -2,7 +2,8 @@
  * 引擎底座升级回归一键入口（本地开发者工具；依赖真端点 + 真 VM，CI 跑不了）。
  *
  * 按序子进程执行 tmp/ 下的活体 smoke 脚本（node --import tsx/esm）：
- *   m1-smoke → m2-smoke → m3-smoke → m4a-client → m4a-sdk-observe → m4b-smoke
+ *   m1-smoke → m2-smoke → m3-smoke → m4a-client → m4b-smoke
+ * （m4a-sdk-observe 已除名：SDK 引擎随 D25 删除，其前置条件永远无法满足。）
  * 每个脚本记录状态/耗时/exit code，单个失败不中断后续，全跑完给汇总表。
  * 任一脚本失败（含超时）→ 本编排器 exit 1（升级阻断语义）。
  *
@@ -30,12 +31,6 @@ const SUITES = [
     file: "tmp/m4a-client.mjs",
     args: [],
     note: "前置：pi 引擎 sidecar 已在 :3199 运行",
-  },
-  {
-    name: "m4a-sdk-observe",
-    file: "tmp/m4a-sdk-observe.mjs",
-    args: [],
-    note: "前置：SDK 引擎 sidecar 已在 :3200 运行",
   },
   {
     name: "m4b-smoke",
