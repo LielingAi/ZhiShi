@@ -55,15 +55,17 @@ describe('validateTag', () => {
 });
 
 describe('远端命令组装', () => {
-  it('start:base64 命令 + 落 log/pid/exit + stdin 重定向', () => {
+  it('start:base64 命令 + 落 log/pid/exit + stdin 重定向 + setsid 建组(回收组杀前提)', () => {
     const remote = buildBgStartRemote('echo hi; echo "q"', 't1');
     expect(remote).toContain(`mkdir -p ${BG_DIR}; `);
+    expect(remote).toContain('setsid sh -c');
     expect(remote).toContain(`< /dev/null > ${BG_DIR}/t1.log 2>&1`);
     expect(remote).toContain(`echo $! > ${BG_DIR}/t1.pid`);
     expect(remote).toContain('base64 -d | sh');
     expect(remote).toContain(`echo $? > ${BG_DIR}/t1.exit`);
     expect(remote).not.toContain('echo hi'); // 命令本身不裸进包装脚本
     expect(remote).not.toContain('cd /tmp/zhishi-bg'); // cd 不再进后台子壳
+    expect(remote).not.toContain('nohup'); // Phase 3 起一律 setsid,不再 nohup
   });
 
   it('poll/log/kill/list 形状', () => {
@@ -90,14 +92,15 @@ describe('远端命令组装', () => {
     expect(w).toContain('"running:$p"');
   });
 
-  it('Phase 3:reap(回收 kill)形状——按登记 pid 杀 + 一致性校验,杀子进程不组杀', () => {
+  it('Phase 3:reap(回收 kill)形状——组杀优先+旧 nohup 兜底,一致性校验', () => {
     const r = buildBgReapRemote('t1', 4242);
     expect(r).toContain('p=4242');
-    expect(r).toContain('kill $p');
+    // 组杀(活体实测:nohup 方案孙进程 sleep 回收后残留,组杀才能杀干净)
+    expect(r).toContain('kill -TERM -- -$p');
     expect(r).toContain('pkill -TERM -P $p');
+    expect(r).toContain('kill -TERM $p');
     expect(r).toContain('"reaped:$p"');
     expect(r).toContain('pid-mismatch');
-    expect(r).not.toContain('kill -$p'); // 不做进程组杀(会波及 ssh 会话内其它命令)
     const w = buildBgReapRemote('t1', 4242, 'windows');
     expect(w).toContain('taskkill /PID $p /T /F');
     expect(w).toContain('pid-mismatch');
@@ -229,7 +232,7 @@ describe('编排(注入 exec,薄包)', () => {
       expect(await envBgReap(DOCKER, 't', 42, { exec })).toEqual({ ok: true, outcome: 'reaped:42' });
       const { exec: exec2, calls } = scriptedExec(['pid-mismatch']);
       expect(await envBgReap(DOCKER, 't', 42, { exec: exec2 })).toEqual({ ok: true, outcome: 'pid-mismatch' });
-      expect(calls[0].slice(-1)[0]).toContain('kill $p');
+      expect(calls[0].slice(-1)[0]).toContain('kill -TERM $p');
     });
 
     it('通道失败 → ok:false(编排层保守保留登记)', async () => {

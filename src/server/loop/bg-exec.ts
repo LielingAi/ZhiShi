@@ -87,18 +87,21 @@ function b64(command: string): string {
   return Buffer.from(command, 'utf8').toString('base64');
 }
 
-/** start 的远端一次性命令。返回 stdout = 后台 shell 的 pid。
- *  两个稳定性陷阱已钉（活体实测）：
+/** start 的远端一次性命令。返回 stdout = 后台进程组长的 pid。
+ *  稳定性陷阱（活体实测钉过，Phase 3 再钉一条）：
  *   ① 后台进程必须 `< /dev/null` 重定向 stdin——否则它继承 ssh 通道的
  *      stdin,ssh 会等它结束才返回,start 表现为超时假死;
  *   ② 全程绝对路径 + mkdir 前置到前台(`;` 而非 `&&` 接后台段)——`cd` 若被
- *      `&&` 卷进后台子壳,前台 `echo $! > pid` 会落到 $HOME 而非 BG_DIR。 */
+ *      `&&` 卷进后台子壳,前台 `echo $! > pid` 会落到 $HOME 而非 BG_DIR。
+ *   ③ 用 `setsid` 建独立进程组(组长 pid = 登记 pid)——回收时按组杀才
+ *      杀得干净。旧的 nohup 方案只登记外层 shell,内层 sh → sleep 的孙
+ *      进程在回收时被 reparent 残留(活体实测:sleep 600 回收后仍存活)。 */
 export function buildBgStartRemote(command: string, tag: string, family: OsFamily = 'linux'): string {
   if (family === 'windows') return buildBgStartRemoteWin(command, tag);
   const encoded = b64(command);
   return (
     `mkdir -p ${BG_DIR}; ` +
-    `nohup sh -c 'echo ${encoded} | base64 -d | sh; echo $? > ${BG_DIR}/${tag}.exit' < /dev/null > ${BG_DIR}/${tag}.log 2>&1 & ` +
+    `setsid sh -c 'echo ${encoded} | base64 -d | sh; echo $? > ${BG_DIR}/${tag}.exit' < /dev/null > ${BG_DIR}/${tag}.log 2>&1 & ` +
     `echo $! > ${BG_DIR}/${tag}.pid; cat ${BG_DIR}/${tag}.pid`
   );
 }
@@ -240,7 +243,9 @@ export function buildBgReapRemote(tag: string, pid: number, family: OsFamily = '
   return (
     `t=${t}; p=${pid}; ` +
     `if [ -f $t.pid ] && [ "$(cat $t.pid)" = "$p" ]; then ` +
-    `kill $p 2>/dev/null; pkill -TERM -P $p 2>/dev/null; echo "reaped:$p"; ` +
+    // 组杀优先(setsid 启动后 $p 即组长,`kill -- -$p` 杀全组,孙进程不漏);
+    // 兼容旧 nohup 残留(非组长,组杀 ESRCH):pkill 子进程 + kill 自身兜底。
+    `kill -TERM -- -$p 2>/dev/null; pkill -TERM -P $p 2>/dev/null; kill -TERM $p 2>/dev/null; echo "reaped:$p"; ` +
     `else echo pid-mismatch; fi`
   );
 }
