@@ -20,6 +20,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.1.2] - 2026-08-19
+
+
+
+> 情报横切最小落地：给引擎一个宿主侧情报检索工具（NVD + exploit-db 本地索引）。
+
+
+
+### Added
+
+
+
+- **情报索引 `intel.db`**：NVD CVE（分级 minimal/window/full，默认 minimal；实跑 window 3 年 15.7 万条）+ exploit-db 索引（4.7 万条，只存索引行）；FTS5 全文检索，按需查库不预载。
+- **`zhishi intel update / status`**：NVD API 2.0 增量（lastModStartDate 水位）+ 断点续传；exploit-db 拉 GitLab CSV 整体替换（解析层按 id 首行去重）；网络错误/超时/响应体读取失败全部指数退避重试（120s 超时，NVD 单页 6.4MB 实测）；`maxSizeMb` 超限删最旧。
+- **loop 工具 `intel_search`**：宿主侧认知供给（与 research_log 同层、无条件注册）——精确 CVE / FTS 模糊 / exploit 关联查询；本地未命中按 `intel.onlineFallback` 回源 NVD（5s 静默降级）；结果 ≤5 条 × ≤200 字，带索引新旧提示。
+
+
+
 ## [1.1.1] - 2026-08-19
 
 
