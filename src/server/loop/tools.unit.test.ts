@@ -20,6 +20,7 @@ import {
   ENV_EXEC_TOOL_NAME,
 } from './tools';
 import { listResearchEvents, resetMemoryStoreForTest } from '../memory/store';
+import { createBgRegistry } from './bg-registry';
 
 const VM_ENTRY: EnvironmentEntry = {
   id: 'pwn-vm',
@@ -109,7 +110,7 @@ describe('formatEnvExecResult', () => {
 });
 
 describe('createEnvBgTool', () => {
-  function scriptedExec(results: Array<string | { exitCode: number; stdout: string; stderr: string }>) {
+  function scriptedExec(results: Array<string | { exitCode: number; stdout: string; stderr: string; error?: string }>) {
     const commands: string[] = [];
     let i = 0;
     const exec: EnvExec = async (argv) => {
@@ -141,6 +142,108 @@ describe('createEnvBgTool', () => {
     expect((kill.content[0] as { text: string }).text).toContain('killed:9');
     const list = await tool.execute('b5', { action: 'list' } as never);
     expect((list.content[0] as { text: string }).text).toContain('- a');
+  });
+
+  describe('Phase 3:登记表接线', () => {
+    type LifecycleEvent =
+      | { kind: 'started'; tag: string; pid: number; commandPreview: string }
+      | { kind: 'finished'; tag: string; status: 'exited' | 'dead' | 'killed'; exitCode?: number };
+
+    function registryHarness() {
+      const dir = mkdtempSync(join(tmpdir(), 'zhishi-bg-tool-'));
+      const registry = createBgRegistry({ filePath: join(dir, 'reg.json') });
+      const lifecycle: LifecycleEvent[] = [];
+      return {
+        dir,
+        registry,
+        lifecycle,
+        cleanup: () => rmSync(dir, { recursive: true, force: true }),
+        onLifecycle: (ev: LifecycleEvent) => { lifecycle.push(ev); },
+      };
+    }
+
+    it('start 成功 → 登记表登记(tag/pid/envId),生命周期 started 照发', async () => {
+      const h = registryHarness();
+      try {
+        const { exec } = scriptedExec(['missing', '  4242\n']);
+        const tool = createEnvBgTool(VM_ENTRY, { exec, registry: h.registry, onLifecycle: h.onLifecycle });
+        await tool.execute('p1', { action: 'start', tag: 'fz', command: 'afl-fuzz' } as never);
+        expect(h.registry.get('fz')).toMatchObject({ tag: 'fz', pid: 4242, envId: 'pwn-vm', commandPreview: 'afl-fuzz' });
+        expect(h.lifecycle).toHaveLength(1);
+        expect(h.lifecycle[0]).toMatchObject({ kind: 'started', tag: 'fz', pid: 4242 });
+      } finally {
+        h.cleanup();
+      }
+    });
+
+    it('poll 登记过的 tag → 走存活探测通道;running 时登记保留', async () => {
+      const h = registryHarness();
+      try {
+        h.registry.register({ tag: 'fz', pid: 4242, envId: 'pwn-vm', startedAt: Date.now(), commandPreview: 'afl' });
+        const { exec, commands } = scriptedExec(['running:4242']);
+        const tool = createEnvBgTool(VM_ENTRY, { exec, registry: h.registry, onLifecycle: h.onLifecycle });
+        const r = await tool.execute('p2', { action: 'poll', tag: 'fz' } as never);
+        expect(commands[0]).toContain('kill -0 $p');
+        expect((r.content[0] as { text: string }).text).toContain('status=running');
+        expect(h.registry.get('fz')).toBeDefined();
+        expect(h.lifecycle).toEqual([]);
+      } finally {
+        h.cleanup();
+      }
+    });
+
+    it('poll 观测到终态(exited)→ 清登记 + 广播 finished(带退出码)', async () => {
+      const h = registryHarness();
+      try {
+        h.registry.register({ tag: 'fz', pid: 4242, envId: 'pwn-vm', startedAt: Date.now(), commandPreview: 'afl' });
+        const { exec } = scriptedExec(['exited:137']);
+        const tool = createEnvBgTool(VM_ENTRY, { exec, registry: h.registry, onLifecycle: h.onLifecycle });
+        await tool.execute('p3', { action: 'poll', tag: 'fz' } as never);
+        expect(h.registry.get('fz')).toBeUndefined();
+        expect(h.lifecycle).toEqual([{ kind: 'finished', tag: 'fz', status: 'exited', exitCode: 137 }]);
+      } finally {
+        h.cleanup();
+      }
+    });
+
+    it('探测失败(环境不可达)→ 结果标注「探测失败」,登记保留,不发 finished', async () => {
+      const h = registryHarness();
+      try {
+        h.registry.register({ tag: 'fz', pid: 4242, envId: 'pwn-vm', startedAt: Date.now(), commandPreview: 'afl' });
+        const { exec } = scriptedExec([{ exitCode: -1, stdout: '', stderr: '', error: 'ssh: connect timed out' }]);
+        const tool = createEnvBgTool(VM_ENTRY, { exec, registry: h.registry, onLifecycle: h.onLifecycle });
+        const r = await tool.execute('p4', { action: 'poll', tag: 'fz' } as never);
+        expect((r.content[0] as { text: string }).text).toContain('探测失败');
+        expect((r.content[0] as { text: string }).text).toContain('status=running');
+        expect(h.registry.get('fz')).toBeDefined();
+        expect(h.lifecycle).toEqual([]);
+      } finally {
+        h.cleanup();
+      }
+    });
+
+    it('kill not-running → 登记表照清(进程已不在),不广播 finished(非本次杀的)', async () => {
+      const h = registryHarness();
+      try {
+        h.registry.register({ tag: 'fz', pid: 4242, envId: 'pwn-vm', startedAt: Date.now(), commandPreview: 'afl' });
+        const { exec } = scriptedExec(['not-running']);
+        const tool = createEnvBgTool(VM_ENTRY, { exec, registry: h.registry, onLifecycle: h.onLifecycle });
+        await tool.execute('p5', { action: 'kill', tag: 'fz' } as never);
+        expect(h.registry.get('fz')).toBeUndefined();
+        expect(h.lifecycle).toEqual([]);
+      } finally {
+        h.cleanup();
+      }
+    });
+
+    it('未初始化全局登记表(registry 未注入)→ 登记降级 no-op,不炸', async () => {
+      // 全局单例是 null(unit 池未调 initBgRegistry):start/poll/kill 照常。
+      const { exec } = scriptedExec(['missing', '  99\n', 'running:99']);
+      const tool = createEnvBgTool(VM_ENTRY, { exec });
+      await tool.execute('p6', { action: 'start', tag: 'nx', command: 'sleep 5' } as never);
+      const poll = await tool.execute('p7', { action: 'poll', tag: 'nx' } as never);
+      expect((poll.content[0] as { text: string }).text).toContain('status=running');
+    });
   });
 });
 

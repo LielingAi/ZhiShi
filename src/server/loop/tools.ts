@@ -20,6 +20,7 @@ import {
   envBgStart,
   type BgExecOptions,
 } from './bg-exec';
+import { getBgRegistry, type BgRegistry } from './bg-registry';
 import {
   recordResearchEvent,
   RESEARCH_BUG_CLASSES,
@@ -80,6 +81,13 @@ export interface CreateEnvBgToolOptions {
     | { kind: 'started'; tag: string; pid: number; commandPreview: string }
     | { kind: 'finished'; tag: string; status: 'exited' | 'dead' | 'killed'; exitCode?: number }
   ) => void;
+  /**
+   * Phase 3 登记表（bg-registry.ts）：start 成功登记、poll 观测到终态 /
+   * kill 后清除——回收杀掉（turn 结束/reset）据此知道要杀谁。缺省取
+   * 全局单例（getBgRegistry，initPiChatEngine 初始化）；未初始化时为
+   * null，登记降级为 no-op（不报错）。测试注入自建实例。
+   */
+  registry?: BgRegistry | null;
 }
 
 /** 结果文本：模型可读。 */
@@ -94,6 +102,7 @@ export function createEnvBgTool(
 ): AgentTool<typeof envBgParameters, EnvBgToolDetails> {
   const envLabel = options.environmentLabel ?? entry.name ?? entry.id;
   const bgOptions: BgExecOptions = { exec: options.exec };
+  const registry = options.registry !== undefined ? options.registry : getBgRegistry();
   return {
     name: 'env_bg',
     label: '在研究环境中发起/管理长驻后台进程',
@@ -112,32 +121,50 @@ export function createEnvBgTool(
           }
           const r = await envBgStart(entry, params.command, tag, bgOptions);
           if (!r.ok) throw new Error(r.error);
+          const commandPreview = params.command.trim().slice(0, 100);
+          // Phase 3：登记进宿主登记表（落盘，写失败不致命——见 bg-registry）。
+          registry?.register({
+            tag: r.tag,
+            pid: r.pid,
+            envId: entry.id,
+            startedAt: Date.now(),
+            commandPreview,
+          });
           options.onLifecycle?.({
             kind: 'started',
             tag: r.tag,
             pid: r.pid,
-            commandPreview: params.command.trim().slice(0, 100),
+            commandPreview,
           });
           text = `started tag=${r.tag} pid=${r.pid} log=${r.logPath}`;
           break;
         }
         case 'poll': {
-          const r = await envBgPoll(entry, tag, bgOptions);
+          // Phase 3：登记表有 pid → 走存活探测通道（bg-exec knownPid）。
+          // 探测失败（环境不可达）保守报 running+probeFailed，不误杀。
+          const knownPid = registry?.get(tag)?.pid;
+          const r = await envBgPoll(entry, tag, { ...bgOptions, knownPid });
           if (!r.ok) throw new Error(r.error);
-          // 观测到终态 → 广播 finished(拍肩膀退出插行)。只发一次:
-          // 服务端不做进程盯梢,终态是 poll 才可见的(设计底账 Phase 2)。
-          if (r.status === 'exited' || r.status === 'dead') {
+          // 观测到终态 → 清登记 + 广播 finished(拍肩膀退出插行)。只发
+          // 一次:服务端不做进程盯梢,终态是 poll 才可见的(Phase 2 语义)。
+          // 已登记的 tag 探测报 missing(.pid 文件没了)同样按终态处理——
+          // 环境重启把状态文件冲了,句柄已失效,广播按 dead(异常消失)。
+          const probeTerminalMissing = r.status === 'missing' && knownPid !== undefined;
+          if (r.status === 'exited' || r.status === 'dead' || probeTerminalMissing) {
+            registry?.remove(tag);
             options.onLifecycle?.({
               kind: 'finished',
               tag,
-              status: r.status,
+              // 已登记的 tag 探测报 missing(.pid 文件没了)→ 按 dead(异常消失)。
+              status: r.status === 'exited' || r.status === 'dead' ? r.status : 'dead',
               exitCode: r.exitCode,
             });
           }
           const line = r.status === 'exited'
             ? `status=exited exit=${r.exitCode ?? '?'}`
             : `status=${r.status}${r.pid ? ` pid=${r.pid}` : ''}`;
-          text = `${line} tag=${tag}`;
+          text = `${line} tag=${tag}` +
+            (r.probeFailed ? '（存活探测失败：环境不可达，保守保留 running 登记，不误杀）' : '');
           break;
         }
         case 'log': {
@@ -151,8 +178,14 @@ export function createEnvBgTool(
           if (!r.ok) throw new Error(r.error);
           const killed = r.outcome.startsWith('killed');
           if (killed) {
+            registry?.remove(tag);
             options.onLifecycle?.({ kind: 'finished', tag, status: 'killed' });
+          } else if (r.outcome === 'not-running' || r.outcome === 'missing') {
+            // 进程已不在：登记表照清（不广播 finished——不是本次杀的，
+            // TUI 侧状态行残留由下一次 poll/list 收敛，保持 Phase 2 契约）。
+            registry?.remove(tag);
           }
+          // kill-failed：进程可能还活着，登记保留（回收链下轮再试）。
           text = `tag=${tag} ${r.outcome}`;
           break;
         }

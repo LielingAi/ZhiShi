@@ -185,6 +185,7 @@
 - **pi 版本钉死 + 升级前回归**：pi 是 0.x 高频迭代项目（0.74→0.84 有 breaking 前科），升级前 MUST 跑 `npm run smoke`（一键入口，`scripts/smoke.mjs` 顺序跑 m1→m2→m3→m4a-client→m4a-sdk-observe→m4b，先打印当前 pi 版本，真端点 + 真 VM；单个失败不中断，任一失败 → 编排器 exit 1，即升级阻断语义，exit 1 不得升级）。手动兜底（单脚本重跑 / 无编排器时）：`node --import tsx/esm tmp/m1-smoke.mjs`（同款 m2/m3），m4 系列见各自文件头注释（需先起 sidecar）。禁止凭假设写 pi 交互代码——查 `@earendil-works/pi-agent-core` 的 .d.ts（注释密度高，是权威契约）。
 
 - **工具执行体挂环境层**：`env_exec`（一次性执行）与 `env_bg`（后台长驻 start/poll/log/kill/list）经 SSH 在研究环境（Docker / VM / SSH 靶机）内执行，不在宿主跑（D25 的核心动机）；`delegate_task`（子任务，深度限 1）与 `research_log`（研究留痕，写 research_events）为 harness 原生工具。宿主执行类工具**结构性不存在**——这就是边界（D14），界内全自动、零审批。
+- **env_bg Phase 3 稳定性闭环**（`docs/env-bg-design.md §8`）：登记表落盘 `<数据目录>/bg-procs/<工作区哈希>.json`（`loop/bg-registry.ts`，原子写失败不致命，启动恢复不重播 started）；poll 带存活探测（`kill -0` + .pid 一致性校验，探测通道失败保守报 running+probeFailed 不误杀）；**turn 结束（含 Esc 中断）与会话 reset 回收杀掉所有仍在跑的 bg 进程——暂定决策**，理由与「保留续跑+认领」替代方向见 `loop/bg-reap.ts` 模块头注释。
 
 - **边界规则**（`loop/boundary.ts` 入向 deny / `loop/output-guard.ts` 出向净化）：规则是数据，allow / deny+reason 回注模型，零问人交互。新规则加进规则数组，不发明交互。
 

@@ -13,11 +13,14 @@ import {
   buildBgListRemote,
   buildBgLogRemote,
   buildBgPollRemote,
+  buildBgProbeRemote,
+  buildBgReapRemote,
   buildBgStartRemote,
   envBgKill,
   envBgList,
   envBgLog,
   envBgPoll,
+  envBgReap,
   envBgStart,
   parseBgList,
   parseBgLog,
@@ -70,6 +73,34 @@ describe('远端命令组装', () => {
     expect(buildBgLogRemote('t1', 100, 8192)).toContain('tail -c +100');
     expect(buildBgKillRemote('t1')).toContain('kill');
     expect(buildBgListRemote()).toContain('*.log');
+  });
+
+  it('Phase 3:probe(存活探测)形状——kill -0 + .pid 一致性校验,语法同 poll', () => {
+    const p = buildBgProbeRemote('t1', 4242);
+    expect(p).toContain('p=4242');
+    expect(p).toContain('kill -0 $p');
+    expect(p).toContain('$t.pid');
+    expect(p).toContain('"running:$p"');
+    expect(p).toContain('"exited:$(cat $t.exit)"');
+    expect(p).toContain('"dead:$p"');
+    expect(p).toContain('echo missing');
+    const w = buildBgProbeRemote('t1', 4242, 'windows');
+    expect(w).toContain('Get-Process -Id $p');
+    expect(w).toContain('"$t.pid"');
+    expect(w).toContain('"running:$p"');
+  });
+
+  it('Phase 3:reap(回收 kill)形状——按登记 pid 杀 + 一致性校验,杀子进程不组杀', () => {
+    const r = buildBgReapRemote('t1', 4242);
+    expect(r).toContain('p=4242');
+    expect(r).toContain('kill $p');
+    expect(r).toContain('pkill -TERM -P $p');
+    expect(r).toContain('"reaped:$p"');
+    expect(r).toContain('pid-mismatch');
+    expect(r).not.toContain('kill -$p'); // 不做进程组杀(会波及 ssh 会话内其它命令)
+    const w = buildBgReapRemote('t1', 4242, 'windows');
+    expect(w).toContain('taskkill /PID $p /T /F');
+    expect(w).toContain('pid-mismatch');
   });
 });
 
@@ -152,6 +183,71 @@ describe('编排(注入 exec,薄包)', () => {
     expect(kill).toEqual({ ok: true, outcome: 'killed:1' });
     const list = await envBgList(DOCKER, { exec });
     expect(list).toEqual({ ok: true, entries: [{ tag: 'a' }, { tag: 'b' }] });
+  });
+
+  describe('Phase 3:存活探测(knownPid 三态)', () => {
+    it('活:kill -0 通过 → running(走探测通道而非 .pid 现场判定)', async () => {
+      const { exec, calls } = scriptedExec(['running:77']);
+      const r = await envBgPoll(DOCKER, 't', { exec, knownPid: 77 });
+      expect(r).toEqual({ ok: true, tag: 't', status: 'running', pid: 77 });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].slice(-1)[0]).toContain('kill -0 $p');
+    });
+
+    it('死:kill -0 不通过 + .exit 有码 → exited 带退出码', async () => {
+      const { exec } = scriptedExec(['exited:137']);
+      const r = await envBgPoll(DOCKER, 't', { exec, knownPid: 77 });
+      expect(r).toEqual({ ok: true, tag: 't', status: 'exited', exitCode: 137 });
+    });
+
+    it('死:.exit 也没有 → dead(异常消失);.pid 没了 → missing(句柄丢失)', async () => {
+      const { exec } = scriptedExec(['dead:77']);
+      expect(await envBgPoll(DOCKER, 't', { exec, knownPid: 77 }))
+        .toEqual({ ok: true, tag: 't', status: 'dead', pid: 77 });
+      const { exec: exec2 } = scriptedExec(['missing']);
+      expect(await envBgPoll(DOCKER, 't', { exec: exec2, knownPid: 77 }))
+        .toEqual({ ok: true, tag: 't', status: 'missing' });
+    });
+
+    it('探测失败(通道不通)→ 保守报 running+probeFailed,ok:true 不误杀', async () => {
+      const { exec } = scriptedExec([{ exitCode: -1, stdout: '', stderr: '', error: 'ssh: connect timed out' }]);
+      const r = await envBgPoll(DOCKER, 't', { exec, knownPid: 77 });
+      expect(r).toEqual({ ok: true, tag: 't', status: 'running', pid: 77, probeFailed: true });
+    });
+
+    it('无 knownPid → 仍走 .pid/.exit 现场判定(Phase 2 语义不变)', async () => {
+      const { exec, calls } = scriptedExec(['running:9']);
+      const r = await envBgPoll(DOCKER, 't', { exec });
+      expect(r).toEqual({ ok: true, tag: 't', status: 'running', pid: 9 });
+      expect(calls[0].slice(-1)[0]).toContain('ps -p');
+    });
+  });
+
+  describe('Phase 3:envBgReap 编排', () => {
+    it('reaped → ok;pid-mismatch → ok(没杀任何东西,由编排层清登记)', async () => {
+      const { exec } = scriptedExec(['reaped:42']);
+      expect(await envBgReap(DOCKER, 't', 42, { exec })).toEqual({ ok: true, outcome: 'reaped:42' });
+      const { exec: exec2, calls } = scriptedExec(['pid-mismatch']);
+      expect(await envBgReap(DOCKER, 't', 42, { exec: exec2 })).toEqual({ ok: true, outcome: 'pid-mismatch' });
+      expect(calls[0].slice(-1)[0]).toContain('kill $p');
+    });
+
+    it('通道失败 → ok:false(编排层保守保留登记)', async () => {
+      const { exec } = scriptedExec([{ exitCode: -1, stdout: '', stderr: '', error: 'ssh: connect refused' }]);
+      const r = await envBgReap(DOCKER, 't', 42, { exec });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain('connect refused');
+    });
+
+    it('tag 非法 / guest 通道 → 同 start/poll 的门禁语义', async () => {
+      const { exec } = scriptedExec([]);
+      const bad = await envBgReap(DOCKER, '../x', 1, { exec });
+      expect(bad.ok).toBe(false);
+      const guest: EnvironmentEntry = { id: 'v', kind: 'vm', vmName: 'iso', vmx: 'D:\\v\\iso.vmx', createdAt: '' };
+      const g = await envBgReap(guest, 't', 1, { exec });
+      expect(g.ok).toBe(false);
+      if (!g.ok) expect(g.error).toContain('guest-exec');
+    });
   });
 
   it('guest 通道(断网 VM)→ 清晰错误(Phase 3 待实现)', async () => {

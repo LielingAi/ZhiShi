@@ -1,6 +1,6 @@
 # 环境内长驻进程通道（env_bg）设计底账
 
-> 版本 2026-08-17 · 状态：Phase 1/2 已落地（见 §6.5），Phase 3 待评估 · 性质：核心功能，稳定性优先
+> 版本 2026-08-19 · 状态：Phase 1/2 已落地（见 §6.5）；Phase 3（稳定性闭环：登记表落盘 / poll 存活探测 / turn 结束回收杀掉）已定稿并落地（见 §8） · 性质：核心功能，稳定性优先
 > 定调：不拍脑袋。本文是动手前的地基，所有「为什么」都落在这里，审过再写代码。
 
 ## 1. 目标与反目标
@@ -25,6 +25,7 @@
 - 进程活在环境里；TUI 关、sidecar 重启、会话 fork，都不影响「进程还在不在」。
 - 任何控制面重连后都能用 `list` 重新发现全部长驻进程——**宿主不持有任何必须持久化的状态**。
 - 这消除了最大一类稳定性隐患：宿主 registry 与环境漂移（进程死了 registry 不知道、registry 残留）。
+- Phase 3 补一张**可弃的宿主登记表**（`bg-registry.ts`，落盘但丢得起）：它不是真相，只是「本工作区发起过谁」的账本，供 turn 结束回收杀掉时知道要杀谁。真相应答（进程在不在）永远走环境现场查询（D1 不变）。
 
 ### D2：env_bg 是薄编排层，复用既有 execInEnvironment
 
@@ -101,6 +102,11 @@ mkdir -p /tmp/zhishi-bg && cd /tmp/zhishi-bg \
 6. 日志无限增长 → v1 接受（环境可弃，读取永远走 tail+offset 切片，绝不整读）；轮转列为后续
 7. ssh 抖动 → 每次操作都是独立一次性连接，失败语义与 env_exec 一致
 8. 超长 command → base64 后仍受 shell 单参上限约束；不设额外 cap，文档说明
+9. 登记表落盘失败（盘满/权限）→ 原子写失败仅告警，内存态继续——登记表不是真相，丢了只是回收链失明
+10. 登记表文件损坏 → 坏 JSON/坏条目逐条跳过，按空表启动，不炸会话
+11. 探测通道失败（ssh 断流）→ poll 保守报 running + `probeFailed` 标注，不广播 finished、不回收杀掉——「没法证伪」不等于「证据说死了」
+12. 环境重启后 pid 被回收 → 探测/回收命令带 .pid 一致性校验，旧 pid 对不上就不杀，绝不误杀别人进程
+13. tag 复用竞态（回收与下个 turn 同名重起并发）→ 回收 kill 按登记 pid + 一致性校验，杀错不了新进程
 
 ## 6.5 边界确认步骤（Phase 2 已落地，回归有据可依）
 
@@ -116,22 +122,78 @@ mkdir -p /tmp/zhishi-bg && cd /tmp/zhishi-bg \
 
 | 文件 | 改动 |
 |---|---|
-| `src/server/loop/bg-exec.ts`（新） | 纯函数：`buildBgStartRemote` / `parseBgPoll` / `parseBgList` / `parseBgLog` + 编排 `envBgStart/Poll/Log/Kill/List`（薄包 `execInEnvironment`） |
-| `src/server/loop/tools.ts` | `createEnvBgTool` + `env_bg` 参数 schema + 结果格式化 |
-| `src/server/loop/chat-engine.ts` | `toolNames` 注册 `env_bg`；`runPiTurn` 挂 `createEnvBgTool(entry)` |
+| `src/server/loop/bg-exec.ts`（新） | 纯函数：`buildBgStartRemote` / `parseBgPoll` / `parseBgList` / `parseBgLog` + 编排 `envBgStart/Poll/Log/Kill/List`（薄包 `execInEnvironment`）；Phase 3 加 `buildBgProbeRemote`（存活探测）/ `buildBgReapRemote` + `envBgReap`（回收 kill）/ `knownPid` 探测注入 |
+| `src/server/loop/bg-registry.ts`（Phase 3 新） | 宿主登记表：内存 Map + 落盘（`<数据目录>/bg-procs/<工作区哈希>.json`，tmp+rename 原子写，写失败不致命）+ 启动恢复 |
+| `src/server/loop/bg-reap.ts`（Phase 3 新） | 回收编排 `reapAllBgProcesses`（注入依赖可测；暂定决策与容错语义见其模块头注释） |
+| `src/server/loop/tools.ts` | `createEnvBgTool` + `env_bg` 参数 schema + 结果格式化；Phase 3 加登记表接线（start 登记 / poll 探测 + 终态清登记 / kill 清登记） |
+| `src/server/loop/chat-engine.ts` | `toolNames` 注册 `env_bg`；`runPiTurn` 挂 `createEnvBgTool(entry)`；Phase 3 加 `initPiChatEngine` 恢复登记表、turn 收尾 finally 与 `resetPiChat` 两处回收挂载 |
 | `src/server/loop/boundary.ts` | env-ready / credential-leak 两条规则认 `env_bg`（白名单加名） |
-| 测试 | `bg-exec.unit.test.ts`（builders/parsers 纯函数 + 注入 exec 编排）+ `tools.unit.test.ts` + `boundary.unit.test.ts` 增补 |
+| 测试 | `bg-exec.unit.test.ts`（builders/parsers 纯函数 + 注入 exec 编排）+ `tools.unit.test.ts` + `boundary.unit.test.ts` 增补；Phase 3 加 `bg-registry.unit.test.ts`（落盘/恢复/原子写失败不致命）+ `bg-reap.unit.test.ts`（回收四态） |
 
 **不碰**：`env-exec.ts` 的 I/O 层、SSE 契约、TUI reducer/app、`/api/task/poll-background`（SDK 时代遗留，保持原样）。
 
 ## 8. 分阶段 rollout（稳定性优先）
 
-- **Phase 1（本文范围）**：纯引擎件——工具 + 纯函数 + 边界 + 单测。TUI 零改动，长驻进程结果走普通工具卡。活体清单：ssh 通道起 `seq` 长跑 → poll 观察 → log 增量 → kill；docker 通道同清单（有 Docker 的机器上）。
-- **Phase 2（独立立项）**：呈现合流——状态行静态段 + 进程退出插行，与 subagent 拍肩膀共用注意力模型。需要新增 SSE 事件（进程 start/finish 通知）或轻量轮询，届时单独立项评审。
-- **Phase 3（独立立项）**：guest-exec 后台通道。
+- **Phase 1（已落地）**：纯引擎件——工具 + 纯函数 + 边界 + 单测。TUI 零改动，长驻进程结果走普通工具卡。活体清单：ssh 通道起 `seq` 长跑 → poll 观察 → log 增量 → kill；docker 通道同清单。
+- **Phase 2（已落地）**：呈现合流——状态行静态段 + 进程退出插行。SSE 事件 `chat:bg-started/finished`（`started` 登记、`finished` 移除，`integration.sse-replay.unit.test.ts` 钉死，见 §6.5）。
+- **Phase 3（本次定稿并落地）**：稳定性闭环——不再是原草案的「guest-exec 后台通道」（guest-exec 继续不做，见 §5 矩阵）。三条缺口：
+
+### 8.1 登记表持久化（sidecar 重启可恢复）
+
+原状：宿主侧根本没有登记表（`bgProcs` 只在 TUI 内存里，靠 SSE 事件登记）。sidecar 重启后回收链失明，进程变孤儿。
+
+定稿：
+
+- 新建宿主登记表 `bg-registry.ts`：内存 Map + 落盘 `<数据目录>/bg-procs/<agentDir 短哈希>.json`（`app-dirs.ts` 的 `getZhiShiDataDir()`，与 loop-sessions 同目录约定；哈希隔离多工作区 sidecar 互踩）。
+- 盘上形状：`{ version: 1, entries: [{ tag, pid, envId, startedAt, commandPreview }] }`——`envId` 是回收时解析环境条目的锚。
+- 启动恢复：`initPiChatEngine` → `initBgRegistry(dir)` → restore。恢复只重新纳入回收链（下一个 turn 结束仍能按 tag+pid 回收），**不重播 `chat:bg-started`**（TUI 侧状态行有自己的内存登记，重复广播制造重影）。
+- 写入原子：tmp+rename（同 `loop/session.ts` 惯例）；**失败不致命**——写失败仅 `console.warn`，内存态继续。登记表不是真相（D1），丢了只是回收链失明。
+- 清除时机：poll 观测到终态 / kill 成功（或进程已不在）/ 回收完成——登记表随进程终结即清。
+
+### 8.2 poll 存活探测
+
+原状：poll 走远端 `.pid/.exit` 现场判定，语义正确；但探测通道失败（ssh 断流）时工具直接 throw，模型看到的是错误而非「探不到」，且登记表里没有可供校验的 pid。
+
+定稿：
+
+- `envBgPoll` 加 `knownPid` 注入（工具层从登记表取 pid）。有 knownPid 时走探测命令 `buildBgProbeRemote`：`kill -0 <pid>`（Windows 用 `Get-Process -Id`）+ **.pid 一致性校验**——先核对 `.pid` 文件仍是登记的 pid，再探测。防环境重启后 pid 被系统回收给别的进程，旧 pid 假活误判。
+- 探测三态（逐条进单测）：
+  - 活 → `running`（与 Phase 2 语义一致）；
+  - 死 → 如实报 `exited`（`.exit` 有码带码；无 `.exit` 报 `dead` 异常消失；`.pid` 文件都没了报 `missing`）——终态一律清登记 + 广播 `chat:bg-finished`；
+  - **探测命令本身失败**（ssh 不通/超时）→ `ok:true`、`status:running`、`probeFailed:true`，结果文本标注「探测失败，保守保留 running 登记，不误杀」。不广播 finished、不回收。这是「没法证伪」，不是「证据说活着」。
+- 无 knownPid（未登记的 tag）→ 仍走 Phase 2 的 `.pid/.exit` 现场判定，语义不变。
+
+### 8.3 清理策略：回收杀掉（**暂定决策**）
+
+**turn 结束（含 Esc 中断）与会话 reset 时，回收杀掉登记表里所有仍在跑的 bg 进程。**
+
+> 接手者注意：这是暂定决策，不是终态。潜在问题（写在 `bg-reap.ts` 模块头注释，代码即底稿）：
+> 1. **误杀长任务**——turn 结束 ≠ 研究结束；fuzz 长跑/长扫描被 turn 边界拦腰杀，进度只留在环境日志，下个 turn 只能重起；
+> 2. **研究中断丢进度**——Esc 打断的有时只是模型闲聊，后台有用进程被连坐；
+> 3. **替代模型已备好**——「保留续跑 + 认领」：进程在环境里继续跑（D1），新 turn / 重启后的 sidecar 用 tag 认领句柄（`list` 重新发现 + poll 看终态）。登记表落盘已为跨重启认领就位。
+>
+> 当时选回收的理由：确定性优先——不杀，孤儿在环境里积压吃光资源；杀了，最多重跑一次。若改保留续跑，改动点集中在 `bg-reap.ts` 一处语义，SSE 契约不用动。
+
+定稿细节：
+
+- 挂载点（chat-engine.ts）：
+  - turn 收尾：`startPiTurn` 的 `.finally()`（`runPiTurn` 之后、`promotePiQueue` 之前 fire-and-forget）——覆盖正常结束与 Esc 中断（abort 后 runPiTurn 正常走完）；fire-and-forget，kill 失败绝不阻塞 turn 收尾；
+  - 会话 reset：`resetPiChat()` 末尾（与 abort 触发的 turn 收尾回收幂等）。
+- kill 顺序：先杀（`envBgReap`：主进程 + linux `pkill -P` 直接子进程，不做进程组杀——后台进程与 ssh 会话同组，组杀波及正在执行的其它命令；Windows `taskkill /T /F` 树杀）→ 清登记表与盘上记录 → 广播 `chat:bg-finished`（登记表里还存在的 = 此前没广播过 finished）。
+- 容错语义（逐条进单测）：
+  - 杀成功 → 清登记 + 广播 `finished(killed)`；
+  - `.pid` 对不上（环境重启/tag 复用）→ 不杀，清登记 + 广播 `finished(dead)`；
+  - 通道失败（ssh 不通）→ 登记保留（下个 turn 结束再试），不广播 finished——与「探测失败不误杀」同一原则；
+  - 环境条目已删 → 够不到，清登记 + 告警（孤儿由环境侧 `env_bg list` 兜底发现）。
+- 回收 kill 与用户主动 `env_bg kill` 分开：回收按**登记 pid** + 一致性校验（防 tag 复用竞态杀错新进程）；主动 kill 维持按 `.pid` 现场取值（Phase 1 契约不变）。
+
+### 8.4 SSE 契约与 TUI
+
+`chat:bg-started/finished` 事件形状不变（finished 新增广播路径只用既有 status `killed`/`dead`/`exited`），TUI reducer 零改动；`integration.sse-replay.unit.test.ts` 原用例不动。
 
 ## 9. 待审问题
 
-1. 工具名 `env_bg`（一个工具五 action）vs `env_exec` 加 `background` 旗标 + 独立 `env_poll`——我倾向前者（白名单更简、模型选型更不易错）。
-2. `start` 的 tag 缺省策略：自动生成 vs 强制模型显式命名——我倾向「缺省自动生成」（模型少一个决策，list 也能看到）。
-3. 日志 v1 接受环境内无限增长、读取永远切片——是否需要 v1 就加大小上限（我倾向不加，环境可弃）。
+1. 工具名 `env_bg`（一个工具五 action）vs `env_exec` 加 `background` 旗标 + 独立 `env_poll`——已定：前者（白名单更简、模型选型更不易错）。
+2. `start` 的 tag 缺省策略：自动生成 vs 强制模型显式命名——已定：缺省自动生成。
+3. 日志 v1 接受环境内无限增长、读取永远切片——已定：不加上限（环境可弃）。
+4. Phase 3 回收杀掉是**暂定决策**（§8.3）：观察误杀长任务的实损后再定是否转「保留续跑 + 认领」模型；转向前先评审，代码改动点集中在 `bg-reap.ts`。
