@@ -20,6 +20,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.1.1] - 2026-08-19
+
+
+
+> 扩展面收敛：MCP 工具正式接入引擎，.zsp 加密插件体系整体移除。
+
+
+
+### Added
+
+
+
+- **MCP 工具接入 loop**：`mcp__<server>__<tool>` 命名接入引擎工具集（每 turn 动态构建，天然支持热重载）；启动即连接 enabled servers（stdio/sse/http，10s 超时），单点失败不阻塞会话；`mcp/reload` 热重载（配置以磁盘为权威，重读 config.json）；TUI `/mcp` 状态展示（connected/failed + 工具数）与 `-r` 刷新；boundary 白名单同步扩进 MCP 工具名。
+
+
+
+### Removed
+
+
+
+- **.zsp 加密插件体系**：`src/server/plugins/` 整目录、`zhishi plugin`/`cc-plugin` 命令族、`plugin_licenses` 表、plugin-assistant skill 全部移除——商业分发时代残留，扩展统一由 MCP + skills 承担。
+
+
+
 ## [1.0.0] - 2026-08-18
 
 
