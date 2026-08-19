@@ -32,6 +32,8 @@
 
 - `src/server/appcraft/` — AppCraft 桌面自动化（terminator-client / replay-engine / recorder，见 PRD 0.2.36）
 
+- `src/server/intel/` — 情报检索（1.1.2）：`intel.db`（NVD CVE + exploit-db 索引，FTS5）+ `zhishi intel update/status` + loop 工具 `intel_search`（宿主侧认知供给，与 research_log 同层）
+
 - `src/cli/` — `zhishi` CLI（同步到 `~/.zhishi/bin/`），产品能力的统一入口
 
 - `src/shared/` — 共享类型（server / cli 等消费）
@@ -237,6 +239,15 @@ MCP / Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**
 
 
 **MCP 配置权威来源 = 磁盘**：CLI `zhishi mcp` 写盘，sidecar self-resolve 从磁盘读。混用 / 不一致会导致 fingerprint 差异 → abort → 30s 重启循环。
+
+
+
+### 情报检索（intel，1.1.2）
+
+- `intel.db`（`~/.zhishi/`，better-sqlite3，WAL）：NVD CVE（窗口分级 minimal/window/full，默认 minimal）+ exploit-db 索引（只存 CSV 索引行，PoC 文件不落盘）。FTS5 全文检索，查询按需直查库、不做启动预载。
+- 更新：`zhishi intel update [--mode minimal|window|full]`（走 sidecar admin API）。NVD 走 API 2.0 增量（lastModStartDate 水位）+ 断点续传；exploit-db 拉 GitLab CSV 整体替换（解析层按 id 首行去重——真实 CSV 有重复行）。**网络错误/超时/响应体读取失败都进指数退避重试**（NVD 单页 6.4MB，慢网络实测 90s+，超时 120s）；`maxSizeMb` 超限删最旧。
+- 工具：loop `intel_search`（宿主侧认知供给，与 research_log 同层、无条件注册）——精确 CVE / FTS 模糊 / exploit 关联查询；本地未命中按 `intel.onlineFallback` 回源 NVD（5s 超时静默降级）；结果 ≤5 条 × ≤200 字，带「索引最后更新于」提示。情报是线索不是结论——工具 description 已写明使用纪律。
+- 配置：`config.json` 的 `intel: { mode, windowYears, maxSizeMb, onlineFallback }`（`src/shared/config-types.ts` 的 resolveIntelConfig）。
 
 
 

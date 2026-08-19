@@ -880,6 +880,13 @@ export interface AppConfig {
 
   };
 
+  /** 情报横切（1.1.2）：NVD + exploit-db 本地索引。存储见 ~/.zhishi/intel.db，
+   *  更新走 `zhishi intel update`，检索经 loop 的 intel_search 工具。
+   *  分级：minimal 只存核心字段按大小裁剪 / window 保留最近 N 年 /
+   *  full 全量（maxSizeMb 兜底）。缺省 INTEL_DEFAULTS。 */
+
+  intel?: IntelConfig;
+
   // General settings
 
   autoStart: boolean; // 开机启动
@@ -1067,7 +1074,89 @@ export interface AppConfig {
 
 
 
+/** 情报索引分级（1.1.2）：minimal 只存核心字段按大小裁剪 / window 保留最近
+
+ *  windowYears 年 / full 全量（maxSizeMb 兜底）。 */
+
+export type IntelMode = 'minimal' | 'window' | 'full';
+
+
+
+/** config.json::intel（1.1.2 情报横切）。全部字段可缺省——resolveIntelConfig
+
+ *  合并 INTEL_DEFAULTS。 */
+
+export interface IntelConfig {
+
+  /** 存储分级。缺省 'minimal'。 */
+
+  mode?: IntelMode;
+
+  /** window 模式保留年数。缺省 3。 */
+
+  windowYears?: number;
+
+  /** intel.db 大小上限（MB），update 末尾自适应裁剪。缺省 300。 */
+
+  maxSizeMb?: number;
+
+  /** intel_search 未命中时是否在线回源 NVD（5s 超时、失败静默降级）。
+
+   *  缺省 true。 */
+
+  onlineFallback?: boolean;
+
+}
+
+
+
+/** intel 配置缺省值（分级设计定稿：minimal / 3 年 / 300MB）。 */
+
+export const INTEL_DEFAULTS: Required<IntelConfig> = {
+
+  mode: 'minimal',
+
+  windowYears: 3,
+
+  maxSizeMb: 300,
+
+  onlineFallback: true,
+
+};
+
+
+
+/** 合并缺省值；非法值回落缺省（配置来自用户可编辑的 config.json，容错优先）。 */
+
+export function resolveIntelConfig(cfg?: IntelConfig): Required<IntelConfig> {
+
+  const mode = cfg?.mode === 'window' || cfg?.mode === 'full' || cfg?.mode === 'minimal'
+
+    ? cfg.mode
+
+    : INTEL_DEFAULTS.mode;
+
+  const windowYears = typeof cfg?.windowYears === 'number' && Number.isFinite(cfg.windowYears) && cfg.windowYears > 0
+
+    ? cfg.windowYears
+
+    : INTEL_DEFAULTS.windowYears;
+
+  const maxSizeMb = typeof cfg?.maxSizeMb === 'number' && Number.isFinite(cfg.maxSizeMb) && cfg.maxSizeMb > 0
+
+    ? cfg.maxSizeMb
+
+    : INTEL_DEFAULTS.maxSizeMb;
+
+  const onlineFallback = typeof cfg?.onlineFallback === 'boolean' ? cfg.onlineFallback : INTEL_DEFAULTS.onlineFallback;
+
+  return { mode, windowYears, maxSizeMb, onlineFallback };
+
+}
+
+
 /** VM 模板条目（config.json::vmTemplates，P2 V6）。 */
+
 export interface VmTemplateEntry {
   /** 模板 .vmx 绝对路径。 */
   vmx: string;

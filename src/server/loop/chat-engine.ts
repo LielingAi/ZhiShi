@@ -89,6 +89,7 @@ import { mapLoopEventToSse, toolResultText } from './sse-adapter';
 import { createDelegateTaskTool, DELEGATE_TASK_TOOL_NAME } from './subagent';
 import { collectEnabledSkills } from './skills';
 import { createEnvBgTool, createEnvExecTool, createResearchLogTool, ENV_EXEC_TOOL_NAME, RESEARCH_LOG_TOOL_NAME } from './tools';
+import { createIntelSearchTool, INTEL_SEARCH_TOOL_NAME } from './intel';
 import { ENV_BG_TOOL_NAME } from './bg-exec';
 import { loadBundledAgents } from '../agents/bundled-agents';
 
@@ -500,6 +501,8 @@ function startPiTurn(input: PiSendInput, resolution: LoopModelResolution, ground
   const toolNames = [
     ...(env ? [ENV_EXEC_TOOL_NAME, ENV_BG_TOOL_NAME, DELEGATE_TASK_TOOL_NAME] : []),
     RESEARCH_LOG_TOOL_NAME,
+    // intel_search 同 research_log：宿主侧 harness 原生能力，无条件注册。
+    INTEL_SEARCH_TOOL_NAME,
   ];
   if (!systemInitInfo) {
     systemInitInfo = {
@@ -586,6 +589,8 @@ async function runPiTurn(
   const tools: AgentTool[] = [
     ...(env ? [createEnvExecTool(env)] : []),
     createResearchLogTool(agentDir),
+    // 1.1.2 情报横切：宿主侧情报检索，无条件注册（不依赖 env）。
+    createIntelSearchTool(),
   ];
   if (env) {
     // W1(design-spec §8)— delegate_task 接回生产路径。深度限 1 由 subagent
