@@ -204,12 +204,12 @@ describe('中断可续 / 失败回滚', () => {
     const before = getIntelStatus(openIntelStore(dir));
 
     tNow = new Date(T0.getTime() + 86_400_000);
-    // 窗口第 1 页 OK（totalResults=2），第 2 页网络故障
+    // 窗口第 1 页 OK（totalResults=2），第 2 页起持续网络故障（重试也失败）
     let page = 0;
     const bad = makeFetch((url) => {
       if (url.includes('files_exploits.csv')) return textResponse(CSV_TEXT);
       page += 1;
-      if (page === 2) return Promise.reject(new Error('connection reset'));
+      if (page >= 2) return Promise.reject(new Error('connection reset'));
       return jsonResponse(nvdPage([
         { cve: nvdCve('CVE-2025-0001', '2025-01-01T00:00:00.000Z', tNow.toISOString()) },
       ], 2, 0));
@@ -248,6 +248,41 @@ describe('429 退避重试', () => {
     expect(backoffDelayMs(1, 0)).toBe(4000);
     expect(backoffDelayMs(2, 0)).toBe(8000);
     expect(backoffDelayMs(1, 0.5)).toBe(4500);
+  });
+});
+
+describe('网络错误退避重试', () => {
+  it('fetch 抛超时异常 → 指数退避重试后成功', async () => {
+    let n = 0;
+    const { fetchImpl } = makeFetch((url) => {
+      if (url.includes('files_exploits.csv')) return textResponse(CSV_TEXT);
+      n += 1;
+      if (n <= 2) return Promise.reject(new Error('The operation was aborted due to timeout'));
+      return jsonResponse(nvdPage([
+        { cve: nvdCve('CVE-2025-0009', '2025-01-01T00:00:00.000Z', tNow.toISOString()) },
+      ], 1));
+    });
+    setMeta(openIntelStore(dir), 'nvdWatermark', new Date(T0.getTime() - 86_400_000).toISOString());
+    const r = await runIntelUpdate(opts(fetchImpl, { maxRetries: 3 }));
+    expect(r.ok).toBe(true);
+    // 两次异常各退避 2000/4000ms（带 jitter，断言区间）
+    expect(sleepLog.length).toBe(2);
+    expect(sleepLog[0]).toBeGreaterThanOrEqual(2000);
+    expect(sleepLog[0]).toBeLessThan(3000);
+    expect(sleepLog[1]).toBeGreaterThanOrEqual(4000);
+    expect(sleepLog[1]).toBeLessThan(5000);
+  });
+
+  it('网络错误重试耗尽 → 明确「请求失败」错误（不归解析失败）', async () => {
+    const { fetchImpl } = makeFetch((url) => {
+      if (url.includes('files_exploits.csv')) return textResponse(CSV_TEXT);
+      return Promise.reject(new Error('boom'));
+    });
+    setMeta(openIntelStore(dir), 'nvdWatermark', new Date(T0.getTime() - 86_400_000).toISOString());
+    const r = await runIntelUpdate(opts(fetchImpl, { maxRetries: 2 }));
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('请求失败（网络/超时）');
+    expect(r.error).not.toContain('解析失败');
   });
 });
 

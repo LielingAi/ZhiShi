@@ -151,10 +151,25 @@ interface RetryContext {
   log: (msg: string) => void;
 }
 
-/** 429/5xx 指数退避重试（尊重 Retry-After，封顶 60s）；其余错误直接抛。 */
+/** 429/5xx 指数退避重试（尊重 Retry-After，封顶 60s）；网络错误/超时同样退避重试。 */
 async function fetchWithRetry(ctx: RetryContext, url: string, label: string): Promise<IntelFetchResponse> {
   for (let attempt = 0; ; attempt++) {
-    const resp = await fetchWithTimeout(ctx.fetchImpl, url, ctx.requestTimeoutMs);
+    let resp: IntelFetchResponse;
+    try {
+      resp = await fetchWithTimeout(ctx.fetchImpl, url, ctx.requestTimeoutMs);
+    } catch (err) {
+      // NVD 大响应在慢网络下超时是常态——网络错误与超时同样退避重试，
+      // 不能只重试 HTTP 状态码（否则一次抖动直接杀死整次 update）。
+      if (attempt >= ctx.maxRetries) {
+        throw new Error(
+          `${label} 请求失败（网络/超时）重试 ${ctx.maxRetries} 次后仍失败: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      const delay = backoffDelayMs(attempt);
+      ctx.log(`${label} 网络错误（${err instanceof Error ? err.message : String(err)}），${delay}ms 后退避重试（第 ${attempt + 1} 次）`);
+      await ctx.sleepMs(delay);
+      continue;
+    }
     if (resp.ok) return resp;
     const retryable = resp.status === 429 || resp.status >= 500;
     if (!retryable) throw new Error(`${label} HTTP ${resp.status}: ${url}`);
@@ -208,9 +223,17 @@ async function fetchNvdWindow(
     });
     const url = `${NVD_BASE_URL}?${params.toString()}`;
     const resp = await fetchWithRetry(ctx, url, 'NVD');
+    // body 读取（网络中断在此暴露）与 JSON 解析分开归类——超时/断流是
+    // 「读取失败」不是「解析失败」，报错信息要能指引排查方向。
+    let bodyText: string;
+    try {
+      bodyText = await resp.text();
+    } catch (err) {
+      throw new Error(`NVD 响应读取失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
     let page;
     try {
-      page = parseNvdPage(JSON.parse(await resp.text()));
+      page = parseNvdPage(JSON.parse(bodyText));
     } catch (err) {
       throw new Error(`NVD 响应解析失败: ${err instanceof Error ? err.message : String(err)}`);
     }
