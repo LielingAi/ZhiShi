@@ -435,6 +435,8 @@ Commands:
 
   research  Research outcome signals (log/list) — security researcher edition
 
+  intel     Intel index (update/status) — NVD + exploit-db 本地情报索引（1.1.2）
+
 
 
   term      Drive embedded terminal (open/write/read/close)
@@ -600,6 +602,25 @@ Examples:
     # ai-security/redteam/malware/intel/ctf；--outcome success/fail/stuck。
 
   zhishi research list [--task-kind binary] [--outcome stuck] [--limit N]
+
+  zhishi intel update [--mode minimal|window|full]
+
+
+
+    # 更新本地情报索引（NVD 全量/增量 + exploit-db 整体替换）。
+
+
+
+    # 首次无水位时按发布时间倒序分段拉全量（耗时较长，断点可续）。
+
+
+
+  zhishi intel status
+
+
+
+    # 索引状态：mode / 最后更新 / CVE 与 exploit 计数 / NVD 增量水位。
+
 
   zhishi term open --cwd /path/to/proj --rows 40 --cols 120 [--cmd "<命令>"] [--env <tag>]
 
@@ -1379,6 +1400,55 @@ function printResult(group: string, action: string, result: Record<string, unkno
 
   }
 
+
+
+  // Intel（1.1.2）——update 打印一行摘要（含警告）；status 打印索引水位
+
+  // 与计数；未初始化时给明确指引（agent 读得到下一步）。
+
+  if (group === 'intel') {
+
+    const data = (result.data as Record<string, unknown>) ?? {};
+
+    if (action === 'update') {
+
+      const r = (data.result ?? {}) as Record<string, unknown>;
+
+      const pruned = (Number(r.prunedByWindow) || 0) + (Number(r.prunedBySize) || 0);
+
+      console.log(`✓ 情报索引已更新 mode=${String(r.mode)} nvd+${String(r.nvdAdded)} exploits=${String(r.exploitCount)} pruned=${pruned} 更新于 ${String(r.lastUpdateAt ?? '').slice(0, 10)}`);
+
+      const warnings = Array.isArray(r.warnings) ? (r.warnings as string[]) : [];
+
+      for (const w of warnings) console.log(`  ⚠ ${w}`);
+
+      return;
+
+    }
+
+    if (action === 'status') {
+
+      const s = (data.status ?? {}) as Record<string, unknown>;
+
+      if (s.dbExists !== true) {
+
+        console.log('情报索引尚未构建。运行 zhishi intel update 初始化。');
+
+        return;
+
+      }
+
+      const mb = Number(s.dbFileSizeBytes) > 0 ? ` ${(Number(s.dbFileSizeBytes) / 1024 / 1024).toFixed(1)}MB` : '';
+
+      console.log(`mode=${String(s.mode)}  更新于 ${String(s.lastUpdateAt ?? '?').slice(0, 10)}  cves=${String(s.cveCount)}  exploits=${String(s.exploitCount)}${mb}`);
+
+      console.log(`nvdWatermark=${String(s.nvdWatermark ?? '（无——下次 update 做全量回填）')}`);
+
+      return;
+
+    }
+
+  }
 
 
   // term（AI 驱动内嵌终端）——AI 是主要读者：open 把 id 显眼
@@ -3301,6 +3371,37 @@ function buildRequestBody(
       };
     }
   }
+
+  // Intel（1.1.2 情报横切）：update 的 mode 枚举在 CLI 侧校验（§4 输出侧
+
+  // 本体）——非法值直接拒绝，不发 server。status 无参。
+
+  if (group === 'intel') {
+
+    if (action === 'update') {
+
+      const mode = flags.mode ? String(flags.mode) : undefined;
+
+      if (mode !== undefined && mode !== 'minimal' && mode !== 'window' && mode !== 'full') {
+
+        console.error(`Error: --mode 非法 "${mode}"（允许：minimal / window / full）`);
+
+        process.exit(1);
+
+      }
+
+      return { mode };
+
+    }
+
+    if (action === 'status') {
+
+      return {};
+
+    }
+
+  }
+
 
   // ===== 内嵌终端（AI-driven embedded terminal）=====
 

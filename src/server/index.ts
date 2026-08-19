@@ -2544,6 +2544,11 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   // 研究成败信号（安全研究员版 P1 D1，memory.db research_events 表）。
   if (route === 'research/log') return await api.handleResearchLog(payload as Parameters<typeof api.handleResearchLog>[0]);
   if (route === 'research/list') return await api.handleResearchList(payload as Parameters<typeof api.handleResearchList>[0]);
+  // 情报横切（1.1.2）：intel.db 由 sidecar 持有，更新/状态经 admin API。
+
+  if (route === 'intel/update') return await api.handleIntelUpdate(payload as Parameters<typeof api.handleIntelUpdate>[0]);
+
+  if (route === 'intel/status') return api.handleIntelStatus();
   if (route.startsWith('term/')) return await api.handlePanelProxy(route, payload);
 
   // 全局人格层（设置页「搭子」）。

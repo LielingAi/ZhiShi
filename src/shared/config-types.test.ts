@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS,
   DEFAULT_CONFIG,
+  INTEL_DEFAULTS,
   normalizeClaudeTranscriptCleanupPeriodDays,
   normalizeProviderOrder,
+  resolveIntelConfig,
 } from './config-types';
 
 // normalizeProviderOrder reconciles a persisted provider order against the set
@@ -49,5 +51,23 @@ describe('normalizeClaudeTranscriptCleanupPeriodDays', () => {
     expect(normalizeClaudeTranscriptCleanupPeriodDays(30.9)).toBe(30);
     expect(normalizeClaudeTranscriptCleanupPeriodDays(0)).toBe(1);
     expect(normalizeClaudeTranscriptCleanupPeriodDays(-12)).toBe(1);
+  });
+});
+
+describe('resolveIntelConfig', () => {
+  it('缺省合并 INTEL_DEFAULTS（minimal / 3 年 / 300MB / 在线回源开）', () => {
+    expect(resolveIntelConfig(undefined)).toEqual(INTEL_DEFAULTS);
+    expect(resolveIntelConfig({})).toEqual(INTEL_DEFAULTS);
+    expect(INTEL_DEFAULTS).toEqual({ mode: 'minimal', windowYears: 3, maxSizeMb: 300, onlineFallback: true });
+  });
+
+  it('合法值透传，非法值回落缺省（config.json 用户可编辑，容错优先）', () => {
+    expect(resolveIntelConfig({ mode: 'window', windowYears: 5, maxSizeMb: 100, onlineFallback: false }))
+      .toEqual({ mode: 'window', windowYears: 5, maxSizeMb: 100, onlineFallback: false });
+    expect(resolveIntelConfig({ mode: 'bogus' as never })).toEqual(INTEL_DEFAULTS);
+    expect(resolveIntelConfig({ windowYears: 0 })).toEqual(INTEL_DEFAULTS);
+    expect(resolveIntelConfig({ windowYears: Number.NaN })).toEqual(INTEL_DEFAULTS);
+    expect(resolveIntelConfig({ maxSizeMb: -1 })).toEqual(INTEL_DEFAULTS);
+    expect(resolveIntelConfig({ onlineFallback: 'yes' as never })).toEqual(INTEL_DEFAULTS);
   });
 });
