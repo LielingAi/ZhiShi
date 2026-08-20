@@ -9,6 +9,7 @@
 
 **安全研究领域的 agent harness：环境融合、原生工具、原生代码。**
 
+[![Version](https://img.shields.io/github/v/tag/LielingAi/ZhiShi)](https://github.com/LielingAi/ZhiShi/tags)
 [![License](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010+-blue.svg)]()
 [![Node](https://img.shields.io/badge/Node-%3E%3D22-green.svg)]()
