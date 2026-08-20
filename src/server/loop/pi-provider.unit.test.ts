@@ -200,3 +200,46 @@ describe('resolveLoopModelFromEnv', () => {
     expect(r?.getApiKey()).toBe('k');
   });
 });
+
+describe('resolveLoopModel（M4d OpenAI 格式预设接线）', () => {
+  it('openai 预设 → openai-completions，baseUrl/modelId 来自 preset', () => {
+    const r = resolveLoopModel(config({
+      defaultProviderId: 'openai',
+      providerApiKeys: { openai: 'fake-key' },
+    }));
+    expect(r?.model.api).toBe('openai-completions');
+    expect(r?.model.baseUrl).toBe('https://api.openai.com/v1');
+    expect(r?.modelId).toBe('gpt-5.4');
+  });
+
+  it('siliconflow 预设（聚合平台 org/Model id）→ openai-completions', () => {
+    const r = resolveLoopModel(config({
+      defaultProviderId: 'siliconflow',
+      providerApiKeys: { siliconflow: 'fake-key' },
+    }));
+    expect(r?.model.api).toBe('openai-completions');
+    expect(r?.modelId).toBe('deepseek-ai/DeepSeek-V4-Pro');
+  });
+
+  it('moonshot 预设走 OpenAI 端点而非 kimi-coding 内置（apiProtocol 分流）', () => {
+    const r = resolveLoopModel(config({
+      defaultProviderId: 'moonshot',
+      providerApiKeys: { moonshot: 'fake-key' },
+    }));
+    expect(r?.model.api).toBe('openai-completions');
+    expect(r?.model.provider).toBe('moonshot');
+    expect(r?.model.baseUrl).toBe('https://api.moonshot.cn/v1');
+  });
+
+  it('dashscope/zhipu 预设同样 openai-completions（baseUrl 透传）', () => {
+    const cases = [
+      ['dashscope', 'https://dashscope.aliyuncs.com/compatible-mode/v1'],
+      ['zhipu', 'https://open.bigmodel.cn/api/paas/v4'],
+    ] as const;
+    for (const [id, baseUrl] of cases) {
+      const r = resolveLoopModel(config({ defaultProviderId: id, providerApiKeys: { [id]: 'fake-key' } }));
+      expect(r?.model.api).toBe('openai-completions');
+      expect(r?.model.baseUrl).toBe(baseUrl);
+    }
+  });
+});

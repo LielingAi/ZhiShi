@@ -2171,6 +2171,23 @@ function printModelList(providers: Array<Record<string, unknown>>): void {
 
     console.log(pad(String(p.id), 24) + pad(status, 12) + String(p.name));
 
+    // 模型目录（预设 ∪ set-key 拉取发现）。聚合平台 /models 可达数百条，
+    // 展示前 8 条 + 总数，完整目录走 admin API 的 model/list models 字段。
+
+    const models = Array.isArray(p.models) ? (p.models as Array<Record<string, unknown>>) : [];
+
+    if (models.length > 0) {
+
+      const MAX_SHOWN = 8;
+
+      const shown = models.slice(0, MAX_SHOWN).map(m => String(m.model)).join(', ');
+
+      const suffix = models.length > MAX_SHOWN ? ` … (+${models.length - MAX_SHOWN})` : '';
+
+      console.log(pad('', 24) + pad('', 12) + `  ${shown}${suffix}`);
+
+    }
+
   }
 
 }

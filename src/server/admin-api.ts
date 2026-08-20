@@ -22,7 +22,7 @@
 
 
 
-import type { IntelConfig, McpServerDefinition } from '../shared/config-types';
+import type { IntelConfig, McpServerDefinition, ModelEntity } from '../shared/config-types';
 
 import { resolveIntelConfig } from '../shared/config-types';
 
@@ -1735,6 +1735,8 @@ export function handleModelList(): AdminResponse {
 
   const verifyStatus = config.providerVerifyStatus ?? {};
 
+  const presetCustomModels = (config.presetCustomModels ?? {}) as Record<string, unknown>;
+
 
 
   const allProviders = getAllEffectiveProviders(config);
@@ -1744,6 +1746,19 @@ export function handleModelList(): AdminResponse {
     const id = String(p.id);
 
     const cfg = p.config as Record<string, unknown> | undefined;
+
+    // 模型目录 = 预设 models ∪ set-key 拉取发现的 presetCustomModels
+    // （按 model 去重，发现条目优先——对齐 model-capabilities 的 first-wins 语义）。
+
+    const presetModels = Array.isArray(p.models) ? (p.models as ModelEntity[]) : [];
+
+    const discovered = Array.isArray(presetCustomModels[id]) ? (presetCustomModels[id] as ModelEntity[]) : [];
+
+    const merged = new Map<string, ModelEntity>();
+
+    for (const m of presetModels) merged.set(m.model, m);
+
+    for (const m of discovered) merged.set(m.model, m);
 
     return {
 
@@ -1764,6 +1779,8 @@ export function handleModelList(): AdminResponse {
       hasApiKey: !!apiKeys[id],
 
       status: (verifyStatus[id] as Record<string, unknown>)?.status ?? 'not-set',
+
+      models: [...merged.values()],
 
     };
 
@@ -1799,7 +1816,73 @@ export async function handleModelSetKey(payload: { id: string; apiKey: string })
 
   broadcast('config:changed', { section: 'model', action: 'set-key', id });
 
-  return { success: true, data: { id }, hint: `API key saved for ${id}.` };
+
+
+  // M4d 多模型接入：填 key 后自动拉取模型目录（显式 modelListUrl 或 OpenAI 协议
+  // provider）并入 presetCustomModels（source: 'discovered'）。拉取失败只降级
+  // 提示——key 已保存，verify / set-default / 会话链路不受影响。
+
+  let modelsFetched: number | undefined;
+
+  let modelsFetchError: string | undefined;
+
+  const provider = findProvider(id);
+
+  if (provider) {
+
+    const { discoverProviderModels } = await import('./utils/provider-models');
+
+    const result = await discoverProviderModels({
+
+      provider,
+
+      apiKey,
+
+      persist: async (models) => {
+
+        await atomicModifyConfig(c => ({
+
+          ...c,
+
+          presetCustomModels: {
+
+            ...((c.presetCustomModels ?? {}) as Record<string, unknown>),
+
+            [id]: models,
+
+          },
+
+        }));
+
+      },
+
+    });
+
+    modelsFetched = result.modelsFetched;
+
+    modelsFetchError = result.error;
+
+  }
+
+
+
+  return {
+
+    success: true,
+
+    data: { id, modelsFetched, modelsFetchError },
+
+    hint: modelsFetchError
+
+      ? `API key saved for ${id}. Model list refresh failed: ${modelsFetchError}`
+
+      : modelsFetched !== undefined
+
+        ? `API key saved for ${id}. ${modelsFetched} model(s) discovered.`
+
+        : `API key saved for ${id}.`,
+
+  };
 
 }
 
