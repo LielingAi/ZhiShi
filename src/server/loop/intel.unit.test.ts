@@ -14,9 +14,18 @@ import {
   createIntelSearchTool,
   formatIntelHit,
   formatIntelResult,
+  formatNucleiTemplates,
   INTEL_SEARCH_TOOL_NAME,
+  nucleiTemplateUrl,
 } from './intel';
-import { openIntelStore, resetIntelStoreForTest, runInTransaction, setMeta, upsertCves } from '../intel/store';
+import {
+  openIntelStore,
+  replaceNucleiTemplates,
+  resetIntelStoreForTest,
+  runInTransaction,
+  setMeta,
+  upsertCves,
+} from '../intel/store';
 import type { ParsedCve } from '../intel/nvd-parser';
 import type { IntelFetchResponse } from '../intel/sync';
 
@@ -55,6 +64,17 @@ function seedIndex(): void {
     `).run();
   });
   setMeta(db, 'lastUpdateAt', '2026-08-10T00:00:00.000Z');
+}
+
+/** 预置 nuclei 检测模板（n 条，路径带序号便于断言截断）。 */
+function seedNuclei(n: number): void {
+  const db = openIntelStore(dir);
+  runInTransaction(db, () => {
+    replaceNucleiTemplates(db, Array.from({ length: n }, (_, i) => ({
+      cveId: 'CVE-2021-44228',
+      templatePath: `http/cves/2021/tpl-${String(i + 1).padStart(2, '0')}.yaml`,
+    })));
+  });
 }
 
 function textResponse(body: string, status = 200): IntelFetchResponse {
@@ -238,5 +258,66 @@ describe('输入校验与截断', () => {
     expect(text).toContain('情报索引最后更新于 2026-08-01');
     expect(text).toContain('CVSS N/A');
     expect(text).toContain('公开 exploit: 未知');
+  });
+});
+
+describe('nuclei 检测模板（1.1.4）', () => {
+  it('精确 CVE 命中：结果行下追加检测模板小节（GitHub blob 链接）', async () => {
+    seedIndex();
+    seedNuclei(2);
+    const tool = createIntelSearchTool({
+      baseDir: dir,
+      resolveConfig: () => ({ onlineFallback: false }),
+    });
+    const result = await tool.execute('tc9', { query: 'CVE-2021-44228' });
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain('检测模板: 2 个（');
+    expect(text).toContain('https://github.com/projectdiscovery/nuclei-templates/blob/main/http/cves/2021/tpl-01.yaml');
+    expect(text).toContain('https://github.com/projectdiscovery/nuclei-templates/blob/main/http/cves/2021/tpl-02.yaml');
+    expect(result.details).toEqual({ hitCount: 1, online: false });
+  });
+
+  it('模板超 5 个：total 全量 + 链接截断 5 个 + 省略号', async () => {
+    seedIndex();
+    seedNuclei(6);
+    const tool = createIntelSearchTool({
+      baseDir: dir,
+      resolveConfig: () => ({ onlineFallback: false }),
+    });
+    const result = await tool.execute('tc10', { query: 'CVE-2021-44228' });
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain('检测模板: 6 个（');
+    expect((text.match(/blob\/main\//g) ?? []).length).toBe(5);
+    expect(text).toContain('…');
+  });
+
+  it('模糊关键字查询：不联查模板（不带检测模板小节）', async () => {
+    seedIndex();
+    seedNuclei(2);
+    const tool = createIntelSearchTool({
+      baseDir: dir,
+      resolveConfig: () => ({ onlineFallback: false }),
+    });
+    const result = await tool.execute('tc11', { query: 'log4j' });
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain('CVE-2021-44228');
+    expect(text).not.toContain('检测模板');
+  });
+
+  it('nucleiTemplateUrl：路径分段 URL 编码（空格/特殊字符），`/` 保留', () => {
+    expect(nucleiTemplateUrl('http/cves/2024/CVE-2024-0001.yaml')).toBe(
+      'https://github.com/projectdiscovery/nuclei-templates/blob/main/http/cves/2024/CVE-2024-0001.yaml',
+    );
+    expect(nucleiTemplateUrl('http/cves/2024/with space/CVE-2024-0001 (v2).yaml')).toBe(
+      'https://github.com/projectdiscovery/nuclei-templates/blob/main/http/cves/2024/with%20space/CVE-2024-0001%20(v2).yaml',
+    );
+  });
+
+  it('formatNucleiTemplates：total=0 → null；截断不足补省略号', () => {
+    expect(formatNucleiTemplates({ total: 0, paths: [] })).toBeNull();
+    expect(formatNucleiTemplates({ total: 2, paths: ['http/a.yaml', 'http/b.yaml'] })).toBe(
+      '检测模板: 2 个（https://github.com/projectdiscovery/nuclei-templates/blob/main/http/a.yaml https://github.com/projectdiscovery/nuclei-templates/blob/main/http/b.yaml）',
+    );
+    expect(formatNucleiTemplates({ total: 3, paths: ['http/a.yaml'] })).toContain('…');
   });
 });

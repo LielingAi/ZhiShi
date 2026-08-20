@@ -162,7 +162,7 @@ import type { AppcraftRunStats } from './appcraft/run-log';
 import { parseActiveReminders, parseReminderMeta, readDistilled } from './memory/distill';
 import { findByContent, listActive, listResearchEvents, logRecallEvents, MEMORY_KINDS, recordResearchEvent, searchEntries, touchEntry, type MemoryKind, type ResearchBugClass, type ResearchOutcome, type ResearchTaskKind } from './memory/store';
 // 1.1.2 情报横切：intel.db 更新/状态（sidecar 进程内直连,不经网络）。
-import { runIntelUpdate } from './intel/sync';
+import { runIntelUpdate, getIntelProgress } from './intel/sync';
 import { getIntelStatus, hasIntelDb, openIntelStore } from './intel/store';
 import {
   importTrustBuffer,
@@ -4580,7 +4580,7 @@ export async function handleResearchList(payload: {
 /** 情报索引更新（zhishi intel update）。mode 旗标 > config.json::intel.mode
  *  > INTEL_DEFAULTS；windowYears/maxSizeMb 恒取 config（无旗标）。长任务
  *  （首次全量回填）同步执行——CLI 侧等待期间 WAL 保证查询不受影响。 */
-export async function handleIntelUpdate(payload: { mode?: string }): Promise<AdminResponse> {
+export async function handleIntelUpdate(payload: { mode?: string; nucleiFile?: string }): Promise<AdminResponse> {
   const intelCfg = (loadConfig() as { intel?: IntelConfig }).intel;
   const cfg = resolveIntelConfig(intelCfg);
   const requested = typeof payload?.mode === 'string' && payload.mode.trim() ? payload.mode.trim() : undefined;
@@ -4588,11 +4588,15 @@ export async function handleIntelUpdate(payload: { mode?: string }): Promise<Adm
     return { success: false, error: `intel/update: 非法 mode "${requested}"（允许 minimal / window / full）` };
   }
   const mode = requested ?? cfg.mode;
+  // nuclei 本地导入（zhishi intel update --nuclei-file）：网络不通时喂宿主机
+  // curl 下载好的 cves.json；路径透传给 sync 的 nuclei 阶段（优先读，失败进 warnings）。
+  const nucleiFile = typeof payload?.nucleiFile === 'string' && payload.nucleiFile.trim() ? payload.nucleiFile.trim() : undefined;
   try {
     const result = await runIntelUpdate({
       mode,
       windowYears: cfg.windowYears,
       maxSizeMb: cfg.maxSizeMb,
+      ...(nucleiFile ? { nucleiFile } : {}),
     });
     if (!result.ok) {
       return { success: false, error: result.error ?? 'intel update 失败', data: { result } };
@@ -4604,15 +4608,28 @@ export async function handleIntelUpdate(payload: { mode?: string }): Promise<Adm
 }
 
 
-/** 情报索引状态（zhishi intel status）。未初始化返回 dbExists=false 不建库。 */
+/** 情报索引状态（zhishi intel status）。未初始化返回 dbExists=false 不建库。
+ *  progress 段来自 sync 模块的进度快照（1.1.4）：update 未跑时 inProgress=false；
+ *  与 update 的并发互斥同源（inProgress）。 */
 export function handleIntelStatus(): AdminResponse {
   try {
     const baseDir = getZhiShiDataDir();
     const cfg = resolveIntelConfig((loadConfig() as { intel?: IntelConfig }).intel);
     const dbExists = hasIntelDb(baseDir);
+    const progress = getIntelProgress();
     const status = dbExists
-      ? getIntelStatus(openIntelStore(baseDir))
-      : { dbExists: false, lastUpdateAt: null, mode: null, cveCount: 0, exploitCount: 0, nvdWatermark: null, dbFileSizeBytes: 0 };
+      ? { ...getIntelStatus(openIntelStore(baseDir)), progress }
+      : {
+          dbExists: false,
+          lastUpdateAt: null,
+          mode: null,
+          cveCount: 0,
+          exploitCount: 0,
+          nucleiCount: 0,
+          nvdWatermark: null,
+          dbFileSizeBytes: 0,
+          progress,
+        };
     return { success: true, data: { status, config: cfg } };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };

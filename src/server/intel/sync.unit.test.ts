@@ -4,9 +4,10 @@
  * 覆盖：首次全量回填（倒序分窗 + 水位=回填起点）、增量续传（120 天分窗）、
  * 429 退避（尊重 Retry-After，睡眠注入收集）、中断可续（断点 meta 保留、
  * 跨运行水位不丢）、窗口事务回滚（半窗口数据不落库）、exploit-db 失败保留
- * 旧数据、window 模式写时过滤 + 裁剪。
+ * 旧数据、window 模式写时过滤 + 裁剪、nuclei 多源 fallback / 源 3 base64
+ * contents 解码 / 本地文件导入（1.1.4）。
  */
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -14,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   backoffDelayMs,
   BACKFILL_START,
+  getIntelProgress,
   isValidIsoDate,
   runIntelUpdate,
   type IntelFetchFn,
@@ -22,6 +24,7 @@ import {
 import {
   countCves,
   countExploits,
+  countNucleiTemplates,
   getIntelStatus,
   getMeta,
   openIntelStore,
@@ -38,6 +41,13 @@ const CSV_TEXT = [
   '1,exploits/x/x.txt,"E1",2024-01-01,a,local,linux,,,,CVE-2024-0001;OSVDB-1,,,,,',
   '2,exploits/x/y.c,"E2",2024-02-01,b,dos,windows,,,,CVE-2024-0002,,,,,',
 ].join('\r\n');
+
+/** nuclei cves.json（NDJSON）样例：两条合法 + 一条坏行（应被解析层跳过）。 */
+const NUCLEI_TEXT = [
+  JSON.stringify({ ID: 'CVE-2024-0001', Info: { Name: 'x' }, file_path: 'http/cves/2024/CVE-2024-0001.yaml' }),
+  JSON.stringify({ ID: 'CVE-2024-0002', Info: { Name: 'y' }, file_path: 'network/cves/2024/CVE-2024-0002.yaml' }),
+  'not-json-line',
+].join('\n');
 
 let dir: string;
 let tNow: Date;
@@ -91,12 +101,33 @@ function nvdCve(id: string, published: string, modified: string = published): un
   };
 }
 
+/** 可控的 deferred（互斥测试卡住 exploit-db 阶段用）。 */
+function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+/** 轮询等待条件成立（真实计时器，10ms 步进——互斥测试观察进行中状态用）。 */
+async function waitUntil(cond: () => boolean, timeoutMs = 5000): Promise<void> {
+  const start = Date.now();
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) throw new Error('waitUntil 超时');
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
 type Handler = (url: string) => IntelFetchResponse | Promise<IntelFetchResponse>;
 
-function makeFetch(handler: Handler): { fetchImpl: IntelFetchFn; calls: string[] } {
+/** makeFetch：cves.json 缺省回固定 nuclei NDJSON（与 happyHandler 的
+ *  exploit-db 一样成为「环境默认」），单独注入 nuclei handler 可测失败
+ *  路径。这样既有测试的 handler 只关心 NVD/exploit-db 分支。 */
+function makeFetch(handler: Handler, extra: { nuclei?: Handler } = {}): { fetchImpl: IntelFetchFn; calls: string[] } {
   const calls: string[] = [];
+  const nuclei = extra.nuclei ?? (() => textResponse(NUCLEI_TEXT));
   const fetchImpl: IntelFetchFn = async (url) => {
     calls.push(url);
+    if (url.includes('cves.json')) return nuclei(url);
     return handler(url);
   };
   return { fetchImpl, calls };
@@ -341,5 +372,174 @@ describe('纯辅助', () => {
 
   it('BACKFILL_START 常量固定（全量回填起点）', () => {
     expect(BACKFILL_START).toBe('1988-01-01T00:00:00.000Z');
+  });
+});
+
+describe('进度状态与并发互斥（1.1.4）', () => {
+  it('update 进行中：窗口标签 + 累计入库数可读；第二个 update 立即被拒；结束清空', async () => {
+    // 直灌水位走增量（1 个窗口），exploit-db 用 deferred 卡住以便观察进行中状态
+    setMeta(openIntelStore(dir), 'nvdWatermark', new Date(T0.getTime() - 86_400_000).toISOString());
+    const release = deferred<IntelFetchResponse>();
+    const { fetchImpl, calls } = makeFetch((url) => {
+      if (url.includes('files_exploits.csv')) return release.promise;
+      return jsonResponse(nvdPage([
+        { cve: nvdCve('CVE-2025-0001', '2025-01-01T00:00:00.000Z', tNow.toISOString()) },
+      ], 1));
+    });
+    const first = runIntelUpdate(opts(fetchImpl));
+    await waitUntil(() => calls.some((c) => c.includes('files_exploits.csv')));
+
+    const mid = getIntelProgress();
+    expect(mid.inProgress).toBe(true);
+    expect(mid.currentWindowLabel).toBe(`${new Date(T0.getTime() - 86_400_000).toISOString()}~${T0_ISO}`);
+    expect(mid.nvdAdded).toBe(1);
+    expect(mid.exploitCount).toBe(0);
+
+    // 互斥：第二个 update 立即被拒（同源 inProgress），不发起任何网络请求
+    const beforeCalls = calls.length;
+    const second = await runIntelUpdate(opts(makeFetch(happyHandler()).fetchImpl));
+    expect(second.ok).toBe(false);
+    expect(second.error).toBe('已有更新在跑（情报索引更新中）');
+    expect(calls.length).toBe(beforeCalls); // 被拒的调用没碰网络
+
+    release.resolve(textResponse(CSV_TEXT));
+    const r1 = await first;
+    expect(r1.ok).toBe(true);
+    // 结束清空：inProgress=false + 计数复位
+    expect(getIntelProgress()).toEqual({ inProgress: false, currentWindowLabel: null, nvdAdded: 0, exploitCount: 0 });
+  });
+
+  it('更新失败也清进度（finally 语义，互斥不残留）', async () => {
+    setMeta(openIntelStore(dir), 'nvdWatermark', new Date(T0.getTime() - 86_400_000).toISOString());
+    const bad = makeFetch(() => Promise.reject(new Error('boom')));
+    const r = await runIntelUpdate(opts(bad.fetchImpl, { maxRetries: 0 }));
+    expect(r.ok).toBe(false);
+    expect(getIntelProgress()).toEqual({ inProgress: false, currentWindowLabel: null, nvdAdded: 0, exploitCount: 0 });
+    // 失败后可再次发起（互斥已释放）
+    const again = await runIntelUpdate(opts(makeFetch(happyHandler()).fetchImpl, { maxRetries: 0 }));
+    expect(again.ok).toBe(true);
+  });
+});
+
+describe('nuclei 同步（1.1.4）', () => {
+  it('成功整体替换：result.nucleiCount + meta nucleiCount + 状态计数（坏行被解析层跳过）', async () => {
+    const r = await runIntelUpdate(opts(makeFetch(happyHandler()).fetchImpl));
+    expect(r.ok).toBe(true);
+    expect(r.nucleiCount).toBe(2); // NUCLEI_TEXT：两条合法 + 一条坏行
+    const db = openIntelStore(dir);
+    expect(countNucleiTemplates(db)).toBe(2);
+    expect(getMeta(db, 'nucleiCount')).toBe('2');
+    expect(getIntelStatus(db).nucleiCount).toBe(2);
+  });
+
+  it('拉取失败保留旧数据（warnings 报告，不致命）', async () => {
+    await runIntelUpdate(opts(makeFetch(happyHandler()).fetchImpl));
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+
+    let nvdOk = 0;
+    const bad = makeFetch((url) => {
+      if (url.includes('files_exploits.csv')) return textResponse(CSV_TEXT);
+      nvdOk += 1;
+      return jsonResponse(nvdPage([{ cve: nvdCve(`CVE-2024-${String(nvdOk).padStart(4, '0')}`, '2024-01-01T00:00:00.000Z') }], 1));
+    }, { nuclei: () => textResponse('boom', 500) });
+    const r = await runIntelUpdate(opts(bad.fetchImpl));
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => w.includes('nuclei') && w.includes('保留旧数据'))).toBe(true);
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+    expect(getMeta(openIntelStore(dir), 'nucleiCount')).toBe('2');
+  });
+
+  it('解析出 0 条保留旧数据（warnings 报告）', async () => {
+    await runIntelUpdate(opts(makeFetch(happyHandler()).fetchImpl));
+    const empty = makeFetch(happyHandler(), { nuclei: () => textResponse('') });
+    const r = await runIntelUpdate(opts(empty.fetchImpl));
+    expect(r.ok).toBe(true);
+    expect(r.warnings.some((w) => w.includes('nuclei cves.json 解析出 0 条'))).toBe(true);
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+  });
+
+  it('多源 fallback：源 1 抛错 → 源 2 成功入库（不再请求源 3）', async () => {
+    const { fetchImpl, calls } = makeFetch(happyHandler(), {
+      nuclei: (url) => {
+        if (url.includes('raw.githubusercontent')) return Promise.reject(new Error('raw 超时'));
+        if (url.includes('cdn.jsdelivr.net')) return textResponse(NUCLEI_TEXT);
+        throw new Error(`不该请求源 3: ${url}`);
+      },
+    });
+    const r = await runIntelUpdate(opts(fetchImpl, { maxRetries: 0 }));
+    expect(r.ok).toBe(true);
+    expect(r.warnings).toEqual([]);
+    expect(r.nucleiCount).toBe(2);
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+    // 源 1 失败 → 源 2 成功即止，源 3 不请求
+    const nucleiCalls = calls.filter((c) => c.includes('cves.json'));
+    expect(nucleiCalls).toEqual([
+      expect.stringContaining('raw.githubusercontent.com'),
+      expect.stringContaining('cdn.jsdelivr.net'),
+    ]);
+  });
+
+  it('三源全败 → 一条 warning（含失败摘要）且旧数据保留', async () => {
+    await runIntelUpdate(opts(makeFetch(happyHandler()).fetchImpl));
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+
+    const bad = makeFetch(happyHandler(), { nuclei: () => textResponse('boom', 500) });
+    const r = await runIntelUpdate(opts(bad.fetchImpl, { maxRetries: 0 }));
+    expect(r.ok).toBe(true);
+    const nucWarnings = r.warnings.filter((w) => w.includes('nuclei') && w.includes('保留旧数据'));
+    expect(nucWarnings).toHaveLength(1); // 一条 warning 汇总，别太长/别刷屏
+    expect(nucWarnings[0]).toContain('nuclei 源1');
+    expect(nucWarnings[0]).toContain('nuclei 源2');
+    expect(nucWarnings[0]).toContain('nuclei 源3');
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+    expect(getMeta(openIntelStore(dir), 'nucleiCount')).toBe('2');
+  });
+
+  it('源 3 base64 contents JSON：源 1/2 失败 → api.github.com 解码入库', async () => {
+    const b64 = Buffer.from(NUCLEI_TEXT, 'utf8').toString('base64');
+    const { fetchImpl, calls } = makeFetch(happyHandler(), {
+      nuclei: (url) => {
+        if (url.includes('raw.githubusercontent') || url.includes('cdn.jsdelivr.net')) {
+          return Promise.reject(new Error('down'));
+        }
+        return jsonResponse({ content: b64, encoding: 'base64' });
+      },
+    });
+    const r = await runIntelUpdate(opts(fetchImpl, { maxRetries: 0 }));
+    expect(r.ok).toBe(true);
+    expect(r.warnings).toEqual([]);
+    expect(r.nucleiCount).toBe(2);
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+    expect(calls.some((c) => c.includes('api.github.com'))).toBe(true);
+  });
+
+  it('nucleiFile 本地导入优先：临时文件成功入库（不发 cves.json 网络请求）', async () => {
+    const filePath = join(dir, 'cves.json');
+    writeFileSync(filePath, NUCLEI_TEXT, 'utf8');
+    const { fetchImpl, calls } = makeFetch(happyHandler(), {
+      nuclei: () => Promise.reject(new Error('不该发网络请求')),
+    });
+    const r = await runIntelUpdate(opts(fetchImpl, { nucleiFile: filePath }));
+    expect(r.ok).toBe(true);
+    expect(r.warnings).toEqual([]);
+    expect(r.nucleiCount).toBe(2);
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+    expect(calls.some((c) => c.includes('cves.json'))).toBe(false);
+  });
+
+  it('nucleiFile 路径不存在 → 按源失败处理进 warnings（网络也失败时）', async () => {
+    await runIntelUpdate(opts(makeFetch(happyHandler()).fetchImpl));
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
+
+    const bad = makeFetch(happyHandler(), { nuclei: () => textResponse('boom', 500) });
+    const r = await runIntelUpdate(opts(bad.fetchImpl, {
+      maxRetries: 0,
+      nucleiFile: join(dir, 'not-exists.json'),
+    }));
+    expect(r.ok).toBe(true);
+    const nucWarnings = r.warnings.filter((w) => w.includes('nuclei') && w.includes('保留旧数据'));
+    expect(nucWarnings).toHaveLength(1);
+    expect(nucWarnings[0]).toContain('文件不存在');
+    expect(countNucleiTemplates(openIntelStore(dir))).toBe(2);
   });
 });
