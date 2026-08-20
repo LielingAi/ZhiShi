@@ -20,6 +20,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.1.4] - 2026-08-20
+
+
+
+> 情报体验 + 横切扩域：update 进度可见、pentest 域 nuclei 模板索引。
+
+
+
+### Added
+
+
+
+- **intel update 进度输出**：CLI 实时轮询显示「已入库 N 条」（简单版不做百分比）；update 并发互斥（第二个 update 立即返回「已有更新在跑」）。
+- **nuclei 模板索引**：`nuclei_templates` 表（CVE→模板路径，只存目录不存正文）；`intel_search` 精确 CVE 查询联查模板（截断 5 个给 GitHub 链接）；同步多源 fallback（raw → jsdelivr → api.github.com contents，应对 node 进程对部分域不可达的网络环境）+ `--nuclei-file` 本地导入兜底。实跑：4321 条模板入库，典型 CVE 联查正确。
+
+
+
 ## [1.1.3] - 2026-08-19
 
 
