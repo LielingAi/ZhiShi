@@ -31,6 +31,8 @@ import {
   clearLine,
   clearScreen,
   cursorTo,
+  disableMouseWheel,
+  enableMouseWheel,
   enterAlternateScreen,
   exitAlternateScreen,
   graphemes,
@@ -223,15 +225,16 @@ export class TerminalWriter {
   // Lifecycle
   // -------------------------------------------------------------------------
 
-  /** 鼠标捕获已整体移除（2026-08-17 修复）：SGR mouse(?1000h)会禁用终端
-   *  原生文本选择（复制不了），且点击事件被键位层误判成 Esc——运行中点
-   *  输入框 = 中断。取舍：文本选择是研究型 TUI 的一等操作，滚轮回看让位
-   *  给 PgUp/PgDn。 */
+  /** 鼠标捕获策略（1.1.6 #3 修订）：只开滚轮上报（?1000h+?1006h），键位层
+   *  只放行 wheel 码 64/65——点击/拖拽序列仍被吞掉（旧实现把点击误判成
+   *  Esc：运行中点输入框 = 中断，这个保护保留）。
+   *  已知取舍：?1000h 接管按下事件后，终端原生拖选需按住 Shift；
+   *  2026-08-17 曾为此整体移除捕获，本次按产品决策受控恢复滚轮。 */
 
   /** Enter the alternate screen and paint the first frame. */
   enter(): void {
     this.entered = true;
-    this.out.write(enterAlternateScreen() + clearScreen());
+    this.out.write(enterAlternateScreen() + enableMouseWheel() + clearScreen());
     this.renderFrame();
   }
 
@@ -239,7 +242,7 @@ export class TerminalWriter {
    *  exit()→enter() to hand the TTY to a child shell and back; disposing here
    *  permanently killed the frame pump (input looked dead after resume). */
   exit(): void {
-    this.out.write(showCursor() + exitAlternateScreen());
+    this.out.write(disableMouseWheel() + showCursor() + exitAlternateScreen());
     this.entered = false;
   }
 

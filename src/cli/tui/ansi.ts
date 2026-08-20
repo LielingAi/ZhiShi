@@ -95,6 +95,17 @@ export function hideCursor(): string {
   return '\x1b[?25l';
 }
 
+/** 滚轮上报（1.1.6 #3）：?1000h 按钮上报 + ?1006h SGR 扩展格式。
+ *  键位层只放行 wheel 码（64/65），点击/拖拽仍被吞掉。
+ *  取舍：?1000h 会接管按下事件，终端原生拖选需按住 Shift（主流终端均支持）。 */
+export function enableMouseWheel(): string {
+  return '\x1b[?1000h\x1b[?1006h';
+}
+
+export function disableMouseWheel(): string {
+  return '\x1b[?1006l\x1b[?1000l';
+}
+
 export function showCursor(): string {
   return '\x1b[?25h';
 }

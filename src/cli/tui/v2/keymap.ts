@@ -127,9 +127,14 @@ export function parseKeys(raw: string): Key[] {
 
 /** Parse a CSI body (without the leading `\x1b[`) + final byte into a Key. */
 function parseCsi(body: string, final: string): Key {
-  // SGR mouse：鼠标捕获已整体关闭（终端文本选择优先），但序列仍要正确
-  // 吞掉——绝不能回退成 Esc（旧实现把点击当 Esc：运行中点输入框=中断）。
+  // SGR mouse（1.1.6 #3）：只放行滚轮（码 64/65，bit6 置位）——wheel-up/
+  // wheel-down 进回看翻历史；点击/拖拽仍吞掉，绝不能回退成 Esc（旧实现把
+  // 点击当 Esc：运行中点输入框=中断）。
   if (body.startsWith('<') && (final === 'M' || final === 'm')) {
+    const code = parseInt(body.slice(1).split(';')[0] ?? '', 10);
+    if (final === 'M' && Number.isFinite(code) && (code & 64) !== 0) {
+      return { name: (code & 1) === 0 ? 'wheel-up' : 'wheel-down', mods: [] };
+    }
     return { char: '', mods: [] }; // 吞掉,不产生任何语义键
   }
 

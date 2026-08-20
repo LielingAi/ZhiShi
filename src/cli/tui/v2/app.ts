@@ -131,6 +131,8 @@ export class App {
   private gateOptions: GateOption[] = [];
   private gateCursor = 0;
   private gateBusy = false;
+  /** 正门来源：false=启动首次选择（Esc 退出到 shell），true=/env 重进（Esc 返回 chat）。 */
+  private gateReentry = false;
   private manualForm: { step: 0 | 1 | 2; host: string; user: string; keyPath: string } | null = null;
 
   /** 隐藏输入接管(/model set-key):非 null 时按键只进缓冲,不进消息编辑器。 */
@@ -190,6 +192,9 @@ export class App {
   // -------------------------------------------------------------------------
 
   private async enterGate(): Promise<void> {
+    // 重进重置（1.1.6 #2）：gateBusy 成功路径不复位，/env 二次进门会吞掉所有键。
+    this.gateReentry = this.mode === 'chat';
+    this.gateBusy = false;
     this.mode = 'gate';
     this.overlay = null;
     this.writer.clear();
@@ -262,8 +267,13 @@ export class App {
       return;
     }
     if (key.name === 'esc') {
-      // D27: 无 host 选项——Esc 保守退出到 shell。
-      this.quitRequested = true;
+      // D27: 启动首次选择无 host 选项——Esc 保守退出到 shell；
+      // /env 重进时 Esc 是取消，返回 chat（1.1.6 #2）。
+      if (this.gateReentry) {
+        this.enterChat();
+      } else {
+        this.quitRequested = true;
+      }
       return;
     }
     if (key.name !== 'enter') return;
@@ -290,7 +300,7 @@ export class App {
     } catch (err) {
       this.appendRaw([
         [{ text: `  ✗ ${err instanceof Error ? err.message : String(err)}`, style: { fg: 'red' } }],
-        [{ text: '  请重新选择（Esc 退出）', style: { fg: 'faint' } }],
+        [{ text: this.gateReentry ? '  请重新选择（Esc 返回）' : '  请重新选择（Esc 退出）', style: { fg: 'faint' } }],
       ]);
       this.gateBusy = false;
       this.renderChrome();

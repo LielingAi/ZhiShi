@@ -26,9 +26,16 @@ describe('parseKeys', () => {
     expect(resolveKey('\x1b[1;6A')).toEqual({ name: 'up', mods: ['shift', 'ctrl'] });
   });
 
-  it('SGR mouse 事件被吞掉(鼠标捕获已关,点击绝不伪造成 Esc)', () => {
-    expect(resolveKey('\x1b[<64;10;5M')).toEqual({ char: '', mods: [] });
-    expect(resolveKey('\x1b[<0;10;5M')).toEqual({ char: '', mods: [] }); // 点击不再是 Esc
+  it('SGR mouse：滚轮放行(1.1.6 #3)，点击/拖拽仍被吞(绝不伪造成 Esc)', () => {
+    expect(resolveKey('\x1b[<64;10;5M')).toEqual({ name: 'wheel-up', mods: [] });
+    expect(resolveKey('\x1b[<65;10;5M')).toEqual({ name: 'wheel-down', mods: [] });
+    // 带修饰位的滚轮（shift+wheel = 64+4）同样放行。
+    expect(resolveKey('\x1b[<68;10;5M')).toEqual({ name: 'wheel-up', mods: [] });
+    // 释放事件（final m）不产生键。
+    expect(resolveKey('\x1b[<64;10;5m')).toEqual({ char: '', mods: [] });
+    // 点击/拖拽不再是 Esc。
+    expect(resolveKey('\x1b[<0;10;5M')).toEqual({ char: '', mods: [] });
+    expect(resolveKey('\x1b[<32;10;5M')).toEqual({ char: '', mods: [] }); // 拖拽
   });
 
   it('maps Enter / Ctrl+J / Alt+Enter / kitty shift+enter correctly', () => {
