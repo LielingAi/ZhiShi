@@ -107,7 +107,8 @@ import { parseSkillFrontmatter } from '../shared/slashCommands';
 import { resolve, basename, isAbsolute } from 'path';
 
 import { setMcpServers, setAgents, getMcpServers, getSidecarPort, getSessionId } from './agent-session';
-import { getPiAgentState, sendPiChatMessage } from './loop/chat-engine';
+import { getPiAgentState, sendPiChatMessage, envSwitchBlocker, getEnvSessionBinding, switchEnvSession } from './loop/chat-engine';
+import { envKeyForSelection, removeEnvSessionsForEnvId } from './environment/env-sessions';
 import { getMcpStatus, initMcpBridge, reloadMcpBridge } from './loop/mcp-bridge';
 
 import { KIMI_CODING_MODELS } from '@earendil-works/pi-ai/providers/kimi-coding.models';
@@ -6476,6 +6477,23 @@ export async function handleEnvironmentRm(payload: {
 
   const rmEntry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
 
+  // 1.1.6 #4：环境删除成功后顺手清会话分线映射里该 envId 的残留条目
+  // （所有 workspace 的 env:<id> 行）；失败只告警，不影响 rm 结果。
+
+  const cleanEnvSessionLines = async (): Promise<void> => {
+
+    try {
+
+      await removeEnvSessionsForEnvId(id);
+
+    } catch (err) {
+
+      console.warn('[env-rm] 清 env-sessions 映射残留失败:', err);
+
+    }
+
+  };
+
   if (rmEntry?.kind === 'vm') {
 
     // 运行中拒绝：先 down（真实 VM 的现场可能比登记值钱）
@@ -6516,6 +6534,8 @@ export async function handleEnvironmentRm(payload: {
 
     }
 
+    await cleanEnvSessionLines();
+
     return { success: true, data: { removed: id } };
 
   }
@@ -6526,6 +6546,8 @@ export async function handleEnvironmentRm(payload: {
 
     if (!hypervResult.ok) return { success: false, error: hypervResult.error };
 
+    await cleanEnvSessionLines();
+
     return { success: true, data: { removed: hypervResult.removed } };
 
   }
@@ -6535,6 +6557,8 @@ export async function handleEnvironmentRm(payload: {
     const vboxResult = await vboxEnvRm(id);
 
     if (!vboxResult.ok) return { success: false, error: vboxResult.error };
+
+    await cleanEnvSessionLines();
 
     return { success: true, data: { removed: vboxResult.removed } };
 
@@ -7110,15 +7134,19 @@ export async function handleEnvironmentBuild(payload: {
  * `environment/select` — 持久化某 workspace 的环境选定（首屏选择器 / --env
  * / --new-env 的落点）。存 `~/.zhishi/env-selection.json`，结构是 S1 能力
  * 清单注入的读取契约（见 environment/selection.ts）。
+ *
+ * 1.1.6 #4 会话按环境分线：落盘后联动引擎切会话线（switchEnvSession）。
+ * turn 进行中整体拒绝（rewind/fork 同口径）且先于落盘——选定落了而线
+ * 没切，锚定工具（env 通道逐 turn 读选定）会与历史线串扰。
  */
 
-export function handleEnvironmentSelect(payload: {
+export async function handleEnvironmentSelect(payload: {
 
   workspace?: string;
 
   selection?: unknown;
 
-}): AdminResponse {
+}): Promise<AdminResponse> {
 
   const workspace = typeof payload.workspace === 'string' ? payload.workspace.trim() : '';
 
@@ -7128,6 +7156,12 @@ export function handleEnvironmentSelect(payload: {
 
   if (!validated.ok) return { success: false, error: validated.error };
 
+  // 1.1.6 #4：busy 拒绝（仅当目标是本 sidecar 引擎的 workspace；其余 workspace 只落盘）
+
+  const blocker = envSwitchBlocker(workspace);
+
+  if (blocker) return { success: false, error: blocker };
+
   try {
 
     const store = loadSelectionStore();
@@ -7135,6 +7169,13 @@ export function handleEnvironmentSelect(payload: {
     const selectedAt = new Date().toISOString();
 
     saveSelectionStore(setWorkspaceSelection(store, workspace, validated.selection, selectedAt));
+
+    // 落盘后联动引擎切线（非本引擎 workspace 时 no-op）。若与 turn 起跑
+    // 撞车（前置闸之后的竞态），切换失败但选定已落盘——返回错误，重选即愈合。
+
+    const switched = await switchEnvSession(workspace, envKeyForSelection(validated.selection));
+
+    if (!switched.ok) return { success: false, error: switched.error ?? '环境会话线切换失败' };
 
     return { success: true, data: { workspace, selection: validated.selection, selectedAt } };
 
@@ -7148,7 +7189,9 @@ export function handleEnvironmentSelect(payload: {
 
 
 
-/** `environment/current` — 查询某 workspace 的当前选定；从未选定 → host。 */
+/** `environment/current` — 查询某 workspace 的当前选定；从未选定 → host。
+ *  1.1.6 #4：附带该环境分线绑定的 SessionStore 会话 id（TUI 启动接线用，
+ *  additive 字段；无映射/映射无绑定会话 → null）。 */
 
 export function handleEnvironmentCurrent(payload: {
 
@@ -7162,6 +7205,8 @@ export function handleEnvironmentCurrent(payload: {
 
   const record = getWorkspaceSelectionRecord(loadSelectionStore(), workspace);
 
+  const binding = getEnvSessionBinding(workspace);
+
   return {
 
     success: true,
@@ -7173,6 +7218,8 @@ export function handleEnvironmentCurrent(payload: {
       selection: record?.selection ?? HOST_SELECTION,
 
       selectedAt: record?.selectedAt ?? null,
+
+      sessionId: binding?.sessionMetaId ?? null,
 
     },
 

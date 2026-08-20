@@ -2482,7 +2482,7 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
 
   // Environment selection（安全研究员版 P1 T4，D17 首屏选定的持久化）
 
-  if (route === 'environment/select') return api.handleEnvironmentSelect(payload as Parameters<typeof api.handleEnvironmentSelect>[0]);
+  if (route === 'environment/select') return await api.handleEnvironmentSelect(payload as Parameters<typeof api.handleEnvironmentSelect>[0]);
 
   if (route === 'environment/current') return api.handleEnvironmentCurrent(payload as Parameters<typeof api.handleEnvironmentCurrent>[0]);
 

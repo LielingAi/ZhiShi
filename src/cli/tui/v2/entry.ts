@@ -30,42 +30,33 @@ export interface AgentLoopOptions {
   output?: NodeJS.WriteStream;
 }
 
-interface SessionMeta {
-  id?: string;
-  updatedAt?: string;
-  lastActiveAt?: string;
-  createdAt?: string;
-}
-
 /**
- * Attach to this workspace's session: switch to the latest switchable one, or
- * create a fresh session (security scenario — the scenario chain is the
- * context-injection switch; dropping it silently degrades the system prompt).
+ * Attach to this workspace's session for the CURRENT selected environment
+ * (1.1.6 #4 会话按环境分线):the sidecar keeps a workspace × 环境键 →
+ * loop session mapping; `environment/current` returns the SessionStore
+ * session bound to that line. The old "list all workspace sessions and walk
+ * newest→oldest trying switch" is abolished — it crossed env lines (the
+ * newest session usually belongs to another environment).
  *
- * Stale metadata is real: /sessions can list ids whose runtime session is
- * gone ("Session not found" on switch). Walk candidates newest→oldest and
- * take the first that actually switches; fall through to create when none do.
+ * Stale mapping (meta deleted, switch 404s) or no mapping at all → fall
+ * through to a fresh session (security scenario — the scenario chain is the
+ * context-injection switch; dropping it silently degrades the system prompt).
  */
 export async function ensureAgentSession(client: SidecarClient, agentDir: string): Promise<string> {
-  const list = await client.getJson<{ success?: boolean; error?: string; sessions?: SessionMeta[] }>(
-    `/sessions?agentDir=${encodeURIComponent(agentDir)}`,
-  );
-  if (list.success === false) {
-    throw new Error(`GET /sessions failed: ${list.error ?? 'unknown error'}`);
+  const current = await client.adminPost<{
+    success?: boolean;
+    error?: string;
+    data?: { sessionId?: string | null };
+  }>('environment/current', { workspace: agentDir });
+  if (current.success === false) {
+    throw new Error(`environment/current failed: ${current.error ?? 'unknown error'}`);
   }
-  const sessions = (Array.isArray(list.sessions) ? list.sessions : []).filter(
-    (s) => typeof s.id === 'string' && s.id,
-  );
-  const byNewest = [...sessions].sort((a, b) => {
-    const sa = a.updatedAt ?? a.lastActiveAt ?? a.createdAt ?? '';
-    const sb = b.updatedAt ?? b.lastActiveAt ?? b.createdAt ?? '';
-    return sb < sa ? -1 : sb > sa ? 1 : 0;
-  });
-  for (const candidate of byNewest) {
+  const mappedId = typeof current.data?.sessionId === 'string' ? current.data.sessionId : null;
+  if (mappedId) {
     const res = await client.postJson<{ success?: boolean; error?: string }>('/sessions/switch', {
-      sessionId: candidate.id,
+      sessionId: mappedId,
     });
-    if (res.success !== false) return String(candidate.id);
+    if (res.success !== false) return mappedId;
   }
   const created = await client.postJson<{ success?: boolean; error?: string; session?: { id?: string } }>(
     '/sessions',

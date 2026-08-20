@@ -51,8 +51,29 @@ vi.mock('./session', async (importOriginal) => {
 
 const selectionMock = vi.fn();
 vi.mock('../environment/selection', () => ({
+  HOST_SELECTION: { kind: 'host' },
   loadSelectionStore: () => ({}),
   getWorkspaceSelection: (_store: unknown, dir: string) => selectionMock(dir),
+  getWorkspaceSelectionRecord: (_store: unknown, dir: string) => ({ selection: selectionMock(dir), selectedAt: '' }),
+}));
+
+// 1.1.6 #4 — 分线映射 mock:内存 Map,行键 = `规范化ws::envKey`(规范化 = 去反斜杠)。
+const envSessionsData = new Map<string, { loopSessionId: string; updatedAt: string }>();
+const normWs = (ws: string) => ws.replace(/\\/g, '/');
+vi.mock('../environment/env-sessions', () => ({
+  envKeyForSelection: (sel: { kind: string; id?: string; instanceId?: string }) =>
+    sel.kind === 'env' ? `env:${sel.id}` : sel.kind === 'recipe' ? `recipe:${sel.instanceId}` : 'host',
+  normalizeWorkspaceKey: (ws: string) => normWs(ws),
+  envSessionLineKey: (ws: string, key: string) => `${normWs(ws)}::${key}`,
+  getEnvSessionLine: (_map: unknown, ws: string, key: string) => envSessionsData.get(`${normWs(ws)}::${key}`),
+  loadEnvSessionsMap: () => ({}),
+  setEnvSessionLine: async (ws: string, key: string, loopSessionId: string) => {
+    envSessionsData.set(`${normWs(ws)}::${key}`, { loopSessionId, updatedAt: '' });
+  },
+  removeEnvSessionLine: async (ws: string, key: string) => {
+    envSessionsData.delete(`${normWs(ws)}::${key}`);
+  },
+  removeEnvSessionsForEnvId: async () => {},
 }));
 
 const configEnvironments = vi.fn(() => [] as unknown[]);
@@ -106,6 +127,7 @@ vi.mock('./refs', () => ({
 
 import {
   cancelPiQueueItem,
+  envSwitchBlocker,
   forcePiQueueItem,
   getPiAgentState,
   getPiMessages,
@@ -121,6 +143,8 @@ import {
   forkPiChat,
   sendPiChatMessage,
   stopPiChat,
+  switchEnvSession,
+  switchPiSession,
 } from './chat-engine';
 
 const RESOLUTION = {
@@ -176,6 +200,7 @@ function gateFirstTurn() {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  envSessionsData.clear();
   resetPiChat();
   resolveLoopModelMock.mockReturnValue(RESOLUTION);
   resolveLoopModelFromEnvMock.mockReturnValue(RESOLUTION);
@@ -395,8 +420,8 @@ describe('队列语义(M4b FIFO,经 /chat/queue 入口 queuePiChatMessage)', () 
   });
 });
 
-describe('会话跨重启(M4b)', () => {
-  it('init 续接最近的 loop 会话:历史重建 + 后续 turn 续用同一 sessionId', async () => {
+describe('会话跨重启(1.1.6 #4 env-aware:按当前环境分线映射续接)', () => {
+  it('init 按映射续接当前环境的线:历史重建 + 后续 turn 续用同一 sessionId', async () => {
     getSessionsByAgentDirMock.mockReturnValue([
       { id: 'meta-old', loopSessionId: 'ls-77', lastActiveAt: '2026-08-16T01:00:00Z' },
     ]);
@@ -405,6 +430,8 @@ describe('会话跨重启(M4b)', () => {
       meta: { model: 'k3', createdAt: 'c', updatedAt: 'u' },
     });
     resetPiChat();
+    // 当前选定 host(beforeEach 缺省)→ host 分线映射指向 ls-77
+    envSessionsData.set('E:/ws::host', { loopSessionId: 'ls-77', updatedAt: '' });
     await initPiChatEngine('E:/ws');
     // 回放重建:toolResult 重放为 tool 卡(带 name/ok),空结论不再悬空
     const wire = getPiMessages();
@@ -418,10 +445,125 @@ describe('会话跨重启(M4b)', () => {
     expect(appendLoopMessagesMock.mock.calls[0][0]).toBe('ls-77');
   });
 
-  it('无绑定会话 → init 后为空会话', async () => {
+  it('无映射 → 不接「全 workspace 最新 meta」(多半串到别的环境的线),开新线', async () => {
+    getSessionsByAgentDirMock.mockReturnValue([
+      { id: 'meta-old', loopSessionId: 'ls-77', lastActiveAt: '2026-08-16T01:00:00Z' },
+    ]);
+    loadLoopSessionMock.mockReturnValue({ messages: [userMsg('旧问题')], meta: null });
     resetPiChat();
     await initPiChatEngine('E:/ws');
     expect(getPiMessages()).toEqual([]);
+  });
+
+  it('映射失效(loop 文件为空/丢失)→ 开新线', async () => {
+    loadLoopSessionMock.mockReturnValue({ messages: [], meta: null });
+    resetPiChat();
+    envSessionsData.set('E:/ws::host', { loopSessionId: 'ls-void', updatedAt: '' });
+    await initPiChatEngine('E:/ws');
+    expect(getPiMessages()).toEqual([]);
+  });
+
+  it('按当前选定环境接线:env 选定 → 读 env 键映射,不碰 host 线', async () => {
+    selectionMock.mockReturnValue({ kind: 'env', id: 'pwn-vm' });
+    configEnvironments.mockReturnValue([VM_ENTRY]);
+    getSessionsByAgentDirMock.mockReturnValue([{ id: 'meta-env', loopSessionId: 'ls-env' }]);
+    loadLoopSessionMock.mockReturnValue({ messages: [userMsg('环境里的旧问题')], meta: null });
+    resetPiChat();
+    envSessionsData.set('E:/ws::host', { loopSessionId: 'ls-host', updatedAt: '' });
+    envSessionsData.set('E:/ws::env:pwn-vm', { loopSessionId: 'ls-env', updatedAt: '' });
+    await initPiChatEngine('E:/ws');
+    expect(getPiMessages().map((m) => m.content)).toEqual(['环境里的旧问题']);
+  });
+});
+
+describe('环境分线切换(1.1.6 #4:switchEnvSession/envSwitchBlocker)', () => {
+  it('busy 拒绝(rewind/fork 同口径);别的 workspace 不拦', async () => {
+    expect(envSwitchBlocker('E:/ws')).toBeNull();
+    expect(envSwitchBlocker('D:/other')).toBeNull();
+    const release = gateFirstTurn();
+    await sendPiChatMessage({ text: 'one' });
+    expect(envSwitchBlocker('E:/ws')).toContain('进行中');
+    expect(envSwitchBlocker('D:/other')).toBeNull(); // 别的 workspace 的选定与本引擎无关
+    const r = await switchEnvSession('E:/ws', 'env:pwn-vm');
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('进行中');
+    release();
+    await waitTurnSettled();
+  });
+
+  it('闲时切线:有映射 → 接线(回放重建 + 旧线回填不丢 + 续跑写目标线)', async () => {
+    await sendPiChatMessage({ text: 'host 线消息' });
+    await waitTurnSettled();
+    const hostSessionId = appendLoopMessagesMock.mock.calls[0][0] as string;
+    // host 线绑定建立后映射已写(ensureSessionBound → persistEnvSessionLine)
+    expect(envSessionsData.get('E:/ws::host')?.loopSessionId).toBe(hostSessionId);
+
+    envSessionsData.set('E:/ws::env:pwn-vm', { loopSessionId: 'ls-env', updatedAt: '' });
+    getSessionsByAgentDirMock.mockReturnValue([{ id: 'meta-env', loopSessionId: 'ls-env' }]);
+    loadLoopSessionMock.mockReturnValue({
+      messages: [userMsg('环境里的旧问题'), assistantMsg('旧回答')],
+      meta: null,
+    });
+
+    const r = await switchEnvSession('E:/ws', 'env:pwn-vm');
+    expect(r.ok).toBe(true);
+    const wire = getPiMessages();
+    expect(wire.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(wire[0].content).toBe('环境里的旧问题');
+    // 旧线(host)回填仍指向原 sessionId,不丢线
+    expect(envSessionsData.get('E:/ws::host')?.loopSessionId).toBe(hostSessionId);
+    // 续跑写目标线
+    await sendPiChatMessage({ text: '继续' });
+    await waitTurnSettled();
+    expect(appendLoopMessagesMock.mock.calls[1][0]).toBe('ls-env');
+  });
+
+  it('闲时切线:无映射 → 开新线(清回放;首条消息绑定后才回填映射)', async () => {
+    await sendPiChatMessage({ text: 'host 线消息' });
+    await waitTurnSettled();
+    const r = await switchEnvSession('E:/ws', 'env:fresh-vm');
+    expect(r.ok).toBe(true);
+    expect(getPiMessages()).toEqual([]);
+    // 新线尚无 SessionStore 绑定:不写映射,防映射指向不存在的线
+    expect(envSessionsData.has('E:/ws::env:fresh-vm')).toBe(false);
+    await sendPiChatMessage({ text: '新线首条' });
+    await waitTurnSettled();
+    const newSessionId = appendLoopMessagesMock.mock.calls[1][0] as string;
+    expect(envSessionsData.get('E:/ws::env:fresh-vm')?.loopSessionId).toBe(newSessionId);
+  });
+
+  it('重选同一环境且线已就位:幂等,不重建回放', async () => {
+    await sendPiChatMessage({ text: 'one' });
+    await waitTurnSettled();
+    loadLoopSessionMock.mockClear();
+    const r = await switchEnvSession('E:/ws', 'host');
+    expect(r.ok).toBe(true);
+    expect(loadLoopSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('别的 workspace 的切线请求:no-op(不动映射不动回放)', async () => {
+    const r = await switchEnvSession('D:/other', 'env:x');
+    expect(r.ok).toBe(true);
+    expect(envSessionsData.size).toBe(0);
+  });
+
+  it('reset 清当前环境键的分线映射(防 reset 后旧历史按映射复活)', async () => {
+    await sendPiChatMessage({ text: 'one' });
+    await waitTurnSettled();
+    expect(envSessionsData.has('E:/ws::host')).toBe(true);
+    resetPiChat();
+    expect(envSessionsData.has('E:/ws::host')).toBe(false);
+  });
+
+  it('switchPiSession 已在当前会话:幂等(不重读历史,不碰 busy)', async () => {
+    await sendPiChatMessage({ text: 'one' });
+    await waitTurnSettled();
+    // 绑定 meta = createSessionMock 的 'meta-new'
+    loadLoopSessionMock.mockClear();
+    getSessionMetadataMock.mockClear();
+    expect(await switchPiSession('meta-new')).toBe(true);
+    expect(getSessionMetadataMock).not.toHaveBeenCalled();
+    expect(loadLoopSessionMock).not.toHaveBeenCalled();
   });
 });
 

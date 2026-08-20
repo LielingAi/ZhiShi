@@ -27,9 +27,14 @@
  *   - chat:status(W1):turn 开始(running)/ done(idle)/ stop / reset
  *     时 broadcast,TUI 状态行数据源。
  *   - 会话跨重启(M4b):首个用户消息时 createSession(SessionStore)并把
- *     loopSessionId 写入会话元数据;sidecar 重启后 init 时找回最近一条
- *     带 loopSessionId 的会话,loop-sessions 读全量历史,回放与续跑同
- *     一 session。
+ *     loopSessionId 写入会话元数据;sidecar 重启后 init 时按当前选定环境
+ *     的分线映射(1.1.6 #4,env-sessions.json)找回对应 loop session,
+ *     loop-sessions 读全量历史,回放与续跑同一 session。
+ *   - 会话按环境分线(1.1.6 #4):workspace × 环境键 → loopSessionId 存
+ *     ~/.zhishi/env-sessions.json(environment/env-sessions.ts);environment/select
+ *     落盘后联动 switchEnvSession 切线(busy 拒绝,rewind/fork 同口径);
+ *     reset 同步清当前环境键的映射条目;cron 不特殊处理——跟随当前选定
+ *     环境的线(引擎单例现状即是如此)。
  *   - rewind(M4b):/chat/rewind 按 userMessageId 截断 loop-sessions
  *     (追加日志,截断即时间回溯)并重建内存消息。
  *   - 图片(M4b):payload.images → pi user 消息的 image 块。
@@ -54,7 +59,20 @@ import type { ImagePayload } from '../../shared/types/image';
 import type { SystemInitInfo } from '../../shared/types/system';
 import { broadcast } from '../sse';
 import { envTagForEntry, findEnvironmentEntry, listEnvironments } from '../environment/registry';
-import { getWorkspaceSelection, loadSelectionStore } from '../environment/selection';
+import {
+  getWorkspaceSelection,
+  getWorkspaceSelectionRecord,
+  loadSelectionStore,
+  HOST_SELECTION,
+} from '../environment/selection';
+import {
+  envKeyForSelection,
+  getEnvSessionLine,
+  loadEnvSessionsMap,
+  normalizeWorkspaceKey,
+  removeEnvSessionLine,
+  setEnvSessionLine,
+} from '../environment/env-sessions';
 import { loadDistilledMemoryForPrompt } from '../memory/distill';
 import { buildSystemPromptAppend, type InteractionScenario } from '../system-prompt';
 import { collectResearchMemory, collectSecurityCapabilities } from '../system-prompt-security';
@@ -165,6 +183,9 @@ let queue: PiQueueItem[] = [];
 let steering: PiQueueItem[] = [];
 /** SessionStore 里绑定的会话元数据 id(其 loopSessionId 字段 === sessionId)。 */
 let boundSessionMetaId: string | null = null;
+/** 1.1.6 #4 — 引擎当前所在的环境分线键(随 restore/switchEnvSession 更新;
+ *  不逐次重读磁盘——select 落盘→切线的窗口内磁盘已超前于引擎)。 */
+let currentEnvKey: string = envKeyForSelection(HOST_SELECTION);
 
 /** W1 — TUI 状态行数据源(sse.ts 已注册 'chat:status'):状态变迁时广播。 */
 function broadcastChatStatus(): void {
@@ -226,6 +247,27 @@ export function resolveSessionEnv(dir: string): EnvironmentEntry | null {
   return findEntry(alt);
 }
 
+/** 当前工作区选定对应的环境分线键(1.1.6 #4)。与 resolveSessionEnv 同一
+ *  双形态兜底(无记录/env 条目悬空 → 回退另一斜杠形态),两形态都落空 → host。 */
+export function resolveSessionEnvKey(dir: string): string {
+  const store = loadSelectionStore();
+  const keyFor = (d: string): string | null => {
+    const record = getWorkspaceSelectionRecord(store, d);
+    if (!record) return null; // 该形态无记录 → 回退另一形态
+    const selection = record.selection;
+    // env 选定但条目已删(悬空)→ 回退另一形态,与 resolveSessionEnv 同坑
+    if (selection.kind === 'env' && !findEnvironmentEntry(listEnvironments(loadConfig()), selection.id)) {
+      return null;
+    }
+    return envKeyForSelection(selection);
+  };
+  const key = keyFor(dir);
+  if (key !== null) return key;
+  const alt = dir.includes('/') ? dir.replace(/\//g, '\\') : dir.replace(/\\/g, '/');
+  if (alt === dir) return envKeyForSelection(HOST_SELECTION);
+  return keyFor(alt) ?? envKeyForSelection(HOST_SELECTION);
+}
+
 // ---------------------------------------------------------------------------
 // 会话跨重启绑定(SessionStore.loopSessionId)
 // ---------------------------------------------------------------------------
@@ -278,19 +320,42 @@ function loopMessagesToWire(loopMessages: AgentMessage[]): MessageWire[] {
   return wire;
 }
 
-/** 启动恢复:找最近一条带 loopSessionId 的会话元数据,续接同一 loop session。 */
+/** 按 loopSessionId 反查 SessionStore 里绑定的会话元数据 id(无 → null)。 */
+function findBoundMetaId(loopId: string): string | null {
+  const meta = getSessionsByAgentDir(agentDir).find(
+    (s) => (s as { loopSessionId?: string }).loopSessionId === loopId,
+  );
+  return meta?.id ?? null;
+}
+
+/** 分线映射写盘(1.1.6 #4):「当前环境键 → 当前 loopSessionId」。只在绑定
+ *  存在时写——映射永不指向没有 SessionStore 绑定的线(新线的首次写盘点在
+ *  ensureSessionBound 之后;切换前的旧线回填见 switchEnvSession)。 */
+async function persistEnvSessionLine(): Promise<void> {
+  if (!boundSessionMetaId || !agentDir) return;
+  try {
+    await setEnvSessionLine(agentDir, currentEnvKey, sessionId);
+  } catch (err) {
+    console.warn('[pi-engine] env-sessions 映射写盘失败:', err);
+  }
+}
+
+/**
+ * 启动恢复(1.1.6 #4 env-aware):按「当前选定环境」的分线映射续接对应
+ * loop session;无映射/映射失效(文件没了或为空)→ 开新线。不再按「全
+ * workspace 最新 meta」接线——分线语义下最新多半是别的环境的线,接了即串线。
+ */
 async function restorePiSession(): Promise<void> {
-  const candidates = getSessionsByAgentDir(agentDir)
-    .filter((s) => typeof (s as { loopSessionId?: string }).loopSessionId === 'string')
-    .sort((a, b) => (b.lastActiveAt ?? '').localeCompare(a.lastActiveAt ?? ''));
-  const latest = candidates[0] as { id: string; loopSessionId?: string } | undefined;
-  if (!latest?.loopSessionId) return;
-  const stored = loadLoopSession(latest.loopSessionId);
+  const envKey = resolveSessionEnvKey(agentDir);
+  currentEnvKey = envKey;
+  const line = getEnvSessionLine(loadEnvSessionsMap(), agentDir, envKey);
+  if (!line) return;
+  const stored = loadLoopSession(line.loopSessionId);
   if (stored.messages.length === 0) return;
-  boundSessionMetaId = latest.id;
-  sessionId = latest.loopSessionId;
+  boundSessionMetaId = findBoundMetaId(line.loopSessionId);
+  sessionId = line.loopSessionId;
   messages = loopMessagesToWire(stored.messages);
-  console.log(`[pi-engine] 续接 loop 会话 ${sessionId}(${stored.messages.length} 条消息,meta=${latest.id})`);
+  console.log(`[pi-engine] 续接环境分线 ${envKey}(loop=${sessionId},${stored.messages.length} 条消息,meta=${boundSessionMetaId ?? '无'})`);
 }
 
 /** 首个用户消息时建 SessionStore 会话并写入 loopSessionId 绑定。 */
@@ -303,6 +368,9 @@ async function ensureSessionBound(firstUserText: string): Promise<void> {
     });
     boundSessionMetaId = meta.id;
     await updateSessionMetadata(meta.id, { loopSessionId: sessionId } as Partial<typeof meta>);
+    // 1.1.6 #4:绑定建立后同步分线映射(新线的写盘点——确保映射指向真实
+    // 存在的线,而不是切换时先写一个尚无绑定的 sessionId)。
+    await persistEnvSessionLine();
   } catch (err) {
     console.warn('[pi-engine] SessionStore 绑定失败(会话不跨重启,其余功能正常):', err);
   }
@@ -872,6 +940,9 @@ export async function sendPiChatMessageAndWait(
  * (其 loopSessionId 指向的 loop-sessions 文件),重建回放。
  */
 export async function switchPiSession(metaId: string): Promise<boolean> {
+  // 已在当前会话:幂等返回——不重建回放、更不要 busy 强停(TUI 启动会按
+  // 环境分线映射重接当前会话,误伤进行中的 turn,如 cron)。
+  if (metaId === boundSessionMetaId) return true;
   if (busy) stopPiChat();
   const meta = getSessionMetadata(metaId) as { loopSessionId?: string } | null;
   if (!meta?.loopSessionId) return false;
@@ -886,6 +957,71 @@ export async function switchPiSession(metaId: string): Promise<boolean> {
   systemInitInfo = null;
   console.log(`[pi-engine] 切换会话 → ${metaId}(loop=${sessionId},${stored.messages.length} 条)`);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// 环境分线(1.1.6 #4):environment/select 联动切线
+// ---------------------------------------------------------------------------
+
+/** 切环境前置闸:目标是本引擎 workspace 且 turn 进行中 → 拒绝文案(rewind/fork
+ *  同口径);其余 workspace 的选定与本引擎无关(sidecar 按 workspace 一个实例)。 */
+export function envSwitchBlocker(workspace: string): string | null {
+  if (!agentDir || normalizeWorkspaceKey(workspace) !== normalizeWorkspaceKey(agentDir)) return null;
+  return busy ? '响应进行中,先 Esc 停止再切换环境' : null;
+}
+
+/**
+ * environment/select 落盘后的联动切线。有映射 → 接该 loopSessionId 的线
+ * (状态重置清单对齐 switchPiSession;busy 已在入口拒绝,这里不强停);
+ * 无映射/映射失效 → 开新线(不清映射——新线等 ensureSessionBound 绑定后
+ * 由 persistEnvSessionLine 回填,确保映射不指向不存在的线)。
+ */
+export async function switchEnvSession(workspace: string, envKey: string): Promise<{ ok: boolean; error?: string }> {
+  // 别的 workspace 的选定,本引擎不动
+  if (!agentDir || normalizeWorkspaceKey(workspace) !== normalizeWorkspaceKey(agentDir)) {
+    return { ok: true };
+  }
+  if (busy) return { ok: false, error: '响应进行中,先 Esc 停止再切换环境' };
+  // 重选同一环境且线已就位:幂等,不重放重建(启动 gate 重选当前环境是常态)。
+  if (envKey === currentEnvKey && boundSessionMetaId) return { ok: true };
+  // 旧线回填:当前线已绑定,先把「旧环境键 → 当前 sessionId」写盘,防旧线丢映射。
+  await persistEnvSessionLine();
+  // 回填写盘让出事件循环期间可能有新 turn 起跑——复查,撞车则放弃本次切换
+  // (选定已落盘,返回错误由调用方上抛,重选即愈合)。
+  if (busy) return { ok: false, error: '响应进行中,先 Esc 停止再切换环境' };
+  const line = getEnvSessionLine(loadEnvSessionsMap(), agentDir, envKey);
+  const stored = line ? loadLoopSession(line.loopSessionId) : null;
+  queue = [];
+  steering = [];
+  messageSeq = 0;
+  streamingAssistantId = null;
+  systemInitInfo = null;
+  if (line && stored && stored.messages.length > 0) {
+    sessionId = line.loopSessionId;
+    boundSessionMetaId = findBoundMetaId(line.loopSessionId);
+    messages = loopMessagesToWire(stored.messages);
+    console.log(`[pi-engine] 环境分线 → 接线 ${envKey}(loop=${sessionId},${stored.messages.length} 条)`);
+  } else {
+    sessionId = newLoopSessionId();
+    boundSessionMetaId = null;
+    messages = [];
+    console.log(`[pi-engine] 环境分线 → 新线 ${envKey}(loop=${sessionId})`);
+  }
+  currentEnvKey = envKey;
+  return { ok: true };
+}
+
+/** 某 workspace 当前选定环境的分线绑定(environment/current 的 TUI 接线数据源)。 */
+export function getEnvSessionBinding(
+  workspace: string,
+): { envKey: string; loopSessionId: string; sessionMetaId: string | null } | null {
+  const envKey = resolveSessionEnvKey(workspace);
+  const line = getEnvSessionLine(loadEnvSessionsMap(), workspace, envKey);
+  if (!line) return null;
+  const meta = getSessionsByAgentDir(workspace).find(
+    (s) => (s as { loopSessionId?: string }).loopSessionId === line.loopSessionId,
+  );
+  return { envKey, loopSessionId: line.loopSessionId, sessionMetaId: meta?.id ?? null };
 }
 
 /** /chat/stop 的 pi 路径:清空 FIFO 队列(逐条 queue:cancelled)+ 清空
@@ -986,6 +1122,11 @@ export function resetPiChat(): void {
       (err) => console.warn('[pi-engine] reset 解绑旧 loopSessionId 失败:', err),
     );
   }
+  // 1.1.6 #4:同步清当前环境键的分线映射——否则 reset 后按映射恢复会把
+  // reset 前的历史整个复活(与上面摘 loopSessionId 绑定同一类活体事故)。
+  void removeEnvSessionLine(agentDir, currentEnvKey).catch(
+    (err) => console.warn('[pi-engine] reset 清 env-sessions 映射失败:', err),
+  );
   sessionId = newLoopSessionId();
   boundSessionMetaId = null;
   messages = [];
