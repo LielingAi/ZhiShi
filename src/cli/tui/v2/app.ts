@@ -59,6 +59,17 @@ import {
 } from './gate';
 import { targetForEnv, spawnAttach, type AttachTarget } from './attach';
 import { composeBackgroundSeg } from './bg-tasks';
+import {
+  parseModelArgs,
+  parseMcpArgs,
+  reduceHiddenLine,
+  composeModelCardRows,
+  composeMcpCardRows,
+  type ModelProviderInfo,
+  type McpBridgeRow,
+  type McpServerRow,
+  type HiddenLineOutcome,
+} from './model';
 import type { Block, SessionState, ModalState, RefAttachment } from './types';
 
 // ---------------------------------------------------------------------------
@@ -121,6 +132,9 @@ export class App {
   private gateCursor = 0;
   private gateBusy = false;
   private manualForm: { step: 0 | 1 | 2; host: string; user: string; keyPath: string } | null = null;
+
+  /** 隐藏输入接管(/model set-key):非 null 时按键只进缓冲,不进消息编辑器。 */
+  private hiddenLine: { buffer: string; prompt: string; resolve: (v: string | null) => void } | null = null;
 
   private showWelcome = false;
   private reconnecting = false;
@@ -462,6 +476,11 @@ export class App {
     if (raw.startsWith('\x1b[200~')) {
       const end = raw.indexOf('\x1b[201~');
       const body = end >= 0 ? raw.slice(6, end) : raw.slice(6);
+      // 隐藏输入中粘贴:逐可打印字符进缓冲(换行剥离),不渲染不回显。
+      if (this.hiddenLine) {
+        this.appendHiddenPaste(body);
+        return;
+      }
       this.editor.apply({ type: 'paste', text: body });
       this.renderChrome();
       return;
@@ -485,6 +504,11 @@ export class App {
     }
     // Swallow the placeholder keys the parser emits for unknown sequences.
     if (key.char === '' && key.name === undefined) return;
+    // 隐藏输入接管:接管期间所有按键路由到隐藏缓冲,不进编辑器/补全/消息流。
+    if (this.hiddenLine) {
+      this.onHiddenLineKey(key);
+      return;
+    }
     if (this.mode === 'gate') {
       void this.onGateKey(key);
       return;
@@ -517,6 +541,54 @@ export class App {
       return;
     }
     this.quitRequested = true;
+  }
+
+  // --- hidden line input (readHiddenLine) ---
+
+  /**
+   * 隐藏输入(readHiddenLine):返回 Promise<string | null>——Enter 提交值,
+   * Esc / Ctrl+C 取消返回 null。接管期间 onKey 全部路由到 onHiddenLineKey,
+   * 字符只进缓冲、不渲染不回显,消息编辑流完全不参与。
+   */
+  private startHiddenLine(prompt: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      this.closeOverlay();
+      this.editor.setText('');
+      this.hiddenLine = { buffer: '', prompt, resolve };
+      this.renderChrome();
+    });
+  }
+
+  /** 隐藏输入按键路由:可打印字符进缓冲,退格回删,Enter 提交,Esc 取消。 */
+  private onHiddenLineKey(key: Key): void {
+    const hl = this.hiddenLine;
+    if (!hl) return;
+    let out: HiddenLineOutcome;
+    if (key.name === 'enter') out = reduceHiddenLine(hl.buffer, { type: 'submit' });
+    else if (key.name === 'esc' || (hasMod(key, 'ctrl') && key.char === 'c')) out = reduceHiddenLine(hl.buffer, { type: 'cancel' });
+    else if (key.name === 'backspace') out = reduceHiddenLine(hl.buffer, { type: 'backspace' });
+    else if (typeof key.char === 'string' && key.char.length === 1 && !hasMod(key, 'ctrl') && !hasMod(key, 'alt')) out = reduceHiddenLine(hl.buffer, { type: 'char', char: key.char });
+    else return; // 方向键/功能键等忽略——隐藏输入只吃可打印字符
+    if (!out.done) {
+      hl.buffer = out.buffer;
+      this.renderChrome();
+      return;
+    }
+    this.hiddenLine = null;
+    this.renderChrome();
+    hl.resolve(out.cancelled ? null : out.value);
+  }
+
+  /** 隐藏输入中的粘贴(夹带在 bracketed-paste 序列里):逐字符进缓冲。 */
+  private appendHiddenPaste(body: string): void {
+    const hl = this.hiddenLine;
+    if (!hl) return;
+    for (const ch of body.replace(/[\r\n]/g, '')) {
+      const out = reduceHiddenLine(hl.buffer, { type: 'char', char: ch });
+      if (out.done) break; // 满长拒绝后不再追加
+      hl.buffer = out.buffer;
+    }
+    this.renderChrome();
   }
 
   // --- input mode ---
@@ -1073,73 +1145,236 @@ export class App {
     else this.pushBlock({ kind: 'divider', label: `已回收到宿主:${res.data?.savedTo ?? 'output/extracted/'}`, tone: 'info' });
   }
 
-  private async runModel(arg: string): Promise<void> {    if (!arg.trim()) {
-      this.pushBlock({ kind: 'error', text: '用法：/model <模型名>' });
+  /**
+   * /model — 模型配置闭环:
+   *   无参 → 状态卡(供应商/已配 key/默认模型/模型数 + 当前默认);
+   *   set-key <供应商id> → 隐藏输入填 key → admin model/set-key(自动发现模型);
+   *   use <供应商id> <模型名> → 带供应商语义切换(防重名);
+   *   <模型名> → 旧语法直接切换(向后兼容)。
+   */
+  private async runModel(arg: string): Promise<void> {
+    const args = parseModelArgs(arg);
+    switch (args.kind) {
+      case 'error':
+        this.pushBlock({ kind: 'error', text: args.message });
+        return;
+      case 'status':
+        await this.showModelStatus();
+        return;
+      case 'set-key':
+        await this.runModelSetKey(args.providerId);
+        return;
+      case 'use':
+        await this.runModelUse(args.providerId, args.model);
+        return;
+      case 'switch':
+        await this.runModelSwitch(args.model);
+        return;
+    }
+  }
+
+  /** /model(无参)——供应商状态卡。数据来自 admin model/list(全量目录)。 */
+  private async showModelStatus(): Promise<void> {
+    const res = await this.client
+      .adminPost<{ success?: boolean; error?: string; data?: ModelProviderInfo[] }>('model/list', {})
+      .catch((): { success?: boolean; error?: string; data?: ModelProviderInfo[] } => ({
+        success: false,
+        error: '无法连接 sidecar',
+      }));
+    if (res.success === false) {
+      this.pushBlock({ kind: 'error', text: res.error ?? '模型状态获取失败' });
+      return;
+    }
+    const providers = res.data ?? [];
+    for (const row of composeModelCardRows(providers, this.state.status.model)) {
+      this.pushBlock({ kind: 'divider', label: row.label, follow: row.follow, tone: row.tone });
+    }
+  }
+
+  /** /model set-key <供应商id> — 隐藏输入填 key → 保存 → 自动拉模型目录。 */
+  private async runModelSetKey(providerId: string): Promise<void> {
+    // 先在目录里确认供应商存在(含 kimi 内置合成条目),顺带拿显示名。
+    const list = await this.client
+      .adminPost<{ success?: boolean; data?: ModelProviderInfo[] }>('model/list', {})
+      .catch((): { success?: boolean; data?: ModelProviderInfo[] } => ({ success: false }));
+    const provider = (list.data ?? []).find((p) => p.id === providerId);
+    if (!provider) {
+      this.pushBlock({ kind: 'error', text: `未知供应商: ${providerId}（/model 查看可配供应商）` });
+      return;
+    }
+    const apiKey = await this.startHiddenLine(
+      `输入 ${provider.name} API key（隐藏输入，Enter 确认，Esc 取消）`,
+    );
+    if (apiKey === null) {
+      this.pushBlock({ kind: 'divider', label: `已取消（未保存 ${providerId} key）`, tone: 'info' });
       return;
     }
     const res = await this.client
-      .postJson<{ success?: boolean; error?: string; providerId?: string; model?: string }>('/chat/model', { model: arg.trim() })
-      .catch((): { success?: boolean; error?: string; providerId?: string; model?: string } => ({ success: false, error: '无法连接 sidecar' }));
+      .adminPost<{ success?: boolean; error?: string; data?: { modelsFetched?: number; modelsFetchError?: string } }>(
+        'model/set-key',
+        { id: providerId, apiKey },
+      )
+      .catch((): { success?: boolean; error?: string; data?: { modelsFetched?: number; modelsFetchError?: string } } => ({
+        success: false,
+        error: '无法连接 sidecar',
+      }));
+    if (res.success === false) {
+      this.pushBlock({ kind: 'error', text: `保存失败：${res.error ?? '未知错误'}` });
+      return;
+    }
+    const fetched = res.data?.modelsFetched;
+    const fetchErr = res.data?.modelsFetchError;
+    const follow = fetched !== undefined
+      ? `自动发现 ${fetched} 个模型`
+      : fetchErr
+        ? `模型列表拉取失败（key 已保存）：${fetchErr}`
+        : '已保存';
+    this.pushBlock({ kind: 'divider', label: `✓ 已保存 ${providerId} API key`, follow, tone: 'ok' });
+    await this.showModelStatus();
+  }
+
+  /** /model use <供应商id> <模型名> — 带供应商前缀的切换(撞名不误配)。 */
+  private async runModelUse(providerId: string, model: string): Promise<void> {
+    const res = await this.client
+      .postJson<{ success?: boolean; error?: string; providerId?: string; model?: string }>('/chat/model', {
+        model,
+        providerId,
+      })
+      .catch((): { success?: boolean; error?: string; providerId?: string; model?: string } => ({
+        success: false,
+        error: '无法连接 sidecar',
+      }));
+    if (!res.success) {
+      this.pushBlock({ kind: 'error', text: res.error ?? '切换模型失败' });
+      return;
+    }
+    this.state.status.model = res.model ?? model;
+    this.pushBlock({ kind: 'divider', label: `模型已切换：${providerId}/${res.model ?? model}`, tone: 'ok' });
+  }
+
+  /** /model <模型名>(向后兼容)——无供应商语义,由服务端反查归属。 */
+  private async runModelSwitch(model: string): Promise<void> {
+    const res = await this.client
+      .postJson<{ success?: boolean; error?: string; providerId?: string; model?: string }>('/chat/model', { model })
+      .catch((): { success?: boolean; error?: string; providerId?: string; model?: string } => ({
+        success: false,
+        error: '无法连接 sidecar',
+      }));
     if (res.success) {
-      this.pushBlock({ kind: 'divider', label: `模型已切换：${res.model ?? arg}`, tone: 'info' });
+      this.state.status.model = res.model ?? model;
+      this.pushBlock({ kind: 'divider', label: `模型已切换：${res.model ?? model}`, tone: 'ok' });
     } else {
       this.pushBlock({ kind: 'error', text: res.error ?? '切换模型失败' });
     }
   }
 
-  /** /mcp — MCP bridge 状态展示;-r/--reload 先重连再展示。 */
+  /**
+   * /mcp — MCP 桥状态展示(含启用标注)/ -r 热重载 / enable|disable <id>
+   * 开关。开关走 admin mcp/enable|disable 写盘 → mcp/reload 桥重载,
+   * 当前会话立即生效(磁盘为权威来源)。
+   */
   private async runMcp(arg: string): Promise<void> {
-    interface McpStatusRow {
-      id: string;
-      name: string;
-      status: 'connected' | 'failed';
-      toolCount?: number;
-      error?: string;
+    const args = parseMcpArgs(arg);
+    switch (args.kind) {
+      case 'error':
+        this.pushBlock({ kind: 'error', text: args.message });
+        return;
+      case 'enable':
+      case 'disable':
+        await this.runMcpToggle(args.kind, args.id);
+        return;
+      case 'reload':
+        await this.showMcpStatus(true);
+        return;
+      case 'status':
+        await this.showMcpStatus(false);
+        return;
     }
-    const reload = /(^|\s)(-r|--reload)(\s|$)/.test(arg.trim());
-    if (reload) {
-      this.pushBlock({ kind: 'divider', label: 'MCP 重连中…', tone: 'info' });
-    }
-    const res = await this.client
-      .adminPost<{ success?: boolean; error?: string; data?: { servers?: McpStatusRow[] } }>(
+  }
+
+  /** 展示 MCP 状态。reload=true 时先走 mcp/reload(热重载后拿新状态)。 */
+  private async showMcpStatus(reload: boolean): Promise<void> {
+    if (reload) this.pushBlock({ kind: 'divider', label: 'MCP 重连中…', tone: 'info' });
+    const statusRes = await this.client
+      .adminPost<{ success?: boolean; error?: string; data?: { servers?: McpBridgeRow[] } }>(
         reload ? 'mcp/reload' : 'mcp/list-status',
         {},
       )
-      .catch((): { success?: boolean; error?: string; data?: { servers?: McpStatusRow[] } } => ({
+      .catch((): { success?: boolean; error?: string; data?: { servers?: McpBridgeRow[] } } => ({
         success: false,
         error: '无法连接 sidecar',
       }));
-    if (res.success === false) {
-      this.pushBlock({ kind: 'error', text: res.error ?? 'MCP 状态获取失败' });
+    if (statusRes.success === false) {
+      this.pushBlock({ kind: 'error', text: statusRes.error ?? 'MCP 状态获取失败' });
       return;
     }
-    const servers = res.data?.servers ?? [];
-    if (servers.length === 0) {
+    const statuses = statusRes.data?.servers ?? [];
+    // 无参展示要标注启用状态:mcp/list 给全量(含 enabled 标记),桥状态只有
+    // 已启用服务器的连接结果——两侧合并。清单拉取失败降级为只列桥状态。
+    let servers: McpServerRow[] = [];
+    if (!reload) {
+      const listRes = await this.client
+        .adminPost<{ success?: boolean; data?: McpServerRow[] }>('mcp/list', {})
+        .catch((): { success?: boolean; data?: McpServerRow[] } => ({ success: false }));
+      servers = listRes.data ?? [];
+    }
+    const summary = composeMcpCardRows(servers, statuses);
+    if (summary.rows.length === 0) {
       this.pushBlock({ kind: 'divider', label: 'MCP 服务器状态', follow: '0 台(无已启用服务器)', tone: 'info' });
       return;
     }
     this.pushBlock({
       kind: 'divider',
       label: reload ? 'MCP 已重载' : 'MCP 服务器状态',
-      follow: `${servers.length} 台`,
+      follow: `${summary.total} 台 · 启用 ${summary.enabledCount}`,
       tone: 'info',
     });
-    for (const s of servers) {
-      if (s.status === 'connected') {
+    for (const row of summary.rows) {
+      this.pushBlock({ kind: 'divider', label: row.label, follow: row.follow, tone: row.tone });
+    }
+  }
+
+  /** /mcp enable|disable <id> — 写盘 → 桥热重载,显示结果与当前工具数。 */
+  private async runMcpToggle(kind: 'enable' | 'disable', id: string): Promise<void> {
+    const verb = kind === 'enable' ? '启用' : '停用';
+    this.pushBlock({ kind: 'divider', label: `MCP ${verb} ${id}…`, tone: 'info' });
+    const res = await this.client
+      .adminPost<{ success?: boolean; error?: string }>(`mcp/${kind}`, { id })
+      .catch((): { success?: boolean; error?: string } => ({ success: false, error: '无法连接 sidecar' }));
+    if (res.success === false) {
+      this.pushBlock({ kind: 'error', text: `${verb}失败：${res.error ?? '未知错误'}` });
+      return;
+    }
+    // 配置已写盘;桥热重载让变更在当前会话立即生效。
+    const reloadRes = await this.client
+      .adminPost<{ success?: boolean; error?: string; data?: { servers?: McpBridgeRow[] } }>('mcp/reload', {})
+      .catch((): { success?: boolean; error?: string; data?: { servers?: McpBridgeRow[] } } => ({
+        success: false,
+        error: '无法连接 sidecar',
+      }));
+    if (reloadRes.success === false) {
+      this.pushBlock({ kind: 'error', text: `配置已写入但桥重载失败：${reloadRes.error ?? '未知错误'}` });
+      return;
+    }
+    const target = (reloadRes.data?.servers ?? []).find((s) => s.id === id);
+    if (kind === 'enable') {
+      if (target?.status === 'connected') {
         this.pushBlock({
           kind: 'divider',
-          label: `${s.id} · ${s.name}`,
-          follow: `connected · ${s.toolCount ?? 0} 工具`,
+          label: `✓ 已启用 ${id}`,
+          follow: `connected · ${target.toolCount ?? 0} 工具`,
           tone: 'ok',
         });
       } else {
         this.pushBlock({
           kind: 'divider',
-          label: `${s.id} · ${s.name}`,
-          follow: `failed · ${s.error ?? '未知错误'}`,
+          label: `✓ 已启用 ${id}（连接失败）`,
+          follow: target?.error ?? '未连接',
           tone: 'fail',
         });
       }
+    } else {
+      this.pushBlock({ kind: 'divider', label: `✓ 已停用 ${id}`, follow: '已从当前会话移除', tone: 'ok' });
     }
   }
 
@@ -1372,6 +1607,10 @@ export class App {
   }
 
   private promptLead(): import('./row-buffer').Span[] {
+    // 隐藏输入(/model set-key):提示语进输入框前导,内容永不渲染。
+    if (this.hiddenLine) {
+      return [{ text: `${this.hiddenLine.prompt} `, style: { fg: 'cyan', bold: true } }];
+    }
     // 手动接入表单的逐步标签(home/user/keyPath)。
     if (this.manualForm) {
       const labels = ['主机', '用户', '密钥路径'];
@@ -1382,6 +1621,7 @@ export class App {
   }
 
   private currentHint(): string {
+    if (this.hiddenLine) return 'API key 隐藏输入 · Enter 确认 · Esc 取消';
     if (this.manualForm) {
       const labels = ['接入主机地址(IP/域名)', 'SSH 用户(缺省 researcher)', '私钥路径(缺省 ~/.ssh/id_ed25519)'];
       return `${labels[this.manualForm.step]} · Enter 下一步 · Esc 返回`;
