@@ -380,7 +380,7 @@ export type ProviderAuthType = 'auth_token' | 'api_key' | 'both' | 'auth_token_c
 
  * - 'anthropic': Native Anthropic Messages API (default)
 
- * - 'openai': OpenAI Chat Completions API (translated via built-in bridge)
+ * - 'openai': OpenAI Chat Completions / Responses API（pi 原生直连，无 bridge 回环）
 
  */
 
@@ -476,9 +476,10 @@ export interface Provider {
 
   // 模型发现端点 URL（可选覆盖）
 
-  // 默认行为：GET {config.baseUrl}/v1/models
-
-  // 当供应商的 Anthropic 路径不支持 /v1/models 时，指向其 OpenAI 路径
+  // 默认推导：apiProtocol === 'openai' 且 baseUrl 以 /v1 结尾 → GET {baseUrl}/models
+  // （OpenAI 格式端点自带版本前缀）；否则 → GET {baseUrl}/v1/models（anthropic 主机式 baseUrl）
+  // 非标准路径（如 /api/paas/v4）显式声明本字段；deepseek 的 anthropic 兼容路径
+  // 不支持 /v1/models，也经此字段指向其 OpenAI 路径
 
   modelListUrl?: string;
 
@@ -1421,6 +1422,247 @@ export const PRESET_PROVIDERS: Provider[] = [
       { model: 'deepseek-v4-pro', modelName: 'DeepSeek V4 Pro', modelSeries: 'deepseek', contextLength: 1_000_000, maxOutputTokens: 384_000, inputModalities: ['text'] },
 
       { model: 'deepseek-v4-flash', modelName: 'DeepSeek V4 Flash', modelSeries: 'deepseek', contextLength: 1_000_000, maxOutputTokens: 384_000, inputModalities: ['text'] },
+
+    ],
+
+  },
+
+  // ===== 多模型接入（M4d）—— OpenAI 格式内置供应商 =====
+  // 共同点：apiProtocol 'openai' → pi 原生走 openai-completions（model.api 显式选择，
+  // 非 baseUrl 探测）；authType 'auth_token' → Authorization: Bearer；
+  // modelListUrl = {baseUrl}/models，set-key 后自动拉取目录并入 presetCustomModels。
+
+  {
+    id: 'openai',
+
+    name: 'OpenAI',
+
+    vendor: 'OpenAI',
+
+    cloudProvider: '模型官方',
+
+    type: 'api',
+
+    primaryModel: 'gpt-5.4',
+
+    isBuiltin: true,
+
+    authType: 'auth_token',
+
+    apiProtocol: 'openai',
+
+    websiteUrl: 'https://platform.openai.com',
+
+    modelListUrl: 'https://api.openai.com/v1/models',
+
+    config: {
+
+      baseUrl: 'https://api.openai.com/v1',
+
+      timeout: 600000,
+
+    },
+
+    modelAliases: { sonnet: 'gpt-5.4', opus: 'gpt-5.4', haiku: 'gpt-5.4-mini' },
+
+    models: [
+
+      // GPT-5 系多模态（text+image）；上下文 400K / 输出 128K 为 5.x 通用口径。
+
+      { model: 'gpt-5.4', modelName: 'GPT-5.4', modelSeries: 'gpt', contextLength: 400_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
+
+      { model: 'gpt-5.4-mini', modelName: 'GPT-5.4 mini', modelSeries: 'gpt', contextLength: 400_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
+
+      { model: 'gpt-5.4-nano', modelName: 'GPT-5.4 nano', modelSeries: 'gpt', contextLength: 400_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
+
+    ],
+
+  },
+
+  {
+    id: 'moonshot',
+
+    name: 'Kimi (Moonshot)',
+
+    vendor: 'Moonshot AI',
+
+    cloudProvider: '模型官方',
+
+    type: 'api',
+
+    primaryModel: 'kimi-k2-0905-preview',
+
+    isBuiltin: true,
+
+    authType: 'auth_token',
+
+    apiProtocol: 'openai',
+
+    websiteUrl: 'https://platform.moonshot.cn',
+
+    modelListUrl: 'https://api.moonshot.cn/v1/models',
+
+    config: {
+
+      baseUrl: 'https://api.moonshot.cn/v1',
+
+      timeout: 600000,
+
+    },
+
+    modelAliases: { sonnet: 'kimi-k2-0905-preview', opus: 'kimi-k2-0905-preview', haiku: 'kimi-k2-turbo-preview' },
+
+    models: [
+
+      // K2 系纯文本；注意与 pi 内置 kimiCodingProvider（api.kimi.com/coding，anthropic 协议）
+      // 区分：本预设走 api.moonshot.cn 的 OpenAI 兼容端点，pi-provider 按 apiProtocol 分流。
+
+      { model: 'kimi-k2-0905-preview', modelName: 'Kimi K2 (0905)', modelSeries: 'kimi', contextLength: 256_000, maxOutputTokens: 32_768, inputModalities: ['text'] },
+
+      { model: 'kimi-k2-0711-preview', modelName: 'Kimi K2 (0711)', modelSeries: 'kimi', contextLength: 256_000, maxOutputTokens: 32_768, inputModalities: ['text'] },
+
+      { model: 'kimi-k2-turbo-preview', modelName: 'Kimi K2 Turbo', modelSeries: 'kimi', contextLength: 256_000, maxOutputTokens: 32_768, inputModalities: ['text'] },
+
+    ],
+
+  },
+
+  {
+    id: 'dashscope',
+
+    name: '通义千问 (DashScope)',
+
+    vendor: '阿里云',
+
+    cloudProvider: '云服务商',
+
+    type: 'api',
+
+    primaryModel: 'qwen3.5-max',
+
+    isBuiltin: true,
+
+    authType: 'auth_token',
+
+    apiProtocol: 'openai',
+
+    websiteUrl: 'https://bailian.console.aliyun.com',
+
+    modelListUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/models',
+
+    config: {
+
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+
+      timeout: 600000,
+
+    },
+
+    modelAliases: { sonnet: 'qwen3.5-max', opus: 'qwen3.5-max', haiku: 'qwen3.5-turbo' },
+
+    models: [
+
+      { model: 'qwen3.5-max', modelName: 'Qwen3.5 Max', modelSeries: 'qwen', contextLength: 256_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
+
+      { model: 'qwen3.5-plus', modelName: 'Qwen3.5 Plus', modelSeries: 'qwen', contextLength: 256_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
+
+      { model: 'qwen3.5-turbo', modelName: 'Qwen3.5 Turbo', modelSeries: 'qwen', contextLength: 256_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
+
+    ],
+
+  },
+
+  {
+    id: 'zhipu',
+
+    name: '智谱 GLM',
+
+    vendor: '智谱 AI',
+
+    cloudProvider: '模型官方',
+
+    type: 'api',
+
+    primaryModel: 'glm-5',
+
+    isBuiltin: true,
+
+    authType: 'auth_token',
+
+    apiProtocol: 'openai',
+
+    websiteUrl: 'https://open.bigmodel.cn',
+
+    // baseUrl 以 /v4 结尾（非 /v1 约定），显式声明模型列表端点。
+
+    modelListUrl: 'https://open.bigmodel.cn/api/paas/v4/models',
+
+    config: {
+
+      baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+
+      timeout: 600000,
+
+    },
+
+    modelAliases: { sonnet: 'glm-5', opus: 'glm-5', haiku: 'glm-5-air' },
+
+    models: [
+
+      { model: 'glm-5', modelName: 'GLM-5', modelSeries: 'glm', contextLength: 200_000, maxOutputTokens: 96_000, inputModalities: ['text', 'image'] },
+
+      { model: 'glm-5-air', modelName: 'GLM-5 Air', modelSeries: 'glm', contextLength: 200_000, maxOutputTokens: 96_000, inputModalities: ['text', 'image'] },
+
+      { model: 'glm-5-flash', modelName: 'GLM-5 Flash', modelSeries: 'glm', contextLength: 200_000, maxOutputTokens: 96_000, inputModalities: ['text', 'image'] },
+
+    ],
+
+  },
+
+  {
+    id: 'siliconflow',
+
+    name: '硅基流动 SiliconFlow',
+
+    vendor: 'SiliconFlow',
+
+    cloudProvider: '云服务商',
+
+    type: 'api',
+
+    primaryModel: 'deepseek-ai/DeepSeek-V4-Pro',
+
+    isBuiltin: true,
+
+    authType: 'auth_token',
+
+    apiProtocol: 'openai',
+
+    websiteUrl: 'https://siliconflow.cn',
+
+    modelListUrl: 'https://api.siliconflow.cn/v1/models',
+
+    config: {
+
+      baseUrl: 'https://api.siliconflow.cn/v1',
+
+      timeout: 600000,
+
+    },
+
+    modelAliases: { sonnet: 'deepseek-ai/DeepSeek-V4-Pro', opus: 'deepseek-ai/DeepSeek-V4-Pro', haiku: 'Qwen/Qwen3.5-Turbo' },
+
+    models: [
+
+      // 聚合平台：org/Model 命名空间；haiku 档由 Qwen Turbo 承担。
+
+      { model: 'deepseek-ai/DeepSeek-V4-Pro', modelName: 'DeepSeek V4 Pro', modelSeries: 'deepseek', contextLength: 1_000_000, maxOutputTokens: 384_000, inputModalities: ['text'] },
+
+      { model: 'deepseek-ai/DeepSeek-V4-Flash', modelName: 'DeepSeek V4 Flash', modelSeries: 'deepseek', contextLength: 1_000_000, maxOutputTokens: 384_000, inputModalities: ['text'] },
+
+      { model: 'Qwen/Qwen3.5-Max', modelName: 'Qwen3.5 Max', modelSeries: 'qwen', contextLength: 256_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
+
+      { model: 'Qwen/Qwen3.5-Turbo', modelName: 'Qwen3.5 Turbo', modelSeries: 'qwen', contextLength: 256_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
 
     ],
 

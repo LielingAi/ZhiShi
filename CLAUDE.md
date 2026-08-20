@@ -243,7 +243,12 @@ MCP / Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**
 
 
 
-### 情报检索（intel，1.1.2 + 1.1.4）
+### 模型供应商（1.1.5 多模型接入）
+
+- 内置 8 家：`anthropic-api`、`deepseek`（anthropic 兼容端点）、`openai`、`moonshot`（Kimi，OpenAI 格式）、`dashscope`（通义）、`zhipu`（智谱）、`siliconflow`（硅基流动聚合）、`kimi`（pi 内置 kimi-coding，合成条目）。定义在 `src/shared/config-types.ts::PRESET_PROVIDERS`——新供应商照此结构加（`apiProtocol: 'openai'` 即走 OpenAI completions；pi 按 `Model.api` 显式选协议，不做 baseUrl 探测）。
+- 模型列表拉取：`src/server/utils/provider-models.ts`——`modelListUrl` 优先（set-key 后自动拉取，`parseProviderModelsResponse` 兼容 OpenAI/anthropic 双形状，上限 200 条）；失败降级不阻塞。发现模型写 `config.presetCustomModels`。
+- 配置入口：CLI `zhishi model set-key/list/verify/set-default`；TUI `/model`（状态卡）/ `/model set-key <id>`（隐藏输入填 key）/ `/model use <id> <模型>`（切换，`/chat/model` 带 providerId 防跨供应商撞名）。
+- MCP 开关进 TUI：`/mcp enable|disable <id>`（复用 mcp/enable、mcp/disable + 桥热重载）；add/remove 仍走 CLI（OAuth/多形态 spec 不适合 TUI 输入行）。
 
 - `intel.db`（`~/.zhishi/`，better-sqlite3，WAL）：NVD CVE（窗口分级 minimal/window/full，默认 minimal）+ exploit-db 索引（只存 CSV 索引行，PoC 文件不落盘）+ nuclei 模板索引（1.1.4：`nuclei_templates(cve_id, template_path)`，只存目录不存正文——模板内容给 GitHub 链接）。FTS5 全文检索，查询按需直查库、不做启动预载。
 - 更新：`zhishi intel update [--mode minimal|window|full] [--nuclei-file <本地 cves.json>]`（走 sidecar admin API）。NVD 走 API 2.0 增量（lastModStartDate 水位）+ 断点续传；exploit-db 拉 GitLab CSV 整体替换（解析层按 id 首行去重——真实 CSV 有重复行）。**网络错误/超时/响应体读取失败都进指数退避重试**（NVD 单页 6.4MB，慢网络实测 90s+，超时 120s）；`maxSizeMb` 超限删最旧。

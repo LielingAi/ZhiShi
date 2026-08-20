@@ -22,7 +22,7 @@
 
 
 
-import type { IntelConfig, McpServerDefinition } from '../shared/config-types';
+import type { IntelConfig, McpServerDefinition, ModelEntity } from '../shared/config-types';
 
 import { resolveIntelConfig } from '../shared/config-types';
 
@@ -109,6 +109,8 @@ import { resolve, basename, isAbsolute } from 'path';
 import { setMcpServers, setAgents, getMcpServers, getSidecarPort, getSessionId } from './agent-session';
 import { getPiAgentState, sendPiChatMessage } from './loop/chat-engine';
 import { getMcpStatus, initMcpBridge, reloadMcpBridge } from './loop/mcp-bridge';
+
+import { KIMI_CODING_MODELS } from '@earendil-works/pi-ai/providers/kimi-coding.models';
 
 import { loadEnabledAgents } from './agents/agent-loader';
 
@@ -1735,15 +1737,30 @@ export function handleModelList(): AdminResponse {
 
   const verifyStatus = config.providerVerifyStatus ?? {};
 
+  const presetCustomModels = (config.presetCustomModels ?? {}) as Record<string, unknown>;
+
 
 
   const allProviders = getAllEffectiveProviders(config);
 
-  const data = allProviders.map(p => {
+  const data: Array<Record<string, unknown>> = allProviders.map(p => {
 
     const id = String(p.id);
 
     const cfg = p.config as Record<string, unknown> | undefined;
+
+    // 模型目录 = 预设 models ∪ set-key 拉取发现的 presetCustomModels
+    // （按 model 去重，发现条目优先——对齐 model-capabilities 的 first-wins 语义）。
+
+    const presetModels = Array.isArray(p.models) ? (p.models as ModelEntity[]) : [];
+
+    const discovered = Array.isArray(presetCustomModels[id]) ? (presetCustomModels[id] as ModelEntity[]) : [];
+
+    const merged = new Map<string, ModelEntity>();
+
+    for (const m of presetModels) merged.set(m.model, m);
+
+    for (const m of discovered) merged.set(m.model, m);
 
     return {
 
@@ -1765,13 +1782,89 @@ export function handleModelList(): AdminResponse {
 
       status: (verifyStatus[id] as Record<string, unknown>)?.status ?? 'not-set',
 
+      primaryModel: p.primaryModel ? String(p.primaryModel) : undefined,
+
+      models: [...merged.values()],
+
     };
 
   });
 
 
 
+  // kimi 内置(pi 层 kimiCodingProvider,api.kimi.com/coding):不在
+
+  // PRESET_PROVIDERS、也不走 set-key 拉目录——模型目录随 pi-ai 内置。
+
+  // 补一条合成条目,TUI /model 状态卡与 /chat/model 的 kimi 反查闭环
+
+  // 才能覆盖它;目录从 pi-ai 内置目录取,不硬编码避免漂移。
+
+  data.push(kimiBuiltinProviderEntry(apiKeys, verifyStatus));
+
+
+
   return { success: true, data };
+
+}
+
+
+
+/** kimi 内置合成条目:模型目录取自 pi-ai 的 kimi-coding 内置目录。 */
+
+function kimiBuiltinProviderEntry(
+
+  apiKeys: Record<string, string>,
+
+  verifyStatus: Record<string, unknown>,
+
+): Record<string, unknown> {
+
+  const catalog = KIMI_CODING_MODELS as unknown as Record<
+
+    string,
+
+    { id: string; name: string; contextWindow?: number; maxTokens?: number }
+
+  >;
+
+  const models: ModelEntity[] = Object.values(catalog).map((m) => ({
+
+    model: m.id,
+
+    modelName: m.name,
+
+    modelSeries: 'kimi',
+
+    contextLength: m.contextWindow,
+
+    maxOutputTokens: m.maxTokens,
+
+  }));
+
+  return {
+
+    id: 'kimi',
+
+    name: 'Kimi (内置)',
+
+    vendor: 'Moonshot AI',
+
+    isBuiltin: true,
+
+    protocol: 'anthropic',
+
+    enabled: true,
+
+    hasApiKey: !!apiKeys['kimi'],
+
+    status: (verifyStatus['kimi'] as Record<string, unknown>)?.status ?? 'not-set',
+
+    primaryModel: models[0]?.model,
+
+    models,
+
+  };
 
 }
 
@@ -1799,7 +1892,73 @@ export async function handleModelSetKey(payload: { id: string; apiKey: string })
 
   broadcast('config:changed', { section: 'model', action: 'set-key', id });
 
-  return { success: true, data: { id }, hint: `API key saved for ${id}.` };
+
+
+  // M4d 多模型接入：填 key 后自动拉取模型目录（显式 modelListUrl 或 OpenAI 协议
+  // provider）并入 presetCustomModels（source: 'discovered'）。拉取失败只降级
+  // 提示——key 已保存，verify / set-default / 会话链路不受影响。
+
+  let modelsFetched: number | undefined;
+
+  let modelsFetchError: string | undefined;
+
+  const provider = findProvider(id);
+
+  if (provider) {
+
+    const { discoverProviderModels } = await import('./utils/provider-models');
+
+    const result = await discoverProviderModels({
+
+      provider,
+
+      apiKey,
+
+      persist: async (models) => {
+
+        await atomicModifyConfig(c => ({
+
+          ...c,
+
+          presetCustomModels: {
+
+            ...((c.presetCustomModels ?? {}) as Record<string, unknown>),
+
+            [id]: models,
+
+          },
+
+        }));
+
+      },
+
+    });
+
+    modelsFetched = result.modelsFetched;
+
+    modelsFetchError = result.error;
+
+  }
+
+
+
+  return {
+
+    success: true,
+
+    data: { id, modelsFetched, modelsFetchError },
+
+    hint: modelsFetchError
+
+      ? `API key saved for ${id}. Model list refresh failed: ${modelsFetchError}`
+
+      : modelsFetched !== undefined
+
+        ? `API key saved for ${id}. ${modelsFetched} model(s) discovered.`
+
+        : `API key saved for ${id}.`,
+
+  };
 
 }
 

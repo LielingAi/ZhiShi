@@ -20,6 +20,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.1.5] - 2026-08-20
+
+
+
+> 多模型接入 + TUI 配置闭环：内置端点填 key 即用，模型与 MCP 开关可在 TUI 里完成。
+
+
+
+### Added
+
+
+
+- **内置 8 家模型供应商**：在原有 anthropic-api / deepseek / kimi 基础上新增 OpenAI 格式供应商——openai、moonshot（Kimi）、dashscope（通义）、zhipu（智谱）、siliconflow（硅基流动）；`zhishi model set-key` 后自动拉取模型列表（OpenAI/anthropic 双响应形状，失败不阻塞）；pi 层走 openai-completions（真端点 one-shot 冒烟通过）。
+- **TUI 模型配置闭环**：`/model` 状态卡（8 家供应商/key 状态/默认模型）、`/model set-key <id>` 隐藏输入填 key、`/model use <id> <模型>` 切换（`/chat/model` 加 providerId 防跨供应商撞名）。
+- **MCP 开关进 TUI**：`/mcp enable|disable <id>`（复用现有 handler + 桥热重载即刻生效）；add/remove 保持 CLI。
+
+
+
 ## [1.1.4] - 2026-08-20
 
 

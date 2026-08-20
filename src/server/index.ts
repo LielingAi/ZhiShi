@@ -972,7 +972,7 @@ import {
 
 } from './SessionStore';
 
-import { atomicModifyConfig, decodeProviderEnvSnapshot, findAgentByWorkspacePath, findProvider, getAllEffectiveProviders, getAllMcpServers, getEffectiveMcpServers, isProviderDisabled, loadConfig, resolveProviderEnv } from './utils/admin-config';
+import { atomicModifyConfig, decodeProviderEnvSnapshot, findAgentByWorkspacePath, findEffectiveProvider, findProvider, getAllEffectiveProviders, getAllMcpServers, getEffectiveMcpServers, isProviderDisabled, loadConfig, resolveProviderEnv } from './utils/admin-config';
 
 import { snapshotForOwnedSession } from './utils/session-snapshot';
 
@@ -1054,6 +1054,8 @@ import {
 } from './loop/chat-engine';
 
 import { initMcpBridge } from './loop/mcp-bridge';
+
+import { isKimiCodingProvider } from './loop/pi-provider';
 
 import { pendingBoundaryAsks, respondBoundaryAsk } from './loop/boundary-ask';
 
@@ -3704,34 +3706,66 @@ async function main() {
 
       if (pathname === '/chat/model' && request.method === 'POST') {
         try {
-          const payload = (await request.json()) as { model?: string };
+          const payload = (await request.json()) as { model?: string; providerId?: string };
           const model = typeof payload?.model === 'string' ? payload.model.trim() : '';
+          const providerIdArg = typeof payload?.providerId === 'string' ? payload.providerId.trim() : '';
           if (!model) {
             return jsonResponse({ success: false, error: '缺少 model 参数' }, 400);
           }
 
-          // 反查 model → providerId：
-          // 1) preset + custom provider 的 models/primaryModel（deepseek、anthropic…）
-          // 2) 用户 providerPrimaryModels（覆盖 kimi k3 / deepseek flash 等非 preset provider）
-          // 3) providerModelAliases 别名（sonnet/opus/haiku → 真实模型）
           const config = loadConfig();
           let providerId: string | null = null;
-          for (const provider of getAllEffectiveProviders(config)) {
-            const rec = provider as unknown as Record<string, unknown>;
-            const models = rec.models as Array<{ model: string }> | undefined;
-            if (models?.some((m) => m.model === model) || rec.primaryModel === model) {
-              providerId = provider.id;
-              break;
+          if (providerIdArg) {
+            // TUI /model use 的显式供应商语义:直接校验该供应商,不做全局反查
+            // (聚合平台同名模型撞名时全局反查会错配供应商)。
+            const provider = findEffectiveProvider(providerIdArg, config);
+            if (!provider) {
+              // kimi 内置无 preset 定义(pi 层 kimiCodingProvider 直连)——
+              // resolveLoopModel 同样放行,这里保持一致的宽松语义。
+              if (!isKimiCodingProvider(providerIdArg)) {
+                return jsonResponse({ success: false, error: `未知供应商: ${providerIdArg}` }, 404);
+              }
+              providerId = providerIdArg;
+            } else {
+              if (isProviderDisabled(providerIdArg, config)) {
+                return jsonResponse({ success: false, error: `供应商 ${providerIdArg} 已禁用` }, 400);
+              }
+              const rec = provider as unknown as Record<string, unknown>;
+              const models = rec.models as Array<{ model: string }> | undefined;
+              const aliases = (rec.modelAliases ?? {}) as Record<string, string>;
+              const userPrimary = (config.providerPrimaryModels as Record<string, string> | undefined)?.[providerIdArg];
+              const known =
+                models?.some((m) => m.model === model) ||
+                rec.primaryModel === model ||
+                userPrimary === model ||
+                Object.values(aliases).includes(model);
+              if (!known) {
+                return jsonResponse({ success: false, error: `供应商 ${providerIdArg} 无模型: ${model}` }, 404);
+              }
+              providerId = providerIdArg;
             }
-          }
-          if (!providerId) {
-            for (const [pid, pm] of Object.entries((config.providerPrimaryModels as Record<string, string>) ?? {})) {
-              if (pm === model) { providerId = pid; break; }
+          } else {
+            // 反查 model → providerId：
+            // 1) preset + custom provider 的 models/primaryModel（deepseek、anthropic…）
+            // 2) 用户 providerPrimaryModels（覆盖 kimi k3 / deepseek flash 等非 preset provider）
+            // 3) providerModelAliases 别名（sonnet/opus/haiku → 真实模型）
+            for (const provider of getAllEffectiveProviders(config)) {
+              const rec = provider as unknown as Record<string, unknown>;
+              const models = rec.models as Array<{ model: string }> | undefined;
+              if (models?.some((m) => m.model === model) || rec.primaryModel === model) {
+                providerId = provider.id;
+                break;
+              }
             }
-          }
-          if (!providerId) {
-            for (const [pid, map] of Object.entries((config.providerModelAliases as Record<string, Record<string, string>>) ?? {})) {
-              if (Object.values(map).some((v) => v === model)) { providerId = pid; break; }
+            if (!providerId) {
+              for (const [pid, pm] of Object.entries((config.providerPrimaryModels as Record<string, string>) ?? {})) {
+                if (pm === model) { providerId = pid; break; }
+              }
+            }
+            if (!providerId) {
+              for (const [pid, map] of Object.entries((config.providerModelAliases as Record<string, Record<string, string>>) ?? {})) {
+                if (Object.values(map).some((v) => v === model)) { providerId = pid; break; }
+              }
             }
           }
           if (!providerId) {
