@@ -243,11 +243,13 @@ MCP / Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**
 
 
 
-### 情报检索（intel，1.1.2）
+### 情报检索（intel，1.1.2 + 1.1.4）
 
-- `intel.db`（`~/.zhishi/`，better-sqlite3，WAL）：NVD CVE（窗口分级 minimal/window/full，默认 minimal）+ exploit-db 索引（只存 CSV 索引行，PoC 文件不落盘）。FTS5 全文检索，查询按需直查库、不做启动预载。
-- 更新：`zhishi intel update [--mode minimal|window|full]`（走 sidecar admin API）。NVD 走 API 2.0 增量（lastModStartDate 水位）+ 断点续传；exploit-db 拉 GitLab CSV 整体替换（解析层按 id 首行去重——真实 CSV 有重复行）。**网络错误/超时/响应体读取失败都进指数退避重试**（NVD 单页 6.4MB，慢网络实测 90s+，超时 120s）；`maxSizeMb` 超限删最旧。
-- 工具：loop `intel_search`（宿主侧认知供给，与 research_log 同层、无条件注册）——精确 CVE / FTS 模糊 / exploit 关联查询；本地未命中按 `intel.onlineFallback` 回源 NVD（5s 超时静默降级）；结果 ≤5 条 × ≤200 字，带「索引最后更新于」提示。情报是线索不是结论——工具 description 已写明使用纪律。
+- `intel.db`（`~/.zhishi/`，better-sqlite3，WAL）：NVD CVE（窗口分级 minimal/window/full，默认 minimal）+ exploit-db 索引（只存 CSV 索引行，PoC 文件不落盘）+ nuclei 模板索引（1.1.4：`nuclei_templates(cve_id, template_path)`，只存目录不存正文——模板内容给 GitHub 链接）。FTS5 全文检索，查询按需直查库、不做启动预载。
+- 更新：`zhishi intel update [--mode minimal|window|full] [--nuclei-file <本地 cves.json>]`（走 sidecar admin API）。NVD 走 API 2.0 增量（lastModStartDate 水位）+ 断点续传；exploit-db 拉 GitLab CSV 整体替换（解析层按 id 首行去重——真实 CSV 有重复行）。**网络错误/超时/响应体读取失败都进指数退避重试**（NVD 单页 6.4MB，慢网络实测 90s+，超时 120s）；`maxSizeMb` 超限删最旧。
+- nuclei 同步（1.1.4）：**多源 fallback**——raw.githubusercontent → cdn.jsdelivr.net → api.github.com 普通 contents API（base64 解码；本机网络实测：node 进程对 raw/jsdelivr/gitlab 域超时、api.github.com 普通 API 稳定）。`--nuclei-file` 本地导入兜底（网络不通时宿主 curl 下载后喂入）。全部源失败保留旧数据进 warnings。
+- 更新并发互斥 + 进度（1.1.4）：update 进行中第二个 update 立即拒绝（「已有更新在跑」）；`intel/status` 带 progress（inProgress/currentWindowLabel/nvdAdded/exploitCount），CLI 每 3s 轮询实时显示「已入库 N 条」（不做百分比——拉取前总量未知）。
+- 工具：loop `intel_search`（宿主侧认知供给，与 research_log 同层、无条件注册）——精确 CVE / FTS 模糊 / exploit 关联查询；精确 CVE 命中时联查 nuclei 模板（截断 5 个，给 GitHub 链接）；本地未命中按 `intel.onlineFallback` 回源 NVD（5s 超时静默降级）；结果 ≤5 条 × ≤200 字，带「索引最后更新于」提示。情报是线索不是结论——工具 description 已写明使用纪律。
 - 配置：`config.json` 的 `intel: { mode, windowYears, maxSizeMb, onlineFallback }`（`src/shared/config-types.ts` 的 resolveIntelConfig）。
 
 
