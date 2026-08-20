@@ -15,6 +15,8 @@
 [![Node](https://img.shields.io/badge/Node-%3E%3D22-green.svg)]()
 [![Homepage](https://img.shields.io/badge/Homepage-zhishi.help-blue)](https://zhishi.help)
 
+> 📖 **新用户从这里开始：[使用指南](docs/user-guide.md)** —— 安装、选环境、配模型、TUI 命令大全、常见问题。
+
 > 以实战出发的**漏洞研究专用 harness**。
 
 > **免责声明**：本工具仅面向**合法授权**的安全研究（漏洞挖掘、复现、渗透测试）。禁止对未授权目标使用；使用者须遵守当地法律法规，作者不承担任何非法使用产生的后果。
