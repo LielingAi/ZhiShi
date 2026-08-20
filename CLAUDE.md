@@ -259,6 +259,16 @@ MCP / Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**
 
 
 
+### 会话按环境分线（1.1.6）
+
+- 每个环境一条独立会话线：映射文件 `~/.zhishi/env-sessions.json`，行键 = `${规范化workspace}::${环境键}` → loopSessionId（`src/server/environment/env-sessions.ts`，写走 withFileLock + tmp+rename）。环境键：env → `env:<id>`、recipe → `recipe:<instanceId>`、host → `host`；workspace 键一律 resolve + 统一正斜杠（斜杠漂移是活体坑）。
+- 联动：`environment/select` busy 前置闸（先于落盘，「响应进行中，先 Esc 停止再切换环境」）→ 落盘 → `switchEnvSession` 切线（有映射接线/无映射开新线/同环境幂等；旧线先回填映射防丢）。新线的映射写盘点在 `ensureSessionBound` 绑定之后——映射永不指向无绑定的线。
+- 启动恢复 env-aware：引擎 `restorePiSession` + TUI `ensureAgentSession` 都按「当前选定环境」接线；「按全 workspace 最新 meta 接线」旧语义已废除（分线下最新多半是别的环境的线）。`resetPiChat` 同步清当前环境键的映射（防旧历史复活）。cron 不特殊处理——跟随当前选定环境的线。
+- TUI 正门（gate）：`enterGate()` 入口必须重置 `gateBusy`（成功路径不复位曾致 /env 二次进门吞掉全部按键）；Esc 语义按来源区分——startup 退出到 shell，/env 重进返回 chat（`gateReentry`）。
+- 鼠标捕获（1.1.6 受控恢复）：writer enter 开 `?1000h+?1006h`、exit 关；keymap 只放行滚轮码 64/65，点击/拖拽继续吞掉（防点击误判 Esc 中断 turn）。取舍：终端原生拖选需按住 Shift。
+
+
+
 ### Agent Runtime
 
 **唯一 loop 引擎 = pi（自研 loop，`src/server/loop/`）**。Claude Agent SDK 已随 D25/M4c 删除（agent-session.ts 裁留元数据层）；外部 Runtime（Claude Code CLI / Codex CLI / Gemini CLI）早已随 D20 删除。存量 config 的 `agents[].runtime` / `runtimeConfig`、task 的 runtime/model 之外 override 字段静默忽略、数据留盘（见 `docs/security_researcher_agent_tech_plan.md` §10.3）。cron 的 `completed` gate 仍 MUST 打在真·turn 成功上（`!getAndClearLastAgentError()`），别只凭 `waitForSessionIdle`。

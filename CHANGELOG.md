@@ -20,6 +20,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.1.6] - 2026-08-21
+
+
+
+> 会话按环境分线 + TUI 缺陷修复：每个环境独立会话线，`/env` 重选可用，滚轮回看恢复。
+
+
+
+### Added
+
+
+
+- **会话按环境分线**：每个环境一条独立会话线（`~/.zhishi/env-sessions.json`，workspace × 环境键 → loopSessionId，withFileLock 原子写）；`environment/select` 落盘后联动引擎切线（turn 运行中拒绝并提示先 Esc）；启动恢复按「工作区 + 当前选定环境」接线；`/chat/reset` 同步清映射防旧历史复活；环境删除顺手清映射残留。活体验收：A/B 两环境各聊一段来回切换各接各的历史（`tmp/m6-env-lines.mjs` 全 PASS）。
+- **滚轮回看恢复**：受控重新引入 wheel-only 鼠标捕获（`?1000h`+`?1006h`，keymap 只放行滚轮码 64/65，点击/拖拽仍吞掉防误中断）；任意态滚轮上滚即翻历史，Esc 或滚到底回最新。已知取舍：终端原生拖选需按住 Shift。
+
+
+
+### Fixed
+
+
+
+- **`/env` 重新选择环境卡死**：`gateBusy` 在选定成功路径不复位，二次进门吞掉所有按键（上下/Enter/Esc 全无效）；附带修复重进时按 Esc 误退整个程序——现在区分启动/重进来源，重进 Esc 返回聊天界面。
+
+
+
 ## [1.1.5] - 2026-08-20
 
 
