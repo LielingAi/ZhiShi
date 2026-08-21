@@ -29,7 +29,7 @@ export type Overlay =
   | { kind: 'history'; query: string; results: string[]; sel: number }
   | { kind: 'rewind'; action: 'rewind' | 'fork'; candidates: { srvId: string; label: string }[]; sel: number }
   | { kind: 'queue'; items: { id: string; preview: string; kindLabel: string }[]; sel: number }
-  | { kind: 'tasks'; sel: number; detail: boolean }
+  | { kind: 'tasks'; sel: number; detail: boolean; offset: number }
   | { kind: 'drawer'; blockId: string; offset: number }
   | { kind: 'modal'; state: ModalState };
 
@@ -41,8 +41,12 @@ export interface OverlayKeyEnv {
   historyTexts: string[];
   /** /tasks 面板行数（Enter 互切与移动夹紧的上界）。 */
   taskRowCount: number;
+  /** /tasks 详情页当前内容总行数（offset 滚动夹紧上界；非详情态为 0）。 */
+  taskDetailTotal: number;
   /** drawer 目标块总行数；块不存在/非 tool → null（关面板）。 */
   drawerTotal: number | null;
+  /** U5(1.1.10):最近 N 个 tool 块 id(旧→新)——drawer ←/→ 切换的候选环。 */
+  drawerToolIds: string[];
 }
 
 /** 归约出的副作用：app 按 type 执行，reducer 自身零副作用。 */
@@ -53,7 +57,8 @@ export type OverlayEffect =
   | { type: 'history-pick'; text: string | undefined }
   | { type: 'rewind-go'; action: 'rewind' | 'fork'; srvId: string }
   | { type: 'queue-cancel'; id: string }
-  | { type: 'drawer-repaint'; blockId: string };
+  | { type: 'tasks-open-detail' }
+  | { type: 'drawer-repaint'; blockId: string; prevBlockId?: string };
 
 export interface OverlayKeyResult {
   overlay: Overlay | null;
@@ -73,7 +78,7 @@ export function filterHistoryResults(query: string, texts: string[]): string[] {
 export function reduceOverlayKey(ov: Overlay, key: Key, env: OverlayKeyEnv): OverlayKeyResult {
   if (key.name === 'esc') {
     // tasks 详情页：Esc 先逐层退回列表，再按才关面板（overlay 惯例）。
-    if (ov.kind === 'tasks' && ov.detail) return { overlay: { ...ov, detail: false } };
+    if (ov.kind === 'tasks' && ov.detail) return { overlay: { ...ov, detail: false, offset: 0 } };
     return { overlay: null };
   }
   switch (ov.kind) {
@@ -143,15 +148,28 @@ export function reduceOverlayKey(ov: Overlay, key: Key, env: OverlayKeyEnv): Ove
       return { overlay: ov };
     }
     case 'tasks': {
-      // 列表/详情两层：Enter 互切；移动键只在列表层生效。
+      // 列表/详情两层：Enter 互切；列表层 ↑/↓ 移选,详情层 ↑/↓/PgUp/PgDn
+      // 滚动 offset（transcript 可能很长,1.1.10 A′）。
       const rows = env.taskRowCount;
       if (key.name === 'enter') {
-        if (rows > 0) return { overlay: { ...ov, detail: !ov.detail } };
+        if (rows > 0) {
+          if (!ov.detail) {
+            // 打开详情:offset 归零 + 通知 app 按需拉 transcript(副作用)。
+            return { overlay: { ...ov, detail: true, offset: 0 }, effect: { type: 'tasks-open-detail' } };
+          }
+          return { overlay: { ...ov, detail: false, offset: 0 } };
+        }
         return { overlay: ov };
       }
       if (!ov.detail) {
         if (key.name === 'up') return { overlay: { ...ov, sel: Math.max(0, ov.sel - 1) } };
         if (key.name === 'down') return { overlay: { ...ov, sel: Math.min(rows - 1, ov.sel + 1) } };
+      } else {
+        const maxOffset = Math.max(0, env.taskDetailTotal - 1);
+        if (key.name === 'up') return { overlay: { ...ov, offset: Math.max(0, ov.offset - 1) } };
+        if (key.name === 'down') return { overlay: { ...ov, offset: Math.min(maxOffset, ov.offset + 1) } };
+        if (key.name === 'pgup') return { overlay: { ...ov, offset: Math.max(0, ov.offset - 10) } };
+        if (key.name === 'pgdn') return { overlay: { ...ov, offset: Math.min(maxOffset, ov.offset + 10) } };
       }
       return { overlay: ov };
     }
@@ -160,6 +178,18 @@ export function reduceOverlayKey(ov: Overlay, key: Key, env: OverlayKeyEnv): Ove
       const total = env.drawerTotal;
       const repaint: OverlayEffect = { type: 'drawer-repaint', blockId: ov.blockId };
       if (hasMod(key, 'ctrl') && key.char === 'o') return { overlay: null, effect: repaint };
+      // U5(1.1.10):←/→ 在最近 N 个 tool 卡间循环切换目标(单卡时原地不动)。
+      if (key.name === 'left' || key.name === 'right') {
+        const ids = env.drawerToolIds;
+        const idx = ids.indexOf(ov.blockId);
+        if (ids.length < 2 || idx < 0) return { overlay: ov, effect: repaint };
+        const dir = key.name === 'left' ? -1 : 1;
+        const to = ids[(idx + dir + ids.length) % ids.length];
+        return {
+          overlay: { kind: 'drawer', blockId: to, offset: 0 },
+          effect: { type: 'drawer-repaint', blockId: to, prevBlockId: ov.blockId },
+        };
+      }
       if (key.name === 'up') return { overlay: { ...ov, offset: Math.max(0, ov.offset - 1) }, effect: repaint };
       if (key.name === 'down') return { overlay: { ...ov, offset: Math.min(total - 1, ov.offset + 1) }, effect: repaint };
       if (key.name === 'pgup') return { overlay: { ...ov, offset: Math.max(0, ov.offset - 10) }, effect: repaint };

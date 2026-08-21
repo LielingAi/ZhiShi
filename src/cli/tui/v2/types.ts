@@ -160,6 +160,12 @@ export interface BackgroundTask {
   outputCount: number;
   latestConclusion?: string;
   done: boolean;
+  /**
+   * 1.1.10(A′):子 loop 的会话 id(chat:subagent-finished 携带)——/tasks
+   * 详情页据此拉 GET /api/loop-session/messages 展示只读 transcript。
+   * 失败路径/旧服务端无此字段 → 详情页回退 summary 视图。
+   */
+  loopSessionId?: string;
 }
 
 /** env_bg 长驻进程（P2 Phase 2 状态行存在感）。 */
@@ -186,6 +192,8 @@ export interface StatusSnapshot {
   contextPct: number;
   /** Model label (narrow-screen first to drop). */
   model?: string;
+  /** U8(1.1.10):累计 token(input/output),message-complete/replay 累加。 */
+  tokens?: { input: number; output: number };
   /** Subagent static segment, e.g. "⛁ fuzz · 3 崩溃". */
   backgroundSeg?: string;
   /** Right-side Esc hint, derived from mode/scroll/interrupt state. */

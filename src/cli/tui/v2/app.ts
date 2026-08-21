@@ -29,7 +29,6 @@ import {
   composeModalBox,
   overlayRow,
   overlayHeader,
-  takeWidth,
   type OverlayItem,
 } from './chrome';
 import { renderUser, renderAssistant } from './blocks/message-block';
@@ -53,6 +52,12 @@ import { GateController, type ManualFormState } from './gate-controller';
 import type { AttachTarget } from './attach';
 import { composeBackgroundSeg } from './bg-tasks';
 import { reduceHiddenLine, type HiddenLineOutcome } from './model';
+import {
+  narrowTranscript,
+  renderTranscriptItems,
+  wrapPanelLine,
+  type TranscriptView,
+} from './task-transcript';
 import { runSnapshot, runRollback, runExtract } from './slash/env';
 import { runAttach } from './slash/attach';
 import { runModel } from './slash/model';
@@ -87,19 +92,14 @@ export interface AppDeps {
 
 const PANEL_MAX_ROWS = 12;
 const INPUT_MAX_CONTENT = 8;
+/** U5(1.1.10):drawer ←/→ 可切换的最近 tool 卡数量。 */
+const DRAWER_SWITCH_RECENT = 5;
 
-/** Wrap one detail line to the panel inner width (grapheme-safe, CJK-aware). */
-function wrapDetailLine(text: string, width: number): string[] {
-  const out: string[] = [];
-  let rest = text;
-  while (rest.length > 0) {
-    const chunk = takeWidth(rest, width);
-    if (!chunk) break;
-    out.push(chunk);
-    rest = rest.slice(chunk.length);
-  }
-  return out.length > 0 ? out : [''];
-}
+/** A′(1.1.10):/tasks 详情的 transcript 拉取缓存态。 */
+type TranscriptCacheEntry =
+  | { status: 'loading' }
+  | { status: 'ok'; transcript: TranscriptView }
+  | { status: 'error' };
 
 export class App {
   private client: SidecarClient;
@@ -126,6 +126,8 @@ export class App {
 
   private showWelcome = false;
   private reconnecting = false;
+  /** A′(1.1.10):loopSessionId → transcript 拉取态(同 id 不重复拉,面板关闭清空)。 */
+  private transcriptCache = new Map<string, TranscriptCacheEntry>();
   /** U3(1.1.9):Esc 清草稿的一次性恢复槽——空编辑器时 ↑/Ctrl+Y 找回,恢复即清槽。 */
   private escDraft: string | null = null;
   private turnStartedAt = 0;
@@ -513,6 +515,8 @@ export class App {
     // 状态变更全部在 overlay-reducer 纯归约；这里只执行副作用 + 重绘。
     const { overlay, effect } = reduceOverlayKey(ov, key, this.overlayKeyEnv(ov));
     this.overlay = overlay;
+    // A′:tasks 面板关掉(或换成别的 overlay)即清 transcript 缓存。
+    if (ov.kind === 'tasks' && overlay?.kind !== 'tasks') this.transcriptCache.clear();
     if (effect) this.applyOverlayEffect(effect);
     this.renderChrome();
   }
@@ -528,8 +532,20 @@ export class App {
       editorText: this.editor.text,
       historyTexts: ov.kind === 'history' ? this.history.recentTexts().reverse() : [],
       taskRowCount: ov.kind === 'tasks' ? this.collectTaskRows().length : 0,
+      taskDetailTotal:
+        ov.kind === 'tasks' && ov.detail
+          ? this.taskDetailItems(ov, this.writer.layout().cols).items.length
+          : 0,
       drawerTotal,
+      drawerToolIds: ov.kind === 'drawer' ? this.recentToolBlockIds() : [],
     };
+  }
+
+  /** U5:最近 N 个 tool 块 id(旧→新)——drawer ←/→ 的切换候选环。 */
+  private recentToolBlockIds(): string[] {
+    const ids: string[] = [];
+    for (const b of this.state.blocks) if (b.kind === 'tool') ids.push(b.id);
+    return ids.slice(-DRAWER_SWITCH_RECENT);
   }
 
   /** overlay reducer 归约出的副作用在这里统一执行。 */
@@ -555,9 +571,15 @@ export class App {
       case 'queue-cancel':
         void this.client.postJson('/chat/queue/cancel', { queueId: effect.id }).catch(() => {});
         return;
-      case 'drawer-repaint':
-        this.repaintBlocks({ touched: [effect.blockId], appended: [] });
+      case 'tasks-open-detail':
+        this.maybeFetchTaskTranscript();
         return;
+      case 'drawer-repaint': {
+        // U5:切换目标时旧卡也要重绘(收起展开态)。
+        const touched = effect.prevBlockId ? [effect.prevBlockId, effect.blockId] : [effect.blockId];
+        this.repaintBlocks({ touched, appended: [] });
+        return;
+      }
     }
   }
 
@@ -691,15 +713,16 @@ export class App {
 
   /** /tasks(U2 1.1.9):子任务 + 后台进程面板。数据直读 state,事件重绘即刷新。 */
   private openTasks(): void {
-    this.overlay = { kind: 'tasks', sel: 0, detail: false };
+    this.overlay = { kind: 'tasks', sel: 0, detail: false, offset: 0 };
     this.renderChrome();
   }
 
   /** 面板行数据:subagent 任务在前,长驻进程在后(均为 Map 插入序)。 */
-  private collectTaskRows(): { label: string; lines: string[] }[] {
-    const rows: { label: string; lines: string[] }[] = [];
+  private collectTaskRows(): { label: string; lines: string[]; taskId?: string }[] {
+    const rows: { label: string; lines: string[]; taskId?: string }[] = [];
     for (const t of this.state.tasks.values()) {
       rows.push({
+        taskId: t.id,
         label: t.done
           ? `✓ ${t.description}${t.latestConclusion ? ` — ${t.latestConclusion}` : ''}`
           : `… ${t.description} · 输出 ${t.outputCount}`,
@@ -723,6 +746,79 @@ export class App {
       });
     }
     return rows;
+  }
+
+  /** 详情页选中的 subagent 任务(后台进程行/越界 → undefined)。 */
+  private detailTask(ov: Extract<Overlay, { kind: 'tasks' }>): import('./types').BackgroundTask | undefined {
+    const rows = this.collectTaskRows();
+    const row = rows[Math.max(0, Math.min(ov.sel, rows.length - 1))];
+    return row?.taskId ? this.state.tasks.get(row.taskId) : undefined;
+  }
+
+  /**
+   * A′(1.1.10):打开详情时按需拉子代理 transcript。状态机:
+   * 无 loopSessionId(旧任务/后台进程) → 不拉,详情页落 summary;
+   * 缓存 miss → loading(「读取中…」)+ 异步 GET;200 → ok 渲染条目流;
+   * 404/失败 → error,落回 summary。同一 sessionId 重复打开不重复拉。
+   */
+  private maybeFetchTaskTranscript(): void {
+    const ov = this.overlay;
+    if (ov?.kind !== 'tasks' || !ov.detail) return;
+    const sessionId = this.detailTask(ov)?.loopSessionId;
+    if (!sessionId || this.transcriptCache.has(sessionId)) return;
+    this.transcriptCache.set(sessionId, { status: 'loading' });
+    void this.client
+      .getJson(`/api/loop-session/messages?loopSessionId=${encodeURIComponent(sessionId)}`)
+      .then((res) => {
+        const transcript = narrowTranscript(res);
+        this.transcriptCache.set(sessionId, transcript ? { status: 'ok', transcript } : { status: 'error' });
+      })
+      .catch(() => {
+        this.transcriptCache.set(sessionId, { status: 'error' });
+      })
+      .finally(() => {
+        // 异步到达必须触发重绘(「读取中…」→ transcript / summary 回退)。
+        this.renderChrome();
+      });
+  }
+
+  /**
+   * /tasks 详情页内容(transcript 条目流 / 读取中 / summary 回退)。渲染与
+   * overlayKeyEnv(taskDetailTotal)共用这一条路径,滚动夹紧的上界永远与
+   * 实际渲染行数一致。followSel 喂给 composeOverlay 的滚动窗口(-1 = 顶)。
+   */
+  private taskDetailItems(
+    ov: Extract<Overlay, { kind: 'tasks' }>,
+    cols: number,
+  ): { title: string; items: OverlayItem[]; followSel: number } {
+    const rows = this.collectTaskRows();
+    const inner = Math.max(8, cols - 4);
+    const task = this.detailTask(ov);
+    const sessionId = task?.loopSessionId;
+    if (sessionId) {
+      const cached = this.transcriptCache.get(sessionId);
+      if (cached?.status === 'ok') {
+        const items = renderTranscriptItems(cached.transcript, inner);
+        return {
+          title: `工作史（↑↓ 滚动 · Enter/Esc 返回）`,
+          items,
+          followSel: Math.min(ov.offset, items.length - 1),
+        };
+      }
+      if (!cached || cached.status === 'loading') {
+        return {
+          title: '工作史（Enter/Esc 返回）',
+          items: [{ spans: [{ text: '读取中…', style: { fg: 'faint' as const } }], selectable: false }],
+          followSel: -1,
+        };
+      }
+      // error → 落回 summary 视图。
+    }
+    const row = rows[Math.max(0, Math.min(ov.sel, rows.length - 1))];
+    const items = (row?.lines ?? [])
+      .flatMap((ln) => wrapPanelLine(ln, inner))
+      .map((ln): OverlayItem => ({ spans: [{ text: ln, style: { fg: 'text' as const } }], selectable: false }));
+    return { title: '详情（Enter/Esc 返回）', items, followSel: -1 };
   }
 
   /** Live / and @ completion driven by the editor content. */
@@ -862,6 +958,7 @@ export class App {
    * gate 选定、/reset、fork 重赋值,getter 保证 handler 拿到的是活的。
    */
   private slashContext(): SlashContext {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- getter 闭包需要词法捕获；alias 是该模式的最简形态
     const app = this;
     return {
       client: this.client,
@@ -1044,6 +1141,7 @@ export class App {
         envName: this.mode === 'chat' ? this.env.name : undefined,
         envKind: this.mode === 'chat' ? this.env.kind : undefined,
         backgroundSeg: this.state.status.backgroundSeg,
+        tokens: this.state.status.tokens,
         hint: this.currentHint(),
         reconnecting: this.reconnecting,
       },
@@ -1145,12 +1243,12 @@ export class App {
         // 事件会增删行(bg-finished 移除进程):渲染时夹紧选中,详情目标消失则退回列表。
         ov.sel = Math.max(0, Math.min(ov.sel, rows.length - 1));
         if (ov.detail) {
-          title = '详情（Enter/Esc 返回）';
-          const inner = Math.max(8, cols - 4);
-          items = rows[ov.sel].lines
-            .flatMap((ln) => wrapDetailLine(ln, inner))
-            .map((ln): OverlayItem => ({ spans: [{ text: ln, style: { fg: 'text' } }], selectable: false }));
-          flatSel = -1;
+          // A′(1.1.10):有 loopSessionId 且已拉到 → transcript 条目流(offset
+          // 经 followSel 驱动 composeOverlay 的滚动窗口);否则读取中/summary。
+          const view = this.taskDetailItems(ov, cols);
+          title = view.title;
+          items = view.items;
+          flatSel = view.followSel;
         } else {
           title = '子任务与后台进程（Enter 详情）';
           items = rows.map((r, i) => overlayRow(r.label, '', i === ov.sel, cols));
@@ -1189,11 +1287,14 @@ export class App {
         case 'modal':
           return 'y 批准 · n 拒绝';
         case 'drawer':
-          return '↑↓ 滚动 · Esc 收起';
+          // U5(1.1.10):有多张工具卡时补 ←/→ 切换提示。
+          return this.recentToolBlockIds().length > 1
+            ? '↑↓ 滚动 · ←→ 切换工具卡 · Esc 收起'
+            : '↑↓ 滚动 · Esc 收起';
         case 'queue':
           return 'x 取消 · Esc 关闭';
         case 'tasks':
-          return ov.detail ? 'Enter/Esc 返回列表' : '↑↓ 选择 · Enter 详情 · Esc 关闭';
+          return ov.detail ? '↑↓ 滚动 · Enter/Esc 返回' : '↑↓ 选择 · Enter 详情 · Esc 关闭';
         case 'history':
           return '输入筛选 · Enter 采用 · Esc 关闭';
         default:

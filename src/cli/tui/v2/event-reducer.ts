@@ -157,6 +157,9 @@ export function reduceSseEvent(
               }
             : undefined;
         if (usage) (blk as AssistantBlock).usage = usage;
+        // U8(1.1.10):累计 token → 状态栏。replay 路径在 replayMessage 里同款
+        // 累加(srvId 去重挡重连重复计)。
+        accumulateTokens(state, usage);
         // 空结论兜底(实测:弱模型跑完工具后产出空文本,界面像「无响应」):
         // 把空 assistant 块改成分隔行,人永远看得见这轮发生了什么。
         if (!(blk as AssistantBlock).text.trim()) {
@@ -373,6 +376,9 @@ export function reduceSseEvent(
       const t = ensureTask(state, str(p.taskId), str(p.description));
       t.done = true;
       t.latestConclusion = str(p.summary)?.slice(0, 200);
+      // 1.1.10(A′):子 loop 会话 id → /tasks 详情页拉只读 transcript。
+      const loopSessionId = str(p.loopSessionId);
+      if (loopSessionId) t.loopSessionId = loopSessionId;
       const failed = str(p.status) === 'failed';
       const summary = t.latestConclusion ?? (failed ? '子任务失败' : '子任务完成');
       const row: Block = {
@@ -561,6 +567,19 @@ function mergeStatus(
   if (p.phase || p.contextPct !== undefined || p.model) patch.status = p;
 }
 
+/** U8(1.1.10):把一条 usage 累加进状态栏的会话级 token 计数。 */
+function accumulateTokens(
+  state: SessionState,
+  usage: { input?: number; output?: number } | undefined,
+): void {
+  if (!usage) return;
+  const cur = state.status.tokens ?? { input: 0, output: 0 };
+  state.status.tokens = {
+    input: cur.input + (usage.input ?? 0),
+    output: cur.output + (usage.output ?? 0),
+  };
+}
+
 function ensureTask(
   state: SessionState,
   id: string | undefined,
@@ -636,6 +655,7 @@ function replayMessage(
       streaming: false,
       usage: m.usage as AssistantBlock['usage'],
     };
+    accumulateTokens(state, m.usage as AssistantBlock['usage']);
     state.blocks.push(blk);
     patch.appended.push(blk);
   } else if (m.role === 'tool') {
