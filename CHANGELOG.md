@@ -20,6 +20,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.1.7] - 2026-08-21
+
+
+
+> 技术债版：IO 写盘纪律统一、引擎状态收拢成类、god file 绞杀拆分。无用户可见功能，纯搬移不改行为。
+
+
+
+### Changed
+
+
+
+- **文件 IO 纪律统一**：`env-selection.json` 写盘收编 `withFileLock` 锁内读-改-写 + tmp+rename 原子替换（多实例共用数据目录时消丢更新窗口）；其余读写点逐个甄别（已是原子写/非状态文件的不动）。
+- **引擎状态收拢成类**：`chat-engine.ts` 模块级单例状态（13 个字段）收进 `ChatEngine` 类，导出改为原签名 facade 委托默认实例——调用点零改动、行为零变化；可变状态边界显式化，为 2.0 多环境并行打地基。
+- **`index.ts` 绞杀拆分**：13041 → 7660 行。抽出 `crash-log.ts`（崩溃诊断）、`skills-config.ts`（skills 配置/种子，`writeSkillsConfig` 顺手收编锁）、`cron/routes.ts`（cron 三路由）、`routes/sessions.ts` + `routes/mcp.ts`（sessions 10 路由 + MCP/OAuth 路由组）。全量 1683 测试绿 + 活体 smoke 5/5。
+
+
+
 ## [1.1.6] - 2026-08-21
 
 

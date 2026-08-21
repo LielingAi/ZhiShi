@@ -28,7 +28,7 @@
 
 
 
-- `src/server/` — Node.js 后端 Sidecar（esbuild 打包成 `server-dist.js`）
+- `src/server/` — Node.js 后端 Sidecar（esbuild 打包成 `server-dist.js`）。入口 `index.ts` 只做启动/路由分发（1.1.7 绞杀拆分后 7.7k 行）；崩溃日志 `crash-log.ts`、skills 配置 `skills-config.ts`、cron 路由 `cron/`、sessions/mcp 路由 `routes/`、`admin-api.ts` admin handler 包
 
 - `src/server/appcraft/` — AppCraft 桌面自动化（terminator-client / replay-engine / recorder，见 PRD 0.2.36）
 

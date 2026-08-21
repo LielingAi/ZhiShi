@@ -2,7 +2,7 @@
   "name": "zhishi",
   "description": "安全研究员专属智能体：zhishi CLI + agent，无窗口，把研究环境接进终端。",
   "type": "module",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "license": "AGPL-3.0",
   "packageManager": "npm@10.8.2",
   "engines": {
