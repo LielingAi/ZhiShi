@@ -20,6 +20,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.1.10] - 2026-08-21
+
+
+
+> 子代理可审计（只读工作史）+ app.ts 拆分 + 工具卡多展开与 token 展示。
+
+
+
+### Added
+
+
+
+- **子代理 transcript 只读查看**：子 loop 会话持久化落盘（delegate_task 接通 storeDir），`chat:subagent-finished` 带 loopSessionId；`/tasks` 面板详情页可查看子代理完整工作史（每轮工具调用/输出/回复，异步加载 + 滚动 + 缓存），新端点 `GET /api/loop-session/messages`（200 条/100KB 护栏）。结论从「黑盒摘要」变「可审证据链」。
+- **状态栏 token 用量**：累计 input/output 以 k 缩写进状态栏（窄终端第一个被丢，不挤占关键段）。
+- **工具卡多展开**：Ctrl+O 抽屉里 ←/→ 在最近 5 张工具卡间切换（此前只能展开最新一张）。
+
+
+
+### Changed
+
+
+
+- **app.ts 绞杀拆分**：1848 → 1258 行。slash 命令抽 `slash/`（env/attach/model/mcp 五文件）、overlay 状态收纯函数 reducer、gate 正门抽 `gate-controller.ts`；纯搬移，四个 app 级测试零改动全绿。
+
+
+
 ## [1.1.9] - 2026-08-21
 
 
