@@ -158,6 +158,11 @@ for (const suite of suites) {
   const r = await runSuite(suite);
   printStatus(suite.name, r.status, r.exitCode, r.ms);
   results.push({ suite, ...r });
+  // 套件间 pacing：全真端点连发容易撞供应商限流（2026-08-21 实测 m3 在
+  // 快速连跑时失败、单跑即过）；每个套件后歇 10s 平抑突发。
+  if (suite !== suites[suites.length - 1]) {
+    await new Promise((res) => setTimeout(res, 10_000));
+  }
 }
 
 const failed = results.filter((r) => r.status !== "pass");
