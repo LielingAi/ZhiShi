@@ -52,12 +52,16 @@ export function renderError(block: ErrorBlock, width: number): Span[][] {
 }
 
 export function renderBackground(block: BackgroundBlock): Span[][] {
-  const spans: Span[] = [
-    { text: '⛁ ', style: { fg: 'cyan' } },
-    { text: block.summary, style: { fg: 'muted' } },
+  // 1.1.9 U1:删掉「要我切过去吗？(y)」尾钩——按键路由从未处理过 y(死按钮),
+  // 且服务端没有切到 subagent 会话的入口(subagent-finished 只带 taskId,
+  // 子 loop sessionId 未持久化也未进 SessionStore,/sessions/switch 到不了)。
+  // switchHook 字段保留在数据层(reducer 仍标记),等有真通道再接。
+  return [
+    [
+      { text: '⛁ ', style: { fg: 'cyan' } },
+      { text: block.summary, style: { fg: 'muted' } },
+    ],
   ];
-  if (block.switchHook) spans.push({ text: '  要我切过去吗？(y)', style: { fg: 'cyan' } });
-  return [spans];
 }
 
 /**

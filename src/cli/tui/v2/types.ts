@@ -110,7 +110,11 @@ export interface BackgroundBlock extends BaseBlock {
   kind: 'background';
   taskId: string;
   summary: string;
-  /** "要我切过去吗" tail hook shown when the subagent finishes. */
+  /**
+   * Marks a finished subagent conclusion (reducer sets it on success).
+   * 1.1.9: 尾钩文案已从渲染层移除(死按钮:无按键路由、服务端无切换入口),
+   * 字段保留作数据标记,等切换通道落地再接渲染。
+   */
   switchHook?: boolean;
 }
 

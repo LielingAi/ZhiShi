@@ -299,6 +299,13 @@ export class TerminalWriter {
     if (this.viewport.state().scrollOffset !== before) this.scheduler.request();
   }
 
+  /** 整页翻页(1.1.9 U6):正=向上翻一页,负=向下;页高=输出区可视行数。 */
+  scrollPages(pages: number): void {
+    const before = this.viewport.state().scrollOffset;
+    this.viewport.scrollPages(pages);
+    if (this.viewport.state().scrollOffset !== before) this.scheduler.request();
+  }
+
   scrollToTail(): void {
     this.viewport.scrollToTail();
     this.scheduler.request();

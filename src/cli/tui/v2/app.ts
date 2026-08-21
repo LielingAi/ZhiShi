@@ -70,7 +70,18 @@ import {
   type McpServerRow,
   type HiddenLineOutcome,
 } from './model';
-import type { Block, SessionState, ModalState, RefAttachment } from './types';
+import type { Block, DividerBlock, SessionState, ModalState, RefAttachment } from './types';
+
+// ---------------------------------------------------------------------------
+
+/**
+ * pushBlock 的按 kind 精确入参(H3):divider/error/background 各有明确字段,
+ * 不再用 `as unknown as Block` 绕类型检查。
+ */
+type PushBlockInput =
+  | { kind: 'divider'; label: string; follow?: string; tone: DividerBlock['tone'] }
+  | { kind: 'error'; text: string }
+  | { kind: 'background'; taskId: string; summary: string; switchHook?: boolean };
 
 // ---------------------------------------------------------------------------
 
@@ -140,6 +151,8 @@ export class App {
 
   private showWelcome = false;
   private reconnecting = false;
+  /** U3(1.1.9):Esc 清草稿的一次性恢复槽——空编辑器时 ↑/Ctrl+Y 找回,恢复即清槽。 */
+  private escDraft: string | null = null;
   private turnStartedAt = 0;
   private spinnerFrame = 0;
   private spinnerTimer: NodeJS.Timeout | null = null;
@@ -492,6 +505,8 @@ export class App {
         return;
       }
       this.editor.apply({ type: 'paste', text: body });
+      this.escDraft = null; // 新输入使恢复槽失效(一次性语义)
+      this.updateLiveCompletion(); // U7a(1.1.9):粘贴与普通击键同待遇——补全联动
       this.renderChrome();
       return;
     }
@@ -609,6 +624,7 @@ export class App {
         this.scrollActive = false;
         this.writer.scrollToTail();
       } else if (!this.editor.isEmpty) {
+        this.escDraft = this.editor.text; // U3: 清空前压入一次性恢复槽
         this.editor.setText('');
       } else if (this.state.status.phase === 'running') {
         void this.stop();
@@ -617,7 +633,14 @@ export class App {
       return;
     }
     if (key.name === 'pgup' || key.name === 'pgdn') {
-      this.writer.scrollBy(key.name === 'pgup' ? 10 : -10);
+      // U6(1.1.9):整页翻页(页高=输出区可视行数),取代固定 ±10 行。
+      this.writer.scrollPages(key.name === 'pgup' ? 1 : -1);
+      this.renderChrome();
+      return;
+    }
+    if (key.name === 'home' && hasMod(key, 'ctrl')) {
+      // U6(1.1.9):Ctrl+Home 跳到最早一行;回底保持 Esc/滚到底语义。
+      this.writer.scrollToTop();
       this.renderChrome();
       return;
     }
@@ -643,6 +666,18 @@ export class App {
       this.renderChrome();
       return;
     }
+    // ↑/Ctrl+Y:U3 恢复槽优先(空编辑器 + 有槽)——恢复后清槽。
+    if (
+      this.escDraft !== null &&
+      this.editor.isEmpty &&
+      (key.name === 'up' || (hasMod(key, 'ctrl') && key.char === 'y'))
+    ) {
+      const draft = this.escDraft;
+      this.escDraft = null;
+      this.editor.setText(draft);
+      this.renderChrome();
+      return;
+    }
     // ↑/↓: completion navigation > history recall (empty/on-edge) > editor move.
     if (key.name === 'up' || key.name === 'down') {
       if (this.editor.isEmpty || (key.name === 'up' && this.editor.onFirstLine) || (key.name === 'down' && this.editor.onLastLine)) {
@@ -655,6 +690,7 @@ export class App {
     }
     const edit = keyToEdit(key);
     if (edit) {
+      this.escDraft = null; // 新输入使恢复槽失效(一次性语义)
       this.editor.apply(edit);
       this.updateLiveCompletion();
       this.renderChrome();
@@ -1437,9 +1473,11 @@ export class App {
   // Rendering
   // -------------------------------------------------------------------------
 
-  private pushBlock(partial: { kind: Block['kind'] } & Record<string, unknown>): string {
-    const id = `${partial.kind}-${++this.state.seq}-${Date.now()}`;
-    this.state.blocks.push({ ...partial, id, seq: this.state.seq } as unknown as Block);
+  private pushBlock(input: PushBlockInput): string {
+    const seq = ++this.state.seq;
+    const id = `${input.kind}-${seq}-${Date.now()}`;
+    const block: Block = { ...input, id, seq };
+    this.state.blocks.push(block);
     this.repaintAll();
     return id;
   }
@@ -1513,13 +1551,9 @@ export class App {
     if (!this.scrollActive) this.writer.scrollToTail();
   }
 
-  /** Repaint the pinned chrome: status bar + (overlay panel) + input box. */
-  private renderChrome(): void {
-    const l = this.writer.layout();
-    const cols = l.cols;
-
-    // 1. status bar
-    const bar = composeStatusBar(
+  /** 状态栏 compose 单一来源(H2):renderChrome 与 spinner 回调共用,入参不再抄两遍。 */
+  private composeStatusBarLine(): import('./row-buffer').Span[] {
+    return composeStatusBar(
       {
         phase: this.state.status.phase,
         elapsedMs: this.turnStartedAt ? Date.now() - this.turnStartedAt : undefined,
@@ -1532,10 +1566,18 @@ export class App {
         hint: this.currentHint(),
         reconnecting: this.reconnecting,
       },
-      cols,
+      this.writer.layout().cols,
       this.spinnerFrame,
     );
-    this.writer.setStatus([bar]);
+  }
+
+  /** Repaint the pinned chrome: status bar + (overlay panel) + input box. */
+  private renderChrome(): void {
+    const l = this.writer.layout();
+    const cols = l.cols;
+
+    // 1. status bar
+    this.writer.setStatus([this.composeStatusBarLine()]);
 
     // 2. input region: (overlay panel) + input box / modal box
     if (this.overlay?.kind === 'modal') {
@@ -1668,24 +1710,7 @@ export class App {
         this.state.status.phase === 'running' || this.gateBusy || this.reconnecting;
       if (!active) return;
       this.spinnerFrame++;
-      const l = this.writer.layout();
-      const bar = composeStatusBar(
-        {
-          phase: this.state.status.phase,
-          elapsedMs: this.turnStartedAt ? Date.now() - this.turnStartedAt : undefined,
-          queueDepth: this.state.queue.length,
-          contextPct: this.state.status.contextPct ?? 0,
-          model: this.state.status.model,
-          envName: this.mode === 'chat' ? this.env.name : undefined,
-          envKind: this.mode === 'chat' ? this.env.kind : undefined,
-          backgroundSeg: this.state.status.backgroundSeg,
-          hint: this.currentHint(),
-          reconnecting: this.reconnecting,
-        },
-        l.cols,
-        this.spinnerFrame,
-      );
-      this.writer.setStatus([bar]);
+      this.writer.setStatus([this.composeStatusBarLine()]);
     }, 100);
   }
 }
