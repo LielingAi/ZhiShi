@@ -148,6 +148,7 @@ zhishi model set-default deepseek deepseek-v4-pro   # 设置默认模型
 | `/rewind` | 回退到历史消息（改完重发） |
 | `/fork` | 从某条消息分叉出新线程 |
 | `/queue` | 查看/取消排队消息 |
+| `/tasks` | 查看子任务与后台进程（列表 → Enter 看结论详情） |
 | `/reset` | 重置对话（新会话） |
 | `/help` | 键位与命令帮助 |
 | `/quit` | 退出会话界面 |
@@ -160,11 +161,11 @@ zhishi model set-default deepseek deepseek-v4-pro   # 设置默认模型
 | `Ctrl+J` / `Alt+Enter` | 多行输入 |
 | `↑` / `↓` | 历史消息（输入为空时） |
 | `Ctrl+R` | 历史搜索 |
-| `Esc` | 中断 turn / 关闭面板 / 回到底部 |
+| `Esc` | 中断 turn / 关闭面板 / 回到底部；清空草稿可用 `↑` 或 `Ctrl+Y` 找回一次 |
 | `Ctrl+Z` | 回退到历史消息（rewind） |
 | `Ctrl+O` | 展开/收起最近工具输出 |
 | `Ctrl+L` | 开关帮助 |
-| `PgUp` / `PgDn` | 回看会话（输入永不锁） |
+| `PgUp` / `PgDn` | 回看会话（整页翻）；`Ctrl+Home` 跳到顶部；滚轮逐行翻看 |
 | `Tab` | 补全 / `@` 引用 |
 | `Ctrl+C` | 清空输入；空输入时中断；空闲时退出 |
 | `/` | 命令面板 |
