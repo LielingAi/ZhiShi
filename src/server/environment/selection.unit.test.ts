@@ -5,7 +5,7 @@
  * per-workspace index, host default, display tag) plus the thin IO
  * (load/save round-trip against a temp dir; missing/corrupt file tolerance).
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,6 +17,7 @@ import {
   getWorkspaceSelectionRecord,
   HOST_SELECTION,
   loadSelectionStore,
+  mutateSelectionStore,
   parseSelectionStore,
   saveSelectionStore,
   selectionTag,
@@ -183,5 +184,37 @@ describe('thin IO (load/save)', () => {
     const path = join(dir, 'env-selection.json');
     writeFileSync(path, '{{{corrupt', 'utf-8');
     expect(loadSelectionStore(path)).toEqual(emptySelectionStore());
+  });
+});
+
+describe('mutateSelectionStore（withFileLock 锁内读-改-写）', () => {
+  let dir: string;
+  let file: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'zhishi-env-selection-mutate-'));
+    file = join(dir, 'env-selection.json');
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('mutate → load round-trip；无改动（同引用返回）不落盘', async () => {
+    await mutateSelectionStore((store) => setWorkspaceSelection(store, WS_A, { kind: 'env', id: 'dev-box' }, STAMP), file);
+    expect(getWorkspaceSelection(loadSelectionStore(file), WS_A)).toEqual({ kind: 'env', id: 'dev-box' });
+
+    // 无改动不写盘：对不存在的文件做恒等 mutate，文件不应被创建
+    const ghost = join(dir, 'ghost.json');
+    await mutateSelectionStore((store) => store, ghost);
+    expect(existsSync(ghost)).toBe(false);
+  });
+
+  it('并发写串行化：两个 mutate 都不丢（锁内读-改-写）', async () => {
+    await Promise.all([
+      mutateSelectionStore((store) => setWorkspaceSelection(store, WS_A, { kind: 'env', id: 'dev-box' }, STAMP), file),
+      mutateSelectionStore((store) => setWorkspaceSelection(store, WS_B, { kind: 'host' }, STAMP), file),
+    ]);
+    const store = loadSelectionStore(file);
+    expect(getWorkspaceSelection(store, WS_A)).toEqual({ kind: 'env', id: 'dev-box' });
+    expect(getWorkspaceSelection(store, WS_B)).toEqual({ kind: 'host' });
   });
 });

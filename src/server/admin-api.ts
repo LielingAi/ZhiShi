@@ -338,7 +338,7 @@ import {
 
   loadSelectionStore,
 
-  saveSelectionStore,
+  mutateSelectionStore,
 
   setWorkspaceSelection,
 
@@ -7164,11 +7164,11 @@ export async function handleEnvironmentSelect(payload: {
 
   try {
 
-    const store = loadSelectionStore();
-
     const selectedAt = new Date().toISOString();
 
-    saveSelectionStore(setWorkspaceSelection(store, workspace, validated.selection, selectedAt));
+    // 1.1.7 ①：锁内读-改-写（多实例共用数据目录时裸 load+save 有丢更新窗口）
+
+    await mutateSelectionStore((store) => setWorkspaceSelection(store, workspace, validated.selection, selectedAt));
 
     // 落盘后联动引擎切线（非本引擎 workspace 时 no-op）。若与 turn 起跑
     // 撞车（前置闸之后的竞态），切换失败但选定已落盘——返回错误，重选即愈合。

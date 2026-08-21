@@ -22,14 +22,17 @@
  *
  * 缺省语义：文件不存在 / 损坏 / workspace 无记录 → host（仅工作区控制面）。
  * 结构照 `registry.ts`：校验、parse/serialize、按 workspace 读写都是纯
- * 函数（可单测）；IO 只有 load/save 两个薄函数，路径可注入（测试传临时
- * 目录）。
+ * 函数（可单测）；IO 只有 load/save/mutate 三组薄函数，路径可注入（测试
+ * 传临时目录）。写盘纪律同 env-sessions.ts：读-改-写必须走 mutate 的
+ * withFileLock 锁内 + tmp+rename 原子替换（多实例共用数据目录时裸读-改-写
+ * 有丢更新窗口），读盘裸读（与 loadLoopSession 同惯例）。
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { getZhiShiDataDir } from '../utils/app-dirs';
+import { withFileLock } from '../utils/file-lock';
 
 // ---------------------------------------------------------------------------
 // Types（S1 契约——勿随意改 shape）
@@ -184,7 +187,7 @@ export function selectionTag(selection: EnvSelection): string {
 }
 
 // ---------------------------------------------------------------------------
-// Thin IO — path injectable for tests
+// Thin IO — path injectable for tests；读-改-写走 withFileLock + tmp+rename
 // ---------------------------------------------------------------------------
 
 /** 默认落盘路径：~/.zhishi/env-selection.json。 */
@@ -192,7 +195,7 @@ export function defaultSelectionStorePath(): string {
   return join(getZhiShiDataDir(), 'env-selection.json');
 }
 
-/** Missing / unreadable / corrupt file → empty store（首屏永不被本文件卡死）。 */
+/** Missing / unreadable / corrupt file → empty store（首屏永不被本文件卡死；读不持锁，同 loadLoopSession）。 */
 export function loadSelectionStore(path: string = defaultSelectionStorePath()): EnvSelectionStore {
   let raw: string;
   try {
@@ -203,7 +206,26 @@ export function loadSelectionStore(path: string = defaultSelectionStorePath()): 
   return parseSelectionStore(raw);
 }
 
+/** 整店覆盖写（tmp+rename 原子替换）。调用方有读-改-写语义时必须改用 mutateSelectionStore。 */
 export function saveSelectionStore(store: EnvSelectionStore, path: string = defaultSelectionStorePath()): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, serializeSelectionStore(store), 'utf-8');
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, serializeSelectionStore(store), 'utf-8');
+  renameSync(tmp, path);
+}
+
+/** 锁内读-改-写（tmp+rename 原子替换）：并发写串行化，无丢更新。 */
+export async function mutateSelectionStore(
+  mutate: (store: EnvSelectionStore) => EnvSelectionStore,
+  path: string = defaultSelectionStorePath(),
+): Promise<void> {
+  mkdirSync(dirname(path), { recursive: true });
+  await withFileLock({ lockPath: `${path}.lock` }, async () => {
+    const current = loadSelectionStore(path);
+    const next = mutate(current);
+    if (next === current) return; // 无改动不写盘
+    const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(tmp, serializeSelectionStore(next), 'utf-8');
+    renameSync(tmp, path);
+  });
 }
