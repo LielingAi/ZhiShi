@@ -5,7 +5,7 @@
  *   - finish report: a background row in the session flow with a "要我切过去吗"
  *     tail hook (y → resume switch).
  *
- * Manual surfaces: /bg (current turn → background), /tasks (list panel).
+ * Manual surface: /tasks (list panel).
  */
 
 import type { BackgroundTask, SessionState } from './types';

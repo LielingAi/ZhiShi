@@ -5,8 +5,8 @@
  * TerminalWriter diffs them onto the screen.
  *
  * Modes:    gate (正门选环境) → chat (会话)
- * Overlays: completion / help / history-search / rewind / queue / drawer /
- *           modal — additive panels above the input box, one at a time.
+ * Overlays: completion / help / history-search / rewind / queue / tasks /
+ *           drawer / modal — additive panels above the input box, one at a time.
  *
  * Invariants:
  *   - The input box is NEVER replaced by a panel (panels render above it).
@@ -30,6 +30,7 @@ import {
   composeMenuRow,
   overlayRow,
   overlayHeader,
+  takeWidth,
   type OverlayItem,
 } from './chrome';
 import { renderUser, renderAssistant } from './blocks/message-block';
@@ -107,6 +108,7 @@ type Overlay =
   | { kind: 'history'; query: string; results: string[]; sel: number }
   | { kind: 'rewind'; action: 'rewind' | 'fork'; candidates: { srvId: string; label: string }[]; sel: number }
   | { kind: 'queue'; items: { id: string; preview: string; kindLabel: string }[]; sel: number }
+  | { kind: 'tasks'; sel: number; detail: boolean }
   | { kind: 'drawer'; blockId: string; offset: number }
   | { kind: 'modal'; state: ModalState };
 
@@ -120,6 +122,19 @@ interface CompletionEntry {
 
 const PANEL_MAX_ROWS = 12;
 const INPUT_MAX_CONTENT = 8;
+
+/** Wrap one detail line to the panel inner width (grapheme-safe, CJK-aware). */
+function wrapDetailLine(text: string, width: number): string[] {
+  const out: string[] = [];
+  let rest = text;
+  while (rest.length > 0) {
+    const chunk = takeWidth(rest, width);
+    if (!chunk) break;
+    out.push(chunk);
+    rest = rest.slice(chunk.length);
+  }
+  return out.length > 0 ? out : [''];
+}
 
 export class App {
   private client: SidecarClient;
@@ -709,6 +724,12 @@ export class App {
   private onOverlayKey(key: Key): void {
     const ov = this.overlay!;
     if (key.name === 'esc') {
+      // tasks 详情页：Esc 先逐层退回列表，再按才关面板（overlay 惯例）。
+      if (ov.kind === 'tasks' && ov.detail) {
+        ov.detail = false;
+        this.renderChrome();
+        return;
+      }
       this.closeOverlay();
       this.renderChrome();
       return;
@@ -781,6 +802,17 @@ export class App {
           if (ov.items.length === 0) this.closeOverlay();
         }
         break;
+      case 'tasks': {
+        // 列表/详情两层：Enter 互切；移动键只在列表层生效。
+        const rows = this.collectTaskRows();
+        if (key.name === 'enter') {
+          if (rows.length > 0) ov.detail = !ov.detail;
+        } else if (!ov.detail) {
+          if (key.name === 'up') ov.sel = Math.max(0, ov.sel - 1);
+          else if (key.name === 'down') ov.sel = Math.min(rows.length - 1, ov.sel + 1);
+        }
+        break;
+      }
       case 'drawer': {
         const blk = this.state.blocks.find((b) => b.id === ov.blockId);
         if (!blk || blk.kind !== 'tool') {
@@ -934,6 +966,42 @@ export class App {
     }
     this.overlay = { kind: 'queue', items, sel: 0 };
     this.renderChrome();
+  }
+
+  /** /tasks(U2 1.1.9):子任务 + 后台进程面板。数据直读 state,事件重绘即刷新。 */
+  private openTasks(): void {
+    this.overlay = { kind: 'tasks', sel: 0, detail: false };
+    this.renderChrome();
+  }
+
+  /** 面板行数据:subagent 任务在前,长驻进程在后(均为 Map 插入序)。 */
+  private collectTaskRows(): { label: string; lines: string[] }[] {
+    const rows: { label: string; lines: string[] }[] = [];
+    for (const t of this.state.tasks.values()) {
+      rows.push({
+        label: t.done
+          ? `✓ ${t.description}${t.latestConclusion ? ` — ${t.latestConclusion}` : ''}`
+          : `… ${t.description} · 输出 ${t.outputCount}`,
+        lines: [
+          `描述：${t.description}`,
+          `状态：${t.done ? '已完成' : '运行中'}`,
+          `输出：${t.outputCount}`,
+          `结论：${t.latestConclusion ?? '（暂无）'}`,
+        ],
+      });
+    }
+    for (const b of this.state.bgProcs.values()) {
+      rows.push({
+        label: `⚙ ${b.tag}${b.pid !== undefined ? ` · pid ${b.pid}` : ''} · ${b.commandPreview}`,
+        lines: [
+          `Tag：${b.tag}`,
+          ...(b.pid !== undefined ? [`PID：${b.pid}`] : []),
+          `命令：${b.commandPreview}`,
+          '状态：运行中',
+        ],
+      });
+    }
+    return rows;
   }
 
   /** Live / and @ completion driven by the editor content. */
@@ -1093,6 +1161,9 @@ export class App {
         break;
       case 'queue':
         await this.openQueue();
+        break;
+      case 'tasks':
+        this.openTasks();
         break;
       case 'reset': {
         await this.client.postJson('/chat/reset', {}).catch(() => {});
@@ -1654,6 +1725,29 @@ export class App {
         items = ov.items.map((q, i) => overlayRow(q.preview, q.kindLabel, i === ov.sel, cols));
         flatSel = ov.sel;
         break;
+      case 'tasks': {
+        const rows = this.collectTaskRows();
+        if (rows.length === 0) {
+          title = '子任务与后台进程';
+          items = [{ spans: [{ text: '暂无子任务或后台进程', style: { fg: 'faint' } }], selectable: false }];
+          break;
+        }
+        // 事件会增删行(bg-finished 移除进程):渲染时夹紧选中,详情目标消失则退回列表。
+        ov.sel = Math.max(0, Math.min(ov.sel, rows.length - 1));
+        if (ov.detail) {
+          title = '详情（Enter/Esc 返回）';
+          const inner = Math.max(8, cols - 4);
+          items = rows[ov.sel].lines
+            .flatMap((ln) => wrapDetailLine(ln, inner))
+            .map((ln): OverlayItem => ({ spans: [{ text: ln, style: { fg: 'text' } }], selectable: false }));
+          flatSel = -1;
+        } else {
+          title = '子任务与后台进程（Enter 详情）';
+          items = rows.map((r, i) => overlayRow(r.label, '', i === ov.sel, cols));
+          flatSel = ov.sel;
+        }
+        break;
+      }
     }
     return composeOverlay(title, items, flatSel, cols, PANEL_MAX_ROWS);
   }
@@ -1688,6 +1782,8 @@ export class App {
           return '↑↓ 滚动 · Esc 收起';
         case 'queue':
           return 'x 取消 · Esc 关闭';
+        case 'tasks':
+          return ov.detail ? 'Enter/Esc 返回列表' : '↑↓ 选择 · Enter 详情 · Esc 关闭';
         case 'history':
           return '输入筛选 · Enter 采用 · Esc 关闭';
         default:
