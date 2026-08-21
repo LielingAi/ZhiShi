@@ -5,6 +5,19 @@
 
 ---
 
+## 1.2.1 —— 专家知识层·骨架期（进行中）
+
+校准协作主线第一期：专家知识库。定位与边界经多轮对齐（用户拍板）：专家知识 ≠ skills（方法）≠ 蒸馏弧（LLM 自身经验）≠ intel 库（结果原料）；它是权威梯度的最高级、LLM 与用户都无能为力时的**最后落脚点**。完整方案（三期迭代 + 技术细节）：`docs/expert-knowledge-plan.md`。
+
+- [ ] **库与检索**：`~/.zhishi/expert.db`（独立库，FTS5）+ loop 工具 `expert_search`（无条件注册，权威呈现与 intel「线索不是结论」对照）。
+- [ ] **输入三通道**：agent 起草→drafts 表→`zhishi expert review` 人审（主通道）；编辑器往返（`expert new/edit`，crontab -e 模式，临时文件仅草稿介质）；`expert promote <eventId>`（蒸馏晋升，人改完保存=审定——LLM 知识变专家知识的唯一分界线）。
+- [ ] **格式契约**：`validateEntry()` 单点校验（kind/domain 闭集、title/applicability/content/criteria 必填、provenance 通道写入、reviewer 条件必填），三通道全汇于此。
+- [ ] **内置首批**：`bundled-expert/<domain>/*.md`（发行载体非存储，content_hash 幂等进库），每域 2-3 条，选题来自 dogfood 亲历卡点，宁少勿精。
+- [ ] **时机教学**：内核一句权威语义（冲突时以专家知识为准并记录冲突点）+ 各域 skill 补「先尽力、卡住再查」。
+- [ ] **验收**：对照实验——同一卡点任务跑两遍（无条目基线 vs 有条目），量脱困率/幻觉率；CLI 三通道各走一遍。
+
+---
+
 ## 1.2.0 —— 研究交付：/export 一键出报告（已完成）
 
 功能里程碑：把留痕设施（loop-sessions / research_events / 子代理 transcript）变现为可交付成果。TUI 单入口 `/export`（环境绑定与热连接只在会话在场时保证；CLI 不做）。组装逻辑全在 sidecar。细节与技术边见 `docs/1.2.0-design.md`。
