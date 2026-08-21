@@ -20,6 +20,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.2.1] - 2026-08-22
+
+
+
+> 专家知识层（骨架期）：harness 第三条认知供给线——LLM 与用户都无能为力时的最后落脚点。
+
+
+
+### Added
+
+
+
+- **专家知识库**：`~/.zhishi/expert.db`（独立 FTS5 库，与 intel 原料库/LLM 经验库物理分立=权威分级）；条目九字段（思路/技术/SOP 三类，带适用条件与验证判据）。
+- **`expert_search` 工具**：无条件注册进 loop，权威呈现（「决策级依据」标记，与 intel「线索不是结论」对照）；检索分级放宽链（FTS AND → OR+bm25 → 逐词元 LIKE，长句自然查询不失声）。
+- **输入三通道**：agent 起草（`expert_draft` 工具 → 草稿表）→ `zhishi expert review` 人审；`expert new/edit` 编辑器往返（crontab -e 模式）；`expert promote <eventId>` 蒸馏晋升（人审定 = LLM 知识变专家知识的分界线）。格式由 `validateEntry()` 单点校验。
+- **内置首批条目**：5 条/四域（栈溢出判定链、SQLite 注入 SOP、SQLi 报错速查、Python 高危 sink、间接注入探针判定），选题全部来自 dogfood 亲历卡点；随包分发、启动幂等进库。
+
+
+
+### 验证
+
+
+
+对照实验（虚构服务黑盒拿 flag）：无库基线 32 次盲扫成功；有库+检索修复后 **1 次 expert_search 命中 → 14 次调用（-56%）拿 flag**。实战抓修骨架级缺陷：FTS AND 对长句查询必空。已知遗留（归 1.2.2）：自发触发率调优（「卡住才查」不在「缓慢进展」场景触发）。
+
+
+
 ## [1.2.0] - 2026-08-21
 
 

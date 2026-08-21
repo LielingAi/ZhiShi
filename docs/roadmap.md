@@ -5,16 +5,18 @@
 
 ---
 
-## 1.2.1 —— 专家知识层·骨架期（进行中）
+## 1.2.1 —— 专家知识层·骨架期（已完成）
 
 校准协作主线第一期：专家知识库。定位与边界经多轮对齐（用户拍板）：专家知识 ≠ skills（方法）≠ 蒸馏弧（LLM 自身经验）≠ intel 库（结果原料）；它是权威梯度的最高级、LLM 与用户都无能为力时的**最后落脚点**。完整方案（三期迭代 + 技术细节）：`docs/expert-knowledge-plan.md`。
 
-- [ ] **库与检索**：`~/.zhishi/expert.db`（独立库，FTS5）+ loop 工具 `expert_search`（无条件注册，权威呈现与 intel「线索不是结论」对照）。
-- [ ] **输入三通道**：agent 起草→drafts 表→`zhishi expert review` 人审（主通道）；编辑器往返（`expert new/edit`，crontab -e 模式，临时文件仅草稿介质）；`expert promote <eventId>`（蒸馏晋升，人改完保存=审定——LLM 知识变专家知识的唯一分界线）。
-- [ ] **格式契约**：`validateEntry()` 单点校验（kind/domain 闭集、title/applicability/content/criteria 必填、provenance 通道写入、reviewer 条件必填），三通道全汇于此。
-- [ ] **内置首批**：`bundled-expert/<domain>/*.md`（发行载体非存储，content_hash 幂等进库），每域 2-3 条，选题来自 dogfood 亲历卡点，宁少勿精。
-- [ ] **时机教学**：内核一句权威语义（冲突时以专家知识为准并记录冲突点）+ 各域 skill 补「先尽力、卡住再查」。
-- [ ] **验收**：对照实验——同一卡点任务跑两遍（无条目基线 vs 有条目），量脱困率/幻觉率；CLI 三通道各走一遍。
+- [x] **库与检索**：`~/.zhishi/expert.db`（独立库，FTS5）+ loop 工具 `expert_search`（无条件注册，权威呈现与 intel「线索不是结论」对照）。
+- [x] **输入三通道**：agent 起草→drafts 表→`zhishi expert review` 人审（主通道）；编辑器往返（`expert new/edit`，crontab -e 模式，临时文件仅草稿介质）；`expert promote <eventId>`（蒸馏晋升，人改完保存=审定——LLM 知识变专家知识的唯一分界线）。
+- [x] **格式契约**：`validateEntry()` 单点校验（kind/domain 闭集、title/applicability/content/criteria 必填、provenance 通道写入、reviewer 条件必填），三通道全汇于此。
+- [x] **内置首批**：`bundled-expert/<domain>/*.md`（发行载体非存储，content_hash 幂等进库），5 条/四域，选题全部来自 dogfood 亲历卡点。
+- [x] **时机教学**：内核权威语义 + 各域 skill 求助时机。
+- [x] **验收**：对照实验（虚构服务 zsrv 黑盒拿 flag）。
+
+> 实际落地（2026-08-22）：对照实验三连跑，每跑都出真发现——①基线（无库）自建功但 32 次盲扫；②有库未引导：`expert_search` 零调用（「卡住才查」在「缓慢但持续进展」场景不触发——这是「先查后干」时机修正的依据）；③引导+检索修复后：1 次查询命中 → quirk 驱动 → **32→14 次调用（-56%）拿 flag**。实战抓修一个骨架级缺陷：FTS AND 语义对长句自然查询必空（「zsrv KV 查询服务 安全测试 漏洞利用」0 命中）——改分级放宽链（AND→OR+bm25→逐词元 LIKE），回归测试钉死。**遗留 1.2.2**：自发触发率调优（提示词纪律单独不够）；system skills 在纯 sidecar 模式（无 Tauri 宿主）不随包更新的环境问题另记。全量 1895 测试绿 + smoke 5/5。
 
 ---
 
