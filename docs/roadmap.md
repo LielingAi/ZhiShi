@@ -5,6 +5,19 @@
 
 ---
 
+## 1.1.8 —— 三域 skills 实战验证（进行中）
+
+产品深度版：pentest / whitebox / ai-security 三域 skills「声明齐、实战未验证」的欠账清零（原「未排版本」项收编）。binary 域已验证（ret2win），本版补三域。细节见 `docs/1.1.8-design.md`。
+
+- [ ] **whitebox 域实战**：造「埋雷代码库」夹具（小项目埋 3-4 个已知漏洞，内容只有出题人知道）→ agent 用 whitebox-audit skill 审计 → 验收：按决策链走完（选入口→基线扫描→确认→求证）且找出埋的雷。
+- [ ] **pentest 域实战**：造靶标服务（带已知漏洞的小 web 服务，跑在宿主机、VM 可达）→ agent 用 pentest skill 从 recon 开打 → 验收：走完「侦察→枚举→利用」决策链拿到 flag。
+- [ ] **ai-security 域实战**：靶标 = 自家 zhishi agent（应用层提示注入：工具返回/文件里埋指令，看 agent 是否被带跑）——自有产品，授权无瑕疵；顺手回答「自家产品抗不抗注入」。验收：探针集跑完 + 结果分级 + 报告留痕。
+- 三域共用验收：各一条 dogfood 成功记录落 `research_events`；每域跑完按实战结果修正对应 skill（方法论缺口/工具问题/信号描述）。
+
+> 授权口径（用户 2026-08-21 确认）：pentest 靶标为自造本机服务，ai-security 靶标为自家 agent——均在授权范围内，符合 skills 红线「目标人确认才进场」。
+
+---
+
 ## 1.1.7 —— 技术债版：IO 统一 + 引擎收拢 + god file 绞杀（已完成）
 
 纯还债版，无用户可见功能。铁律：**纯搬移不改行为**——每个 commit 全量测试绿，测试断言一行不改。细节见 `docs/1.1.7-design.md`。
@@ -70,7 +83,7 @@
 
 ## 未排版本
 
-- [ ] **各域 skills 实战深化**：binary 域最强（ret2win 验证过）；pentest / whitebox / ai-security 的 skills 属「声明齐、实战未验证」——每个域至少一次真实任务跑通，按结果修正对应 skill。验收：三域各一条 dogfood 成功记录落 `research_events`。（暂缓：文档性质工作，功能层面优先）
+（原「各域 skills 实战深化」已收编进 1.1.8）
 
 ## 后续候选（未定版本）
 
