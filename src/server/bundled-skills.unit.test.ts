@@ -7,7 +7,8 @@ import { resolve } from 'node:path';
 // 防三类静默事故：
 //  1. bundled-skills/<name>/SKILL.md 缺失或 frontmatter 缺 name/description；
 //  2. Rust SYSTEM_SKILLS（src-tauri/src/commands.rs）与 Node 镜像清单
-//     （src/server/index.ts::SYSTEM_SKILLS）漂移——漏改任一侧会静默 double-seed；
+//     （src/server/skills-config.ts::SYSTEM_SKILLS，1.1.7 ③ 从 index.ts 抽出的
+//     原块）漂移——漏改任一侧会静默 double-seed；
 //  3. 新增/变更 system skill 忘了 bump SYSTEM_SKILLS_VERSION（版本门不触发，
 //     存量用户拿不到新 skill）。
 const ROOT = process.cwd();
@@ -26,7 +27,7 @@ function extractStringList(source: string, startMarker: string): string[] {
 }
 
 const rustSrc = readFileSync(resolve(ROOT, 'src-tauri/src/commands.rs'), 'utf8');
-const nodeSrc = readFileSync(resolve(ROOT, 'src/server/index.ts'), 'utf8');
+const nodeSrc = readFileSync(resolve(ROOT, 'src/server/skills-config.ts'), 'utf8');
 const rustList = extractStringList(rustSrc, 'const SYSTEM_SKILLS: &[&str] = &[');
 const nodeList = extractStringList(nodeSrc, 'const SYSTEM_SKILLS: readonly string[] = [');
 
