@@ -57,6 +57,10 @@ import { runAgentLoop } from './tui/v2/entry';
 
 import { INTEL_POLL_INTERVAL_MS, startIntelProgressPolling } from './intel-progress';
 
+import { buildExpertDoc, expertEditRoundTrip, parseExpertDoc } from './expert-edit';
+
+import { EXPERT_ENTRY_KINDS, EXPERT_PROVENANCES, validateEntry, type ValidateResult } from '../server/expert/validate';
+
 
 
 // ---------------------------------------------------------------------------
@@ -439,6 +443,8 @@ Commands:
 
   intel     Intel index (update/status) — NVD + exploit-db 本地情报索引（1.1.2）
 
+  expert    专家知识库（list/show/new/edit/rm/search/review/promote）——专家审定，决策级依据（1.2.1）
+
 
 
   term      Drive embedded terminal (open/write/read/close)
@@ -630,6 +636,23 @@ Examples:
 
 
     # 索引状态：mode / 最后更新 / CVE 与 exploit 计数 / NVD 增量水位。
+
+
+  zhishi expert list [--domain binary] [--kind sop]   # 专家知识库（决策级依据）条目摘要
+
+  zhishi expert show <id>                             # 单条全文（适用条件/判据/正文）
+
+  zhishi expert search "fastbin" [--domain binary]    # FTS 检索（≤5 条）
+
+  zhishi expert new <标题> [--reviewer <审定人>]       # 编辑器往返新建（$EDITOR，Windows 缺省 notepad）
+
+  zhishi expert edit <id>                             # 编辑器往返修改
+
+  zhishi expert review                                # 逐条交互审批 agent 草稿（[a]批准/[e]编辑/[d]丢弃/[s]跳过）
+
+    # 非 TTY：zhishi expert review --approve <draftId> --reviewer <审定人> / --discard <draftId>
+
+  zhishi expert promote <eventId> [--reviewer <审定人>]  # 研究事件晋升为专家知识（人审即跨界）
 
 
   zhishi term open --cwd /path/to/proj --rows 40 --cols 120 [--cmd "<命令>"] [--env <tag>]
@@ -2790,6 +2813,424 @@ function formatObject(obj: Record<string, unknown> | undefined, indent = '  '): 
 
 
 
+// ---------------------------------------------------------------------------
+// Expert（1.2.1 专家知识层）——命令组
+// ---------------------------------------------------------------------------
+//
+// 编辑器往返 / 逐条审批是多步交互链路，不是「一次 API 调用」，所以整组不进
+// 通用 buildRoute / callApi / printResult 管线，由 runExpertCommand 自处理
+// （jsonMode 时原样打印 API 响应）。编辑部逻辑在 ./expert-edit（依赖注入可测）。
+
+type ExpertApiResult = Record<string, unknown>;
+
+/** 打印错误并返回失败结果（main 据 success=false 置退出码 1）。 */
+function expertFail(error: string): ExpertApiResult {
+  console.error(`Error: ${error}`);
+  return { success: false, error };
+}
+
+/** 打印 API 结果：json 模式原样输出；人类模式失败打 Error、成功走 printHuman。 */
+function printExpertApiResult(
+  res: ExpertApiResult,
+  jsonMode: boolean,
+  printHuman: (data: Record<string, unknown>) => void,
+): ExpertApiResult {
+  if (jsonMode) {
+    console.log(JSON.stringify(res, null, 2));
+    return res;
+  }
+  if (!res.success) {
+    console.error(`Error: ${String(res.error ?? 'unknown error')}`);
+    return res;
+  }
+  printHuman((res.data ?? {}) as Record<string, unknown>);
+  return res;
+}
+
+/** 普通回显输入（reviewer、审批动作选择）。非 TTY 返回空串——调用方按「未提供」处理。 */
+function promptLine(question: string): Promise<string> {
+  if (!process.stdin.isTTY) return Promise.resolve('');
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+
+/** 编辑器校验失败后的「重新编辑？(y/n)」决策（expertEditRoundTrip 的 confirmRetry）。 */
+async function confirmRetryExpertEdit(): Promise<boolean> {
+  const ans = (await promptLine('重新编辑？(y/n) ')).trim().toLowerCase();
+  return ans === 'y' || ans === 'yes';
+}
+
+/** 解析编辑器文件 + 服务端同款单点校验（provenance 由通道固定，不接受文件输入）。 */
+function validateExpertDoc(raw: string, provenance: unknown, sourceEventId?: number): ValidateResult {
+  const parsed = parseExpertDoc(raw);
+  if (!parsed.ok) return { ok: false, errors: parsed.errors };
+  return validateEntry({ ...parsed.fields, content: parsed.content, provenance, sourceEventId });
+}
+
+/** 解析正整数 id 参数；非法时打印 usage 并返回 null（调用方返回失败结果即可，勿重复打印）。 */
+function parseExpertIdArg(raw: string | undefined, usage: string): number | null {
+  const id = Number(raw);
+  if (raw === undefined || !Number.isInteger(id) || id <= 0) {
+    console.error(`Error: ${usage}`);
+    return null;
+  }
+  return id;
+}
+
+/** 条目/草稿全文打印（show / review 逐条展示共用；草稿无 enabled 字段，缺省不显示）。 */
+function printExpertEntryFull(e: Record<string, unknown>): void {
+  const id = e.id !== undefined ? `#${String(e.id)} ` : '';
+  console.log(`${id}[${String(e.domain)}/${String(e.kind)}] ${String(e.title)}`);
+  const reviewer = `reviewer=${e.reviewer ? String(e.reviewer) : '—'}`;
+  const tags = typeof e.tags === 'string' && e.tags ? `  tags=${e.tags}` : '';
+  const src = e.sourceEventId ? `  sourceEvent=#${String(e.sourceEventId)}` : '';
+  console.log(`provenance=${String(e.provenance)}  ${reviewer}${tags}${src}`);
+  if (typeof e.createdVia === 'string' && e.createdVia) console.log(`createdVia=${e.createdVia}`);
+  if (typeof e.updatedAt === 'number') console.log(`更新于 ${new Date(e.updatedAt).toISOString()}`);
+  console.log(`\n适用条件：\n${String(e.applicability)}\n\n判据：\n${String(e.criteria)}\n\n正文：\n${String(e.content)}`);
+}
+
+/** 草稿一行摘要（非 TTY review 列表）。 */
+function printExpertDraftRows(drafts: Array<Record<string, unknown>>): void {
+  if (drafts.length === 0) {
+    console.log('（无待审草稿）');
+    return;
+  }
+  for (const d of drafts) {
+    const date = typeof d.createdAt === 'number' ? new Date(d.createdAt).toISOString().slice(0, 10) : '?';
+    console.log(`#${String(d.id)}  [${String(d.domain)}/${String(d.kind)}]  ${String(d.title)}  via=${String(d.createdVia ?? '?')}  ${date}`);
+  }
+}
+
+async function runExpertCommand(
+  action: string,
+  rest: string[],
+  flags: Record<string, unknown>,
+  jsonMode: boolean,
+): Promise<ExpertApiResult> {
+  const flagStr = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() ? v.trim() : undefined;
+
+  if (action === 'list') {
+    const domain = flagStr(flags.domain);
+    const kind = flagStr(flags.kind);
+    const provenance = flagStr(flags.provenance);
+    if (domain !== undefined && !isResearchTaskKind(domain)) {
+      return expertFail(`--domain 非法 "${domain}"（允许：${RESEARCH_TASK_KINDS.join(' / ')}）`);
+    }
+    if (kind !== undefined && !(EXPERT_ENTRY_KINDS as readonly string[]).includes(kind)) {
+      return expertFail(`--kind 非法 "${kind}"（允许：${EXPERT_ENTRY_KINDS.join(' / ')}）`);
+    }
+    if (provenance !== undefined && !(EXPERT_PROVENANCES as readonly string[]).includes(provenance)) {
+      return expertFail(`--provenance 非法 "${provenance}"（允许：${EXPERT_PROVENANCES.join(' / ')}）`);
+    }
+    const res = await callApi('expert/list', { domain, kind, provenance });
+    return printExpertApiResult(res, jsonMode, (data) => {
+      const entries = (Array.isArray(data.entries) ? data.entries : []) as Array<Record<string, unknown>>;
+      if (entries.length === 0) {
+        console.log('（无专家知识条目）');
+        return;
+      }
+      for (const e of entries) {
+        const disabled = e.enabled === false ? '  (disabled)' : '';
+        console.log(`#${String(e.id)}  [${String(e.domain)}/${String(e.kind)}]  ${String(e.title)}  reviewer=${e.reviewer ? String(e.reviewer) : '—'}  provenance=${String(e.provenance)}${disabled}`);
+        if (typeof e.contentPreview === 'string' && e.contentPreview) console.log(`    ${e.contentPreview}`);
+      }
+    });
+  }
+
+  if (action === 'show') {
+    const id = parseExpertIdArg(rest[0], 'usage: zhishi expert show <id>');
+    if (id === null) return { success: false, error: 'usage' };
+    const res = await callApi('expert/show', { id });
+    return printExpertApiResult(res, jsonMode, (data) => {
+      printExpertEntryFull((data.entry ?? {}) as Record<string, unknown>);
+    });
+  }
+
+  if (action === 'rm') {
+    const id = parseExpertIdArg(rest[0], 'usage: zhishi expert rm <id>');
+    if (id === null) return { success: false, error: 'usage' };
+    // builtin 条目服务端拒删（随包分发）——错误原样透传。
+    const res = await callApi('expert/rm', { id });
+    return printExpertApiResult(res, jsonMode, () => console.log(`✓ 条目 #${id} 已删除`));
+  }
+
+  if (action === 'search') {
+    const query = rest.join(' ').trim() || flagStr(flags.query) || '';
+    if (!query) return expertFail('usage: zhishi expert search <query> [--domain X]');
+    const domain = flagStr(flags.domain);
+    if (domain !== undefined && !isResearchTaskKind(domain)) {
+      return expertFail(`--domain 非法 "${domain}"（允许：${RESEARCH_TASK_KINDS.join(' / ')}）`);
+    }
+    const res = await callApi('expert/search', { query, domain });
+    return printExpertApiResult(res, jsonMode, (data) => {
+      const results = (Array.isArray(data.results) ? data.results : []) as Array<Record<string, unknown>>;
+      if (results.length === 0) {
+        console.log('（无命中——专家知识库无相关条目；未命中≠不存在，标注库边界后继续）');
+        return;
+      }
+      for (const e of results) {
+        console.log(`#${String(e.id)}  [${String(e.domain)}/${String(e.kind)}]  ${String(e.title)}  reviewer=${e.reviewer ? String(e.reviewer) : '—'}  provenance=${String(e.provenance)}`);
+        console.log(`    适用条件：${String(e.applicability)}`);
+      }
+    });
+  }
+
+  // --- 编辑器往返通道（crontab -e 模式）：未动/退出码非零/校验放弃均不落库 ---
+
+  if (action === 'new') {
+    const title = rest.join(' ').trim();
+    if (!title) return expertFail('usage: zhishi expert new <标题> [--reviewer <审定人>]');
+    const reviewer = flagStr(flags.reviewer);
+    const doc = buildExpertDoc({ title, ...(reviewer ? { reviewer } : {}) }, '');
+    const trip = await expertEditRoundTrip(doc, (raw) => validateExpertDoc(raw, 'user'), { confirmRetry: confirmRetryExpertEdit });
+    if (trip.status !== 'ok') return expertFail(`未落库：${trip.reason}`);
+    const v = validateExpertDoc(trip.raw, 'user');
+    if (!v.ok) return expertFail(`校验失败：${v.errors.join('；')}`); // 理论不可达（round trip 已校验）
+    const res = await callApi('expert/add', {
+      domain: v.value.domain,
+      kind: v.value.kind,
+      title: v.value.title,
+      applicability: v.value.applicability,
+      content: v.value.content,
+      criteria: v.value.criteria,
+      reviewer: v.value.reviewer,
+      tags: v.value.tags,
+    });
+    return printExpertApiResult(res, jsonMode, (data) => {
+      const entry = (data.entry ?? {}) as Record<string, unknown>;
+      console.log(`✓ 专家知识已入库 #${String(entry.id)}  [${String(entry.domain)}/${String(entry.kind)}] ${String(entry.title)}`);
+    });
+  }
+
+  if (action === 'edit') {
+    const id = parseExpertIdArg(rest[0], 'usage: zhishi expert edit <id>');
+    if (id === null) return { success: false, error: 'usage' };
+    const showRes = await callApi('expert/show', { id });
+    if (!showRes.success) return printExpertApiResult(showRes, jsonMode, () => {});
+    const entry = ((showRes.data as Record<string, unknown> | undefined)?.entry ?? {}) as Record<string, unknown>;
+    const doc = buildExpertDoc({
+      domain: String(entry.domain ?? ''),
+      kind: String(entry.kind ?? ''),
+      title: String(entry.title ?? ''),
+      applicability: String(entry.applicability ?? ''),
+      criteria: String(entry.criteria ?? ''),
+      ...(entry.reviewer ? { reviewer: String(entry.reviewer) } : {}),
+      ...(typeof entry.tags === 'string' && entry.tags ? { tags: entry.tags } : {}),
+    }, String(entry.content ?? ''));
+    // provenance 不可变（服务端 update 也沿用原值）；builtin 条目 reviewer 非必填。
+    const provenance = entry.provenance;
+    const srcId = typeof entry.sourceEventId === 'number' ? entry.sourceEventId : undefined;
+    const trip = await expertEditRoundTrip(doc, (raw) => validateExpertDoc(raw, provenance, srcId), { confirmRetry: confirmRetryExpertEdit });
+    if (trip.status !== 'ok') return expertFail(`未落库：${trip.reason}`);
+    const v = validateExpertDoc(trip.raw, provenance, srcId);
+    if (!v.ok) return expertFail(`校验失败：${v.errors.join('；')}`); // 理论不可达
+    const res = await callApi('expert/update', {
+      id,
+      domain: v.value.domain,
+      kind: v.value.kind,
+      title: v.value.title,
+      applicability: v.value.applicability,
+      content: v.value.content,
+      criteria: v.value.criteria,
+      reviewer: v.value.reviewer,
+      tags: v.value.tags,
+    });
+    return printExpertApiResult(res, jsonMode, () => console.log(`✓ 条目 #${id} 已更新`));
+  }
+
+  if (action === 'promote') {
+    const eventId = parseExpertIdArg(rest[0], 'usage: zhishi expert promote <eventId> [--reviewer <审定人>]');
+    if (eventId === null) return { success: false, error: 'usage' };
+    const pre = await callApi('expert/promote-prefill', { eventId });
+    if (!pre.success) return printExpertApiResult(pre, jsonMode, () => {});
+    const prefill = ((pre.data as Record<string, unknown> | undefined)?.prefill ?? {}) as Record<string, unknown>;
+    const sourceEventId = Number(prefill.sourceEventId);
+    const reviewer = flagStr(flags.reviewer);
+    const doc = buildExpertDoc({
+      domain: String(prefill.domain ?? ''),
+      kind: String(prefill.kind ?? ''),
+      title: String(prefill.title ?? ''),
+      applicability: String(prefill.applicability ?? ''),
+      criteria: String(prefill.criteria ?? ''),
+      ...(reviewer ? { reviewer } : {}),
+      ...(typeof prefill.tags === 'string' && prefill.tags ? { tags: prefill.tags } : {}),
+    }, String(prefill.content ?? ''));
+    // 编辑器里保存 = 审定动作：provenance=promoted + sourceEventId 关联（晋升即跨界）。
+    const trip = await expertEditRoundTrip(doc, (raw) => validateExpertDoc(raw, 'promoted', sourceEventId), { confirmRetry: confirmRetryExpertEdit });
+    if (trip.status !== 'ok') return expertFail(`未落库：${trip.reason}`);
+    const v = validateExpertDoc(trip.raw, 'promoted', sourceEventId);
+    if (!v.ok) return expertFail(`校验失败：${v.errors.join('；')}`); // 理论不可达
+    const res = await callApi('expert/add', {
+      domain: v.value.domain,
+      kind: v.value.kind,
+      title: v.value.title,
+      applicability: v.value.applicability,
+      content: v.value.content,
+      criteria: v.value.criteria,
+      reviewer: v.value.reviewer,
+      tags: v.value.tags,
+      provenance: 'promoted',
+      sourceEventId,
+    });
+    return printExpertApiResult(res, jsonMode, (data) => {
+      const entry = (data.entry ?? {}) as Record<string, unknown>;
+      console.log(`✓ 已晋升入库 #${String(entry.id)}  [${String(entry.domain)}/${String(entry.kind)}] ${String(entry.title)}（provenance=promoted，来源事件 #${eventId}）`);
+    });
+  }
+
+  if (action === 'review') {
+    // 非交互用法（脚本 / 非 TTY）：--approve <draftId> [--reviewer X] | --discard <draftId>
+    if (flags.approve !== undefined || flags.discard !== undefined) {
+      if (flags.approve !== undefined && flags.discard !== undefined) {
+        return expertFail('--approve 与 --discard 只能二选一');
+      }
+      if (flags.approve !== undefined) {
+        const draftId = parseExpertIdArg(
+          flags.approve === true ? rest[0] : String(flags.approve),
+          'usage: zhishi expert review --approve <draftId> --reviewer <审定人>',
+        );
+        if (draftId === null) return { success: false, error: 'usage' };
+        const reviewer = flagStr(flags.reviewer);
+        const res = await callApi('expert/review', {
+          draftId,
+          action: 'approve',
+          ...(reviewer ? { edited: { reviewer } } : {}),
+        });
+        return printExpertApiResult(res, jsonMode, (data) => {
+          const entry = (data.entry ?? {}) as Record<string, unknown>;
+          console.log(`✓ 草稿 #${draftId} 已批准入库 #${String(entry.id)}`);
+        });
+      }
+      const draftId = parseExpertIdArg(
+        flags.discard === true ? rest[0] : String(flags.discard),
+        'usage: zhishi expert review --discard <draftId>',
+      );
+      if (draftId === null) return { success: false, error: 'usage' };
+      const res = await callApi('expert/review', { draftId, action: 'discard' });
+      return printExpertApiResult(res, jsonMode, () => console.log(`✓ 草稿 #${draftId} 已丢弃`));
+    }
+
+    const draftsRes = await callApi('expert/drafts', {});
+    if (!draftsRes.success) return printExpertApiResult(draftsRes, jsonMode, () => {});
+    const drafts = (Array.isArray((draftsRes.data as Record<string, unknown> | undefined)?.drafts)
+      ? (draftsRes.data as Record<string, unknown>).drafts
+      : []) as Array<Record<string, unknown>>;
+
+    // 非 TTY：列草稿 + 给非交互用法（交互逐条审批需要终端）。
+    if (!process.stdin.isTTY) {
+      printExpertDraftRows(drafts);
+      if (drafts.length > 0) {
+        console.log('非交互用法：zhishi expert review --approve <draftId> --reviewer <审定人> / --discard <draftId>');
+      }
+      return { success: true };
+    }
+    if (drafts.length === 0) {
+      console.log('（无待审草稿）');
+      return { success: true };
+    }
+
+    // reviewer 启动时问一次、全程沿用（--reviewer 可预填）。
+    let reviewer = flagStr(flags.reviewer) ?? '';
+    if (!reviewer) {
+      reviewer = (await promptLine('审定人 reviewer（本次 review 全程沿用，写入每条批准）: ')).trim();
+      if (!reviewer) return expertFail('reviewer 必填——权威性的来源是人审这个动作');
+    }
+    console.log(`共 ${drafts.length} 条待审草稿（reviewer=${reviewer}）`);
+
+    let approved = 0;
+    let discarded = 0;
+    let skipped = 0;
+    for (const draft of drafts) {
+      console.log('\n────────────────────────────────────────');
+      printExpertEntryFull(draft);
+      for (;;) {
+        const ans = (await promptLine('[a]批准 / [e]编辑后批准 / [d]丢弃 / [s]跳过 : ')).trim().toLowerCase();
+        if (ans === 'a') {
+          const r = await callApi('expert/review', { draftId: draft.id, action: 'approve', edited: { reviewer } });
+          if (r.success) {
+            approved++;
+            const entry = ((r.data as Record<string, unknown> | undefined)?.entry ?? {}) as Record<string, unknown>;
+            console.log(`✓ 草稿 #${String(draft.id)} 已批准入库 #${String(entry.id)}`);
+          } else {
+            console.error(`Error: ${String(r.error)}`);
+          }
+          break;
+        }
+        if (ans === 'e') {
+          const srcId = typeof draft.sourceEventId === 'number' ? draft.sourceEventId : undefined;
+          const doc = buildExpertDoc({
+            domain: String(draft.domain ?? ''),
+            kind: String(draft.kind ?? ''),
+            title: String(draft.title ?? ''),
+            applicability: String(draft.applicability ?? ''),
+            criteria: String(draft.criteria ?? ''),
+            reviewer: draft.reviewer ? String(draft.reviewer) : reviewer,
+            ...(typeof draft.tags === 'string' && draft.tags ? { tags: draft.tags } : {}),
+          }, String(draft.content ?? ''));
+          const trip = await expertEditRoundTrip(doc, (raw) => validateExpertDoc(raw, draft.provenance, srcId), { confirmRetry: confirmRetryExpertEdit });
+          if (trip.status !== 'ok') {
+            console.log(`（${trip.reason}——回到草稿 #${String(draft.id)} 的操作选择）`);
+            continue;
+          }
+          const v = validateExpertDoc(trip.raw, draft.provenance, srcId);
+          if (!v.ok) {
+            console.error(`Error: 校验失败：${v.errors.join('；')}`);
+            continue;
+          }
+          const edited = {
+            domain: v.value.domain,
+            kind: v.value.kind,
+            title: v.value.title,
+            applicability: v.value.applicability,
+            content: v.value.content,
+            criteria: v.value.criteria,
+            reviewer: v.value.reviewer ?? reviewer,
+            tags: v.value.tags,
+          };
+          const r = await callApi('expert/review', { draftId: draft.id, action: 'approve', edited });
+          if (r.success) {
+            approved++;
+            const entry = ((r.data as Record<string, unknown> | undefined)?.entry ?? {}) as Record<string, unknown>;
+            console.log(`✓ 草稿 #${String(draft.id)} 已批准（编辑后）入库 #${String(entry.id)}`);
+          } else {
+            console.error(`Error: ${String(r.error)}`);
+          }
+          break;
+        }
+        if (ans === 'd') {
+          const c = (await promptLine(`确认丢弃草稿 #${String(draft.id)}？不可恢复 (y/n) `)).trim().toLowerCase();
+          if (c === 'y' || c === 'yes') {
+            const r = await callApi('expert/review', { draftId: draft.id, action: 'discard' });
+            if (r.success) {
+              discarded++;
+              console.log(`✓ 草稿 #${String(draft.id)} 已丢弃`);
+            } else {
+              console.error(`Error: ${String(r.error)}`);
+            }
+          }
+          break;
+        }
+        if (ans === 's' || ans === '') {
+          skipped++;
+          break;
+        }
+        console.log('请输入 a / e / d / s');
+      }
+    }
+    console.log(`\nreview 完成：批准 ${approved} / 丢弃 ${discarded} / 跳过 ${skipped}`);
+    return { success: true };
+  }
+
+  return expertFail(`未知 expert 子命令 "${action}"（允许：list / show / new / edit / rm / search / review / promote；详见 zhishi expert --help）`);
+}
+
 async function main(): Promise<void> {
 
   // `env exec <id> -- <cmd...>`（P2 B2 guest-exec）：`--` 之后的一切原样透传
@@ -2898,6 +3339,15 @@ async function main(): Promise<void> {
   const action = positional[1] || 'list';
 
 
+
+  // 专家知识层（1.2.1）：编辑器往返 / 逐条审批是多步交互链路，不是单次
+  // API 调用——整组不进通用 buildRoute/callApi 管线，由 runExpertCommand
+  // 自处理（含打印），此处只据 success 置退出码。
+  if (group === 'expert') {
+    const expertResult = await runExpertCommand(action, positional.slice(2), flags, jsonMode);
+    if (!expertResult.success) process.exit(1);
+    return;
+  }
 
   // Simple commands (no subcommand)
 

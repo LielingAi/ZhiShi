@@ -3067,6 +3067,28 @@ Options for 'list':
   --task-kind / --outcome   Filter (same enums as log)
   --limit                   Max rows (default 50)`,
 
+  expert: `zhishi expert — 专家知识库（1.2.1 骨架期：专家审定，决策级依据）
+
+Commands:
+  list [--domain X] [--kind Y] [--provenance Z]   条目摘要列表（id/kind/domain/reviewer/标题/摘要）
+  show <id>                                       单条全文
+  search <query> [--domain X]                     FTS 检索（≤5 条，title/kind/applicability 摘要）
+  new <标题> [--reviewer X]                       编辑器往返新建：模板临时文件 → $EDITOR → 校验 → 落库
+  edit <id>                                       导出全文到编辑器往返 → 校验 → 更新
+  rm <id>                                         删除（builtin 条目随包分发，服务端拒删）
+  review                                          逐条交互审批草稿：[a]批准/[e]编辑后批准/[d]丢弃/[s]跳过
+  review --approve <draftId> --reviewer X         非交互批准草稿（脚本/非 TTY）
+  review --discard <draftId>                      非交互丢弃草稿
+  promote <eventId> [--reviewer X]                从 research_events 事件预填 → 编辑器审定 → 晋升入库
+                                                  （provenance=promoted + sourceEventId 关联）
+
+格式契约：frontmatter（domain/kind/title/applicability/criteria/reviewer/tags）+ markdown 正文。
+  kind 闭集：idea（思路）/ technique（技术知识）/ sop（标准作业流程）
+  domain 闭集：binary / pentest / ai-security / redteam / malware / whitebox / intel / ctf
+  reviewer 必填非空——权威性的来源是人审这个动作。
+编辑器：$EDITOR ?? $VISUAL ??（Windows ? notepad : vi），可带参数（如 "code --wait"）。
+  文件未动 / 编辑器退出码非零 → 不落库；校验失败列全部错误可重开。`,
+
   task: `zhishi task — Manage Task Center tasks (v0.1.69+)
 
 
@@ -4818,8 +4840,9 @@ export function handleIntelStatus(): AdminResponse {
 }
 // ===== 专家知识层（1.2.1 骨架期）—— expert.db 管理面 =====
 // 所有写入路径（add/update/review-approve）过 validateEntry 单点校验；
-// provenance 通道写入（add 恒 user；review 用草稿的；promote 恒 promoted），
-// 不接受调用方指定。deps.baseDir 仅供测试注入。
+// provenance 通道写入（add 缺省 user，promote 变体显式 promoted；review 用
+// 草稿的；builtin 只走 seed）——除 add 的 user/promoted 二选一外不接受
+// 调用方指定。deps.baseDir 仅供测试注入。
 
 export interface ExpertAdminDeps {
   /** expert.db 数据目录（缺省 getZhiShiDataDir()）。 */
@@ -4913,8 +4936,33 @@ export async function handleExpertShow(payload: { id?: number }, deps: ExpertAdm
   }
 }
 
-/** expert/add {entry 字段} → validate → provenance=user 插入（reviewer 必填）。 */
+/**
+ * expert/add {entry 字段} → validate → 插入（reviewer 必填）。
+ * provenance 缺省 user；promote 变体（provenance='promoted'，CLI
+ * `zhishi expert promote` 编辑器审定后调用）要求 sourceEventId 为正整数且
+ * 对应的 research_events 事件存在——晋升即跨界，来源事件是审计锚点。
+ * builtin 不接受 API 输入（随包 seed 写入）。validateEntry 单点不变。
+ */
 export async function handleExpertAdd(payload: Record<string, unknown>, deps: ExpertAdminDeps = {}): Promise<AdminResponse> {
+  const rawProvenance = payload?.provenance;
+  if (rawProvenance !== undefined && rawProvenance !== 'user' && rawProvenance !== 'promoted') {
+    return { success: false, error: `expert/add: 非法 provenance "${String(rawProvenance)}"（允许 user / promoted；builtin 随包 seed 写入，不接受 API 输入）` };
+  }
+  const provenance = rawProvenance === 'promoted' ? 'promoted' : 'user';
+  let sourceEventId: number | undefined;
+  if (provenance === 'promoted') {
+    const n = Number(payload?.sourceEventId);
+    if (!Number.isInteger(n) || n <= 0) {
+      return { success: false, error: 'expert/add: provenance=promoted 时 sourceEventId 必填（正整数 research_events.id）' };
+    }
+    try {
+      const event = getResearchEventById(n, deps.memoryBaseDir ?? deps.baseDir ?? getZhiShiDataDir());
+      if (!event) return { success: false, error: `expert/add: sourceEventId #${n} 在 research_events 不存在` };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    sourceEventId = n;
+  }
   const result = validateEntry({
     domain: payload?.domain,
     kind: payload?.kind,
@@ -4922,8 +4970,9 @@ export async function handleExpertAdd(payload: Record<string, unknown>, deps: Ex
     applicability: payload?.applicability,
     content: payload?.content,
     criteria: payload?.criteria,
-    provenance: 'user',
+    provenance,
     reviewer: payload?.reviewer,
+    sourceEventId,
     tags: payload?.tags,
   });
   if (!result.ok) return { success: false, error: `expert/add 校验失败：${result.errors.join('；')}` };
