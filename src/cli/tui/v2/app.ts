@@ -59,6 +59,7 @@ import {
   type TranscriptView,
 } from './task-transcript';
 import { runSnapshot, runRollback, runExtract } from './slash/env';
+import { runExport } from './slash/report';
 import { runAttach } from './slash/attach';
 import { runModel } from './slash/model';
 import { runMcp } from './slash/mcp';
@@ -993,6 +994,9 @@ export class App {
         break;
       case 'extract':
         await runExtract(ctx, arg);
+        break;
+      case 'export':
+        await runExport(ctx, arg);
         break;
       case 'env':
         await this.gate.enter();

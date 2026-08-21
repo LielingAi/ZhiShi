@@ -31,6 +31,7 @@ export const SLASH_COMMANDS: CommandItem[] = [
   { name: 'fork', detail: '从某条消息分叉出新线程', group: '线程' },
   { name: 'queue', detail: '查看/取消排队消息', group: '线程' },
   { name: 'tasks', detail: '查看子任务与后台进程', group: '线程' },
+  { name: 'export', detail: '导出研究报告（report.md + evidence/）', group: '线程', usage: '/export [sanitize]' },
   { name: 'reset', detail: '重置对话（新会话）', group: '线程' },
   { name: 'model', detail: '模型配置/切换（状态卡 · set-key · use）', group: '配置', usage: '/model [set-key <供应商> | use <供应商> <模型> | <模型名>]' },
   { name: 'mcp', detail: 'MCP 服务器状态/开关', group: '配置', usage: '/mcp [enable <id> | disable <id> | -r]' },

@@ -149,6 +149,7 @@ zhishi model set-default deepseek deepseek-v4-pro   # 设置默认模型
 | `/fork` | 从某条消息分叉出新线程 |
 | `/queue` | 查看/取消排队消息 |
 | `/tasks` | 查看子任务与后台进程（列表 → Enter 看结论详情） |
+| `/export` | 导出研究报告（report.md + evidence/；`/export sanitize` 出脱敏版，需一次越界批准） |
 | `/reset` | 重置对话（新会话） |
 | `/help` | 键位与命令帮助 |
 | `/quit` | 退出会话界面 |

@@ -69,3 +69,4 @@ garak --model_type openai-compatible --model_name <m> \
 
 - 每个确认/可疑问题落 `research_log`（kind=ai-security，bug_class 挂对应类别）
 - 死路（哪些探针试过无效、哪些绕过手法被封）也留痕——这是蒸馏最值钱的原料
+- 产出工件（PoC/样本/截图）必挂 `trajectory_ref`（环境内路径）——报告导出的证据回收按此登记

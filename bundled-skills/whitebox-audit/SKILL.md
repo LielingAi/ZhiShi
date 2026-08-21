@@ -90,3 +90,4 @@ semgrep scan --config p/owasp-top-ten .
 - 每步关键判断落 `research_log`（kind=whitebox）：
   - 成功：确认漏洞（bug_class + CWE + 位置 + 复现方式），**summary 以置信度 0.xx 开头**
   - 失败/卡住：死路（哪些告警追过不可达）——死路是蒸馏最值钱的原料
+- 产出工件（PoC/样本/截图）必挂 `trajectory_ref`（环境内路径）——报告导出的证据回收按此登记
