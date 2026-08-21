@@ -160,10 +160,12 @@ export interface DelegateTaskDetails {
  * W1(design-spec §8 拍肩膀)— delegate_task 生命周期通知。chat-engine
  * 注入,把 started/finished 广播成 chat:subagent-started/finished SSE;
  * finished 带结论摘要(子 loop 最终文本,由实现侧截断),不带过程。
+ * 1.1.10(A′):finished 追加 sessionId(子 loop 持久化的 loop-sessions id,
+ * 供 TUI 拉 transcript);子 loop 抛异常时无 sessionId,故为可选。
  */
 export interface DelegateTaskNotifier {
   started(taskId: string, description: string): void;
-  finished(taskId: string, description: string, summary: string, error?: string): void;
+  finished(taskId: string, description: string, summary: string, error?: string, sessionId?: string): void;
 }
 
 export interface CreateDelegateTaskToolOptions {
@@ -244,7 +246,7 @@ export function createDelegateTaskTool(
       const summary = result.error
         ? `子任务执行失败:${result.error}`
         : result.text || '(子任务无文本结论)';
-      options.notify?.finished(taskId, description, summary, result.error);
+      options.notify?.finished(taskId, description, summary, result.error, result.sessionId);
       return {
         content: [{ type: 'text', text: `[子任务结论 session=${result.sessionId}]\n${summary}` }],
         details: { sessionId: result.sessionId, taskId, error: result.error },

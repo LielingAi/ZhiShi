@@ -327,6 +327,8 @@ import {
 
 } from './loop/chat-engine';
 
+import { buildLoopTranscript } from './loop/transcript';
+
 import { initMcpBridge } from './loop/mcp-bridge';
 
 import { isKimiCodingProvider } from './loop/pi-provider';
@@ -1872,12 +1874,32 @@ async function main() {
 
       }
 
+      // 1.1.10(A′)— 子代理 transcript 只读查看:按 loopSessionId 返回
+      // loop-sessions 的结构化消息序列(纯读;大小护栏见 loop/transcript.ts)。
+      if (pathname === '/api/loop-session/messages' && request.method === 'GET') {
+        const loopSessionId = url.searchParams.get('loopSessionId');
+        if (!loopSessionId) {
+          return jsonResponse({ success: false, error: 'loopSessionId is required' }, 400);
+        }
+        try {
+          const transcript = buildLoopTranscript(loopSessionId);
+          if (!transcript) {
+            return jsonResponse({ success: false, error: `loop session '${loopSessionId}' not found` }, 404);
+          }
+          return jsonResponse({ success: true, transcript });
+        } catch (error) {
+          return jsonResponse(
+            { success: false, error: error instanceof Error ? error.message : 'Failed to read loop session messages' },
+            500
+          );
+        }
+      }
+
 
 
       // 🔍 Debug endpoint: Expose logger diagnostics via HTTP
 
       if (pathname === '/debug/logger' && request.method === 'GET') {
-
         const diagnostics = getLoggerDiagnostics();
 
         const clientsCount = getClients().length;

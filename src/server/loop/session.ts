@@ -132,8 +132,13 @@ export function parseLoopSession(content: string): LoopSession {
 // I/O — load / append(锁 + 原子写)
 // ---------------------------------------------------------------------------
 
+/** loop-sessions 默认存储目录(~/.zhishi/loop-sessions,主/子会话同目录)。 */
+export function defaultLoopSessionDir(): string {
+  return join(getZhiShiDataDir(), 'loop-sessions');
+}
+
 function storeDir(options?: LoopSessionStoreOptions): string {
-  return options?.dir ?? join(getZhiShiDataDir(), 'loop-sessions');
+  return options?.dir ?? defaultLoopSessionDir();
 }
 
 /** 加载会话;不存在/损坏 → 空会话(messages:[], meta:null)。 */

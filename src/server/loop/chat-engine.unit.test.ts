@@ -880,4 +880,29 @@ describe('delegate_task 接回生产(W1)', () => {
     expect(finished.summary.length).toBe(201);
     expect(finished.summary.endsWith('…')).toBe(true);
   });
+
+  it('1.1.10(A′):finished 广播带 loopSessionId(= 子 loop details.sessionId)', async () => {
+    anchorEnv();
+    await sendPiChatMessage({ text: 'hi' });
+    await waitTurnSettled();
+    const opts = runLoopMock.mock.calls[0][0] as {
+      tools: Array<{ name: string; execute: (id: string, params: { task: string }) => Promise<{ details: { sessionId: string } }> }>;
+    };
+    const delegate = opts.tools.find((t) => t.name === 'delegate_task')!;
+    broadcastMock.mockClear();
+    runLoopMock.mockImplementation(async function* () {
+      for (const e of doneEvents('结论')) yield e;
+    });
+    const result = await delegate.execute('call-1', { task: '留档' });
+    const finished = broadcastMock.mock.calls.find((c) => c[0] === 'chat:subagent-finished')![1] as {
+      loopSessionId?: string;
+    };
+    expect(finished.loopSessionId).toBe(result.details.sessionId);
+    // 子 loop 持久化到 loop-sessions 默认目录(与主会话同目录)。
+    const persisted = appendLoopMessagesMock.mock.calls.find(
+      (c) => c[0] === result.details.sessionId,
+    );
+    expect(persisted).toBeDefined();
+    expect((persisted![3] as { dir: string }).dir).toContain('loop-sessions');
+  });
 });

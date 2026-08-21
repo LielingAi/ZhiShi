@@ -98,6 +98,7 @@ import { firePostTurnTitleHook } from '../turn-hooks';
 import { resolveLoopModel, resolveLoopModelFromEnv, type LoopModelResolution } from './pi-provider';
 import {
   appendLoopMessages,
+  defaultLoopSessionDir,
   loadLoopSession,
   markLoopSessionCompacted,
   newLoopSessionId,
@@ -752,13 +753,16 @@ class ChatEngine {
         env,
         resolution,
         parentAllowedTools: toolNames,
+        // 1.1.10(A′)— 子 loop 持久化:与主会话同一 loop-sessions 默认目录,
+        // loadLoopSession 可按 sessionId 读回(transcript 只读查看)。
+        storeDir: defaultLoopSessionDir(),
         // 子代理定义(bundled-agents)engine 装载——模型按名派发,v1 不挂 skill 注入。
         agents: loadBundledAgents().map((a) => ({ name: a.name, body: a.body })),
         notify: {
           started: (taskId, description) => {
             broadcast('chat:subagent-started', { taskId, description });
           },
-          finished: (taskId, description, summary, error) => {
+          finished: (taskId, description, summary, error, sessionId) => {
             const trimmed = summary.length > 200 ? `${summary.slice(0, 200)}…` : summary;
             broadcast('chat:subagent-finished', {
               taskId,
@@ -766,6 +770,8 @@ class ChatEngine {
               summary: trimmed,
               status: error ? 'failed' : 'completed',
               ...(error ? { error } : {}),
+              // A′ — 子 loop 的 loop-sessions id,TUI 据此拉 transcript。
+              ...(sessionId ? { loopSessionId: sessionId } : {}),
             });
           },
         },
