@@ -110,6 +110,7 @@ import { createDelegateTaskTool, DELEGATE_TASK_TOOL_NAME } from './subagent';
 import { collectEnabledSkills } from './skills';
 import { createEnvBgTool, createEnvExecTool, createResearchLogTool, ENV_EXEC_TOOL_NAME, RESEARCH_LOG_TOOL_NAME } from './tools';
 import { createIntelSearchTool, INTEL_SEARCH_TOOL_NAME } from './intel';
+import { createExpertDraftTool, createExpertSearchTool, EXPERT_DRAFT_TOOL_NAME, EXPERT_SEARCH_TOOL_NAME } from './expert';
 import { ENV_BG_TOOL_NAME, envBgReap } from './bg-exec';
 import { getBgRegistry, initBgRegistry } from './bg-registry';
 import { reapAllBgProcesses } from './bg-reap';
@@ -637,6 +638,10 @@ class ChatEngine {
       RESEARCH_LOG_TOOL_NAME,
       // intel_search 同 research_log：宿主侧 harness 原生能力，无条件注册。
       INTEL_SEARCH_TOOL_NAME,
+      // 1.2.1 专家知识层：expert_search（决策级检索）/ expert_draft（起草待人审），
+      // 同 intel_search 无条件注册。
+      EXPERT_SEARCH_TOOL_NAME,
+      EXPERT_DRAFT_TOOL_NAME,
     ];
     if (!this.systemInitInfo) {
       this.systemInitInfo = {
@@ -730,6 +735,9 @@ class ChatEngine {
       createResearchLogTool(this.agentDir),
       // 1.1.2 情报横切：宿主侧情报检索，无条件注册（不依赖 env）。
       createIntelSearchTool(),
+      // 1.2.1 专家知识层：决策级检索 + 起草通道，同 intel_search 无条件注册。
+      createExpertSearchTool(),
+      createExpertDraftTool(),
     ];
     if (env) {
       // W1(design-spec §8)— delegate_task 接回生产路径。深度限 1 由 subagent

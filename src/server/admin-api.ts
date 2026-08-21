@@ -168,7 +168,23 @@ import {
 import { aggregateAppcraftRunStats, appendAppcraftRun } from './appcraft/run-log';
 import type { AppcraftRunStats } from './appcraft/run-log';
 import { parseActiveReminders, parseReminderMeta, readDistilled } from './memory/distill';
-import { findByContent, listActive, listResearchEvents, logRecallEvents, MEMORY_KINDS, recordResearchEvent, searchEntries, touchEntry, type MemoryKind, type ResearchBugClass, type ResearchOutcome, type ResearchTaskKind } from './memory/store';
+import { findByContent, getResearchEventById, isResearchTaskKind, listActive, listResearchEvents, logRecallEvents, MEMORY_KINDS, recordResearchEvent, RESEARCH_TASK_KINDS, searchEntries, touchEntry, type MemoryKind, type ResearchBugClass, type ResearchOutcome, type ResearchTaskKind } from './memory/store';
+// 1.2.1 专家知识层：expert.db（sidecar 进程内直连,不经网络）。
+import {
+  deleteDraft,
+  deleteEntry,
+  getDraftById,
+  getEntryById,
+  insertDraft,
+  insertEntry,
+  listDrafts,
+  listEntries,
+  openExpertStore,
+  updateEntry,
+  type ExpertEntry,
+} from './expert/store';
+import { searchExpertEntries, EXPERT_SEARCH_LIMIT } from './expert/search';
+import { computeContentHash, validateEntry, EXPERT_ENTRY_KINDS, EXPERT_PROVENANCES } from './expert/validate';
 // 1.1.2 情报横切：intel.db 更新/状态（sidecar 进程内直连,不经网络）。
 import { runIntelUpdate, getIntelProgress } from './intel/sync';
 import { getIntelStatus, hasIntelDb, openIntelStore } from './intel/store';
@@ -4796,6 +4812,257 @@ export function handleIntelStatus(): AdminResponse {
           progress,
         };
     return { success: true, data: { status, config: cfg } };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+// ===== 专家知识层（1.2.1 骨架期）—— expert.db 管理面 =====
+// 所有写入路径（add/update/review-approve）过 validateEntry 单点校验；
+// provenance 通道写入（add 恒 user；review 用草稿的；promote 恒 promoted），
+// 不接受调用方指定。deps.baseDir 仅供测试注入。
+
+export interface ExpertAdminDeps {
+  /** expert.db 数据目录（缺省 getZhiShiDataDir()）。 */
+  baseDir?: string;
+  /** memory.db 数据目录（promote-prefill 查 research_events；缺省同 baseDir）。 */
+  memoryBaseDir?: string;
+}
+
+/** 管理面列表的条目摘要：不带 content 全文，带截断摘要。 */
+function toExpertEntrySummary(entry: ExpertEntry): Record<string, unknown> {
+  const preview = entry.content.length > 120 ? `${entry.content.slice(0, 119)}…` : entry.content;
+  return {
+    id: entry.id,
+    domain: entry.domain,
+    kind: entry.kind,
+    title: entry.title,
+    applicability: entry.applicability,
+    contentPreview: preview,
+    criteria: entry.criteria,
+    provenance: entry.provenance,
+    reviewer: entry.reviewer,
+    sourceEventId: entry.sourceEventId,
+    tags: entry.tags,
+    enabled: entry.enabled,
+    createdAt: entry.createdAt,
+    updatedAt: entry.updatedAt,
+  };
+}
+
+/** expert/search {query, domain?} → 命中条目数组（FTS，≤5）。 */
+export async function handleExpertSearch(payload: {
+  query?: string;
+  domain?: string;
+}, deps: ExpertAdminDeps = {}): Promise<AdminResponse> {
+  const query = typeof payload?.query === 'string' ? payload.query.trim() : '';
+  if (!query) return { success: false, error: 'usage: expert/search { query, domain? }' };
+  if (payload.domain !== undefined && !isResearchTaskKind(String(payload.domain))) {
+    return { success: false, error: `expert/search: 非法 domain "${payload.domain}"（允许：${RESEARCH_TASK_KINDS.join(' / ')}）` };
+  }
+  try {
+    const db = openExpertStore(deps.baseDir ?? getZhiShiDataDir());
+    const results = searchExpertEntries(db, query, {
+      limit: EXPERT_SEARCH_LIMIT,
+      ...(payload.domain ? { domain: payload.domain } : {}),
+    });
+    return { success: true, data: { results } };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** expert/list {domain?, kind?, provenance?} → 条目摘要（不含 content 全文）。 */
+export async function handleExpertList(payload: {
+  domain?: string;
+  kind?: string;
+  provenance?: string;
+}, deps: ExpertAdminDeps = {}): Promise<AdminResponse> {
+  if (payload?.domain !== undefined && !isResearchTaskKind(String(payload.domain))) {
+    return { success: false, error: `expert/list: 非法 domain "${payload.domain}"（允许：${RESEARCH_TASK_KINDS.join(' / ')}）` };
+  }
+  if (payload?.kind !== undefined && !(EXPERT_ENTRY_KINDS as readonly string[]).includes(String(payload.kind))) {
+    return { success: false, error: `expert/list: 非法 kind "${payload.kind}"（允许：${EXPERT_ENTRY_KINDS.join(' / ')}）` };
+  }
+  if (payload?.provenance !== undefined && !(EXPERT_PROVENANCES as readonly string[]).includes(String(payload.provenance))) {
+    return { success: false, error: `expert/list: 非法 provenance "${payload.provenance}"（允许：${EXPERT_PROVENANCES.join(' / ')}）` };
+  }
+  try {
+    const db = openExpertStore(deps.baseDir ?? getZhiShiDataDir());
+    const entries = listEntries(db, {
+      ...(payload.domain ? { domain: payload.domain } : {}),
+      ...(payload.kind ? { kind: payload.kind } : {}),
+      ...(payload.provenance ? { provenance: payload.provenance } : {}),
+    });
+    return { success: true, data: { entries: entries.map(toExpertEntrySummary) } };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** expert/show {id} → 单条全文。 */
+export async function handleExpertShow(payload: { id?: number }, deps: ExpertAdminDeps = {}): Promise<AdminResponse> {
+  const id = Number(payload?.id);
+  if (!Number.isInteger(id) || id <= 0) return { success: false, error: 'usage: expert/show { id }' };
+  try {
+    const db = openExpertStore(deps.baseDir ?? getZhiShiDataDir());
+    const entry = getEntryById(db, id);
+    if (!entry) return { success: false, error: `expert/show: 条目 #${id} 不存在` };
+    return { success: true, data: { entry } };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** expert/add {entry 字段} → validate → provenance=user 插入（reviewer 必填）。 */
+export async function handleExpertAdd(payload: Record<string, unknown>, deps: ExpertAdminDeps = {}): Promise<AdminResponse> {
+  const result = validateEntry({
+    domain: payload?.domain,
+    kind: payload?.kind,
+    title: payload?.title,
+    applicability: payload?.applicability,
+    content: payload?.content,
+    criteria: payload?.criteria,
+    provenance: 'user',
+    reviewer: payload?.reviewer,
+    tags: payload?.tags,
+  });
+  if (!result.ok) return { success: false, error: `expert/add 校验失败：${result.errors.join('；')}` };
+  try {
+    const db = openExpertStore(deps.baseDir ?? getZhiShiDataDir());
+    const entry = insertEntry(db, result.value, computeContentHash(result.value));
+    return { success: true, data: { entry } };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** expert/update {id, 可变字段} → validate（provenance 不可变，沿用原值）。 */
+export async function handleExpertUpdate(payload: Record<string, unknown>, deps: ExpertAdminDeps = {}): Promise<AdminResponse> {
+  const id = Number(payload?.id);
+  if (!Number.isInteger(id) || id <= 0) return { success: false, error: 'usage: expert/update { id, ...可变字段 }' };
+  try {
+    const db = openExpertStore(deps.baseDir ?? getZhiShiDataDir());
+    const existing = getEntryById(db, id);
+    if (!existing) return { success: false, error: `expert/update: 条目 #${id} 不存在` };
+    const result = validateEntry({
+      domain: payload.domain ?? existing.domain,
+      kind: payload.kind ?? existing.kind,
+      title: payload.title ?? existing.title,
+      applicability: payload.applicability ?? existing.applicability,
+      content: payload.content ?? existing.content,
+      criteria: payload.criteria ?? existing.criteria,
+      provenance: existing.provenance,
+      reviewer: payload.reviewer !== undefined ? payload.reviewer : existing.reviewer,
+      sourceEventId: payload.sourceEventId !== undefined ? payload.sourceEventId : existing.sourceEventId,
+      tags: payload.tags ?? existing.tags,
+      enabled: payload.enabled !== undefined ? payload.enabled : existing.enabled,
+    });
+    if (!result.ok) return { success: false, error: `expert/update 校验失败：${result.errors.join('；')}` };
+    const entry = updateEntry(db, id, { ...result.value, contentHash: computeContentHash(result.value) });
+    return { success: true, data: { entry } };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** expert/rm {id}：user/promoted 可删；builtin 拒绝删（随包分发）。 */
+export async function handleExpertRm(payload: { id?: number }, deps: ExpertAdminDeps = {}): Promise<AdminResponse> {
+  const id = Number(payload?.id);
+  if (!Number.isInteger(id) || id <= 0) return { success: false, error: 'usage: expert/rm { id }' };
+  try {
+    const db = openExpertStore(deps.baseDir ?? getZhiShiDataDir());
+    deleteEntry(db, id);
+    return { success: true, data: { removed: id } };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** expert/drafts → 待审草稿列表。 */
+export async function handleExpertDrafts(_payload: unknown, deps: ExpertAdminDeps = {}): Promise<AdminResponse> {
+  try {
+    const db = openExpertStore(deps.baseDir ?? getZhiShiDataDir());
+    return { success: true, data: { drafts: listDrafts(db) } };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * expert/review {draftId, action:'approve'|'discard', edited?}：
+ * approve——草稿（或被 edited 覆盖后的字段）过 validateEntry 后进 entries
+ * （provenance 用草稿的，reviewer 必填），删草稿；discard——删草稿。
+ */
+export async function handleExpertReview(payload: {
+  draftId?: number;
+  action?: string;
+  edited?: Record<string, unknown>;
+}, deps: ExpertAdminDeps = {}): Promise<AdminResponse> {
+  const draftId = Number(payload?.draftId);
+  if (!Number.isInteger(draftId) || draftId <= 0) {
+    return { success: false, error: 'usage: expert/review { draftId, action: approve|discard, edited? }' };
+  }
+  if (payload?.action !== 'approve' && payload?.action !== 'discard') {
+    return { success: false, error: `expert/review: 非法 action "${payload?.action}"（允许 approve / discard）` };
+  }
+  try {
+    const db = openExpertStore(deps.baseDir ?? getZhiShiDataDir());
+    const draft = getDraftById(db, draftId);
+    if (!draft) return { success: false, error: `expert/review: 草稿 #${draftId} 不存在` };
+    if (payload.action === 'discard') {
+      deleteDraft(db, draftId);
+      return { success: true, data: { discarded: draftId } };
+    }
+    const edited = payload.edited ?? {};
+    const result = validateEntry({
+      domain: edited.domain ?? draft.domain,
+      kind: edited.kind ?? draft.kind,
+      title: edited.title ?? draft.title,
+      applicability: edited.applicability ?? draft.applicability,
+      content: edited.content ?? draft.content,
+      criteria: edited.criteria ?? draft.criteria,
+      provenance: draft.provenance,
+      reviewer: edited.reviewer ?? draft.reviewer,
+      sourceEventId: edited.sourceEventId ?? draft.sourceEventId,
+      tags: edited.tags ?? draft.tags,
+    });
+    if (!result.ok) return { success: false, error: `expert/review 审定校验失败：${result.errors.join('；')}` };
+    const entry = insertEntry(db, result.value, computeContentHash(result.value));
+    deleteDraft(db, draftId);
+    return { success: true, data: { entry } };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * expert/promote-prefill {eventId} → 从 research_events 取该事件，返回预填
+ * 字段（title/content 骨架/轨迹引用/domain=task_kind）供 CLI 打开编辑器。
+ * 只读——不落任何数据（晋升落库走 expert/add 或编辑器往返，由人审定）。
+ */
+export async function handleExpertPromotePrefill(payload: { eventId?: number }, deps: ExpertAdminDeps = {}): Promise<AdminResponse> {
+  const eventId = Number(payload?.eventId);
+  if (!Number.isInteger(eventId) || eventId <= 0) return { success: false, error: 'usage: expert/promote-prefill { eventId }' };
+  try {
+    const event = getResearchEventById(eventId, deps.memoryBaseDir ?? deps.baseDir ?? getZhiShiDataDir());
+    if (!event) return { success: false, error: `expert/promote-prefill: research_events #${eventId} 不存在` };
+    const trajectoryLine = event.trajectoryRef ? `\n\n## 轨迹引用\n${event.trajectoryRef}` : '';
+    return {
+      success: true,
+      data: {
+        prefill: {
+          domain: event.taskKind,
+          kind: 'technique',
+          title: event.summary.slice(0, 60),
+          applicability: '',
+          content: `## 背景\n${event.summary}\n\n## 经验\n（在此补充：怎么做、为什么有效）${trajectoryLine}`,
+          criteria: '',
+          tags: '',
+          provenance: 'promoted',
+          sourceEventId: event.id,
+        },
+      },
+    };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }

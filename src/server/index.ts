@@ -531,6 +531,7 @@ async function ensureAgentDir(dir: string): Promise<string> {
 // ============= END SKILLS CONFIG & SEED =============
 
 import { bumpSkillsGeneration, cleanupStalePlaywrightProfile, mutateSkillsConfig, seedBundledSkills, seedEnvironmentRecipes } from './skills-config';
+import { seedBundledExpert } from './expert/seed';
 
 
 
@@ -885,6 +886,17 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'intel/update') return await api.handleIntelUpdate(payload as Parameters<typeof api.handleIntelUpdate>[0]);
 
   if (route === 'intel/status') return api.handleIntelStatus();
+
+  // 专家知识层（1.2.1 骨架期）：expert.db 管理面。
+  if (route === 'expert/search') return await api.handleExpertSearch(payload as Parameters<typeof api.handleExpertSearch>[0]);
+  if (route === 'expert/list') return await api.handleExpertList(payload as Parameters<typeof api.handleExpertList>[0]);
+  if (route === 'expert/show') return await api.handleExpertShow(payload as Parameters<typeof api.handleExpertShow>[0]);
+  if (route === 'expert/add') return await api.handleExpertAdd(payload as Record<string, unknown>);
+  if (route === 'expert/update') return await api.handleExpertUpdate(payload as Record<string, unknown>);
+  if (route === 'expert/rm') return await api.handleExpertRm(payload as Parameters<typeof api.handleExpertRm>[0]);
+  if (route === 'expert/drafts') return await api.handleExpertDrafts(payload);
+  if (route === 'expert/review') return await api.handleExpertReview(payload as Parameters<typeof api.handleExpertReview>[0]);
+  if (route === 'expert/promote-prefill') return await api.handleExpertPromotePrefill(payload as Parameters<typeof api.handleExpertPromotePrefill>[0]);
   if (route.startsWith('term/')) return await api.handlePanelProxy(route, payload);
 
   // 全局人格层（设置页「搭子」）。
@@ -7450,6 +7462,20 @@ async function main() {
       seedEnvironmentRecipes();
 
       console.log('[startup] seedBundledSkills done');
+
+
+
+      // 1.2.1 专家知识层：bundled-expert 幂等导入 expert.db（按 content_hash；
+      // 内置条目强制覆盖，user/promoted 条目绝不动）。失败不阻塞启动。
+      try {
+        const seedResult = seedBundledExpert();
+        console.log(`[startup] seedBundledExpert done (inserted=${seedResult.inserted} updated=${seedResult.updated} unchanged=${seedResult.unchanged} errors=${seedResult.errors.length})`);
+        for (const seedErr of seedResult.errors) {
+          console.warn(`[startup] seedBundledExpert: ${seedErr}`);
+        }
+      } catch (err) {
+        console.warn('[startup] seedBundledExpert failed (non-fatal):', err instanceof Error ? err.message : String(err));
+      }
 
 
 

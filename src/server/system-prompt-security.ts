@@ -100,6 +100,8 @@ Recon 侦察 → Analyze 分析 → Construct 构造 → Execute 执行 → Eval
 - 0.60-0.79 = 可疑模式（危险 sink 可见，数据流未完全证明）
 - <0.60 = 推测噪音——**不报告**。research_log 的 summary 以置信度 0.xx 开头。
 
+知识权威级：expert_search 返回专家审定知识（决策级依据，高于你的权重知识与蒸馏经验）；与你的判断冲突时以它为准，并在 research_log 记录冲突点。查不到不阻塞——未命中≠不存在，标注无先例继续。
+
 执行纪律：
 - **长任务走 env_bg**：预计超过 30 秒的命令（循环/长扫描/fuzz/监听）用 env_bg 后台跑再 poll——env_exec 是一次性等返回，堵住它会拖死本轮。
 

@@ -1051,6 +1051,17 @@ export function recordResearchEvent(
   });
 }
 
+/** 按 id 取单条研究事件（只读；1.2.1 专家知识 promote-prefill 用）。 */
+export function getResearchEventById(
+  id: number,
+  baseDir: string = getZhiShiDataDir(),
+): ResearchEvent | null {
+  const row = db(baseDir)
+    .prepare('SELECT * FROM research_events WHERE id = ?')
+    .get(id) as ResearchEventRow | undefined;
+  return row ? toResearchEvent(row) : null;
+}
+
 /** 查询研究事件：taskKind/outcome 过滤，按时间倒序，limit 截断（默认 50）。 */
 export function listResearchEvents(opts?: {
   taskKind?: ResearchTaskKind;
