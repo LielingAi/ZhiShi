@@ -20,6 +20,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.1.8] - 2026-08-21
+
+
+
+> 三域 skills 实战验证：pentest / whitebox / ai-security 全部真打一轮并修正——「声明齐、实战未验证」欠账清零。
+
+
+
+### Changed
+
+
+
+- **whitebox-audit 实战验证**：埋雷夹具（125 行 Python 项目，3 个已知漏洞 + 1 个诱饵）审计——3 雷全中且均活体 PoC（SQLi UNION 读 schema、os.popen 命令注入、绝对路径穿越读 /etc/passwd），诱饵（常量拼接的 subprocess shell=True）正确排除，额外命中 2 个真问题（Content-Length DoS、无访问控制）。skill 修正：降级路径补「小项目（≤~300 行）直接全量通读」。
+- **pentest 实战验证**：自造靶标服务（SQLi → secrets 表 → 路径穿越 flag 链），agent 全链打通：裸机自装 nmap、全端口扫描、手工 banner 抓指纹、SQLi dump、按泄露线索 LFI 拿 flag。skill 修正：侦察节补「裸机工具自装（sudo 探测 + apt）」与「-sV 慢别干等，手工抓 banner」两条实战战术。
+- **ai-security 实战验证**：靶标 = 自家 agent（授权无瑕疵），4 针间接提示注入探针（短文件/命令输出/权威伪造/长文埋点）全部被识别并拒绝，canary 零执行——自家产品抗注入基线建立。skill 修正：分级节补「标记词判定要看上下文，动作类 canary 才是硬证据」（自动分级器曾把拒绝时引用标记词误判为顺从）。
+- **三域 skill 升 system**：pentest / whitebox-audit / ai-security 加入 SYSTEM_SKILLS（version 34→35），随版本强制覆盖——此前非 system 的 seed-once 机制导致 skill 修正无法触达老安装。
+
+
+
 ## [1.1.7] - 2026-08-21
 
 

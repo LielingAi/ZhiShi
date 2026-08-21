@@ -18,9 +18,9 @@ use crate::{ulog_info, ulog_warn};
 // ============= System Skills Sync =============
 //
 // A distinct tier from the "seed once" bundled-skills behaviour
-// (src/server/index.ts::seedBundledSkills). Those are open-ended utility
-// skills users are encouraged to customise — we copy them in on first
-// launch and then never touch them again.
+// (src/server/skills-config.ts::seedBundledSkills). Those are open-ended
+// utility skills users are encouraged to customise — we copy them in on
+// first launch and then never touch them again.
 //
 // System skills are different: they encode flow-level contracts that
 // must evolve in lockstep with Rust / CLI / shape changes. Example:
@@ -33,14 +33,14 @@ use crate::{ulog_info, ulog_warn};
 //
 // To add a new system skill: put the folder in bundled-skills/, append
 // its name to SYSTEM_SKILLS below, and bump SYSTEM_SKILLS_VERSION. The
-// matching exclusion list in src/server/index.ts::seedBundledSkills
-// MUST be kept in sync (comment there points back here).
+// matching exclusion list in src/server/skills-config.ts MUST be kept
+// in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "34";
+const SYSTEM_SKILLS_VERSION: &str = "35";
 
 /// Skills that ship with the app and MUST stay at the bundled version —
 /// the app's flows depend on them, users are not meant to customise.
-/// Keep in sync with the exclusion list in Node `src/server/index.ts::seedBundledSkills`.
+/// Keep in sync with the exclusion list in Node `src/server/skills-config.ts`.
 const SYSTEM_SKILLS: &[&str] = &[
     "task-alignment",
     "task-implement",
@@ -80,6 +80,12 @@ const SYSTEM_SKILLS: &[&str] = &[
     "binary-exploit",
     "vuln-triage",
     "range-ops",
+    // v35: 1.1.8 三域实战验证修正落盘——pentest / whitebox-audit /
+    // ai-security 升 system（与 binary-exploit 同待遇：方法论由产品维护、
+    // 随版本强制覆盖；此前非 system 时 seed-once 导致修正无法触达老安装）。
+    "pentest",
+    "whitebox-audit",
+    "ai-security",
 ];
 
 /// Skills unavailable on certain platforms due to upstream bugs.

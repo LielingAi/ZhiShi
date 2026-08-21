@@ -269,6 +269,16 @@ const SYSTEM_SKILLS: readonly string[] = [
 
   'range-ops',
 
+  // v35: 1.1.8 三域实战验证修正落盘——pentest / whitebox-audit /
+
+  // ai-security 升 system（与 binary-exploit 同待遇），见 commands.rs::SYSTEM_SKILLS。
+
+  'pentest',
+
+  'whitebox-audit',
+
+  'ai-security',
+
 ];
 
 

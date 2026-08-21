@@ -60,6 +60,7 @@ semgrep scan --config p/owasp-top-ten .
 ## 降级路径（工具缺失时）
 
 - semgrep 不可用 → rg/grep 手工模式 + OWASP 清单逐类过
+- semgrep 和 rg/grep 都没有、而项目很小（≤ ~300 行）→ 直接全量通读：小项目全读比模式匹配更靠谱，漏不了（1.1.8 实战：125 行项目全读 + 逐 sink 活体 PoC，5 确认 0 误报）
 - CodeQL 太重 → 换 semgrep 深层规则（p/owasp-top-ten）+ 手工数据流
 - 环境没有 → `zhishi env up code-audit`（人建环境,D17）
 
