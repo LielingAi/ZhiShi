@@ -808,6 +808,10 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'environment/rollback') return await api.handleEnvironmentRollback(payload as Parameters<typeof api.handleEnvironmentRollback>[0]);
   if (route === 'environment/extract') return await api.handleEnvironmentExtract(payload as Parameters<typeof api.handleEnvironmentExtract>[0]);
 
+  // 1.2.0 研究交付——一键出报告（组装 → 敏感扫描 → 一次批准 → 回收 → 填肉 → 落盘）
+
+  if (route === 'report/export') return await api.handleReportExport(payload as Parameters<typeof api.handleReportExport>[0]);
+
 
 
   // Environment selection（安全研究员版 P1 T4，D17 首屏选定的持久化）

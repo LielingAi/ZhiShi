@@ -77,11 +77,11 @@ import { managementApi } from './utils/management-api';
 
 const ADMIN_LOOPBACK_TIMEOUT_MS = 10_000;
 
-import { existsSync , writeFileSync, unlinkSync, readFileSync, readdirSync, statSync } from 'fs';
+import { existsSync , mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, statSync } from 'fs';
 
 import { ensureDirSync, isDirEntry } from './utils/fs-utils';
 
-import { resolveSshTarget, execInEnvironment } from './loop/env-exec';
+import { resolveSshTarget, execInEnvironment, buildScpArgv } from './loop/env-exec';
 
 import { buildToolCheckCommand, parseToolCheckOutput } from './environment/recipes';
 
@@ -107,9 +107,14 @@ import { parseSkillFrontmatter } from '../shared/slashCommands';
 import { resolve, basename, isAbsolute } from 'path';
 
 import { setMcpServers, setAgents, getMcpServers, getSidecarPort, getSessionId } from './agent-session';
-import { getPiAgentState, sendPiChatMessage, envSwitchBlocker, getEnvSessionBinding, switchEnvSession } from './loop/chat-engine';
-import { envKeyForSelection, removeEnvSessionsForEnvId } from './environment/env-sessions';
+import { getPiAgentState, sendPiChatMessage, envSwitchBlocker, getEnvSessionBinding, switchEnvSession, resolveSessionEnv, resolveSessionEnvKey } from './loop/chat-engine';
+import { envKeyForSelection, getEnvSessionLine, loadEnvSessionsMap, removeEnvSessionsForEnvId } from './environment/env-sessions';
 import { getMcpStatus, initMcpBridge, reloadMcpBridge } from './loop/mcp-bridge';
+import { resolveLoopModel } from './loop/pi-provider';
+import { runLoopText } from './loop/loop';
+import { buildLoopTranscript } from './loop/transcript';
+import { exportReport } from './report/export';
+import { workspacePathsEqual } from '../shared/workspacePath';
 
 import { KIMI_CODING_MODELS } from '@earendil-works/pi-ai/providers/kimi-coding.models';
 
@@ -6364,23 +6369,7 @@ export async function handleEnvironmentExtract(payload: {
   if (!approved) return { success: false, error: '越界提取已被拒绝或超时(写宿主需人批准)' };
 
   ensureDirSync(destDir);
-  const argv = [
-
-    'scp',
-
-    '-o', 'StrictHostKeyChecking=accept-new',
-
-    '-o', 'BatchMode=yes',
-
-    ...(target.keyPath ? ['-i', target.keyPath] : []),
-
-    ...(target.port ? ['-P', String(target.port)] : []),
-
-    `${target.destination}:${guestPath}`,
-
-    destDir,
-
-  ];
+  const argv = buildScpArgv(target, guestPath, destDir);
 
   const proc = spawnSubprocess([resolveCommand(argv[0]), ...argv.slice(1)], {
 
@@ -6421,6 +6410,81 @@ export async function handleEnvironmentExtract(payload: {
     clearTimeout(timer);
 
   }
+
+}
+
+
+
+/** `report/export` — 1.2.0 研究交付：一键出报告（design 1.2.0）。
+ * 编排本体在 report/export.ts（纯注入，可单测）；这里只做真实接线：
+ * research_events 查询（按 workspace 过滤）/ env-sessions 当前环境线 /
+ * transcript / 一次边界批准 / 批量证据回收 / 一次性叙述 loop / 落盘。
+ * 叙述 loop 无工具、独立 sessionId 语义（runLoopText 一次性调用，不碰
+ * 引擎单例会话线）；模型取工作区当前配置（resolveLoopModel）。 */
+
+export async function handleReportExport(payload: {
+
+  workspace?: string;
+
+  sanitize?: boolean;
+
+}): Promise<AdminResponse> {
+
+  const workspace = typeof payload.workspace === 'string' ? payload.workspace.trim() : '';
+
+  if (!workspace) return { success: false, error: 'Missing required argument: <workspace>' };
+
+  const sanitize = payload.sanitize === true;
+
+  const entry = resolveSessionEnv(workspace);
+  const envKey = resolveSessionEnvKey(workspace);
+  const envId = entry?.id ?? envKey.replace(/^(env|recipe):/, '');
+
+  const resolution = resolveLoopModel();
+  const modelId = resolution ? `${resolution.providerId ?? 'custom'}/${resolution.modelId}` : null;
+
+  const result = await exportReport(
+    { workspace, sanitize, env: { envId, entry } },
+    {
+      listWorkspaceEvents: (ws) =>
+        listResearchEvents({ limit: 1000 }).filter((e) => workspacePathsEqual(e.workspace, ws)),
+      findLoopSessionId: (ws) =>
+        getEnvSessionLine(loadEnvSessionsMap(), ws, envKey)?.loopSessionId,
+      loadTranscript: (loopSessionId) => buildLoopTranscript(loopSessionId),
+      requestApproval: (objects) => requestBoundaryAsk({ kind: 'host-write', objects }),
+      narrate: async (prompt, systemPrompt) => {
+        if (!resolution) return { error: '模型不可用（无 provider/key）' };
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 180_000);
+        try {
+          const { text, error } = await runLoopText({
+            prompt,
+            systemPrompt,
+            model: resolution.model,
+            models: resolution.models,
+            getApiKey: resolution.getApiKey,
+            tools: [],
+            signal: controller.signal,
+          });
+          if (error !== undefined) return { error };
+          return { text };
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : String(err) };
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+      modelId,
+      writeOutputs: (reportDir, files) => {
+        mkdirSync(reportDir, { recursive: true });
+        for (const [name, content] of Object.entries(files)) {
+          writeFileSync(join(reportDir, name), content, 'utf-8');
+        }
+      },
+    },
+  );
+
+  return result;
 
 }
 

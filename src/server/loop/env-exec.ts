@@ -214,6 +214,24 @@ export function buildSshArgv(
   return argv;
 }
 
+/**
+ * 组装 scp 回收 argv（纯函数）：把环境内单个文件/目录拉回宿主目录。
+ * `environment/extract`（admin-api）与报告导出的批量证据回收
+ * （report/evidence.ts）共用此构造——两条路径的 scp 形态必须一致
+ * （accept-new 免首次确认、BatchMode 禁交互、D-T4 只用 keyPath）。
+ */
+export function buildScpArgv(target: SshTarget, guestPath: string, destDir: string): string[] {
+  return [
+    'scp',
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', 'BatchMode=yes',
+    ...(target.keyPath ? ['-i', target.keyPath] : []),
+    ...(target.port ? ['-P', String(target.port)] : []),
+    `${target.destination}:${guestPath}`,
+    destDir,
+  ];
+}
+
 export interface TruncatedOutput {
   text: string;
   truncated: boolean;

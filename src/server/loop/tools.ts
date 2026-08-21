@@ -276,7 +276,11 @@ const researchLogParameters = Type.Object({
   outcome: Type.String({ enum: [...RESEARCH_OUTCOMES], description: `成败:${RESEARCH_OUTCOMES.join(' / ')}` }),
   summary: Type.String({ description: '成了什么 / 卡在哪 / 有效组合（一句话,蒸馏原料）' }),
   bug_class: Type.Optional(Type.String({ enum: [...RESEARCH_BUG_CLASSES], description: `漏洞类别(可空):${RESEARCH_BUG_CLASSES.join(' / ')}` })),
-  trajectory_ref: Type.Optional(Type.String({ description: '轨迹文件的工作区相对路径(可空)' })),
+  trajectory_ref: Type.Optional(Type.String({
+    description:
+      '轨迹文件的工作区相对路径(可空)。纪律:产出 PoC/样本/截图等工件时必须挂环境内路径——' +
+      '报告导出的证据回收按此登记批量拉回宿主,不挂=报告里该证据只能降级标注。',
+  })),
 });
 
 export type ResearchLogParams = Static<typeof researchLogParameters>;
