@@ -27,7 +27,6 @@ import {
   composeInputBox,
   composeOverlay,
   composeModalBox,
-  composeMenuRow,
   overlayRow,
   overlayHeader,
   takeWidth,
@@ -49,40 +48,24 @@ import {
   filterByQuery,
   type AtItem,
 } from './commands';
-import {
-  gatherGateData,
-  buildGateOptions,
-  moveGateCursor,
-  firstEnabledIndex,
-  commitGate,
-  type GateOption,
-  type GateResult,
-} from './gate';
-import { targetForEnv, spawnAttach, type AttachTarget } from './attach';
+import type { GateResult } from './gate';
+import { GateController, type ManualFormState } from './gate-controller';
+import type { AttachTarget } from './attach';
 import { composeBackgroundSeg } from './bg-tasks';
+import { reduceHiddenLine, type HiddenLineOutcome } from './model';
+import { runSnapshot, runRollback, runExtract } from './slash/env';
+import { runAttach } from './slash/attach';
+import { runModel } from './slash/model';
+import { runMcp } from './slash/mcp';
+import type { PushBlockInput, SlashContext } from './slash/types';
 import {
-  parseModelArgs,
-  parseMcpArgs,
-  reduceHiddenLine,
-  composeModelCardRows,
-  composeMcpCardRows,
-  type ModelProviderInfo,
-  type McpBridgeRow,
-  type McpServerRow,
-  type HiddenLineOutcome,
-} from './model';
-import type { Block, DividerBlock, SessionState, ModalState, RefAttachment } from './types';
-
-// ---------------------------------------------------------------------------
-
-/**
- * pushBlock 的按 kind 精确入参(H3):divider/error/background 各有明确字段,
- * 不再用 `as unknown as Block` 绕类型检查。
- */
-type PushBlockInput =
-  | { kind: 'divider'; label: string; follow?: string; tone: DividerBlock['tone'] }
-  | { kind: 'error'; text: string }
-  | { kind: 'background'; taskId: string; summary: string; switchHook?: boolean };
+  reduceOverlayKey,
+  type Overlay,
+  type OverlayEffect,
+  type OverlayKeyEnv,
+  type CompletionEntry,
+} from './overlay-reducer';
+import type { Block, SessionState, ModalState, RefAttachment } from './types';
 
 // ---------------------------------------------------------------------------
 
@@ -100,24 +83,6 @@ export interface AppDeps {
   resume?: () => void;
   /** 测试注入:替换真实 spawn(接管子进程)。生产缺省 attach.spawnAttach。 */
   spawnAttachImpl?: (target: AttachTarget) => Promise<number>;
-}
-
-type Overlay =
-  | { kind: 'completion'; source: '/' | '@'; items: CompletionEntry[]; sel: number }
-  | { kind: 'help'; sel: number }
-  | { kind: 'history'; query: string; results: string[]; sel: number }
-  | { kind: 'rewind'; action: 'rewind' | 'fork'; candidates: { srvId: string; label: string }[]; sel: number }
-  | { kind: 'queue'; items: { id: string; preview: string; kindLabel: string }[]; sel: number }
-  | { kind: 'tasks'; sel: number; detail: boolean }
-  | { kind: 'drawer'; blockId: string; offset: number }
-  | { kind: 'modal'; state: ModalState };
-
-interface CompletionEntry {
-  label: string;
-  detail: string;
-  group: string;
-  insert: string;
-  ref?: RefAttachment;
 }
 
 const PANEL_MAX_ROWS = 12;
@@ -153,13 +118,8 @@ export class App {
   private env: { name?: string; kind?: string } = {};
   private atItems: AtItem[] = [];
 
-  // gate
-  private gateOptions: GateOption[] = [];
-  private gateCursor = 0;
-  private gateBusy = false;
-  /** 正门来源：false=启动首次选择（Esc 退出到 shell），true=/env 重进（Esc 返回 chat）。 */
-  private gateReentry = false;
-  private manualForm: { step: 0 | 1 | 2; host: string; user: string; keyPath: string } | null = null;
+  // gate（1.1.10 B）：正门选择 + 手动 SSH 表单由 GateController 持有。
+  private gate: GateController;
 
   /** 隐藏输入接管(/model set-key):非 null 时按键只进缓冲,不进消息编辑器。 */
   private hiddenLine: { buffer: string; prompt: string; resolve: (v: string | null) => void } | null = null;
@@ -193,6 +153,39 @@ export class App {
     if (deps.presetEnv) {
       this.env = { name: deps.presetEnv.id, kind: deps.presetEnv.envKind };
     }
+    this.gate = new GateController({
+      client: this.client,
+      workspace: this.workspace,
+      editor: this.editor,
+      isChatMode: () => this.mode === 'chat',
+      enterGateMode: () => {
+        this.mode = 'gate';
+        this.overlay = null;
+      },
+      enterChat: () => this.enterChat(),
+      requestQuit: () => {
+        this.quitRequested = true;
+      },
+      setEnv: (env) => {
+        this.env = env;
+      },
+      clearScrollback: () => this.writer.clear(),
+      appendRaw: (lines) => this.appendRaw(lines),
+      renderChrome: () => this.renderChrome(),
+      layoutCols: () => this.writer.layout().cols,
+    });
+  }
+
+  // gate 状态由 GateController 持有；这三个访问器保持既有读取路径
+  // （currentHint / promptLead / startSpinner 与 app-gate-reentry 测试）不变。
+  private get gateCursor(): number {
+    return this.gate.gateCursor;
+  }
+  private get gateBusy(): boolean {
+    return this.gate.gateBusy;
+  }
+  private get manualForm(): ManualFormState | null {
+    return this.gate.manualForm;
   }
 
   async start(): Promise<void> {
@@ -202,7 +195,7 @@ export class App {
     if (this.mode === 'chat') {
       this.enterChat();
     } else {
-      await this.enterGate();
+      await this.gate.enter();
     }
   }
 
@@ -216,215 +209,8 @@ export class App {
   }
 
   // -------------------------------------------------------------------------
-  // Gate (正门)
-  // -------------------------------------------------------------------------
-
-  private async enterGate(): Promise<void> {
-    // 重进重置（1.1.6 #2）：gateBusy 成功路径不复位，/env 二次进门会吞掉所有键。
-    this.gateReentry = this.mode === 'chat';
-    this.gateBusy = false;
-    this.mode = 'gate';
-    this.overlay = null;
-    this.writer.clear();
-    this.appendRaw([[{ text: '  正在盘点本机环境…', style: { fg: 'faint' } }]]);
-    this.renderChrome();
-    const data = await gatherGateData(this.client);
-    this.gateOptions = buildGateOptions(data);
-    this.gateCursor = Math.max(0, firstEnabledIndex(this.gateOptions));
-    this.renderGate();
-  }
-
-  private renderGate(): void {
-    this.writer.clear();
-    const cols = this.writer.layout().cols;
-    const envCount = this.gateOptions.filter((o) => o.envId).length;
-    const recipeCount = this.gateOptions.filter((o) => o.recipeId).length;
-    const discoveredCount = this.gateOptions.filter((o) => o.discoveredKind).length;
-    this.appendRaw([
-      [],
-      [{ text: '  选择本次会话的工作环境', style: { fg: 'cyan', bold: true } }],
-      [{
-        text: `  已登记 ${envCount} · 本机发现 ${discoveredCount} · 环境类型 ${recipeCount}`,
-        style: { fg: 'faint' },
-      }],
-      [],
-    ]);
-    let lastGroup: GateOption['group'] | null = null;
-    const groupLabel: Record<GateOption['group'], string> = {
-      running: '运行中',
-      stopped: '已停止',
-      discovered: '本机已有（未注册 · 选中即登记）',
-      recipe: '新建环境（选类型）',
-      manual: '手动接入',
-    };
-    this.gateOptions.forEach((opt, i) => {
-      if (opt.group !== lastGroup) {
-        this.appendRaw([[{ text: `  ${groupLabel[opt.group]}`, style: { fg: 'faint' } }]]);
-        lastGroup = opt.group;
-      }
-      const selected = i === this.gateCursor;
-      const reason = opt.disabled && opt.disabledReason ? `（不可用：${opt.disabledReason}）` : '';
-      const spans: import('./row-buffer').Span[] = [
-        { text: selected ? '  ❯ ' : '    ', style: selected ? { fg: 'amber', bold: true } : { fg: 'faint' } },
-        { text: opt.label, style: opt.disabled ? { fg: 'faint' } : selected ? { fg: 'text', bold: true } : { fg: 'text' } },
-        { text: `  ${opt.detail}${reason}`, style: { fg: 'muted' } },
-      ];
-      this.appendRaw([composeMenuRow(spans, selected && !opt.disabled, cols)]);
-    });
-    if (this.gateOptions.length === 0) {
-      this.appendRaw([[{ text: '  未发现任何环境或环境类型（sidecar 连接异常？）', style: { fg: 'red' } }]]);
-    }
-    this.appendRaw([[]]);
-    this.renderChrome();
-  }
-
-  private async onGateKey(key: Key): Promise<void> {
-    if (this.manualForm) {
-      await this.onManualFormKey(key);
-      return;
-    }
-    if (this.gateBusy) return;
-    if (key.name === 'up') {
-      this.gateCursor = moveGateCursor(this.gateOptions, this.gateCursor, -1);
-      this.renderGate();
-      return;
-    }
-    if (key.name === 'down') {
-      this.gateCursor = moveGateCursor(this.gateOptions, this.gateCursor, 1);
-      this.renderGate();
-      return;
-    }
-    if (key.name === 'esc') {
-      // D27: 启动首次选择无 host 选项——Esc 保守退出到 shell；
-      // /env 重进时 Esc 是取消，返回 chat（1.1.6 #2）。
-      if (this.gateReentry) {
-        this.enterChat();
-      } else {
-        this.quitRequested = true;
-      }
-      return;
-    }
-    if (key.name !== 'enter') return;
-    const opt = this.gateOptions[this.gateCursor];
-    if (!opt || opt.disabled) return;
-    // 手动接入:进三步表单(host → user → keyPath),不走 commitGate。
-    if (opt.key === 'manual:ssh') {
-      this.manualForm = { step: 0, host: '', user: '', keyPath: '' };
-      this.editor.setText('');
-      this.renderChrome();
-      return;
-    }
-    this.gateBusy = true;
-    this.renderChrome();
-    try {
-      const result = await commitGate(this.client, opt, this.workspace, (line) => {
-        this.appendRaw([[{ text: `  ${line}`, style: { fg: 'muted' } }]]);
-      });
-      for (const w of result.warnings) {
-        this.appendRaw([[{ text: `  ⚠ ${w}`, style: { fg: 'amber' } }]]);
-      }
-      this.env = { name: result.id, kind: result.envKind };
-      this.enterChat();
-    } catch (err) {
-      this.appendRaw([
-        [{ text: `  ✗ ${err instanceof Error ? err.message : String(err)}`, style: { fg: 'red' } }],
-        [{ text: this.gateReentry ? '  请重新选择（Esc 返回）' : '  请重新选择（Esc 退出）', style: { fg: 'faint' } }],
-      ]);
-      this.gateBusy = false;
-      this.renderChrome();
-    }
-  }
-
-  // -------------------------------------------------------------------------
   // Chat mode entry
   // -------------------------------------------------------------------------
-
-  /** 手动接入三步表单:① host ② user(缺省 researcher)③ keyPath(缺省
-   *  ~/.ssh/id_ed25519)。Enter 逐步,Esc 退回列表,D-T4 不碰密码。 */
-  private async onManualFormKey(key: Key): Promise<void> {
-    const form = this.manualForm!;
-    if (key.name === 'esc') {
-      this.manualForm = null;
-      this.renderGate();
-      this.renderChrome();
-      return;
-    }
-    if (key.name === 'enter') {
-      const value = this.editor.text.trim();
-      if (form.step === 0) {
-        if (!value) return; // host 必填
-        form.host = value;
-        form.step = 1;
-        this.editor.setText(form.user || 'researcher');
-      } else if (form.step === 1) {
-        form.user = value || 'researcher';
-        form.step = 2;
-        this.editor.setText(form.keyPath || `${this.homeDirSshKey()}`);
-      } else {
-        form.keyPath = value || this.homeDirSshKey();
-        await this.submitManualForm(form);
-        return;
-      }
-      this.renderChrome();
-      return;
-    }
-    const edit = keyToEdit(key);
-    if (edit) {
-      this.editor.apply(edit);
-      this.renderChrome();
-    }
-  }
-
-  private homeDirSshKey(): string {
-    const home = process.env.USERPROFILE ?? process.env.HOME ?? '~';
-    return `${home}/.ssh/id_ed25519`;
-  }
-
-  private async submitManualForm(form: { host: string; user: string; keyPath: string }): Promise<void> {
-    this.gateBusy = true;
-    this.renderChrome();
-    const id = `ssh-${form.host.replace(/[^A-Za-z0-9.-]/g, '-')}`;
-    const addRes = await this.client
-      .adminPost<{ success?: boolean; error?: string }>('environment/add', {
-        id,
-        kind: 'ssh',
-        host: form.host,
-        user: form.user,
-        keyPath: form.keyPath,
-      })
-      .catch((err): { success?: boolean; error?: string } => ({
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      }));
-    if (addRes.success === false) {
-      this.appendRaw([[{ text: `  ✗ 接入失败:${addRes.error}`, style: { fg: 'red' } }]]);
-      this.gateBusy = false;
-      this.manualForm = null;
-      this.renderGate();
-      this.renderChrome();
-      return;
-    }
-    const selRes = await this.client
-      .adminPost<{ success?: boolean; error?: string }>('environment/select', {
-        workspace: this.workspace,
-        selection: { kind: 'env', id },
-      })
-      .catch((err): { success?: boolean; error?: string } => ({
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      }));
-    if (selRes.success === false) {
-      this.appendRaw([[{ text: `  ✗ 选定失败:${selRes.error}`, style: { fg: 'red' } }]]);
-      this.gateBusy = false;
-      this.manualForm = null;
-      this.renderGate();
-      this.renderChrome();
-      return;
-    }
-    this.manualForm = null;
-    this.env = { name: id, kind: 'ssh' };
-    this.enterChat();
-  }
 
   private enterChat(): void {
     this.mode = 'chat';
@@ -550,7 +336,7 @@ export class App {
       return;
     }
     if (this.mode === 'gate') {
-      void this.onGateKey(key);
+      void this.gate.onKey(key);
       return;
     }
     // Modal swallows everything but y/n (design §6.6 — 越界无惯性).
@@ -722,114 +508,57 @@ export class App {
   // --- overlays ---
 
   private onOverlayKey(key: Key): void {
-    const ov = this.overlay!;
-    if (key.name === 'esc') {
-      // tasks 详情页：Esc 先逐层退回列表，再按才关面板（overlay 惯例）。
-      if (ov.kind === 'tasks' && ov.detail) {
-        ov.detail = false;
-        this.renderChrome();
-        return;
-      }
-      this.closeOverlay();
-      this.renderChrome();
-      return;
-    }
-    switch (ov.kind) {
-      case 'completion':
-        if (key.name === 'up') ov.sel = Math.max(0, ov.sel - 1);
-        else if (key.name === 'down') ov.sel = Math.min(ov.items.length - 1, ov.sel + 1);
-        else if (key.name === 'tab') return this.acceptCompletion();
-        else if (key.name === 'enter') {
-          // Enter = accept the highlighted completion ONLY while the user is
-          // still typing the bare command. Once args begin (a space follows
-          // the verb) or nothing matches, Enter must SUBMIT the text — the
-          // first cut swallowed '/snapshot tui-live' into the void here.
-          const txt = this.editor.text;
-          if (ov.items.length === 0 || /\s/.test(txt.slice(1))) {
-            this.closeOverlay();
-            void this.submit();
-            return;
-          }
-          return this.acceptCompletion();
-        } else {
-          // typing continues into the editor, live-filtering the panel
-          const edit = keyToEdit(key);
-          if (edit) {
-            this.editor.apply(edit);
-            this.updateLiveCompletion();
-          }
-        }
-        break;
-      case 'help':
-        if (key.name === 'up') ov.sel = Math.max(0, ov.sel - 1);
-        else if (key.name === 'down') ov.sel = Math.min(HELP_ENTRIES.length - 1, ov.sel + 1);
-        else if (hasMod(key, 'ctrl') && key.char === 'l') this.closeOverlay();
-        break;
-      case 'history':
-        if (key.name === 'up') ov.sel = Math.max(0, ov.sel - 1);
-        else if (key.name === 'down') ov.sel = Math.min(ov.results.length - 1, ov.sel + 1);
-        else if (key.name === 'enter') {
-          const pick = ov.results[ov.sel];
-          this.closeOverlay();
-          if (pick) this.editor.setText(pick);
-        } else if (key.name === 'backspace') {
-          ov.query = ov.query.slice(0, -1);
-          this.refilterHistory(ov);
-        } else if (key.char && !hasMod(key, 'ctrl')) {
-          ov.query += key.char;
-          this.refilterHistory(ov);
-        }
-        break;
-      case 'rewind':
-        if (key.name === 'up') ov.sel = Math.max(0, ov.sel - 1);
-        else if (key.name === 'down') ov.sel = Math.min(ov.candidates.length - 1, ov.sel + 1);
-        else if (key.name === 'enter' && ov.candidates[ov.sel]) {
-          const sel = ov.candidates[ov.sel];
-          const action = ov.action;
-          this.closeOverlay();
-          if (action === 'fork') void this.doFork(sel.srvId);
-          else void this.doRewind(sel.srvId);
-        }
-        break;
-      case 'queue':
-        if (key.name === 'up') ov.sel = Math.max(0, ov.sel - 1);
-        else if (key.name === 'down') ov.sel = Math.min(ov.items.length - 1, ov.sel + 1);
-        else if ((key.char === 'x' || key.name === 'enter') && ov.items[ov.sel]) {
-          const item = ov.items[ov.sel];
-          void this.client.postJson('/chat/queue/cancel', { queueId: item.id }).catch(() => {});
-          ov.items.splice(ov.sel, 1);
-          ov.sel = Math.max(0, Math.min(ov.sel, ov.items.length - 1));
-          if (ov.items.length === 0) this.closeOverlay();
-        }
-        break;
-      case 'tasks': {
-        // 列表/详情两层：Enter 互切；移动键只在列表层生效。
-        const rows = this.collectTaskRows();
-        if (key.name === 'enter') {
-          if (rows.length > 0) ov.detail = !ov.detail;
-        } else if (!ov.detail) {
-          if (key.name === 'up') ov.sel = Math.max(0, ov.sel - 1);
-          else if (key.name === 'down') ov.sel = Math.min(rows.length - 1, ov.sel + 1);
-        }
-        break;
-      }
-      case 'drawer': {
-        const blk = this.state.blocks.find((b) => b.id === ov.blockId);
-        if (!blk || blk.kind !== 'tool') {
-          this.closeOverlay();
-          break;
-        }
-        const total = (blk.output ?? '').split('\n').length;
-        if (hasMod(key, 'ctrl') && key.char === 'o') this.closeOverlay();
-        else if (key.name === 'up') ov.offset = Math.max(0, ov.offset - 1);
-        else if (key.name === 'down') ov.offset = Math.min(total - 1, ov.offset + 1);
-        else if (key.name === 'pgup') ov.offset = Math.max(0, ov.offset - 10);
-        else if (key.name === 'pgdn') ov.offset = Math.min(total - 1, ov.offset + 10);
-        this.repaintBlocks({ touched: [ov.blockId], appended: [] });
-        break;
-      }
-    }
+    const ov = this.overlay;
+    if (!ov) return;
+    // 状态变更全部在 overlay-reducer 纯归约；这里只执行副作用 + 重绘。
+    const { overlay, effect } = reduceOverlayKey(ov, key, this.overlayKeyEnv(ov));
+    this.overlay = overlay;
+    if (effect) this.applyOverlayEffect(effect);
     this.renderChrome();
+  }
+
+  /** reducer 判定数据的现取注入（只算当前 overlay 种类需要的）。 */
+  private overlayKeyEnv(ov: Overlay): OverlayKeyEnv {
+    let drawerTotal: number | null = null;
+    if (ov.kind === 'drawer') {
+      const blk = this.state.blocks.find((b) => b.id === ov.blockId);
+      if (blk && blk.kind === 'tool') drawerTotal = (blk.output ?? '').split('\n').length;
+    }
+    return {
+      editorText: this.editor.text,
+      historyTexts: ov.kind === 'history' ? this.history.recentTexts().reverse() : [],
+      taskRowCount: ov.kind === 'tasks' ? this.collectTaskRows().length : 0,
+      drawerTotal,
+    };
+  }
+
+  /** overlay reducer 归约出的副作用在这里统一执行。 */
+  private applyOverlayEffect(effect: OverlayEffect): void {
+    switch (effect.type) {
+      case 'accept-completion':
+        this.acceptCompletion();
+        return;
+      case 'submit':
+        void this.submit();
+        return;
+      case 'editor-edit':
+        this.editor.apply(effect.edit);
+        this.updateLiveCompletion();
+        return;
+      case 'history-pick':
+        if (effect.text) this.editor.setText(effect.text);
+        return;
+      case 'rewind-go':
+        if (effect.action === 'fork') void this.doFork(effect.srvId);
+        else void this.doRewind(effect.srvId);
+        return;
+      case 'queue-cancel':
+        void this.client.postJson('/chat/queue/cancel', { queueId: effect.id }).catch(() => {});
+        return;
+      case 'drawer-repaint':
+        this.repaintBlocks({ touched: [effect.blockId], appended: [] });
+        return;
+    }
   }
 
   private closeOverlay(): void {
@@ -941,14 +670,6 @@ export class App {
     const texts = this.history.recentTexts().reverse(); // newest first
     this.overlay = { kind: 'history', query: '', results: texts, sel: 0 };
     this.renderChrome();
-  }
-
-  private refilterHistory(ov: Extract<Overlay, { kind: 'history' }>): void {
-    const texts = this.history.recentTexts().reverse();
-    ov.results = ov.query
-      ? texts.filter((t) => HistoryStore.score(ov.query, t) > 0)
-      : texts;
-    ov.sel = 0;
   }
 
   private async openQueue(): Promise<void> {
@@ -1136,22 +857,48 @@ export class App {
     return out.length ? out : undefined;
   }
 
+  /**
+   * slash handler 的上下文(1.1.10 B):每次分发现取一份——env/state 会被
+   * gate 选定、/reset、fork 重赋值,getter 保证 handler 拿到的是活的。
+   */
+  private slashContext(): SlashContext {
+    const app = this;
+    return {
+      client: this.client,
+      workspace: this.workspace,
+      get env() {
+        return app.env;
+      },
+      get state() {
+        return app.state;
+      },
+      pushBlock: (input) => this.pushBlock(input),
+      startHiddenLine: (prompt) => this.startHiddenLine(prompt),
+      suspend: this.suspend,
+      resume: this.resume,
+      spawnAttachImpl: this.spawnAttachImpl,
+      repaintAll: () => this.repaintAll(),
+      renderChrome: () => this.renderChrome(),
+    };
+  }
+
   private async runSlash(verb: string, arg: string): Promise<void> {
+    const ctx = this.slashContext();
     switch (verb) {
       case 'attach':
-        await this.runAttach();
+        await runAttach(ctx);
         break;
       case 'snapshot':
-        await this.runSnapshot(arg);
+        await runSnapshot(ctx, arg);
         break;
       case 'rollback':
-        await this.runRollback(arg);
+        await runRollback(ctx, arg);
         break;
       case 'extract':
-        await this.runExtract(arg);
+        await runExtract(ctx, arg);
         break;
       case 'env':
-        await this.enterGate();
+        await this.gate.enter();
         break;
       case 'rewind':
         this.openRewind('rewind');
@@ -1173,10 +920,10 @@ export class App {
         break;
       }
       case 'model':
-        await this.runModel(arg);
+        await runModel(ctx, arg);
         break;
       case 'mcp':
-        await this.runMcp(arg);
+        await runMcp(ctx, arg);
         break;
       case 'help':
         this.toggleHelp();
@@ -1192,309 +939,6 @@ export class App {
     this.renderChrome();
   }
 
-  private async runSnapshot(name: string): Promise<void> {
-    if (!this.env.name) {
-      this.pushBlock({ kind: 'error', text: '未锚定环境' });
-      return;
-    }
-    this.pushBlock({ kind: 'divider', label: `正在为 ${this.env.name} 打快照…`, tone: 'info' });
-    const res = await this.client
-      .adminPost<{ success?: boolean; error?: string; data?: { snapshot?: string } }>('environment/snapshot', {
-        id: this.env.name,
-        ...(name.trim() ? { name: name.trim() } : {}),
-      })
-      .catch((err): { success?: boolean; error?: string; data?: { snapshot?: string } } => ({
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      }));
-    if (res.success === false) this.pushBlock({ kind: 'error', text: `快照失败：${res.error}` });
-    else this.pushBlock({ kind: 'divider', label: `快照已打：${res.data?.snapshot ?? name}`, tone: 'info' });
-  }
-
-  private async runRollback(name: string): Promise<void> {
-    if (!this.env.name) {
-      this.pushBlock({ kind: 'error', text: '未锚定环境' });
-      return;
-    }
-    if (!name.trim()) {
-      this.pushBlock({ kind: 'error', text: '用法：/rollback <快照名>' });
-      return;
-    }
-    this.pushBlock({ kind: 'divider', label: `回滚 ${this.env.name} → ${name.trim()}…`, tone: 'info' });
-    const res = await this.client
-      .adminPost<{ success?: boolean; error?: string; data?: { restarted?: boolean } }>('environment/rollback', {
-        id: this.env.name,
-        snapshot: name.trim(),
-      })
-      .catch((err): { success?: boolean; error?: string; data?: { restarted?: boolean } } => ({
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      }));
-    if (res.success === false) this.pushBlock({ kind: 'error', text: `回滚失败：${res.error}` });
-    else this.pushBlock({ kind: 'divider', label: `已回滚到 ${name.trim()}${res.data?.restarted ? '（环境已重启）' : ''}`, tone: 'info' });
-  }
-
-  /**
-   * /extract <环境内路径> — 成果回收(design §6.4)。服务端走越界 ask 通道:
-   * 这个 adminPost 会一直 pending 到人在红色模态里回答 y/n。
-   */
-  private async runExtract(arg: string): Promise<void> {
-    if (!this.env.name) {
-      this.pushBlock({ kind: 'error', text: '未锚定环境' });
-      return;
-    }
-    if (!arg.trim()) {
-      this.pushBlock({ kind: 'error', text: '用法：/extract <环境内绝对路径>' });
-      return;
-    }
-    this.pushBlock({ kind: 'divider', label: `请求提取 ${this.env.name}:${arg.trim()}(需越界批准)…`, tone: 'info' });
-    const res = await this.client
-      .adminPost<{ success?: boolean; error?: string; data?: { savedTo?: string } }>('environment/extract', {
-        id: this.env.name,
-        guestPath: arg.trim(),
-        workspace: this.workspace,
-      })
-      .catch((err): { success?: boolean; error?: string; data?: { savedTo?: string } } => ({
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      }));
-    if (res.success === false) this.pushBlock({ kind: 'error', text: `提取失败:${res.error}` });
-    else this.pushBlock({ kind: 'divider', label: `已回收到宿主:${res.data?.savedTo ?? 'output/extracted/'}`, tone: 'info' });
-  }
-
-  /**
-   * /model — 模型配置闭环:
-   *   无参 → 状态卡(供应商/已配 key/默认模型/模型数 + 当前默认);
-   *   set-key <供应商id> → 隐藏输入填 key → admin model/set-key(自动发现模型);
-   *   use <供应商id> <模型名> → 带供应商语义切换(防重名);
-   *   <模型名> → 旧语法直接切换(向后兼容)。
-   */
-  private async runModel(arg: string): Promise<void> {
-    const args = parseModelArgs(arg);
-    switch (args.kind) {
-      case 'error':
-        this.pushBlock({ kind: 'error', text: args.message });
-        return;
-      case 'status':
-        await this.showModelStatus();
-        return;
-      case 'set-key':
-        await this.runModelSetKey(args.providerId);
-        return;
-      case 'use':
-        await this.runModelUse(args.providerId, args.model);
-        return;
-      case 'switch':
-        await this.runModelSwitch(args.model);
-        return;
-    }
-  }
-
-  /** /model(无参)——供应商状态卡。数据来自 admin model/list(全量目录)。 */
-  private async showModelStatus(): Promise<void> {
-    const res = await this.client
-      .adminPost<{ success?: boolean; error?: string; data?: ModelProviderInfo[] }>('model/list', {})
-      .catch((): { success?: boolean; error?: string; data?: ModelProviderInfo[] } => ({
-        success: false,
-        error: '无法连接 sidecar',
-      }));
-    if (res.success === false) {
-      this.pushBlock({ kind: 'error', text: res.error ?? '模型状态获取失败' });
-      return;
-    }
-    const providers = res.data ?? [];
-    for (const row of composeModelCardRows(providers, this.state.status.model)) {
-      this.pushBlock({ kind: 'divider', label: row.label, follow: row.follow, tone: row.tone });
-    }
-  }
-
-  /** /model set-key <供应商id> — 隐藏输入填 key → 保存 → 自动拉模型目录。 */
-  private async runModelSetKey(providerId: string): Promise<void> {
-    // 先在目录里确认供应商存在(含 kimi 内置合成条目),顺带拿显示名。
-    const list = await this.client
-      .adminPost<{ success?: boolean; data?: ModelProviderInfo[] }>('model/list', {})
-      .catch((): { success?: boolean; data?: ModelProviderInfo[] } => ({ success: false }));
-    const provider = (list.data ?? []).find((p) => p.id === providerId);
-    if (!provider) {
-      this.pushBlock({ kind: 'error', text: `未知供应商: ${providerId}（/model 查看可配供应商）` });
-      return;
-    }
-    const apiKey = await this.startHiddenLine(
-      `输入 ${provider.name} API key（隐藏输入，Enter 确认，Esc 取消）`,
-    );
-    if (apiKey === null) {
-      this.pushBlock({ kind: 'divider', label: `已取消（未保存 ${providerId} key）`, tone: 'info' });
-      return;
-    }
-    const res = await this.client
-      .adminPost<{ success?: boolean; error?: string; data?: { modelsFetched?: number; modelsFetchError?: string } }>(
-        'model/set-key',
-        { id: providerId, apiKey },
-      )
-      .catch((): { success?: boolean; error?: string; data?: { modelsFetched?: number; modelsFetchError?: string } } => ({
-        success: false,
-        error: '无法连接 sidecar',
-      }));
-    if (res.success === false) {
-      this.pushBlock({ kind: 'error', text: `保存失败：${res.error ?? '未知错误'}` });
-      return;
-    }
-    const fetched = res.data?.modelsFetched;
-    const fetchErr = res.data?.modelsFetchError;
-    const follow = fetched !== undefined
-      ? `自动发现 ${fetched} 个模型`
-      : fetchErr
-        ? `模型列表拉取失败（key 已保存）：${fetchErr}`
-        : '已保存';
-    this.pushBlock({ kind: 'divider', label: `✓ 已保存 ${providerId} API key`, follow, tone: 'ok' });
-    await this.showModelStatus();
-  }
-
-  /** /model use <供应商id> <模型名> — 带供应商前缀的切换(撞名不误配)。 */
-  private async runModelUse(providerId: string, model: string): Promise<void> {
-    const res = await this.client
-      .postJson<{ success?: boolean; error?: string; providerId?: string; model?: string }>('/chat/model', {
-        model,
-        providerId,
-      })
-      .catch((): { success?: boolean; error?: string; providerId?: string; model?: string } => ({
-        success: false,
-        error: '无法连接 sidecar',
-      }));
-    if (!res.success) {
-      this.pushBlock({ kind: 'error', text: res.error ?? '切换模型失败' });
-      return;
-    }
-    this.state.status.model = res.model ?? model;
-    this.pushBlock({ kind: 'divider', label: `模型已切换：${providerId}/${res.model ?? model}`, tone: 'ok' });
-  }
-
-  /** /model <模型名>(向后兼容)——无供应商语义,由服务端反查归属。 */
-  private async runModelSwitch(model: string): Promise<void> {
-    const res = await this.client
-      .postJson<{ success?: boolean; error?: string; providerId?: string; model?: string }>('/chat/model', { model })
-      .catch((): { success?: boolean; error?: string; providerId?: string; model?: string } => ({
-        success: false,
-        error: '无法连接 sidecar',
-      }));
-    if (res.success) {
-      this.state.status.model = res.model ?? model;
-      this.pushBlock({ kind: 'divider', label: `模型已切换：${res.model ?? model}`, tone: 'ok' });
-    } else {
-      this.pushBlock({ kind: 'error', text: res.error ?? '切换模型失败' });
-    }
-  }
-
-  /**
-   * /mcp — MCP 桥状态展示(含启用标注)/ -r 热重载 / enable|disable <id>
-   * 开关。开关走 admin mcp/enable|disable 写盘 → mcp/reload 桥重载,
-   * 当前会话立即生效(磁盘为权威来源)。
-   */
-  private async runMcp(arg: string): Promise<void> {
-    const args = parseMcpArgs(arg);
-    switch (args.kind) {
-      case 'error':
-        this.pushBlock({ kind: 'error', text: args.message });
-        return;
-      case 'enable':
-      case 'disable':
-        await this.runMcpToggle(args.kind, args.id);
-        return;
-      case 'reload':
-        await this.showMcpStatus(true);
-        return;
-      case 'status':
-        await this.showMcpStatus(false);
-        return;
-    }
-  }
-
-  /** 展示 MCP 状态。reload=true 时先走 mcp/reload(热重载后拿新状态)。 */
-  private async showMcpStatus(reload: boolean): Promise<void> {
-    if (reload) this.pushBlock({ kind: 'divider', label: 'MCP 重连中…', tone: 'info' });
-    const statusRes = await this.client
-      .adminPost<{ success?: boolean; error?: string; data?: { servers?: McpBridgeRow[] } }>(
-        reload ? 'mcp/reload' : 'mcp/list-status',
-        {},
-      )
-      .catch((): { success?: boolean; error?: string; data?: { servers?: McpBridgeRow[] } } => ({
-        success: false,
-        error: '无法连接 sidecar',
-      }));
-    if (statusRes.success === false) {
-      this.pushBlock({ kind: 'error', text: statusRes.error ?? 'MCP 状态获取失败' });
-      return;
-    }
-    const statuses = statusRes.data?.servers ?? [];
-    // 无参展示要标注启用状态:mcp/list 给全量(含 enabled 标记),桥状态只有
-    // 已启用服务器的连接结果——两侧合并。清单拉取失败降级为只列桥状态。
-    let servers: McpServerRow[] = [];
-    if (!reload) {
-      const listRes = await this.client
-        .adminPost<{ success?: boolean; data?: McpServerRow[] }>('mcp/list', {})
-        .catch((): { success?: boolean; data?: McpServerRow[] } => ({ success: false }));
-      servers = listRes.data ?? [];
-    }
-    const summary = composeMcpCardRows(servers, statuses);
-    if (summary.rows.length === 0) {
-      this.pushBlock({ kind: 'divider', label: 'MCP 服务器状态', follow: '0 台(无已启用服务器)', tone: 'info' });
-      return;
-    }
-    this.pushBlock({
-      kind: 'divider',
-      label: reload ? 'MCP 已重载' : 'MCP 服务器状态',
-      follow: `${summary.total} 台 · 启用 ${summary.enabledCount}`,
-      tone: 'info',
-    });
-    for (const row of summary.rows) {
-      this.pushBlock({ kind: 'divider', label: row.label, follow: row.follow, tone: row.tone });
-    }
-  }
-
-  /** /mcp enable|disable <id> — 写盘 → 桥热重载,显示结果与当前工具数。 */
-  private async runMcpToggle(kind: 'enable' | 'disable', id: string): Promise<void> {
-    const verb = kind === 'enable' ? '启用' : '停用';
-    this.pushBlock({ kind: 'divider', label: `MCP ${verb} ${id}…`, tone: 'info' });
-    const res = await this.client
-      .adminPost<{ success?: boolean; error?: string }>(`mcp/${kind}`, { id })
-      .catch((): { success?: boolean; error?: string } => ({ success: false, error: '无法连接 sidecar' }));
-    if (res.success === false) {
-      this.pushBlock({ kind: 'error', text: `${verb}失败：${res.error ?? '未知错误'}` });
-      return;
-    }
-    // 配置已写盘;桥热重载让变更在当前会话立即生效。
-    const reloadRes = await this.client
-      .adminPost<{ success?: boolean; error?: string; data?: { servers?: McpBridgeRow[] } }>('mcp/reload', {})
-      .catch((): { success?: boolean; error?: string; data?: { servers?: McpBridgeRow[] } } => ({
-        success: false,
-        error: '无法连接 sidecar',
-      }));
-    if (reloadRes.success === false) {
-      this.pushBlock({ kind: 'error', text: `配置已写入但桥重载失败：${reloadRes.error ?? '未知错误'}` });
-      return;
-    }
-    const target = (reloadRes.data?.servers ?? []).find((s) => s.id === id);
-    if (kind === 'enable') {
-      if (target?.status === 'connected') {
-        this.pushBlock({
-          kind: 'divider',
-          label: `✓ 已启用 ${id}`,
-          follow: `connected · ${target.toolCount ?? 0} 工具`,
-          tone: 'ok',
-        });
-      } else {
-        this.pushBlock({
-          kind: 'divider',
-          label: `✓ 已启用 ${id}（连接失败）`,
-          follow: target?.error ?? '未连接',
-          tone: 'fail',
-        });
-      }
-    } else {
-      this.pushBlock({ kind: 'divider', label: `✓ 已停用 ${id}`, follow: '已从当前会话移除', tone: 'ok' });
-    }
-  }
-
   private async stop(): Promise<void> {
     // Optimistic interrupt divider (server confirms via chat:message-stopped).
     this.state.pendingDividerId = this.pushBlock({
@@ -1504,40 +948,6 @@ export class App {
     });
     this.writer.flush();
     await this.client.postJson('/chat/stop', {}).catch(() => {});
-  }
-
-  private async runAttach(): Promise<void> {
-    if (!this.suspend || !this.resume) return;
-    // Resolve connection metadata fresh (the gate only carries id+kind).
-    let target;
-    try {
-      const res = await this.client.adminPost<{ data?: { environments?: Record<string, unknown>[] } }>(
-        'environment/list',
-        {},
-      );
-      const entry = (res.data?.environments ?? []).find((e) => e.id === this.env.name) ?? {};
-      target = targetForEnv({
-        kind: (entry.kind as string) ?? this.env.kind,
-        sshUser: (entry.user as string) ?? undefined,
-        sshAddress: ((entry.host ?? entry.address) as string) ?? undefined,
-        sshKeyPath: (entry.keyPath as string) ?? undefined,
-        container: (entry.container as string) ?? undefined,
-      });
-    } catch {
-      target = targetForEnv({ kind: this.env.kind });
-    }
-    if (target.kind === 'local') {
-      this.pushBlock({ kind: 'error', text: '该环境不支持接管（缺少 ssh/docker 连接信息）' });
-      return;
-    }
-    this.suspend();
-    try {
-      await (this.spawnAttachImpl ?? spawnAttach)(target);
-    } finally {
-      this.resume();
-      this.repaintAll();
-      this.renderChrome();
-    }
   }
 
   // -------------------------------------------------------------------------
