@@ -90,6 +90,20 @@ describe('searchExpertEntries', () => {
     expect(hits).toHaveLength(1);
   });
 
+  it('长句自然查询放宽命中（1.2.1 对照实验钉：AND 全中才返回 = 长查询必空）', () => {
+    add({
+      title: 'zsrv KV 查询服务的两个 quirks',
+      applicability: '黑盒测试 zsrv 时',
+      content: '注释符是 ~~；系统表 _meta.tables 可直接读',
+    });
+    const db = openExpertStore(dir);
+    // agent 的自然长句查询：「安全测试」「漏洞利用」不在条目里——AND 必空，
+    // 放宽链（FTS OR / 逐词元 LIKE）必须把它捞回来。
+    const hits = searchExpertEntries(db, 'zsrv KV 查询服务 安全测试 漏洞利用');
+    expect(hits).toHaveLength(1);
+    expect(hits[0].title).toContain('zsrv');
+  });
+
   it('limit 截断', () => {
     for (let i = 0; i < 8; i++) add({ title: `canary 条目 ${i}` });
     const db = openExpertStore(dir);
