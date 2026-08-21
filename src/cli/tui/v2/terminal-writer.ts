@@ -118,7 +118,7 @@ export class TerminalWriter {
   private readonly viewport: Viewport;
 
   /** Wrap cache per row id, valid for the current width. */
-  private wrapCache = new Map<string, Segment[][]>();
+  private wrapCache = new Map<string, WrapEntry>();
   /** Previous frame's painted output rows (diff baseline), keyed for equality. */
   private prevFrameKeys: string[] | null = null;
   private prevStatusKeys: string[] | null = null;
@@ -208,8 +208,17 @@ export class TerminalWriter {
     }
     if (!changed) return;
     this.viewport.resize({ width: this.cols, height: this.layout().outputBottom });
-    this.invalidateFrame();
-    this.scheduler.flush();
+    // P4（1.1.9）：输出区锚定顶行（outputTop 恒为 1），chrome 高度变化只在
+    // 尾部增删行——prevFrameKeys 按区域内偏移索引，绝对行号不变，基线仍然有
+    // 效（变短的区域多出的旧 key 不再被比较，变长的区域 prev[i] 为 undefined
+    // 必然重画）；窗口平移/裁剪造成的内容变化由 key diff 自然覆盖。只有
+    // status/input 的位置变了，它们的基线作废。flush 降级为 request：与紧随
+    // 的 setInput 等变更合进同一帧（16ms），不再每次高度变化同步全屏刷。
+    this.prevStatusKeys = null;
+    this.prevInputKeys = null;
+    this.prevCursorRow = -1;
+    this.prevCursorCol = -1;
+    this.scheduler.request();
   }
 
   /** Force the next frame to repaint every region (used after setChrome/resize). */
@@ -265,8 +274,17 @@ export class TerminalWriter {
 
   /** Patch an optimistic row (Esc divider, streaming card…). */
   updateRow(id: string, spans: Span[]): boolean {
+    const prevSpans = this.buffer.get(id)?.spans;
+    const entry = this.wrapCache.get(id);
     if (!this.buffer.update(id, spans)) return false;
-    this.wrapCache.delete(id);
+    // P1: 流式「单点追加」走尾部增量重折（保留稳定行，只重折插入点所在行起
+    // 的尾段）；任何疑义回退全量——删缓存，下一帧 wrapRow 懒重折全文。
+    const next =
+      entry && prevSpans
+        ? rewrapAppended(prevSpans, spans, entry, this.cols)
+        : null;
+    if (next) this.wrapCache.set(id, next);
+    else this.wrapCache.delete(id);
     this.scheduler.request();
     return true;
   }
@@ -437,12 +455,12 @@ export class TerminalWriter {
   // -------------------------------------------------------------------------
 
   private wrapRow(row: Row): Segment[][] {
-    let lines = this.wrapCache.get(row.id);
-    if (!lines) {
-      lines = wrapSpans(row.spans, this.cols);
-      this.wrapCache.set(row.id, lines);
+    let entry = this.wrapCache.get(row.id);
+    if (!entry) {
+      entry = wrapSpansTracked(row.spans, this.cols);
+      this.wrapCache.set(row.id, entry);
     }
-    return lines;
+    return entry.lines;
   }
 
   /** Emit segments with minimal SGR churn; style mapping happens here only. */
@@ -482,13 +500,63 @@ function sameStyle(a: Style | undefined, b: Style | undefined): boolean {
   return styleKey(a) === styleKey(b);
 }
 
+function spanEquals(a: Span, b: Span): boolean {
+  return a.text === b.text && sameStyle(a.style, b.style);
+}
+
+/** A visual line's source position: index into spans + code-unit offset within
+ *  that span's text (always a grapheme-cluster boundary, by construction). */
+interface LineStart {
+  span: number;
+  offset: number;
+}
+
+/** Wrap cache entry: visual lines + each line's source start (for P1). */
+export interface WrapEntry {
+  lines: Segment[][];
+  starts: LineStart[];
+}
+
+/**
+ * next 中包含 offset 的 grapheme 簇的起点（offset 本身是簇边界则返回它）。
+ * chunk 可能把簇切成两半（👩‍💻 的 💻 第二次才到）——追加会让新文本把插入点
+ * 之前的若干码元并进一个更大的簇，此时必须从该簇的起点开始重折，否则稳定
+ * 前缀里会留下半个簇（seed-20 实测：prev 末 grapheme 是孤立高代理项，next
+ * 里它与前面的 👩+ZWJ 并成一簇）。
+ */
+function clusterFloor(text: string, index: number): number {
+  let start = 0;
+  for (const g of graphemes(text)) {
+    const end = start + g.length;
+    if (end >= index) return end === index ? index : start;
+    start = end;
+  }
+  return index; // index >= text.length：视为边界
+}
+
 /**
  * Wrap logical-row spans into visual lines of at most `width` cells.
  * Grapheme-aware (CJK = 2 cells, emoji ZWJ clusters move as one unit).
  * C0 controls are dropped; `\n` forces a line break.
  */
 export function wrapSpans(spans: Span[], width: number): Segment[][] {
+  return wrapSpansCore(spans, width, null);
+}
+
+/** wrapSpans + 每条 visual line 的源起点（增量重折的定位锚）。 */
+export function wrapSpansTracked(spans: Span[], width: number): WrapEntry {
+  const starts: LineStart[] = [];
+  const lines = wrapSpansCore(spans, width, starts);
+  return { lines, starts };
+}
+
+function wrapSpansCore(
+  spans: Span[],
+  width: number,
+  starts: LineStart[] | null,
+): Segment[][] {
   const lines: Segment[][] = [[]];
+  starts?.push({ span: 0, offset: 0 });
   let cur = lines[0];
   let col = 0;
   const push = (text: string, style: Style | undefined): void => {
@@ -496,12 +564,16 @@ export function wrapSpans(spans: Span[], width: number): Segment[][] {
     if (last && sameStyle(last.style, style)) last.text += text;
     else cur.push({ text, style });
   };
-  for (const span of spans) {
+  for (let si = 0; si < spans.length; si++) {
+    const span = spans[si];
+    let offset = 0; // code-unit offset of the current grapheme's END
     for (const g of graphemes(span.text)) {
+      offset += g.length;
       if (g === '\n') {
         cur = [];
         lines.push(cur);
         col = 0;
+        starts?.push({ span: si, offset });
         continue;
       }
       const cp = g.codePointAt(0)!;
@@ -511,12 +583,100 @@ export function wrapSpans(spans: Span[], width: number): Segment[][] {
         cur = [];
         lines.push(cur);
         col = 0;
+        starts?.push({ span: si, offset: offset - g.length });
       }
       push(g, span.style);
       col += w;
     }
   }
   return lines;
+}
+
+/**
+ * 流式尾部增量重折（1.1.9 P1）。entry 必须是 prev 的折行结果。
+ *
+ * 只接受一种形态：next = prev 的「单点追加」——存在 k 使得
+ *   - next[0..k-1] 与 prev[0..k-1] 逐 span 全等（text + style）；
+ *   - next[k] 与 prev[k] 同 style，且 text 是 prev[k].text 的向前增长
+ *     （增长量可为 0，即纯插入）；
+ *   - next 末尾与 prev[k+1..] 逐 span 全等（中间允许插入新 span——流式光标
+ *     ▍ 这类恒定尾缀就是 k = 倒数第二 span、尾缀 1 个 span 的情形）。
+ *
+ * 此时 prev 折行结果中，重折锚点所在 visual line 之前的行逐字节稳定（折行
+ * 是左到右的确定性状态机，已完结的前缀不受追加影响），只需从该行的源起点
+ * 用 next 的 spans 重折尾段。锚点 = next 中包含插入点的 grapheme 簇的起点
+ * （见 clusterFloor：chunk 切开的簇在追加时会与前面的码元并簇）。任何疑义
+ * （缩短、中间 span 变化、style 变化）→ 返回 null，调用方回退全量
+ * wrapSpans。渲染正确性优先于性能。
+ */
+export function rewrapAppended(
+  prev: Span[],
+  next: Span[],
+  entry: WrapEntry,
+  width: number,
+): WrapEntry | null {
+  if (prev.length === 0 || next.length < prev.length) return null;
+  // 公共前缀 / 公共尾缀（逐 span 全等），夹出中间的变化区。
+  let p = 0;
+  while (p < prev.length && p < next.length && spanEquals(prev[p], next[p])) p++;
+  let s = 0;
+  while (
+    s < prev.length - p &&
+    s < next.length - p &&
+    spanEquals(prev[prev.length - 1 - s], next[next.length - 1 - s])
+  )
+    s++;
+  const oldMid = prev.length - p - s;
+  let k: number; // 追加发生的 span（prev 下标）
+  if (oldMid === 1) {
+    k = p;
+    const a = prev[k];
+    const b = next[k];
+    if (!sameStyle(a.style, b.style)) return null;
+    if (!b.text.startsWith(a.text)) return null;
+  } else if (oldMid === 0) {
+    k = p - 1; // 纯插入：追加点在 prev[p-1] 末尾
+    if (k < 0) return null; // 插在开头 = 全文变，直接全量
+  } else {
+    return null;
+  }
+
+  // 插入点（prev 坐标）。它之前的 visual line 全部稳定；找到包含插入点的
+  // 行 L（最后一个起点 <= 插入点的行），从 L 的源起点用 next 重折尾段。
+  // 注意追加可能让 next 把插入点前的码元并进更大的簇（ZWJ 序列），所以
+  // 实际锚点是 next 中包含插入点的簇的**起点**，而非插入点本身。
+  const atSpan = k;
+  const atOffset =
+    oldMid === 1
+      ? clusterFloor(next[k].text, prev[k].text.length)
+      : prev[k].text.length; // 纯插入：spans 各自独立切分，不存在跨合并
+  let L = 0;
+  for (let i = 0; i < entry.starts.length; i++) {
+    const st = entry.starts[i];
+    if (st.span < atSpan || (st.span === atSpan && st.offset <= atOffset)) L = i;
+    else break;
+  }
+  const st = entry.starts[L];
+  // st.span <= k 恒成立：st.span < k 时 next[st.span] 与 prev 全等；
+  // st.span === k 时 st.offset 落在未变的前缀内（且是簇边界）。
+  const src: Span[] = [
+    {
+      text: next[st.span].text.slice(st.offset),
+      style: next[st.span].style,
+    },
+    ...next.slice(st.span + 1),
+  ];
+  const subStarts: LineStart[] = [];
+  const rewrapped = wrapSpansCore(src, width, subStarts);
+  return {
+    lines: entry.lines.slice(0, L).concat(rewrapped),
+    starts: entry.starts.slice(0, L).concat(
+      subStarts.map((s2) => ({
+        span: st.span + s2.span,
+        offset: s2.span === 0 ? st.offset + s2.offset : s2.offset,
+      })),
+    ),
+  };
 }
 
 /** Truncate spans to a single visual line of at most `width` cells. */

@@ -15,6 +15,54 @@ import { TerminalWriter } from './terminal-writer';
 import { App } from './app';
 import { resolveFlag, type GateResult } from './gate';
 import { detectColorDepth } from './style';
+import type { TimerApi } from './frame-scheduler';
+
+const globalTimer: TimerApi = {
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
+};
+
+export interface ResizeDebouncerOptions {
+  /** 读最新终端尺寸（事件只代表「变了」，尺寸以触发时为准）。 */
+  measure: () => { cols: number; rows: number };
+  /** 防抖到期后一次性应用（entry 里是 writer.resize —— 全量重折行 + 重绘）。 */
+  apply: (cols: number, rows: number) => void;
+  /** 静默窗口（默认 50ms）：拖窗口一秒几十个事件，合成一次 reflow。 */
+  debounceMs?: number;
+  timer?: TimerApi;
+}
+
+/**
+ * P5（1.1.9）：resize 防抖。拖动/缩放窗口时 resize 事件以每秒几十个的频率
+ * 到达，每个都同步 writer.resize()（全量重折行 + 同步重绘）会把主线程打满。
+ * 这里只记「有未应用的尺寸」，静默 debounceMs 后一次性取最新尺寸应用。
+ * trailing-only：最后一次事件后必有一次 apply，不会停在中间尺寸。
+ */
+export function createResizeDebouncer(opts: ResizeDebouncerOptions): {
+  onResize: () => void;
+  cancel: () => void;
+} {
+  const ms = Math.max(1, opts.debounceMs ?? 50);
+  const timer = opts.timer ?? globalTimer;
+  let pending: unknown = null;
+  const fire = (): void => {
+    pending = null;
+    const { cols, rows } = opts.measure();
+    opts.apply(cols, rows);
+  };
+  return {
+    onResize: () => {
+      if (pending !== null) timer.clearTimeout(pending);
+      pending = timer.setTimeout(fire, ms);
+    },
+    cancel: () => {
+      if (pending !== null) {
+        timer.clearTimeout(pending);
+        pending = null;
+      }
+    },
+  };
+}
 
 export interface AgentLoopOptions {
   /** Sidecar ROOT base URL (no /api/admin), e.g. `http://127.0.0.1:19100`. */
@@ -128,9 +176,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   });
 
   input.setRawMode?.(true);
-  const onResize = (): void => {
-    writer.resize(output.columns || 80, output.rows || 24);
-  };
+  // P5：resize 防抖（~50ms），期间只记最新尺寸，静默后一次性 reflow。
+  const resizeDebouncer = createResizeDebouncer({
+    measure: () => ({ cols: output.columns || 80, rows: output.rows || 24 }),
+    apply: (cols, rows) => writer.resize(cols, rows),
+  });
+  const onResize = resizeDebouncer.onResize;
   output.on('resize', onResize);
 
   let exiting = false;
@@ -138,6 +189,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     if (exiting) return;
     exiting = true;
     output.removeListener('resize', onResize);
+    resizeDebouncer.cancel(); // 退出后不再补刀一次 reflow
     app.dispose();
     writer.exit();
     writer.dispose(); // final teardown — kills the frame scheduler's timer

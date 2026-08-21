@@ -161,11 +161,18 @@ export function charWidth(cp: number): 0 | 1 | 2 {
   return 1;
 }
 
+/**
+ * 模块级单例（1.1.9 P3）：Intl.Segmenter 无内部状态、segment() 可并发复用，
+ * 而构造比切分贵得多——wrap/truncate/宽度计算全链路每帧调用，不能每次 new。
+ */
+const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, {
+  granularity: 'grapheme',
+});
+
 /** Split text into grapheme clusters (user-perceived characters). */
 export function graphemes(text: string): string[] {
   if (text === '') return [];
-  const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-  return Array.from(seg.segment(text), (s) => s.segment);
+  return Array.from(GRAPHEME_SEGMENTER.segment(text), (s) => s.segment);
 }
 
 /**

@@ -6,7 +6,29 @@
 
 import { describe, it, expect } from 'vitest';
 import { SidecarClient, type FetchLike, type FetchResponseLike } from '../client';
-import { ensureAgentSession } from './entry';
+import { createResizeDebouncer, ensureAgentSession } from './entry';
+import type { TimerApi } from './frame-scheduler';
+
+class ManualTimer implements TimerApi {
+  private queue = new Map<number, () => void>();
+  private seq = 0;
+  setTimeout(fn: () => void, _ms: number): unknown {
+    const h = ++this.seq;
+    this.queue.set(h, fn);
+    return h;
+  }
+  clearTimeout(handle: unknown): void {
+    this.queue.delete(handle as number);
+  }
+  runAll(): void {
+    const fns = [...this.queue.values()];
+    this.queue.clear();
+    for (const fn of fns) fn();
+  }
+  get pending(): number {
+    return this.queue.size;
+  }
+}
 
 type Handler = (url: string, body: Record<string, unknown>) => Record<string, unknown>;
 
@@ -85,5 +107,61 @@ describe('ensureAgentSession（1.1.6 #4 环境分线接线）', () => {
       return { success: true };
     });
     await expect(ensureAgentSession(client, '/ws')).rejects.toThrow('sidecar boom');
+  });
+});
+
+describe('createResizeDebouncer（1.1.9 P5 resize 防抖）', () => {
+  it('连续 5 个 resize 事件只触发一次 apply，且用最新尺寸', () => {
+    const timer = new ManualTimer();
+    let size = { cols: 80, rows: 24 };
+    const applied: Array<{ cols: number; rows: number }> = [];
+    const d = createResizeDebouncer({
+      measure: () => size,
+      apply: (cols, rows) => applied.push({ cols, rows }),
+      timer,
+    });
+    for (let i = 0; i < 5; i++) {
+      size = { cols: 80 + i, rows: 24 };
+      d.onResize();
+    }
+    expect(timer.pending).toBe(1); // 合并为一个待定帧
+    expect(applied).toEqual([]); // 静默期内不同步 reflow
+    timer.runAll();
+    expect(applied).toEqual([{ cols: 84, rows: 24 }]); // 一次性、最新尺寸
+  });
+
+  it('静默期后的新事件会再次应用（trailing 不会停在中间尺寸）', () => {
+    const timer = new ManualTimer();
+    let size = { cols: 100, rows: 30 };
+    const applied: Array<{ cols: number; rows: number }> = [];
+    const d = createResizeDebouncer({
+      measure: () => size,
+      apply: (cols, rows) => applied.push({ cols, rows }),
+      timer,
+    });
+    d.onResize();
+    timer.runAll();
+    size = { cols: 120, rows: 40 };
+    d.onResize();
+    timer.runAll();
+    expect(applied).toEqual([
+      { cols: 100, rows: 30 },
+      { cols: 120, rows: 40 },
+    ]);
+  });
+
+  it('cancel 丢弃待定 reflow（退出后不补刀）', () => {
+    const timer = new ManualTimer();
+    const applied: unknown[] = [];
+    const d = createResizeDebouncer({
+      measure: () => ({ cols: 80, rows: 24 }),
+      apply: () => applied.push(1),
+      timer,
+    });
+    d.onResize();
+    d.cancel();
+    expect(timer.pending).toBe(0);
+    timer.runAll();
+    expect(applied).toEqual([]);
   });
 });

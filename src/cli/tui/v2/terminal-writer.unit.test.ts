@@ -599,3 +599,104 @@ describe('pure helpers', () => {
     expect(out[out.length - 1].style).toEqual({ fg: 'amber' });
   });
 });
+
+describe('chrome height change (1.1.9 P4)', () => {
+  it('inputHeight 变化后输出区内容逐行不变、且不重画；status/input 照常重画', () => {
+    const { writer, vt, delta } = makeWriter(40, 12); // 输出区 1-based 行 1..10
+    writer.enter();
+    for (let i = 1; i <= 8; i++) writer.append(span(`row${i}`));
+    writer.setStatus([span('S')]);
+    writer.setInput([span('❯ a')], 0, 3);
+    writer.flush();
+    delta();
+    const before: string[] = [];
+    for (let r = 0; r < 10; r++) before.push(vt.line(r));
+
+    // 补全面板张开：input 1 → 3 行（输出区缩 2 行）。
+    writer.setChrome({ inputHeight: 3 });
+    writer.setInput([span('p1'), span('p2'), span('❯ a')], 2, 3);
+    writer.flush();
+    const d = delta();
+    // 输出区 0..7 行（0-based）内容不变，且这 8 行一个字节都没重画。
+    for (let r = 0; r < 8; r++) expect(vt.line(r)).toBe(before[r]);
+    for (let row = 1; row <= 8; row++)
+      expect(d).not.toContain(`\x1b[${row};1H`);
+    // status 移到 1-based 第 9 行；input 占 10..12 行。
+    expect(vt.line(8)).toBe('S');
+    expect(vt.line(9)).toBe('p1');
+    expect(vt.line(10)).toBe('p2');
+    expect(vt.line(11)).toBe('❯ a');
+    expect(vt.cursor).toEqual({ row: 11, col: 3 });
+
+    // 面板收起：input 3 → 1 行（输出区长回 10 行），新暴露的行要重画。
+    writer.setChrome({ inputHeight: 1 });
+    writer.setInput([span('❯ a')], 0, 3);
+    writer.flush();
+    delta();
+    for (let r = 0; r < 10; r++) expect(vt.line(r)).toBe(before[r]);
+    expect(vt.line(10)).toBe('S');
+    expect(vt.line(11)).toBe('❯ a');
+    expect(vt.cursor).toEqual({ row: 11, col: 3 });
+  });
+
+  it('setChrome 不再同步 flush：高度变化走 16ms 合帧', () => {
+    const { writer, timer, writes } = makeWriter(40, 12);
+    writer.enter();
+    writer.append(span('x'));
+    writer.flush();
+    const base = writes();
+    writer.setChrome({ inputHeight: 2 });
+    expect(writes()).toBe(base); // 没有同步上屏
+    expect(timer.pending).toBe(1); // 合并为一帧
+    timer.runAll();
+    expect(writes()).toBe(base + 1);
+  });
+});
+
+describe('streaming incremental wrap (1.1.9 P1)', () => {
+  it('chunked updateRow 与一次性全文上屏逐行一致（含 CJK/emoji/多 style）', () => {
+    const final = [
+      { text: '## 标题', style: { fg: 'cyan' as const, bold: true } },
+      { text: '\n' },
+      { text: '正文 ' },
+      { text: 'code', style: { fg: 'purple' as const } },
+      { text: ' 混排 ✈️👩‍💻🎯 中文宽字符折行压力测试，长度足够跨越多行 visual line。' },
+      { text: '\n' },
+      { text: '尾部', style: { fg: 'amber' as const } },
+    ];
+    const total = final.map((s) => s.text).join('');
+    const width = 20;
+
+    const a = makeWriter(width, 30);
+    a.writer.enter();
+    // 码元级 7B chunk 流式（允许切断簇/代理对），镜像 app 的 flatten 后单 span 序列。
+    let text = '';
+    for (let i = 0; i < total.length; i += 7) {
+      text = total.slice(0, i + 7);
+      const spans = overlayStyles(text); // 重新生成整段 spans（模拟 markdown 重渲染）
+      if (!a.writer.updateRow('s', spans)) a.writer.append(spans, { id: 's' });
+      a.writer.flush();
+    }
+    a.delta();
+
+    const b = makeWriter(width, 30);
+    b.writer.enter();
+    b.writer.append(overlayStyles(total), { id: 's' });
+    b.writer.flush();
+    b.delta();
+
+    for (let r = 0; r < 28; r++) expect(a.vt.line(r)).toBe(b.vt.line(r));
+
+    // 按固定样式边界把 text 切回 spans（与 final 的 span/样式结构一致）。
+    function overlayStyles(t: string) {
+      const out: { text: string; style?: (typeof final)[number]['style'] }[] = [];
+      let rest = 0;
+      for (const seg of final) {
+        const take = Math.min(seg.text.length, Math.max(0, t.length - rest));
+        if (take > 0) out.push({ text: seg.text.slice(0, take), style: seg.style });
+        rest += seg.text.length;
+      }
+      return out;
+    }
+  });
+});
