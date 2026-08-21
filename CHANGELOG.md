@@ -20,6 +20,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.2.0] - 2026-08-21
+
+
+
+> 研究交付：TUI `/export` 一键出研究报告（report.md + evidence/ 目录）——留痕设施变现为可交付成果。
+
+
+
+### Added
+
+
+
+- **研究报告导出**：`/export` 把工作区的研究记录组装成报告目录——按域模板（pentest/whitebox/binary/通用），确定性骨架（事件流、bug_class、文件:行号等事实由代码钉死）+ LLM 只写过程叙述（失败自动退化为纯骨架，不阻塞导出）。
+- **证据回收链**：`research_log` 挂 `trajectory_ref`（环境内工件路径，skills 与工具描述已补纪律）→ 导出时按登记经 extract 通道批量回收到 `evidence/`；环境下线/docker 环境走明确降级标注。
+- **导出闸门**：落点 + 证据清单 + 敏感项计数一次列清、人批一次（不逐文件问）；默认完整导出（脱敏版不是成果报告），`/export sanitize` 出脱敏版（`[redacted:类别]`遮蔽）。
+- **meta.json**：生成时间/环境/模型/事件清单/降级与截断标注，随报告落盘。
+
+
+
 ## [1.1.10] - 2026-08-21
 
 
