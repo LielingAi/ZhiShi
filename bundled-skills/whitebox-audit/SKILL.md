@@ -63,6 +63,7 @@ semgrep scan --config p/owasp-top-ten .
 - semgrep 和 rg/grep 都没有、而项目很小（≤ ~300 行）→ 直接全量通读：小项目全读比模式匹配更靠谱，漏不了（1.1.8 实战：125 行项目全读 + 逐 sink 活体 PoC，5 确认 0 误报）
 - CodeQL 太重 → 换 semgrep 深层规则（p/owasp-top-ten）+ 手工数据流
 - 环境没有 → `zhishi env up code-audit`（人建环境,D17）
+- 知识缺口（不是工具缺口：不认识的 sink/拿不准的判定）→ 查 `expert_search`——专家审定知识，决策级；**先尽力、卡住再查**；未命中 = 库里没这条 ≠ 不是漏洞，标注「无先例」后继续
 
 ## 不报告清单（硬排除，误报过滤器——逐条自动排除，不为它们生成假设）
 
