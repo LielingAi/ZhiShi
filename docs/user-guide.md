@@ -24,14 +24,9 @@
 
 ### 发行包（Windows）
 
-- 下载安装包 `ZhiShi_<版本>_x64-setup.exe`（NSIS）安装，或便携 ZIP 解压即用。
-- 安装后开一个终端，直接：
-
-```powershell
-zhishi agent
-```
-
-TUI 启动，`zhishi` 命令已同步到 `~/.zhishi/bin/`。Tauri 壳在后台负责引擎（sidecar）生命周期，无需手动起服务。
+- 到 [GitHub Releases](https://github.com/LielingAi/ZhiShi/releases/latest) 下载 `ZhiShi_<版本>_x64-setup.exe`（NSIS）安装，或便携 ZIP 解压即用。
+- **安装后点击桌面图标即直接打开 TUI**（弹一个终端跑 `zhishi agent`）；开机自启不会弹窗。托盘的「打开会话」菜单/左键同样拉起 TUI。
+- 也可以自己开终端：`zhishi agent`。`zhishi` 命令在应用启动时自动同步到 `~/.zhishi/bin/`。Tauri 壳在后台负责引擎（sidecar）生命周期，无需手动起服务。
 
 ### 源码运行（开发态）
 
@@ -86,11 +81,13 @@ zhishi env ps                                   # 运行中实例
 
 | 命令 | 作用 |
 |---|---|
-| `/env` | 重新选择工作环境 |
+| `/env` | 重新选择工作环境（同时切到该环境自己的会话线） |
 | `/snapshot [名]` | 给当前环境打快照（干净现场，反复回滚的底气） |
 | `/rollback <快照名>` | 回滚到快照 |
 | `/attach` | 接管环境 shell（TUI 挂起，exit 返回） |
 | `/extract <环境内路径>` | 回收环境内文件到宿主 |
+
+`/env` 切换环境会**同时切到该环境自己的会话线**（1.1.6：每环境独立历史，来回切换各接各的，不串场；turn 运行中会被拒绝，先 Esc 中断再切）。
 
 VM 类型环境的快照约定：每次 `env up` 回到 `zhishi-clean` 干净快照——环境脏了不用收拾，回滚重来。
 
@@ -139,7 +136,7 @@ zhishi model set-default deepseek deepseek-v4-pro   # 设置默认模型
 
 | 命令 | 作用 |
 |---|---|
-| `/env` | 重新选择工作环境 |
+| `/env` | 重新选择工作环境（同时切到该环境自己的会话线） |
 | `/attach` | 接管环境 shell（TUI 挂起） |
 | `/snapshot [名]` / `/rollback <名>` | 环境快照 / 回滚 |
 | `/extract <环境内路径>` | 回收环境内文件到宿主 |
@@ -181,7 +178,7 @@ zhishi model set-default deepseek deepseek-v4-pro   # 设置默认模型
 
 ---
 
-## 6. 引擎能力：四个工具
+## 6. 引擎能力：七个工具
 
 agent 在会话里使用的工具，研究员需要知道它们的行为边界：
 
@@ -190,7 +187,10 @@ agent 在会话里使用的工具，研究员需要知道它们的行为边界�
 | `env_exec` | 在环境内执行一条命令，等它返回（exit/stdout/stderr） | 短命令：查事实、编译、跑 exp |
 | `env_bg` | 后台长驻进程：start / poll / log / kill / list | **预计超 30 秒的命令**：长扫描、fuzz、监听 |
 | `delegate_task` | 派子任务给专用子代理（fuzz-runner / crash-triager / vuln-hunter 等），结论回注主循环 | 独立子目标，避免污染主上下文 |
-| `research_log` | 研究留痕（成败/漏洞类型/一句话结论） | 拿到 flag / 确认根因 / 放弃时落一条 |
+| `research_log` | 研究留痕（成败/漏洞类型/一句话结论/证据路径） | 拿到 flag / 确认根因 / 放弃时落一条 |
+| `intel_search` | 本地情报索引检索（CVE / exploit / nuclei 模板） | 复现/验证漏洞前查先例——线索不是结论 |
+| `expert_search` | 专家知识库检索（思路/技术/SOP，人审定才进库） | 识别到知识缺口时（反复失败/没把握/无先例）——决策级依据 |
+| `expert_draft` | 把会话里的解法起草成专家知识草稿 | 你说「存为专家知识」时；人审后才生效 |
 
 **人机关系**：边界之内（环境内执行、分析、留痕）agent 全自动推进；跨越边界（写宿主/动凭据/改网络/销毁有成果环境）才停下来问。**人只做授权官，不做驾驶员。**
 
@@ -218,7 +218,7 @@ zhishi intel status                     # 索引状态与水位
 
 ## 8. 研究留痕与记忆
 
-每次研究的关键节点，agent 会通过 `research_log` 落一条**成败信号**（任务类型 / 成败 / 漏洞类型 / 一句话结论）。人侧查询与补记：
+每次研究的关键节点，agent 会通过 `research_log` 落一条**成败信号**（任务类型 / 成败 / 漏洞类型 / 一句话结论 / 证据路径）。人侧查询与补记：
 
 ```bash
 zhishi research list                    # 研究记录
@@ -226,6 +226,31 @@ zhishi research log ...                 # 手动补记
 ```
 
 这些记录定期**按研究域蒸馏**成经验（经验不跨域混压，置信度分级），逐轮反喂进系统提示——**研究做得越多，下一次越少走弯路**。死路（非零 exit）与突破口（flag/CVE）在上下文压缩中永不裁剪。
+
+### 研究报告导出（1.2.0）
+
+TUI 里 `/export` 把当前工作区的研究记录组装成报告目录（`output/reports/<时间戳>-<环境>/`）：
+
+- `report.md`：按域模板（渗透/白盒/二进制/通用）——事件时间线、漏洞、证据、复现步骤由代码钉死（LLM 只写过程叙述）
+- `evidence/`：PoC/样本等环境内工件的本体（agent 留痕时挂了 `trajectory_ref` 的，导出时按单回收；回收要一次越界批准）
+- 导出前会列出敏感项计数（flag/密钥/内网 IP）让人过目；默认完整导出，`/export sanitize` 出脱敏版
+- 报告里标注「引用的专家知识」——结论可追溯到决策依据
+
+### 专家知识库（1.2.1+）
+
+`expert.db` 是权威知识层（与情报原料库、LLM 经验库分立）：思路 / 技术知识 / SOP，**人审定才进库**。agent 在识别到知识缺口时查 `expert_search`（决策级依据）；留痕可挂 `expert_refs` 追溯。
+
+人侧管理：
+
+```bash
+zhishi expert list / show <id> / search <关键词>   # 浏览检索
+zhishi expert new <标题>            # 新建（打开编辑器写，frontmatter + 正文）
+zhishi expert edit <id>             # 修改（编辑器往返）
+zhishi expert review                # 审定 agent 起草的草稿（批准/编辑/丢弃）
+zhishi expert promote <事件id>      # 把一条研究经验晋升为专家知识（人审定）
+```
+
+会话里直接说「把刚才这个解法存成专家知识」也行——agent 起草，你审定。
 
 ---
 
