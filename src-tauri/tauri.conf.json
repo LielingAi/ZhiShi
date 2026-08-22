@@ -42,7 +42,6 @@
       "../bundled-environments": "bundled-environments",
       "../bundled-agents": "bundled-agents",
       "../src-tauri/resources/cli": "cli",
-      "../novo": "novo",
       "infoplist/en.lproj/InfoPlist.strings": "en.lproj/InfoPlist.strings",
       "infoplist/zh-Hans.lproj/InfoPlist.strings": "zh-Hans.lproj/InfoPlist.strings"
     },

@@ -222,104 +222,7 @@ try {
 
 
 
-    # ========================================
 
-    # 检查统计上报配置 (VITE_ANALYTICS_*)
-
-    # ========================================
-
-    # 埋点是编译期 gate：isAnalyticsEnabled() 要求 VITE_ANALYTICS_ENABLED=true 且
-
-    # API_KEY / ENDPOINT 非空 (src/renderer/analytics/config.ts)。.env 是 gitignored，
-
-    # 不会随 git checkout 过来——若这台 Windows 构建机没填好 .env，Vite 会把这三个变量
-
-    # 编译成空字符串，整个 Windows 包**完全不上报统计**，平台分布看板里 Windows 凭空消失。
-
-    # ./scripts/build/build_macos.sh 在 .env 缺失时直接 exit，所以 mac 包从不会静默掉这个；Windows 这条
-
-    # 之前是"警告 + 继续"，于是出现过 Windows 包带着 analytics OFF 发版。这里改成显式确认，
-
-    # 与上面的签名私钥检查同一套交互（Fork / 自建无需上报者直接回车继续）。
-
-    Write-Host "[1.5/7] 检查统计上报配置..." -ForegroundColor Blue
-
-    # Vite 构建时读的是项目根 .env，不是进程环境变量——所以这里必须做同样的
-    # 回退，否则 .env 已配好但进程环境没设时会产生"统计上报未启用"的误报，
-    # 诱导构建者在确认提示前犹豫甚至取消（0.2.39 实战：.env 齐、进程空 → 假警报）。
-    function Get-AnalyticsEnv([string]$name) {
-        $v = [Environment]::GetEnvironmentVariable($name, "Process")
-        if (-not [string]::IsNullOrWhiteSpace($v)) { return $v }
-        $envFile = Join-Path $PSScriptRoot "..\..\.env"
-        if (Test-Path $envFile) {
-            # -Encoding UTF8 是必须的：Windows PowerShell 5.1 对无 BOM 的 UTF-8 .env
-            # 按 ANSI 解码，中文注释行的多字节序列会吞掉行尾，导致紧随其后的
-            # 变量行被并行进注释行而匹配不到（0.2.39 实战踩中）。
-            $line = Get-Content $envFile -Encoding UTF8 | Where-Object { $_ -match "^\s*$name\s*=" } | Select-Object -First 1
-            if ($line) { return ($line -replace "^\s*$name\s*=\s*", "").Trim().Trim('"').Trim("'") }
-        }
-        return $null
-    }
-
-    $AnalyticsEnabled = Get-AnalyticsEnv "VITE_ANALYTICS_ENABLED"
-
-    $AnalyticsKey = Get-AnalyticsEnv "VITE_ANALYTICS_API_KEY"
-
-    $AnalyticsEndpoint = Get-AnalyticsEnv "VITE_ANALYTICS_ENDPOINT"
-
-    $AnalyticsOn = ($AnalyticsEnabled -eq "true") -and -not [string]::IsNullOrWhiteSpace($AnalyticsKey) -and -not [string]::IsNullOrWhiteSpace($AnalyticsEndpoint)
-
-    if ($AnalyticsOn) {
-
-        Write-Host "  OK - 统计上报已启用 (endpoint=$AnalyticsEndpoint)" -ForegroundColor Green
-
-    }
-
-    else {
-
-        Write-Host ""
-
-        Write-Host "=========================================" -ForegroundColor Yellow
-
-        Write-Host "  警告: 统计上报未启用 (VITE_ANALYTICS_* 缺失或为空)" -ForegroundColor Yellow
-
-        Write-Host "  此 Windows 构建将不会上报任何统计事件！" -ForegroundColor Yellow
-
-        Write-Host "  → 平台分布看板里 Windows 用户会凭空消失。" -ForegroundColor Yellow
-
-        Write-Host "  官方发版请确认本机 .env 已配置:" -ForegroundColor Yellow
-
-        Write-Host "    VITE_ANALYTICS_ENABLED=true" -ForegroundColor Yellow
-
-        Write-Host "    VITE_ANALYTICS_API_KEY=<key>" -ForegroundColor Yellow
-
-        Write-Host "    VITE_ANALYTICS_ENDPOINT=<url>" -ForegroundColor Yellow
-
-        Write-Host "  (Fork / 自建无需上报可忽略本提示。)" -ForegroundColor Yellow
-
-        Write-Host "=========================================" -ForegroundColor Yellow
-
-        Write-Host ""
-
-        $continueAnalytics = Read-Host "是否继续构建? (Y/n)"
-
-        if ($continueAnalytics -eq "n" -or $continueAnalytics -eq "N") {
-
-            Write-Host "构建已取消" -ForegroundColor Red
-
-            throw "用户取消构建"
-
-        }
-
-    }
-
-    Write-Host ""
-
-
-
-    # ========================================
-
-    # 检查依赖
 
     # ========================================
 
@@ -1379,17 +1282,6 @@ try {
     # Tauri v2 在 Windows 上对 gitignored/大体积资源的收集不稳定（nodejs、
     # server-dist.js 等关键文件会随机丢失）。我们通过自定义 NSIS 模板显式复制所有资源，
     # 生成的临时配置只负责注入 Windows NSIS hooks，不再通过 bundle.resources 让 Tauri 收集资源。
-    #
-    # 另外，把项目根目录的 novo 模板复制到 src-tauri/resources/novo，确保默认工作区模板被打包。
-    $novoSrc = Join-Path $ProjectDir "novo"
-    $novoRes = Join-Path $ProjectDir "src-tauri\resources\novo"
-    if (Test-Path $novoSrc) {
-        if (Test-Path $novoRes) {
-            Remove-Item -Recurse -Force $novoRes -ErrorAction SilentlyContinue
-        }
-        Copy-Item -Recurse -Force $novoSrc $novoRes
-        Write-Host "  已复制 novo 模板到 src-tauri/resources/novo" -ForegroundColor DarkGray
-    }
 
     $generatedConfPath = Join-Path $ProjectDir "src-tauri\tauri.windows.generated.conf.json"
     $winConf = [ordered]@{
@@ -1459,11 +1351,6 @@ try {
     $generatedConfPath = Join-Path $ProjectDir "src-tauri\tauri.windows.generated.conf.json"
     if (Test-Path $generatedConfPath) {
         Remove-Item $generatedConfPath -ErrorAction SilentlyContinue
-    }
-    # 清理临时复制的 novo 模板
-    $novoRes = Join-Path $ProjectDir "src-tauri\resources\novo"
-    if (Test-Path $novoRes) {
-        Remove-Item -Recurse -Force $novoRes -ErrorAction SilentlyContinue
     }
     # 恢复被补丁修改的 NSIS 模板
     $nsiBackup = Join-Path $ProjectDir "src-tauri\nsis\installer.nsi.bak"
@@ -1774,10 +1661,6 @@ try {
     $generatedConfPath = Join-Path $ProjectDir "src-tauri\tauri.windows.generated.conf.json"
     if (Test-Path $generatedConfPath) {
         Remove-Item $generatedConfPath -ErrorAction SilentlyContinue
-    }
-    $novoRes = Join-Path $ProjectDir "src-tauri\resources\novo"
-    if (Test-Path $novoRes) {
-        Remove-Item -Recurse -Force $novoRes -ErrorAction SilentlyContinue
     }
     $nsiBackup = Join-Path $ProjectDir "src-tauri\nsis\installer.nsi.bak"
     $nsiPath = Join-Path $ProjectDir "src-tauri\nsis\installer.nsi"

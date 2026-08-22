@@ -37,7 +37,6 @@ Tauri v2 在 Windows 上打包 `bundle.resources` 时会尊重 `.gitignore`。�
 - `bundled-environments/`
 - `bundled-agents/`
 - `cli/`
-- ~~`novo/`~~（`novo/` 目录已随 persona 维度化移除（2026-08-17）；`patch_nsis.py` 与 `tauri.conf.json` 中的相关条目已成死路径，可一并清理）
 - `en.lproj/`、`zh-Hans.lproj/`
 - `vcruntime140.dll`、`vcruntime140_1.dll`
 
@@ -76,11 +75,8 @@ Tauri v2 在 Windows 上打包 `bundle.resources` 时会尊重 `.gitignore`。�
 | 变量 | 说明 |
 |------|------|
 | `TAURI_SIGNING_PRIVATE_KEY` | Tauri updater 签名私钥。未设置时构建会报错，但 exe 仍生成；正式发版必须配置。 |
-| `VITE_ANALYTICS_ENABLED` | 设置为 `true` 开启统计上报。 |
-| `VITE_ANALYTICS_API_KEY` | 统计接口 API Key。 |
-| `VITE_ANALYTICS_ENDPOINT` | 统计接口地址。 |
 
-本地测试时如果缺少上述变量，脚本会给出警告；`TAURI_SIGNING_PRIVATE_KEY` 缺失时脚本会直接继续（已改为非交互式），最终产物可用但 updater 签名失败。
+`TAURI_SIGNING_PRIVATE_KEY` 缺失时脚本会给出警告并询问是否继续；继续构建的最终产物可用，但 updater 签名失败、自动更新不可用。
 
 ## 7. 产物位置
 
@@ -109,7 +105,6 @@ $exe = "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/ZhiShi_1.0.0
 - [ ] `bundled-skills/`
 - [ ] `bundled-environments/`
 - [ ] `bundled-agents/`
-- [ ] ~~`novo/`（默认模板，约 284 个文件）~~（已随 persona 维度化移除）
 - [ ] `en.lproj/`、`zh-Hans.lproj/`
 - [ ] `server-dist.js`
 - [ ] `vcruntime140.dll`、`vcruntime140_1.dll`
@@ -118,8 +113,6 @@ $exe = "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/ZhiShi_1.0.0
 启动应用后确认：
 
 - [ ] system skills 同步成功（`~/.zhishi/skills/`）
-- [ ] ~~没有 `Template 'novo' not found` 报错~~（novo 模板已删除，此检查作废）
-- [ ] ~~默认工作区模板被正确创建到 `%USERPROFILE%\.zhishi\projects\novo`~~（同上）
 
 ## 9. 常见故障排查
 
@@ -134,7 +127,7 @@ $enc = New-Object System.Text.UTF8Encoding($true)
 [System.IO.File]::WriteAllText($path, $content, $enc)
 ```
 
-### 9.2 安装后缺少 `nodejs`、`novo` 等资源
+### 9.2 安装后缺少 `nodejs` 等资源
 
 检查 `scripts/build/patch_nsis.py` 是否被正确调用，以及 `src-tauri/nsis/installer.nsi` 中的 `_ZHISHI_EXTRA_RESOURCES` 宏是否包含对应资源路径。确认构建目录下 `target/x86_64-pc-windows-msvc/release/nsis/x64/installer.nsi` 已渲染为绝对路径。
 

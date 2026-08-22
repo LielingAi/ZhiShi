@@ -79,9 +79,6 @@ def main():
   ; cli
   SetOutPath "$INSTDIR\\cli"
   File /nonfatal /r "{r}\\src-tauri\\resources\\cli\\*.*"
-  ; novo (use project root template so it survives post-build cleanup)
-  SetOutPath "$INSTDIR\\novo"
-  File /nonfatal /r "{r}\\novo\\*.*"
   ; en.lproj
   SetOutPath "$INSTDIR\\en.lproj"
   File /nonfatal "{r}\\src-tauri\\infoplist\\en.lproj\\InfoPlist.strings"
@@ -130,7 +127,6 @@ def main():
   RMDir /r "$INSTDIR\\shared"
   RMDir /r "$INSTDIR\\bundled-skills"
   RMDir /r "$INSTDIR\\cli"
-  RMDir /r "$INSTDIR\\novo"
   RMDir "$INSTDIR\\en.lproj"
   RMDir "$INSTDIR\\zh-Hans.lproj"'''
         content = content.replace(uninstall_loop, uninstall_loop + delete_extra)

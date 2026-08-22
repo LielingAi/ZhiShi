@@ -150,13 +150,6 @@ check_dependency "rustc" "请安装 Rust: https://rustup.rs"
 check_dependency "npm" "请安装 Node.js: https://nodejs.org"
 check_dependency "codesign" "需要 Xcode Command Line Tools"
 
-# 检查 novo 默认工作区
-if [ ! -d "${PROJECT_DIR}/novo" ] || [ ! -f "${PROJECT_DIR}/novo/CLAUDE.md" ]; then
-    echo -e "${RED}错误: novo/ 目录不存在或不完整! 请先运行 ./scripts/setup/setup.sh${NC}"
-    exit 1
-fi
-echo -e "${GREEN}  ✓ novo 默认工作区已就绪${NC}"
-
 # 检查并安装 Rust 交叉编译目标
 for TARGET in "${BUILD_TARGETS[@]}"; do
     if ! rustup target list --installed | grep -q "$TARGET"; then
