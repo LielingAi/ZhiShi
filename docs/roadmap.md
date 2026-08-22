@@ -5,6 +5,16 @@
 
 ---
 
+## 1.2.3 —— 构建产物修复与验证（进行中）
+
+主题：修复 issue #5 + 建立「构建产物」验证链路——此前所有验证（npm test / smoke）都跑在 tsx 源码上，打包产物（用户真正运行的形态）从未被验过。分析记录见 `docs/1.2.3-design.md`。
+
+- [ ] **修复 #5：CLI bundle cjs 导致 import.meta fallback 日志污染 TUI**——`getScriptDir()`（server/utils/runtime.ts）被卷进 CLI cjs bundle，`import.meta.url` 失效 → fallback 打日志 → 漏进 TUI 输入框上方。修复方案待对齐（CLI 改 esm / getScriptDir 静默化 / 切断 server 依赖进 CLI 链）。
+- [ ] **构建链路审查**：`scripts/esbuild-bundle.mjs` + `scripts/build/` + `scripts/release/` + `scripts/setup/` + `docs/windows-release-build.md` 逐个过——构建怎么做、产物是什么、脚本是否正确（有没有像 #5 这样「编译期警告早就提示了」的被忽略信号）。
+- [ ] **产物级验证**：smoke 链路补「跑在打包产物上」的能力（build:cli + build:server 后的 dist 跑关键路径），把「源码绿但产物坏」这类问题挡在发版前。
+
+---
+
 ## 1.2.2 —— 专家知识层·飞轮期（已完成）
 
 校准协作主线第二期：让专家知识层开始自我积累、使用留下痕迹。方案：`docs/expert-knowledge-plan.md` 二期节。
