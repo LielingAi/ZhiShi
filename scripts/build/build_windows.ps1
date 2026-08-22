@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 
 # ZhiShi Windows 正式发布构建脚本
 
@@ -722,9 +722,11 @@ try {
 
         "http://ipc.localhost",
 
-        "asset:",
+        "asset:"
 
-        "https://download.zhishi.help"
+        # 1.2.3：删掉 "https://download.zhishi.help" 要求——GUI 删除后 CSP 只约束
+        # 占位页，运行时代码（Rust/Node）下资源不受 CSP 管；全仓库无任何
+        # WebView 内代码引用该域，此要求为 GUI 时代残留。
 
     )
 
@@ -1438,15 +1440,32 @@ try {
 
 
 
-            $resourcesSource = Join-Path $targetDir "resources"
-
-            if (Test-Path $resourcesSource) {
-
-                Copy-Item $resourcesSource $portableDir -Recurse -Force
-
+            # 1.2.3: portable ZIP now mirrors the NSIS macro resource list
+            # (patch_nsis.py) + tauri.conf bundle.resources. The old logic copied
+            # target/release/resources which Tauri never produces, so the zip
+            # shipped exe+DLLs only and died at runtime.
+            $resourceItems = @(
+                @{ Src = "src-tauri\resources\server-dist.js"; Dst = "server-dist.js"; Dir = $false },
+                @{ Src = "src-tauri\resources\sharp-runtime"; Dst = "sharp-runtime"; Dir = $true },
+                @{ Src = "src-tauri\resources\sqlite-runtime"; Dst = "sqlite-runtime"; Dir = $true },
+                @{ Src = "src-tauri\resources\tsx-runtime"; Dst = "tsx-runtime"; Dir = $true },
+                @{ Src = "src-tauri\resources\nodejs"; Dst = "nodejs"; Dir = $true },
+                @{ Src = "src\shared"; Dst = "shared"; Dir = $true },
+                @{ Src = "bundled-skills"; Dst = "bundled-skills"; Dir = $true },
+                @{ Src = "bundled-environments"; Dst = "bundled-environments"; Dir = $true },
+                @{ Src = "bundled-agents"; Dst = "bundled-agents"; Dir = $true },
+                @{ Src = "src-tauri\resources\cli"; Dst = "cli"; Dir = $true },
+                @{ Src = "src-tauri\infoplist\en.lproj"; Dst = "en.lproj"; Dir = $true },
+                @{ Src = "src-tauri\infoplist\zh-Hans.lproj"; Dst = "zh-Hans.lproj"; Dir = $true }
+            )
+            foreach ($item in $resourceItems) {
+                if (Test-Path $item.Src) {
+                    if ($item.Dir) { Copy-Item $item.Src (Join-Path $portableDir $item.Dst) -Recurse -Force }
+                    else { Copy-Item $item.Src (Join-Path $portableDir $item.Dst) -Force }
+                } else {
+                    Write-Host "  WARN: portable resource missing $($item.Src)" -ForegroundColor Yellow
+                }
             }
-
-
 
             if (Test-Path $zipPath) {
 
