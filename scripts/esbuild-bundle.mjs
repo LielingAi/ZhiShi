@@ -164,11 +164,16 @@ const TARGETS = {
 
     outfile: 'src-tauri/resources/cli/zhishi.js',
 
-    format: 'cjs',
+    // 1.2.3（issue #5）：cjs → esm。repo 本身 type:module、server bundle 已是
+    // esm，CLI 的 cjs 是历史异类；cjs 下 import.meta 为空会让 getScriptDir()
+    // fallback 到 cwd（宿主资源定位到错误路径 + console.warn 污染 TUI）。
+    // banner = shebang（必须首行）+ server 同款 createRequire 互操作别名
+    // （bundle 内若有 cjs 依赖/createRequire 字面引用需要）。
+    format: 'esm',
 
     sourcemap: false,
 
-    banner: { js: CLI_SHEBANG_BANNER },
+    banner: { js: CLI_SHEBANG_BANNER + '\n' + ESM_INTEROP_BANNER },
 
     /** Post-build: drop the Windows launcher next to the bundle. Rust's
 
@@ -184,13 +189,15 @@ const TARGETS = {
 
      *
 
-     *  Also writes `package.json` with {"type":"commonjs"}: the bundle is
+     *  Also writes `package.json` with {"type":"module"}: the bundle is ESM
 
-     *  CJS but named .js, and the repo root package.json is type:module —
+     *  (1.2.3, issue #5 — was CJS + type:commonjs; CJS has no import.meta,
 
-     *  without this marker, running the built CLI in-repo dies with
+     *  which made getScriptDir() fall back to cwd) but named .js, and the
 
-     *  "require is not defined in ES module scope" (实测 2026-08-15)。
+     *  repo root package.json is type:module — the marker pins the module
+
+     *  type regardless of the parent package.json scope.
 
      */
 
@@ -210,11 +217,11 @@ const TARGETS = {
 
         'src-tauri/resources/cli/package.json',
 
-        JSON.stringify({ type: 'commonjs' }) + '\n',
+        JSON.stringify({ type: 'module' }) + '\n',
 
       );
 
-      console.log('  ↳ wrote src-tauri/resources/cli/package.json (type: commonjs)');
+      console.log('  ↳ wrote src-tauri/resources/cli/package.json (type: module)');
 
     },
 

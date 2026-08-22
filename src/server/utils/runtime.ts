@@ -16,39 +16,11 @@ import { existsSync } from 'fs';
 
 import { dirname, join, resolve } from 'path';
 
-import { fileURLToPath } from 'url';
+// 1.2.3（issue #5）：getScriptDir 迁至 src/shared/script-dir.ts（CLI 也合法
+// 需要宿主资源定位）；这里 re-export 保持 `utils/runtime` 既有引用路径不变。
+import { getScriptDir } from '../../shared/script-dir';
 
-
-
-/**
-
- * Get script directory at runtime (not compile-time).
-
- * IMPORTANT: bun build hardcodes __dirname at compile time, breaking production builds.
-
- * This function uses import.meta.url which is evaluated at runtime.
-
- */
-
-export function getScriptDir(): string {
-
-  // For ESM modules: use import.meta.url
-
-  if (typeof import.meta?.url === 'string') {
-
-    return dirname(fileURLToPath(import.meta.url));
-
-  }
-
-  // Fallback for bundled environments - use cwd
-
-  // NOTE: In production, sidecar.rs sets cwd to Resources directory
-
-  console.warn('[getScriptDir] import.meta.url unavailable, falling back to cwd:', process.cwd());
-
-  return process.cwd();
-
-}
+export { getScriptDir };
 
 
 

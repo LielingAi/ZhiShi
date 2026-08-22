@@ -22,8 +22,8 @@ import { join } from 'node:path';
 import { dump as yamlDump, load as yamlLoad } from 'js-yaml';
 
 import { extractFrontmatter } from '../shared/slashCommands';
-import { EXPERT_ENTRY_KINDS } from '../server/expert/validate';
-import { RESEARCH_TASK_KINDS } from '../server/memory/store';
+import { EXPERT_ENTRY_KINDS } from '../shared/expert-validate';
+import { RESEARCH_TASK_KINDS } from '../shared/research-kinds';
 
 // ---------------------------------------------------------------------------
 // 文件格式：序列化 / 解析（纯函数）

@@ -25,6 +25,16 @@ import { getBundledSqliteEntryPoint } from '../utils/runtime';
 // 1.2.2 引用追踪：recordResearchEvent 落库前查证 expert_refs 存在于 expert.db。
 // expert/store 对本模块只有 type-only 引用（ResearchTaskKind），无运行时环。
 import { findMissingExpertEntryIds } from '../expert/store';
+// 1.2.3：研究信号枚举迁至 shared（issue #5，CLI 共用），此处 re-export 保持既有引用路径。
+import {
+  isResearchBugClass,
+  isResearchOutcome,
+  isResearchTaskKind,
+  RESEARCH_BUG_CLASSES,
+  RESEARCH_OUTCOMES,
+  RESEARCH_TASK_KINDS,
+} from '../../shared/research-kinds';
+import type { ResearchBugClass, ResearchOutcome, ResearchTaskKind } from '../../shared/research-kinds';
 
 // ===== Types =====
 
@@ -961,36 +971,21 @@ export function listGapRecurrences(opts?: {
 
 // ===== 研究成败信号（research_events，安全研究员版 P1 D1） =====
 // 安全蒸馏闭环的原料：「拿 flag 成功/失败、卡在哪、哪个工具组合有效」
-// 从自由文本落成结构化记录。枚举值同时是 §4 输出侧本体——system prompt
-// 教学段声明、CLI 侧校验、落库前这里再校验一次（admin API 可被直接调用）。
-// 记录本身不改任何分值——价值在聚合（哪种 task_kind 卡得多、哪个
-// bug_class 收成好），所以这里没有 settle 循环，只有"记 + 查"。
+// 从自由文本落成结构化记录。记录本身不改任何分值——价值在聚合（哪种
+// task_kind 卡得多、哪个 bug_class 收成好），所以这里没有 settle 循环，
+// 只有"记 + 查"。
+// 枚举定义在 shared/research-kinds.ts（1.2.3 迁移，issue #5）；这里 re-export
+// 保持既有引用路径（admin-api / loop / report / CLI 之外的全部消费方）零改动。
 
-/** 七研究域 + ctf 补充域（D30 实战定位：实战为主，CTF 是补充——任何环境按需适配）。 */
-export const RESEARCH_TASK_KINDS = ['binary', 'pentest', 'ai-security', 'redteam', 'malware', 'whitebox', 'intel', 'ctf'] as const;
-export type ResearchTaskKind = (typeof RESEARCH_TASK_KINDS)[number];
-
-export const RESEARCH_OUTCOMES = ['success', 'fail', 'stuck'] as const;
-export type ResearchOutcome = (typeof RESEARCH_OUTCOMES)[number];
-
-export const RESEARCH_BUG_CLASSES = [
-  'stack-overflow', 'heap-overflow', 'uaf', 'double-free', 'oob-read', 'oob-write',
-  'null-deref', 'int-overflow', 'format-string', 'type-confusion',
-  // 白盒审计/web 侧(P2 whitebox 域):注入家族
-  'sql-injection', 'xss', 'ssrf', 'path-traversal', 'command-injection', 'xxe',
-  'auth-bypass', 'deserialization', 'other',
-] as const;
-export type ResearchBugClass = (typeof RESEARCH_BUG_CLASSES)[number];
-
-export function isResearchTaskKind(v: string): v is ResearchTaskKind {
-  return (RESEARCH_TASK_KINDS as readonly string[]).includes(v);
-}
-export function isResearchOutcome(v: string): v is ResearchOutcome {
-  return (RESEARCH_OUTCOMES as readonly string[]).includes(v);
-}
-export function isResearchBugClass(v: string): v is ResearchBugClass {
-  return (RESEARCH_BUG_CLASSES as readonly string[]).includes(v);
-}
+export {
+  isResearchBugClass,
+  isResearchOutcome,
+  isResearchTaskKind,
+  RESEARCH_BUG_CLASSES,
+  RESEARCH_OUTCOMES,
+  RESEARCH_TASK_KINDS,
+};
+export type { ResearchBugClass, ResearchOutcome, ResearchTaskKind };
 
 export interface ResearchEvent {
   id: number;

@@ -15,7 +15,7 @@ import {
   collectDomainSignals,
   loadDomainManifests,
   type DomainSignalRule,
-} from '../../../../server/domains/manifest';
+} from '../../../../shared/domain-manifest';
 
 export interface SignalHints {
   exitCode?: number;

@@ -17,7 +17,7 @@
 
 import { TerminalWriter } from './terminal-writer';
 import type { SidecarClient } from '../client';
-import type { SSEEvent } from '../../../server/utils/sse-parser';
+import type { SSEEvent } from '../../../shared/sse-parser';
 import { parseKeys, keyToEdit, hasMod, type Key } from './keymap';
 import { LineEditor } from './editor';
 import { HistoryStore } from './history';

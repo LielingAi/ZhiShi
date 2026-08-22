@@ -40,7 +40,7 @@ import { Agent, fetch as undiciFetch } from 'undici';
 
 
 
-import { getZhiShiDataDir } from '../server/utils/app-dirs';
+import { getZhiShiDataDir } from '../shared/app-dirs';
 
 import {
   isResearchBugClass,
@@ -49,7 +49,7 @@ import {
   RESEARCH_BUG_CLASSES,
   RESEARCH_OUTCOMES,
   RESEARCH_TASK_KINDS,
-} from '../server/memory/store';
+} from '../shared/research-kinds';
 
 
 
@@ -59,7 +59,7 @@ import { INTEL_POLL_INTERVAL_MS, startIntelProgressPolling } from './intel-progr
 
 import { buildExpertDoc, expertEditRoundTrip, parseExpertDoc } from './expert-edit';
 
-import { EXPERT_ENTRY_KINDS, EXPERT_PROVENANCES, validateEntry, type ValidateResult } from '../server/expert/validate';
+import { EXPERT_ENTRY_KINDS, EXPERT_PROVENANCES, validateEntry, type ValidateResult } from '../shared/expert-validate';
 
 
 

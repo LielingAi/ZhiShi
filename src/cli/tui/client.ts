@@ -23,7 +23,7 @@
  * SidecarHttpError carrying the status code.
  */
 
-import { SSEParser, type SSEEvent } from '../../server/utils/sse-parser';
+import { SSEParser, type SSEEvent } from '../../shared/sse-parser';
 
 // ---------------------------------------------------------------------------
 // Minimal structural fetch types (DOM-lib free; Node 18+ global fetch satisfies
