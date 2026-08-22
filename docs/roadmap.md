@@ -13,7 +13,9 @@
 - [x] **构建链路审查**：五项腐化清理——macOS novo 必挂检查（不修则 macOS 构建一直挂）、NSIS novo 死宏、tauri.conf 死引用、windows analytics 死逻辑（117 行）、文档作废项。附带发现两条断链（`~/.zhishi/bin/zhishi` 安装者缺失、macOS SDK_DEST 未定义）记入设计文档，归发行链路版本。
 - [x] **产物级验证**：`tmp/m123-dist-smoke.mjs`——构建零警告门槛 + 产物 sidecar 全链路 + #5 回归钉，全 PASS。教训沉淀：admin 路由在 deferred init 未完成时回 warming-up，产物验证必须等 /health/ready。
 
-> 实际落地（2026-08-22）：全量 1914 测试绿（零新增零改动——纯搬移 + 格式切换）+ smoke 5/5 + 产物 smoke 全 PASS。mac/linux 脚本与 NSIS 打包未实机验证（无对应环境），已在设计文档标注。issue #5 已关闭（带修复说明）。
+> 实际落地（2026-08-22）：全量测试绿（1793 过——差值 121 与删除的 7 个 appcraft 测试文件精确吻合）+ smoke 5/5 + 产物 smoke 全 PASS。mac/linux 脚本与 NSIS 打包未实机验证（无对应环境），已在设计文档标注。issue #5 已关闭（带修复说明）。
+>
+> 追加（同日，用户拍板）：**AppCraft 整体退役**（桌面自动化与安全主线无关 + 其二进制闭源不可得 + 数周失效无人在意）——模块/CLI 命令组/内置 MCP 注册/app-automation skill/vendored terminator/下载脚本全切。直接收益：**完整 NSIS 构建端到端通过**（无裁剪，setup.exe 106M + portable.zip 63M/2759 条目全资源），打包彻底解卡。已知：正式发版还需 TAURI_SIGNING_PRIVATE_KEY；zhishi-updater 二进制靠手动 cargo build（无脚本负责，归发行链路版本）。
 
 ---
 

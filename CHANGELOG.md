@@ -24,7 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
-> 构建产物修复与验证：#5 修复（CLI esm 化 + 依赖切断）、构建脚本腐化清理、产物级 smoke 链路。
+> 构建产物修复与验证：#5 修复（CLI esm 化 + 依赖切断）、构建脚本腐化清理、产物级 smoke 链路；AppCraft 整体退役。
+
+
+
+### Removed
+
+
+
+- **AppCraft（桌面自动化）整体退役**：与安全研究主线无关且其 sidecar 二进制（cuse/terminator-mcp-agent）闭源不可得、数周连接失败无人在意——`src/server/appcraft/` 模块、`zhishi appcraft` 命令组、内置 MCP 的 cuse/terminator 注册、app-automation skill（SYSTEM_SKILLS_VERSION→36，存量目录由用户自处）、vendored terminator/ 源码树、相关下载/发布脚本全部移除；externalBin 只剩本地构建的 zhishi-updater。Windows NSIS 打包由此端到端解卡。存量 `~/.zhishi/.appcraft/` 数据按惯例留盘不清。
 
 
 
