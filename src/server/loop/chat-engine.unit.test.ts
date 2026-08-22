@@ -1157,7 +1157,7 @@ describe('1.2.6 批次B 回归(B2 cron invoke 通道 / B4 force 单起点 / B5 s
       let call = 0;
       let releaseFirst!: () => void;
       const gate = new Promise<void>((r) => { releaseFirst = r; });
-      runLoopMock.mockImplementation(async function* (opts: { prompt?: string }) {
+      runLoopMock.mockImplementation(async function* (_opts: { prompt?: string }) {
         call++;
         if (call === 1) await gate;
         for (const e of doneEvents(`ans-${call}`)) yield e;

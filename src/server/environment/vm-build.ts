@@ -38,7 +38,6 @@ import { getZhiShiDataDir } from '../utils/app-dirs';
 import { spawn as spawnSubprocess } from '../utils/subprocess';
 import { buildIso9660 } from './iso9660';
 import type { EnvironmentRecipe } from './recipes';
-import { buildToolCheckScript, parseToolCheckOutput } from './recipes';
 import {
   buildGuestPoweroffCommand,
   buildScpArgs,

@@ -140,7 +140,6 @@ import {
   getDraftById,
   getEntryById,
   hasExpertDb,
-  insertDraft,
   insertEntry,
   listDrafts,
   listEntries,

@@ -540,7 +540,7 @@ describe('buildSecurityCapabilitiesSection — 配方工作流摘要（1.2.5「�
     const summaryLines = section.split('\n').filter((l) => l.startsWith('  工作流摘要：'));
     expect(summaryLines.length).toBeGreaterThan(0);
     for (const line of summaryLines) {
-      expect(line).toMatch(/^  工作流摘要：摘要 \d+：(?:工作流内容)+$/);
+      expect(line).toMatch(/^ {2}工作流摘要：摘要 \d+：(?:工作流内容)+$/);
     }
     expect(section).toContain('个环境类型的工作流摘要因预算未注入');
   });
