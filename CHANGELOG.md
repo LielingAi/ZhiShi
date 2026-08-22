@@ -20,6 +20,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.2.6] - 2026-08-22
+
+
+
+> 引擎深化：摸底实证 13 个 bug 全修——cron 链路根治、数据完整性、上下文清扫与压缩边界。
+
+
+
+### Fixed
+
+
+
+- **cron 链路**：`new_session` 同步执行必 500（无绑定 meta 当场开线绑定）；cron 与 TUI 共用引擎单例的三切面事故（注入用户 turn/互杀 turn/污染分线）——cron 改走独立 invoke 通道，结构性消失；退出机制教学断链（教学段对齐 `[CRON_TASK_COMPLETE: …]` 真实机制并接线）；cron 回报僵尸 sessionId（绑定/切换/重置全路径写配置面会话标识）。
+- **数据完整性**：被中止 turn 的尾部写入新会话（turn 起跑快照 sessionId，收尾一律用快照）；force 队列与 promote 竞态双 turn（force 塞回队首统一接管）；steering 孤儿消息（turn 结束 drain 到队首续跑）+ send-and-wait 按 queueId 归属追踪（cron 不再拿错答案）；steering 注入补 wire 消息（rewind 截点准确，回放不再冒幽灵消息）。
+- **delegate_task 子 loop**：接 abort signal（Esc/stop 可杀）+ 挂主 loop 同款压缩。
+- **上下文清扫**：陈旧「SDK/Bash」文案改 pi 现状；教 host 无 shell 的 CLI 用法全部归为人侧通道；`cliToolsEnabled` 接线（cron 场景注入自退标记段）；能力清单截断后具名环境条目保到最后；skills 丢弃顺序改用户库最后丢、截断取整行边界；research-log 段余量修复（此前静默截掉收尾标签）。
+- **compaction 边界**：`\berror\b` 误伤收窄（剥离良性搭配再判）；占位消息措辞与真实契约对齐；压缩阈值估算纳入系统提示；裁完仍超有第二档（更激进截断 + 明确引导 /reset，不撞裸 400）。
+
+
+
 ## [1.2.5] - 2026-08-22
 
 
