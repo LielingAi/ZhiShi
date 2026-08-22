@@ -258,6 +258,7 @@ describe('vmTemplateAdopt orchestration', () => {
       ok(),                                             // ssh probe researcher with key
       ok(),                                             // scp setup.sh
       ok('ready\n'),                                    // ssh bash setup.sh
+      ok('OK:gdb\n'),                                   // ssh 配方工具自检（1.2.5「配」）
       ok(),                                             // ssh poweroff (断开也算)
       ok('Total running VMs: 0\n'),                     // waitUntilStopped: gone
       ok(),                                             // vmrun snapshot
@@ -297,6 +298,7 @@ describe('vmTemplateAdopt orchestration', () => {
       ok(),                  // researcher probe
       ok(),                  // scp
       ok(),                  // setup.sh
+      ok('OK:gdb\n'),        // 配方工具自检（1.2.5「配」）
       ok(),                  // poweroff
       ok('Total running VMs: 0\n'),
       ok(),                  // snapshot
@@ -317,7 +319,7 @@ describe('vmTemplateAdopt orchestration', () => {
       ok('Total running VMs: 0\n'),   // running check: not running
       ok(),                            // vmrun start
       ok('10.0.0.9\n'),
-      ok(), ok('PROVISION_OK\n'), ok(), ok(), ok(), ok(),
+      ok(), ok('PROVISION_OK\n'), ok(), ok(), ok(), ok('OK:gdb\n'), ok(),
       ok('Total running VMs: 0\n'),
       ok(),
     ]);
@@ -335,7 +337,7 @@ describe('vmTemplateAdopt orchestration', () => {
       ok('Total running VMs: 0\n'),
       ok(`Total running VMs: 1\n${vmx}\n`),
       fail('Error: VMware Tools not running'),  // getGuestIPAddress fails
-      ok(), ok('PROVISION_OK\n'), ok(), ok(), ok(), ok(),
+      ok(), ok('PROVISION_OK\n'), ok(), ok(), ok(), ok('OK:gdb\n'), ok(),
       ok('Total running VMs: 0\n'),
       ok(),
     ]);
@@ -427,12 +429,68 @@ describe('vmTemplateAdopt orchestration', () => {
       ok('Total running VMs: 0\n'),
       ok(`Total running VMs: 1\n${vmx}\n`),
       ok('10.0.0.8\n'),
-      ok(), ok('PROVISION_OK\n'), ok(), ok(), ok(), ok(),
+      ok(), ok('PROVISION_OK\n'), ok(), ok(), ok(), ok('OK:gdb\n'), ok(),
       ok('Total running VMs: 0\n'),
       fail('Error: snapshot failed'),
     ]);
     const result = await vmTemplateAdopt(makeRecipe(recipeDir), { vmx, keyPath }, { exec });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain('快照');
+  });
+});
+
+describe('配方工具自检挂点（1.2.5「配」——快照之前）', () => {
+  it('自检缺工具 → 报错、不做快照（坏现场不固化成模板）', async () => {
+    const { vmx, keyPath, recipeDir } = makeFixture();
+    const { exec, calls } = scriptedExec([
+      ok('Total running VMs: 0\n'),
+      ok(`Total running VMs: 1\n${vmx}\n`),
+      ok('10.0.0.8\n'),
+      ok(), ok('PROVISION_OK\n'), ok(), ok(), ok(),
+      ok('MISS:gdb\n'),              // 配方工具自检：声明了但 guest 里没有
+    ]);
+    const result = await vmTemplateAdopt(makeRecipe(recipeDir), { vmx, keyPath }, { exec });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('工具自检未过');
+      expect(result.error).toContain('gdb');
+    }
+    expect(calls.some((c) => c.includes('snapshot'))).toBe(false);
+    expect(calls.some((c) => c.some((a) => a.includes('poweroff')))).toBe(false);
+  });
+
+  it('自检通道失败（ssh 非零退出）→ 报错、不做快照', async () => {
+    const { vmx, keyPath, recipeDir } = makeFixture();
+    const { exec, calls } = scriptedExec([
+      ok('Total running VMs: 0\n'),
+      ok(`Total running VMs: 1\n${vmx}\n`),
+      ok('10.0.0.8\n'),
+      ok(), ok('PROVISION_OK\n'), ok(), ok(), ok(),
+      fail('Connection reset'),      // 自检 ssh 调用本身挂了
+    ]);
+    const result = await vmTemplateAdopt(makeRecipe(recipeDir), { vmx, keyPath }, { exec });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('自检通道失败');
+    expect(calls.some((c) => c.includes('snapshot'))).toBe(false);
+  });
+
+  it('配方 tools 为空 → 跳过自检（不多一次 ssh 调用，老队列原样通过）', async () => {
+    const { vmx, keyPath, recipeDir } = makeFixture();
+    const { exec, calls } = scriptedExec([
+      ok('Total running VMs: 0\n'),
+      ok(`Total running VMs: 1\n${vmx}\n`),
+      ok('10.0.0.8\n'),
+      ok(), ok('PROVISION_OK\n'), ok(), ok(), ok(),
+      ok(),                          // poweroff（自检无调用，直接定型）
+      ok('Total running VMs: 0\n'),
+      ok(),                          // snapshot
+    ]);
+    const result = await vmTemplateAdopt(
+      { ...makeRecipe(recipeDir), tools: [] },
+      { vmx, keyPath },
+      { exec },
+    );
+    expect(result.ok).toBe(true);
+    expect(calls.some((c) => c.includes('snapshot'))).toBe(true);
   });
 });

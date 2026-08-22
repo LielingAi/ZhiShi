@@ -248,6 +248,15 @@ export function defaultRecipesRoot(): string {
 }
 
 /**
+ * 播种备份目录（`<配方>.bak-<YYYYMMDD>` 或 `-N` 后缀，见
+ * skills-config.ts 的配方内容哈希同步）不是配方——里面虽含 SKILL.md，
+ * 扫描时必须跳过，否则旧版备份会以新 id 混进配方清单。
+ */
+export function isRecipeBackupDir(name: string): boolean {
+  return /\.bak-\d{8}(-\d+)?$/.test(name);
+}
+
+/**
  * Scan the recipes root. Missing root → []. Non-directory entries (e.g. a
  * README.md at the root) are ignored. Invalid recipes stay in the list with
  * their reasons — one broken recipe never fails the whole scan.
@@ -256,7 +265,7 @@ export function defaultRecipesRoot(): string {
 export function scanRecipes(rootDir: string = defaultRecipesRoot()): EnvironmentRecipe[] {
   if (!existsSync(rootDir)) return [];
   const entries = readdirSync(rootDir, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
+    .filter((d) => d.isDirectory() && !isRecipeBackupDir(d.name))
     .map((d) => d.name)
     .sort();
 
@@ -290,6 +299,50 @@ export function loadRecipe(
 export function buildToolCheckCommand(tools: string[]): string {
   const quoted = tools.map((t) => `'${t}'`).join(' ');
   return `for t in ${quoted}; do command -v "$t" >/dev/null 2>&1 && echo "OK:$t" || echo "MISS:$t"; done`;
+}
+
+/**
+ * 声明词 → 探测命令映射（1.2.5「配」——词汇错位修正）。
+ *
+ * 配方 SKILL.md 的 tools[] 允许两种形态，本表只收后者：
+ * - 真实二进制名（rg、gdb、semgrep……）——直接 `command -v <名>`，不进表；
+ * - 包/能力名（pwntools、universal-ctags……）——二进制名与包名不同，
+ *   或根本不是二进制（python 包），`command -v` 必假 MISS。
+ *
+ * 探测命令以退出码判有无（0 = 有）。注意 pwndbg 用 `gdb -batch`：
+ * 非 batch 模式下 `pi import` 抛错 gdb 仍继续并以 0 退出（假 OK）；
+ * -batch 遇命令错误以非零退出，才是可用的判据。
+ */
+export const TOOL_PROBE_COMMANDS: Readonly<Record<string, string>> = {
+  pwntools: 'python3 -c "import pwn"',
+  pwndbg: 'gdb -q -batch -ex "pi import pwndbg"',
+  ripgrep: 'command -v rg',
+  'universal-ctags': 'command -v ctags',
+  ghidra: 'command -v analyzeHeadless',
+  binutils: 'command -v objdump',
+  nodejs: 'command -v node',
+};
+
+/**
+ * 完整自检脚本：统一 PATH 前缀（非交互 ssh 不读 ~/.profile，~/.local/bin
+ * 不在 PATH——pip --user 装的 pwntools 等会假 MISS；docker bash -lc 下
+ * 无害），然后逐工具探测：映射表命中的用映射命令，未命中的复用
+ * buildToolCheckCommand 的 `command -v` 循环。输出协议不变——每行
+ * `OK:<声明词>` / `MISS:<声明词>`，由 parseToolCheckOutput 解析。
+ */
+export function buildToolCheckScript(tools: string[]): string {
+  const parts: string[] = ['export PATH="$HOME/.local/bin:$PATH"'];
+  const unmapped: string[] = [];
+  for (const tool of tools) {
+    const probe = TOOL_PROBE_COMMANDS[tool];
+    if (probe === undefined) {
+      unmapped.push(tool);
+    } else {
+      parts.push(`${probe} >/dev/null 2>&1 && echo "OK:${tool}" || echo "MISS:${tool}"`);
+    }
+  }
+  if (unmapped.length > 0) parts.push(buildToolCheckCommand(unmapped));
+  return parts.join('; ');
 }
 
 export interface ToolCheckResult {

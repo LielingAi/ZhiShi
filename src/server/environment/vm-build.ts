@@ -38,6 +38,7 @@ import { getZhiShiDataDir } from '../utils/app-dirs';
 import { spawn as spawnSubprocess } from '../utils/subprocess';
 import { buildIso9660 } from './iso9660';
 import type { EnvironmentRecipe } from './recipes';
+import { buildToolCheckScript, parseToolCheckOutput } from './recipes';
 import {
   buildGuestPoweroffCommand,
   buildScpArgs,
@@ -46,6 +47,7 @@ import {
   ensureKeyMaterial,
   POWEROFF_POLL_MS,
   POWEROFF_WAIT_MS,
+  runGuestToolCheck,
   SSH_EXEC_TIMEOUT_MS,
   SSH_PROBE_TIMEOUT_MS,
   type SshTarget,
@@ -572,6 +574,10 @@ export async function vmTemplateBuild(
       };
     }
   }
+
+  // 7.5 配方工具自检：缺工具不定型（不做快照、报错，避免固化坏现场）
+  const toolCheck = await runGuestToolCheck(exec, researcherTarget, recipe);
+  if (!toolCheck.ok) return toolCheck;
 
   // 8. 定型：关机 → 等退出运行列表 → 快照
   await exec(buildSshExecArgs(researcherTarget, buildGuestPoweroffCommand()), SSH_PROBE_TIMEOUT_MS)

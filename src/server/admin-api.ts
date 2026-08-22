@@ -22,7 +22,7 @@
 
 
 
-import type { IntelConfig, McpServerDefinition, ModelEntity } from '../shared/config-types';
+import type { EnvironmentEntry, IntelConfig, McpServerDefinition, ModelEntity } from '../shared/config-types';
 
 import { resolveIntelConfig } from '../shared/config-types';
 
@@ -83,7 +83,7 @@ import { ensureDirSync, isDirEntry } from './utils/fs-utils';
 
 import { resolveSshTarget, execInEnvironment, buildScpArgv } from './loop/env-exec';
 
-import { buildToolCheckCommand, parseToolCheckOutput } from './environment/recipes';
+import { buildToolCheckScript, parseToolCheckOutput } from './environment/recipes';
 
 import { requestBoundaryAsk } from './loop/boundary-ask';
 
@@ -5174,6 +5174,13 @@ export async function handleEnvironmentUp(payload: {
 
             };
 
+        // 配方工具自检(与 docker 路径对齐,1.2.5「配」):拿到地址的 VM
+        // 回写前当场验声明工具(ssh 通道),证据落条目 toolCheck;无地址
+        // (断网/未就绪)或通道失败 → 降级为无自检,不阻断 up。
+        if (instance.address) {
+          Object.assign(entry, await runRecipeToolCheck(entry, recipe.tools));
+        }
+
         await atomicModifyConfig((config) => {
 
           let entries = listEnvironments(config);
@@ -5235,7 +5242,10 @@ export async function handleEnvironmentUp(payload: {
 
       // 配方工具自检:构建后当场验声明工具真实存在(声明与实装的漂移
       // 证据落进条目;失败降级为无自检,不阻断 up)。
-      ...(await runRecipeToolCheck(result.instance.name, recipe.tools)),
+      ...(await runRecipeToolCheck(
+        { id: result.instance.name, kind: 'docker', container: result.instance.name, createdAt: '' },
+        recipe.tools,
+      )),
 
       createdAt: new Date().toISOString(),
 
@@ -5275,17 +5285,18 @@ export async function handleEnvironmentUp(payload: {
 
 
 
-/** 配方工具自检(env up 构建后 + domain check 用):docker exec 进容器逐
- *  个 command -v。通道失败(容器死了/引擎没了)→ null(降级为无自检)。 */
+/** 配方工具自检(env up 构建后 + domain check 用):按条目 kind 选通道
+ *  ——docker 走 docker exec,vm/ssh 走 ssh(env-exec 统一分派),逐个探测
+ *  声明工具。通道失败(容器死了/ssh 不通/VM 未就绪)→ null(降级为无自检)。 */
 export async function runRecipeToolCheck(
-  container: string,
+  entry: EnvironmentEntry,
   tools: string[],
 ): Promise<{ toolCheck?: { ok: boolean; missing: string[]; checkedAt: string } }> {
   if (tools.length === 0) return {};
   try {
     const r = await execInEnvironment(
-      { id: container, kind: 'docker', container, createdAt: '' },
-      buildToolCheckCommand(tools),
+      entry,
+      buildToolCheckScript(tools),
       { timeoutMs: 30_000 },
     );
     if (!r.ok) return {};
@@ -5473,16 +5484,18 @@ export async function handleDomainCheck(payload: { id?: string }): Promise<Admin
 
   const checkOne = async (m: ReturnType<typeof loadDomainManifests>[number]) => {
     const issues = validateDomainManifest(m, ctx);
-    // 配方工具自检(现场证据):域内每个配方的 docker 环境在跑就验一次。
-    const dockerEntries = listEnvironments(loadConfig()).filter(
-      (e) => e.kind === 'docker' && e.container,
+    // 配方工具自检(现场证据):域内每个配方有在跑/可达的环境就验一次。
+    // 覆盖 docker(在跑容器)与 vm(拿到地址的条目,ssh 通道);断网 VM
+    // (无 address)没有可用通道,跳过(1.2.5「配」)。
+    const runnableEntries = listEnvironments(loadConfig()).filter(
+      (e) => (e.kind === 'docker' && e.container) || (e.kind === 'vm' && e.address),
     );
     const recipes = scanRecipes(defaultRecipesRoot());
     for (const recipeId of m.recipes) {
       const recipe = recipes.find((r) => r.id === recipeId);
-      const entry = dockerEntries.find((e) => e.container === recipeId || e.name?.includes(recipeId));
-      if (!recipe || !entry?.container || recipe.tools.length === 0) continue;
-      const check = await runRecipeToolCheck(entry.container, recipe.tools);
+      const entry = runnableEntries.find((e) => e.container === recipeId || e.name?.includes(recipeId));
+      if (!recipe || !entry || recipe.tools.length === 0) continue;
+      const check = await runRecipeToolCheck(entry, recipe.tools);
       if (check.toolCheck && !check.toolCheck.ok) {
         issues.push({
           level: 'error',

@@ -323,38 +323,97 @@ const SYSTEM_SKILLS: readonly string[] = [
  */
 
 /**
- * Dev-side recipe seeding: Rust 宿主负责把 bundled-environments 播种到
- * ~/.zhishi/environments(ENVIRONMENT_RECIPES_VERSION 版本门控),但裸
- * sidecar 开发态没有 Rust——新增配方(code-audit)永远不会落盘。这里做
- * 「缺 id 补种」:已存在的配方目录绝不动(用户改过的配方不覆盖),只补
- * 目标目录里没有的 bundled 配方。
+ * Dev-side recipe seeding + 内容哈希同步（1.2.5「配」——修正触达老安装）。
+ *
+ * 老语义是 seed-if-missing：已落盘的配方目录永不覆盖——bundled 的配方
+ * 修正（如 tools[] 词汇修正）永远到不了老用户。新语义对齐 skills 的
+ * syncSystemSkill 内容哈希比对，但配方没有 system/user 分层（用户/LLM
+ * 允许迭代自己的配方副本），所以覆盖前先把旧版整个改名备份到
+ * <配方>.bak-<YYYYMMDD>（同名已存在缀 -2、-3…；scanRecipes 按
+ * isRecipeBackupDir 跳过这些备份目录，不会混进配方清单）：
+ *
+ * - 目标缺失 → 落盘（播种，与老语义一致）
+ * - 内容一致 → no-op（与 Rust 宿主 seed-if-missing 共存不打架）
+ * - 内容不一致 → 备份旧版 + 强制覆盖为 bundled 新版；覆盖失败回滚备份
+ *
+ * bundled 源缺 SKILL.md 是打包缺陷，绝不用它替换可用副本（与
+ * syncSystemSkill 的守卫一致，issue #321 同款教训）。
  */
 export function seedEnvironmentRecipes(): void {
   try {
     const bundledDir = resolveBundledDir('bundled-environments');
     if (!bundledDir) return;
-    const root = defaultRecipesRoot();
-    ensureDirSync(root);
-    for (const entry of readdirSync(bundledDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const src = join(bundledDir, entry.name);
-      const dst = join(root, entry.name);
-      if (existsSync(dst)) continue; // 已存在(含用户改过的)不动
-      cpSync(src, dst, { recursive: true });
-      console.log(`[seed] recipe seeded: ${entry.name}`);
-    }
+    syncEnvironmentRecipes(bundledDir, defaultRecipesRoot());
   } catch (err) {
     console.warn('[seed] environment recipes seeding failed (non-fatal):', err);
   }
 }
 
 /**
- * Hash a skill directory's full content tree (relative paths + file bytes +
+ * syncEnvironmentRecipes 的核心（目录可注入，便于单测）。返回每个配方的
+ * 处置结果；单配方失败记 failed 并继续，不阻塞其余配方。
+ */
+export function syncEnvironmentRecipes(
+  bundledDir: string,
+  root: string,
+): Array<{ id: string; action: 'seeded' | 'synced' | 'kept' | 'failed' }> {
+  const outcomes: Array<{ id: string; action: 'seeded' | 'synced' | 'kept' | 'failed' }> = [];
+  ensureDirSync(root);
+  for (const entry of readdirSync(bundledDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const src = join(bundledDir, entry.name);
+    if (!existsSync(join(src, 'SKILL.md'))) continue; // 打包缺陷源，跳过
+    const dst = join(root, entry.name);
+    try {
+      if (!existsSync(dst)) {
+        cpSync(src, dst, { recursive: true });
+        console.log(`[seed] recipe seeded: ${entry.name}`);
+        outcomes.push({ id: entry.name, action: 'seeded' });
+        continue;
+      }
+      const srcHash = hashDirTree(src);
+      if (srcHash !== null && srcHash === hashDirTree(dst)) {
+        outcomes.push({ id: entry.name, action: 'kept' }); // 内容一致 no-op
+        continue;
+      }
+      // bundled 变了（或本地被改过）→ 旧版备份 + 覆盖；失败回滚，宁可
+      // 留旧版也不留空位。
+      const backup = nextRecipeBackupPath(root, entry.name);
+      renameSync(dst, backup);
+      try {
+        cpSync(src, dst, { recursive: true });
+      } catch (err) {
+        try { renameSync(backup, dst); } catch { /* 已尽力，备份仍在 */ }
+        throw err;
+      }
+      console.log(`[seed] recipe updated: ${entry.name}（旧版备份 → ${backup}）`);
+      outcomes.push({ id: entry.name, action: 'synced' });
+    } catch (err) {
+      console.warn(`[seed] recipe sync failed for ${entry.name} (non-fatal):`, err);
+      outcomes.push({ id: entry.name, action: 'failed' });
+    }
+  }
+  return outcomes;
+}
+
+/** 备份落点：<root>/<name>.bak-<YYYYMMDD>，同名已存在缀 -2、-3… */
+function nextRecipeBackupPath(root: string, name: string): string {
+  const d = new Date();
+  const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  let candidate = join(root, `${name}.bak-${stamp}`);
+  for (let n = 2; existsSync(candidate); n += 1) {
+    candidate = join(root, `${name}.bak-${stamp}-${n}`);
+  }
+  return candidate;
+}
+
+/**
+ * Hash a directory's full content tree (relative paths + file bytes +
  * symlink targets, sorted for determinism) into a single digest. Missing,
  * dangling-symlink, or unreadable dirs hash to null, so "absent" always
  * differs from any real bundled source.
  */
-function hashSkillDir(dir: string): string | null {
+function hashDirTree(dir: string): string | null {
   if (!existsSync(dir)) return null; // follows symlinks: broken link & missing both null
   const hash = createHash('sha256');
   const walk = (rel: string): void => {
@@ -417,8 +476,8 @@ export function syncSystemSkill(bundledDir: string, userSkillsDir: string, folde
     console.warn(`[seed] Bundled system skill incomplete (no SKILL.md), preserved existing copy: ${folder}`);
     return false;
   }
-  const srcHash = hashSkillDir(src);
-  if (srcHash !== null && srcHash === hashSkillDir(dst)) {
+  const srcHash = hashDirTree(src);
+  if (srcHash !== null && srcHash === hashDirTree(dst)) {
     return false; // already in sync — no-op
   }
   try {

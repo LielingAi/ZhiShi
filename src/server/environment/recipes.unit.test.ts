@@ -16,10 +16,13 @@ import {
   aggregateRecipeTools,
   buildRecipe,
   buildToolCheckCommand,
+  buildToolCheckScript,
+  isRecipeBackupDir,
   loadRecipe,
   parseRecipeFrontmatter,
   parseToolCheckOutput,
   scanRecipes,
+  TOOL_PROBE_COMMANDS,
   validateRecipe,
 } from './recipes';
 
@@ -320,5 +323,77 @@ describe('配方工具自检(声明 vs 实装)', () => {
     // 输出缺行(命令挂了)= 缺失;声明空 = 无验
     expect(parseToolCheckOutput('', ['semgrep'])).toEqual({ ok: false, missing: ['semgrep'] });
     expect(parseToolCheckOutput('', [])).toEqual({ ok: true, missing: [] });
+  });
+});
+
+describe('声明词 → 探测命令映射（1.2.5「配」）', () => {
+  it('TOOL_PROBE_COMMANDS:七个能力名的探测命令', () => {
+    expect(TOOL_PROBE_COMMANDS).toEqual({
+      pwntools: 'python3 -c "import pwn"',
+      pwndbg: 'gdb -q -batch -ex "pi import pwndbg"',
+      ripgrep: 'command -v rg',
+      'universal-ctags': 'command -v ctags',
+      ghidra: 'command -v analyzeHeadless',
+      binutils: 'command -v objdump',
+      nodejs: 'command -v node',
+    });
+  });
+
+  it('buildToolCheckScript:PATH 前缀打头(非交互 ssh 没有 ~/.local/bin)', () => {
+    const script = buildToolCheckScript(['gdb']);
+    expect(script.startsWith('export PATH="$HOME/.local/bin:$PATH"; ')).toBe(true);
+  });
+
+  it('buildToolCheckScript:实名走 command -v 循环(与 buildToolCheckCommand 同形态)', () => {
+    const script = buildToolCheckScript(['semgrep', 'pip-audit']);
+    expect(script).toContain(
+      `for t in 'semgrep' 'pip-audit'; do command -v "$t" >/dev/null 2>&1 && echo "OK:$t" || echo "MISS:$t"; done`,
+    );
+  });
+
+  it('buildToolCheckScript:能力名走映射命令,echo 的仍是声明词(parse 协议不变)', () => {
+    const script = buildToolCheckScript(['pwntools', 'universal-ctags']);
+    expect(script).toContain('python3 -c "import pwn" >/dev/null 2>&1 && echo "OK:pwntools" || echo "MISS:pwntools"');
+    expect(script).toContain('command -v ctags >/dev/null 2>&1 && echo "OK:universal-ctags" || echo "MISS:universal-ctags"');
+    // 能力名不再进 command -v <能力名> 的假 MISS 循环
+    expect(script).not.toContain("'pwntools'");
+    expect(script).not.toContain("'universal-ctags'");
+  });
+
+  it('buildToolCheckScript:混合清单两形态共存;空清单只有 PATH 前缀', () => {
+    const mixed = buildToolCheckScript(['gdb', 'ripgrep']);
+    expect(mixed).toContain('command -v rg >/dev/null 2>&1 && echo "OK:ripgrep" || echo "MISS:ripgrep"');
+    expect(mixed).toContain(`for t in 'gdb';`);
+    expect(buildToolCheckScript([])).toBe('export PATH="$HOME/.local/bin:$PATH"');
+  });
+
+  it('脚本输出与 parseToolCheckOutput 协议对齐:OK/MISS:<声明词>', () => {
+    // 映射形态与循环形态产出的行,parse 都认(声明词原样回显)
+    expect(parseToolCheckOutput('OK:pwntools\nMISS:gdb\n', ['pwntools', 'gdb']))
+      .toEqual({ ok: false, missing: ['gdb'] });
+  });
+});
+
+describe('isRecipeBackupDir(播种备份目录扫描排除)', () => {
+  it('<配方>.bak-<YYYYMMDD> 与 -N 后缀命中;普通配方目录不命中', () => {
+    expect(isRecipeBackupDir('pwn.bak-20260822')).toBe(true);
+    expect(isRecipeBackupDir('pwn.bak-20260822-2')).toBe(true);
+    expect(isRecipeBackupDir('pwn')).toBe(false);
+    expect(isRecipeBackupDir('pwn.bak')).toBe(false);
+    expect(isRecipeBackupDir('pwn.bak-2026')).toBe(false);
+  });
+
+  it('scanRecipes 跳过备份目录(含 SKILL.md 也不进清单)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'zhishi-recipes-bak-'));
+    try {
+      for (const id of ['real', 'real.bak-20260822']) {
+        mkdirSync(join(root, id), { recursive: true });
+        writeFileSync(join(root, id, 'SKILL.md'), VALID_VM_SKILL);
+      }
+      const recipes = scanRecipes(root);
+      expect(recipes.map((r) => r.id)).toEqual(['real']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

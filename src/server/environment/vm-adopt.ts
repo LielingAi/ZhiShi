@@ -38,6 +38,7 @@ import { augmentedProcessEnv, resolveCommand } from '../utils/env-utils';
 import { getZhiShiDataDir } from '../utils/app-dirs';
 import { spawn as spawnSubprocess } from '../utils/subprocess';
 import type { EnvironmentRecipe } from './recipes';
+import { buildToolCheckScript, parseToolCheckOutput } from './recipes';
 import {
   buildVmrunGetIpArgs,
   buildVmrunListArgs,
@@ -399,6 +400,37 @@ export function buildGuestPoweroffCommand(): string {
   return 'sudo -n poweroff';
 }
 
+/**
+ * 配方工具自检（1.2.5「配」——adopt/build 共用）：声明的工具真在
+ * guest 里才配定型——缺工具不做快照、直接报错（快照会把「坏现场」
+ * 固化成模板）。setup.sh 之后、关机之前调，researcher 公钥通道。
+ * tools 为空 → ok（无声明无需验，零额外 ssh 调用）。
+ */
+export async function runGuestToolCheck(
+  exec: VmExec,
+  target: SshTarget,
+  recipe: EnvironmentRecipe,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (recipe.tools.length === 0) return { ok: true };
+  const r = await exec(
+    buildSshExecArgs(target, buildToolCheckScript(recipe.tools)),
+    SSH_EXEC_TIMEOUT_MS,
+  );
+  if (r.error || r.exitCode !== 0) {
+    return { ok: false, error: `配方工具自检通道失败（ssh）：${(r.error || r.stderr).trim() || '未知错误'}` };
+  }
+  const check = parseToolCheckOutput(r.stdout, recipe.tools);
+  if (!check.ok) {
+    return {
+      ok: false,
+      error:
+        `配方 "${recipe.id}" 工具自检未过：声明了但 guest 里没有：${check.missing.join('、')}。\n` +
+        '请在 guest 内补齐（或修正配方 SKILL.md 的 tools[] 声明）后重跑——不做快照，避免把不完整现场固化成模板。',
+    };
+  }
+  return { ok: true };
+}
+
 // ---------------------------------------------------------------------------
 // I/O — default exec + key material
 // ---------------------------------------------------------------------------
@@ -683,6 +715,10 @@ export async function vmTemplateAdopt(
       };
     }
   }
+
+  // 4.5 配方工具自检：缺工具不定型（不做快照、报错，避免固化坏现场）
+  const toolCheck = await runGuestToolCheck(exec, researcherTarget, recipe);
+  if (!toolCheck.ok) return toolCheck;
 
   // 5. 定型：关机 → 快照
   const poweroffArgv = buildSshExecArgs(researcherTarget, buildGuestPoweroffCommand());

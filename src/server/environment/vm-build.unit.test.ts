@@ -110,6 +110,7 @@ function happyQueue(): Array<VmExecResult | ((argv: string[]) => VmExecResult)> 
     ok(),                            // ssh probe researcher
     ok(),                            // scp setup.sh
     ok('done\n'),                    // ssh bash setup.sh
+    ok('OK:gdb\n'),                  // ssh 配方工具自检（1.2.5「配」）
     ok(),                            // ssh poweroff
     ok('Total running VMs: 0\n'),    // waitUntilStopped: gone
     ok(),                            // vmrun snapshot
@@ -296,7 +297,7 @@ describe('vmTemplateBuild orchestration', () => {
       fail('Error: 未知错误'), // start 第一次失败
       ok(),                    // start 重试成功
       ok('10.0.0.8\n'),
-      ok(), ok(), ok('done\n'), ok(),
+      ok(), ok(), ok('done\n'), ok('OK:gdb\n'), ok(),
       ok('Total running VMs: 0\n'),
       ok(),
     ]);
@@ -371,6 +372,7 @@ describe('vmTemplateBuild orchestration', () => {
     const { exec, calls } = scriptedExec([
       ok('Total running VMs: 0\n'),
       ok(), ok(), ok('10.0.0.8\n'), ok(),
+      ok('OK:gdb\n'),                // 配方工具自检（无 setup.sh 也照验）
       ok(),                          // poweroff
       ok('Total running VMs: 0\n'),
       ok(),                          // snapshot
@@ -388,7 +390,7 @@ describe('vmTemplateBuild orchestration', () => {
     const { recipeDir, isoPath, keysDir, templatesRoot } = makeFixture();
     const { exec } = scriptedExec([
       ok('Total running VMs: 0\n'),
-      ok(), ok(), ok('10.0.0.8\n'), ok(), ok(), ok('done\n'), ok(),
+      ok(), ok(), ok('10.0.0.8\n'), ok(), ok(), ok('done\n'), ok('OK:gdb\n'), ok(),
       ok('Total running VMs: 0\n'),
       fail('Error: snapshot failed'),
     ]);
@@ -426,5 +428,63 @@ describe('vmTemplateBuild orchestration', () => {
     );
     expect(r3.ok).toBe(false);
     if (!r3.ok) expect(r3.error).toContain('模板已存在');
+  });
+});
+
+describe('配方工具自检挂点（1.2.5「配」——快照之前）', () => {
+  it('自检缺工具 → 报错、不做快照（坏现场不固化成模板）', async () => {
+    const { recipeDir, isoPath, keysDir, templatesRoot } = makeFixture();
+    const { exec, calls } = scriptedExec([
+      ok('Total running VMs: 0\n'),
+      ok(), ok(), ok('10.0.0.8\n'), ok(), ok(), ok('done\n'),
+      ok('MISS:gdb\n'),              // 配方工具自检：声明了但 guest 里没有
+    ]);
+    const result = await vmTemplateBuild(
+      makeRecipe(recipeDir),
+      { isoPath },
+      { exec, keysDir, templatesRoot, sleep: noopSleep },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('工具自检未过');
+      expect(result.error).toContain('gdb');
+    }
+    expect(calls.some((c) => c.includes('snapshot'))).toBe(false);
+    expect(calls.some((c) => c.some((a) => a.includes('poweroff')))).toBe(false);
+  });
+
+  it('自检通道失败（ssh 非零退出）→ 报错、不做快照', async () => {
+    const { recipeDir, isoPath, keysDir, templatesRoot } = makeFixture();
+    const { exec, calls } = scriptedExec([
+      ok('Total running VMs: 0\n'),
+      ok(), ok(), ok('10.0.0.8\n'), ok(), ok(), ok('done\n'),
+      fail('Connection reset'),      // 自检 ssh 调用本身挂了
+    ]);
+    const result = await vmTemplateBuild(
+      makeRecipe(recipeDir),
+      { isoPath },
+      { exec, keysDir, templatesRoot, sleep: noopSleep },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('自检通道失败');
+    expect(calls.some((c) => c.includes('snapshot'))).toBe(false);
+  });
+
+  it('配方 tools 为空 → 跳过自检（不多一次 ssh 调用）', async () => {
+    const { recipeDir, isoPath, keysDir, templatesRoot } = makeFixture();
+    const { exec, calls } = scriptedExec([
+      ok('Total running VMs: 0\n'),
+      ok(), ok(), ok('10.0.0.8\n'), ok(), ok(), ok('done\n'),
+      ok(),                          // poweroff（自检无调用，直接定型）
+      ok('Total running VMs: 0\n'),
+      ok(),                          // snapshot
+    ]);
+    const result = await vmTemplateBuild(
+      { ...makeRecipe(recipeDir), tools: [] },
+      { isoPath },
+      { exec, keysDir, templatesRoot, sleep: noopSleep },
+    );
+    expect(result.ok).toBe(true);
+    expect(calls.some((c) => c.includes('snapshot'))).toBe(true);
   });
 });
