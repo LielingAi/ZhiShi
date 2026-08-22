@@ -292,96 +292,6 @@ try {
 
 
 
-    # 每次构建都拉取最新 cuse release — 从 Cloudflare R2 拉取（公网公开），
-
-    # 不再依赖 gh CLI / 私有仓库访问权限。cuse 维护者负责在 GH Release 之后跑
-
-    # ZhiShi-Cuse/publish_r2.sh 镜像产物到 R2（`download.zhishi.help/cuse/...`）。
-
-    # 直接在当前 shell 里运行 .ps1，不走 `pwsh -File` ——
-
-    # 这样 Windows PowerShell 5.1（Windows 自带）和 PowerShell 7+ 都能工作，
-
-    # 避免用户没装 pwsh 时 preflight 直接失败。
-
-    $cuseBinaryPath = "src-tauri\binaries\cuse-x86_64-pc-windows-msvc.exe"
-
-    $cuseMissing = $false
-
-    if (Test-Path $cuseBinaryPath) {
-
-        Write-Host "  cuse 已存在，跳过下载" -ForegroundColor Green
-
-    } else {
-
-        Write-Host "  拉取最新 cuse 二进制..." -ForegroundColor Cyan
-
-        try {
-
-            & "$ProjectDir\scripts\download_cuse.ps1"
-
-            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) { throw "download_cuse.ps1 exit $LASTEXITCODE" }
-
-            if (-not (Test-Path $cuseBinaryPath)) { throw "cuse binary not written" }
-
-            Write-Host "  cuse OK" -ForegroundColor Green
-
-        } catch {
-
-            Write-Host "  ⚠ cuse 下载失败: $_" -ForegroundColor Yellow
-
-            Write-Host "    computer-use 功能将不可用" -ForegroundColor Yellow
-
-            Write-Host "    网络恢复后重试: .\scripts\download_cuse.ps1" -ForegroundColor Yellow
-
-            $cuseMissing = $true
-
-        }
-
-    }
-
-
-
-    # terminator-mcp-agent（UIA 桌面自动化引擎，AppCraft PRD 0.2.36）—
-
-    # 与 cuse 同构：从 R2 拉取自构建二进制（含 chcp stdout 补丁），
-
-    # 维护者经 scripts/build/publish_terminator_r2.ps1 镜像产物。
-
-    $terminatorBinaryPath = "src-tauri\binaries\terminator-mcp-agent-x86_64-pc-windows-msvc.exe"
-
-    if (Test-Path $terminatorBinaryPath) {
-
-        Write-Host "  terminator 已存在，跳过下载" -ForegroundColor Green
-
-    } else {
-
-        Write-Host "  拉取最新 terminator 二进制..." -ForegroundColor Cyan
-
-        try {
-
-            & "$ProjectDir\scripts\download_terminator.ps1"
-
-            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) { throw "download_terminator.ps1 exit $LASTEXITCODE" }
-
-            if (-not (Test-Path $terminatorBinaryPath)) { throw "terminator binary not written" }
-
-            Write-Host "  terminator OK" -ForegroundColor Green
-
-        } catch {
-
-            Write-Host "  ⚠ terminator 下载失败: $_" -ForegroundColor Yellow
-
-            Write-Host "    AppCraft 桌面自动化功能将不可用" -ForegroundColor Yellow
-
-            Write-Host "    网络恢复后重试: .\scripts\download_terminator.ps1" -ForegroundColor Yellow
-
-        }
-
-    }
-
-
-
     $nodejsPath = "src-tauri\resources\nodejs\node.exe"
 
     $NodeDir = "src-tauri\resources\nodejs"
@@ -1257,20 +1167,6 @@ try {
     # 构建 Tauri 应用
 
     # ========================================
-
-    # 如果 cuse 缺失，临时从 tauri.conf.json bundle.externalBin 中移除以避免 bundling 失败
-    # 使用文本替换而非 JSON round-trip，避免 PowerShell 引入 UTF-8 BOM 导致 Tauri 解析失败
-    if ($cuseMissing) {
-        $TauriConfPath = Join-Path $ProjectDir "src-tauri\tauri.conf.json"
-        if (-not (Test-Path "$TauriConfPath.bak")) {
-            Copy-Item $TauriConfPath "$TauriConfPath.bak"
-        }
-        $content = Get-Content $TauriConfPath -Raw
-        $content = $content -replace '(?s)"externalBin"\s*:\s*\[\s*"binaries/cuse"\s*\]', '"externalBin": []'
-        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-        [System.IO.File]::WriteAllText($TauriConfPath, $content, $utf8NoBom)
-        Write-Host "  ⚠ cuse 缺失，已从 bundle.externalBin 中暂时移除" -ForegroundColor Yellow
-    }
 
     Write-Host "[6/7] 构建 Tauri 应用 (Release)..." -ForegroundColor Blue
 

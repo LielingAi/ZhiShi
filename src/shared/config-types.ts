@@ -509,56 +509,6 @@ export interface Provider {
 
 /**
 
- * AppCraft (PRD 0.2.36 §6.1) — a Windows application bound to a workspace.
-
- * The agent operates the app through the cuse (computer-use) MCP; every
-
- * operation is anchored to the window matched by `windowTitle`.
-
- *
-
- * Persisted on `Project.boundApps` in projects.json (transparent JSON —
-
- * the renderer projectService patch/update paths carry it unchanged).
-
- */
-
-export interface BoundApp {
-
-  /** Slug identifier, e.g. "kingdee" */
-
-  id: string;
-
-  /** Display name, e.g. "金蝶财务" */
-
-  name: string;
-
-  /** Absolute path to the executable */
-
-  exe: string;
-
-  /** Window title match pattern; supports `*` wildcards. The binding anchor. */
-
-  windowTitle: string;
-
-  /** Optional arguments used when launching the app */
-
-  launchArgs?: string;
-
-  /** App data drop point the agent may read/write */
-
-  dataDir?: string;
-
-  /** Disabled apps stay in config but are never injected into sessions */
-
-  enabled: boolean;
-
-}
-
-
-
-/**
-
  * Project/workspace configuration
 
  */
@@ -624,10 +574,6 @@ export interface Project {
   /** Template source. Built-in templates can carry product-level Agent defaults. */
 
   templateSource?: 'builtin' | 'user';
-
-  /** AppCraft (PRD 0.2.36 §6.1) — applications bound to this workspace. */
-
-  boundApps?: BoundApp[];
 
 }
 
@@ -1861,57 +1807,8 @@ export const PRESET_MCP_SERVERS: McpServerDefinition[] = [
 
   },
 
-  {
-
-    id: 'cuse',
-
-    name: 'Cuse 电脑控制',
-
-    description: '让 AI 直接操作你的电脑：截图、点击、输入、滚动。',
-
-    type: 'stdio',
-
-    // Sentinel resolved at MCP launch to the bundled cuse binary path —
-
-    // see getBundledCusePath() in src/server/utils/runtime.ts.
-
-    command: '__bundled_cuse__',
-
-    args: ['mcp', '--caller-app', 'ZhiShi'],
-
-    isBuiltin: true,
-
-    isFree: true,
-
-    platforms: ['darwin', 'win32'],
-
-  },
-
-  {
-
-    id: 'terminator',
-
-    name: 'Terminator 桌面自动化',
-
-    description: 'Windows 桌面 UI 自动化：UIA 语义定位控件（不抢鼠标、抗窗口移动），适合操作原生应用；与 Cuse 视觉通道互补。',
-
-    type: 'stdio',
-
-    // Sentinel resolved at MCP launch to the bundled terminator-mcp-agent
-
-    // binary path — see getBundledTerminatorPath() in src/server/utils/runtime.ts.
-
-    command: '__bundled_terminator__',
-
-    args: [],
-
-    isBuiltin: true,
-
-    isFree: true,
-
-    platforms: ['win32'],
-
-  },
+  // (cuse / terminator 内置条目已随 1.2.3 AppCraft 退役移除；存量用户 config.json
+  // 里的旧条目按「单点失败不阻塞会话」容错，不做数据迁移)
 
 ];
 

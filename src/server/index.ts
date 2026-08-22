@@ -856,17 +856,11 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
 
 
 
-  // AppCraft (PRD 0.2.36 §6.4-6.6) — workspace app-automation recordings + replay
-
-  if (route === 'appcraft/list') return await api.handleAppcraftList(payload as Parameters<typeof api.handleAppcraftList>[0]);
-
-  if (route === 'appcraft/replay') return await api.handleAppcraftReplay(payload as Parameters<typeof api.handleAppcraftReplay>[0]);
-
-  if (route === 'appcraft/record/start') return await api.handleAppcraftRecordStart(payload as Parameters<typeof api.handleAppcraftRecordStart>[0]);
-
-  if (route === 'appcraft/record/stop') return await api.handleAppcraftRecordStop();
-
-  if (route === 'appcraft/record/status') return await api.handleAppcraftRecordStatus();
+  // AppCraft 已随 1.2.3 退役移除（桌面自动化整体切除）——老客户端打到这些
+  // 路由时给明确错误，而不是 unknown route。
+  if (route.startsWith('appcraft/')) {
+    return { success: false, error: 'appcraft 已随 1.2.3 移除（AppCraft 桌面自动化整体退役）' };
+  }
 
   // 想法流（COWORK 任务7/8）：搭子的主动提醒（附来源），经蒸馏层过滤后给 Launcher 流。
   if (route === 'memory/active-reminders') return api.handleMemoryActiveReminders();
@@ -910,8 +904,6 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'trust/resolve') return await api.handleTrustResolve(payload as Parameters<typeof api.handleTrustResolve>[0]);
   if (route === 'trust/reset') return api.handleTrustReset();
   if (route === 'trust/import') return await api.handleTrustImport(payload as Parameters<typeof api.handleTrustImport>[0]);
-
-  if (route === 'appcraft/app/approve') return await api.handleAppcraftAppApprove(payload as Parameters<typeof api.handleAppcraftAppApprove>[0]);
 
 
 

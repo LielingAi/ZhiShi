@@ -10,7 +10,6 @@
  * bun build hardcodes __dirname at compile time, breaking production builds.
  */
 
-import type { BoundApp } from '../shared/config-types';
 import type { RuntimeType } from '../shared/types/runtime';
 import type { DistilledMemory } from './memory/distill';
 import { parseActiveReminders } from './memory/distill';
@@ -78,32 +77,6 @@ const TMPL_CRON_TASK = `<zhishi-cron-task-instructions>
 
 如果任务目标已完全达成、或继续执行无意义/有害，请按下方 \`<zhishi-cli-cron-exit>\` 段落给出的 \`zhishi cron exit\` 命令结束任务。{{/if}}
 </zhishi-cron-task-instructions>`;
-
-// ===== AppCraft bound apps (PRD 0.2.36 §6.1) =====
-
-/**
- * Build the `<zhishi-bound-apps>` context section for workspaces with enabled
- * bound applications. Returns '' when the list is empty — callers MUST treat
- * that as zero injection (no section, no trailing whitespace).
- */
-export function buildBoundAppsSection(boundApps: BoundApp[] | undefined): string {
-  if (!boundApps || boundApps.length === 0) return '';
-  const lines = boundApps.map((app) => {
-    const parts = [`名称: ${app.name}`, `id: ${app.id}`, `程序: ${app.exe}`, `窗口标题: ${app.windowTitle}`];
-    if (app.dataDir) parts.push(`数据目录: ${app.dataDir}`);
-    return `- ${parts.join(' | ')}`;
-  });
-  return `<zhishi-bound-apps>
-本工作区绑定了以下应用（AppCraft）。操作这些应用时的规则：
-1. 首选 terminator 工具（UIA 语义通道）：用 get_window_tree（process 参数限定为该应用的进程名）观察窗口，
-   用 invoke_element / click_element / set_value / type_into_element / press_key 操作控件（selector 如 role:Button && name:保存）。
-   动作走 UIA pattern，不需要也不要移动真实鼠标。
-2. 仅当控件树拿不到目标（Electron/自绘 UI）才退回 cuse 视觉工具（screenshot / click / type / key）。
-3. 所有操作必须锚定到对应应用的窗口，不要退回全屏搜索或全屏截图。
-4. 应用的「数据目录」已纳入你可读写的范围，导入导出文件请落在对应数据目录。
-${lines.join('\n')}
-</zhishi-bound-apps>`;
-}
 
 // ===== 全局人格层（乙方案：一个灵魂，注入直读 db） =====
 
@@ -187,13 +160,6 @@ export interface SystemPromptOptions {
    */
   cliToolsEnabled?: boolean;
   /**
-   * AppCraft (PRD 0.2.36 §6.1) — enabled apps bound to this session's
-   * workspace. When non-empty, a `<zhishi-bound-apps>` section is appended
-   * telling the agent what it may operate via the cuse MCP and which data
-   * directories are in scope. Omit/empty = zero injection.
-   */
-  boundApps?: BoundApp[];
-  /**
    * 蒸馏记忆（工作生命宪章 §4.1 蒸馏层 / §4.2 蒸馏弧）。调用方从
    * ~/.zhishi/memory/distilled/ 读入（loadDistilledMemoryForPrompt），
    * 三个文件全空时传 undefined = 零注入。总量恒定 ≤6000 字符。
@@ -253,13 +219,8 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
   const widgetSection = buildWidgetSection(scenario);
   if (widgetSection) parts.push(widgetSection);
 
-  // L3: AppCraft bound apps — workspace has applications the agent operates
-  // via the cuse computer-use MCP (window-anchored UIA / screenshot).
-  const boundAppsSection = buildBoundAppsSection(options?.boundApps);
-  if (boundAppsSection) parts.push(boundAppsSection);
-
-  // L3: Distilled memory (宪章 §4.1) — constant-size cognitive layer,
-  // same injection tier as boundApps. Zero injection when no distilled
+  // L3: Distilled memory (宪章 §4.1) — constant-size cognitive layer.
+  // Zero injection when no distilled
   // files exist yet (first-run installs, fresh workspaces).
   const distilledMemorySection = buildDistilledMemorySection(options?.distilledMemory);
   if (distilledMemorySection) parts.push(distilledMemorySection);

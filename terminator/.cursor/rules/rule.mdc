@@ -1,5 +1,0 @@
----
-alwaysApply: true
----
-
-check @CLAUDE.md

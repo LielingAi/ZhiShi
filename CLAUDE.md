@@ -30,8 +30,6 @@
 
 - `src/server/` — Node.js 后端 Sidecar（esbuild 打包成 `server-dist.js`）。入口 `index.ts` 只做启动/路由分发（1.1.7 绞杀拆分后 7.7k 行）；崩溃日志 `crash-log.ts`、skills 配置 `skills-config.ts`、cron 路由 `cron/`、sessions/mcp 路由 `routes/`、admin-api.ts admin handler 包、`report/` 报告导出（1.2.0：骨架组装 + 证据回收 + LLM 填肉 + 落盘，设计见 `docs/1.2.0-design.md`）
 
-- `src/server/appcraft/` — AppCraft 桌面自动化（terminator-client / replay-engine / recorder，见 PRD 0.2.36）
-
 - `src/server/intel/` — 情报检索（1.1.2）：`intel.db`（NVD CVE + exploit-db 索引，FTS5）+ `zhishi intel update/status` + loop 工具 `intel_search`（宿主侧认知供给，与 research_log 同层）
 
 - `src/cli/` — `zhishi` CLI（同步到 `~/.zhishi/bin/`），产品能力的统一入口
@@ -501,8 +499,6 @@ npm run coverage                  # 覆盖率报告（不设硬阈值，看改�
 
 - 本机无 Rust 工具链，`cargo check` / `clippy` 未跑——src-tauri 大量改动（lib.rs、management_api.rs、task*.rs、sidecar.rs、commands.rs、cli.rs、i18n.rs、search/mod.rs）待补验；`Cargo.lock` 未 regenerate（转型删除了 4 个 crate：tokio-tungstenite / prost / pulldown-cmark / futures）。
 
-- 整库 `npm run lint` 因 `terminator/` 子项目 349 个既有 eslint 错误红灯（非本次转型引入）；日常验证用上面的 scoped lint。
-
 
 
 ## 测试纪律（回归护栏）
@@ -639,7 +635,7 @@ Team Hub 服务端（`zhishi-hub/`）从未随本仓库分发，且已被确认�
 
 
 
-保留核心能力：MCP enable 管线、AppCraft / cuse / terminator、memory 全套、task / cron 系统、CLI、panel_api.rs（仅 term 路由）/ terminal.rs、provider-probe / verify。（browser.rs 已在 W6 减法删除；openai-bridge 已随 D25/M4c 删除，OpenAI 协议 provider 由 pi 原生直连。）
+保留核心能力：MCP enable 管线、memory 全套、task / cron 系统、CLI、panel_api.rs（仅 term 路由）/ terminal.rs、provider-probe / verify。（browser.rs 已在 W6 减法删除；openai-bridge 已随 D25/M4c 删除，OpenAI 协议 provider 由 pi 原生直连。）
 
 
 
@@ -650,23 +646,7 @@ Team Hub 服务端（`zhishi-hub/`）从未随本仓库分发，且已被确认�
 ## AppCraft（工作区桌面自动化，PRD 0.2.36）
 
 
-
-工作区可绑定 Windows 应用（`Project.boundApps`），agent 经两个互补引擎操作它们：
-
-
-
-- **Terminator（UIA 语义通道，默认）**：mediar-ai/terminator（MIT）打包为内置 MCP preset `terminator`（哨兵 `__bundled_terminator__` → `src/server/utils/runtime.ts::getBundledTerminatorPath()`，Windows only）。选择器 `role:/name:/nativeid:`，动作走 UIA InvokePattern（不抢鼠标）。已知上游 bug（chcp 子进程污染 stdout）已在自构建二进制打补丁；分发走自构建 + R2 镜像（`scripts/download_terminator.ps1` / `scripts/build/publish_terminator_r2.ps1`）。
-- **cuse（视觉兜底 + macOS）**：现有 preset 不变。
-
-
-
-核心闭环：**录制**（`zhishi appcraft record start/stop` — Sidecar 消息流捕获工具调用 → `.appcraft/<id>/trace.json`）→ **沉淀**（`src/shared/appcraft-trace.ts` 变量抽取/参数化 → `.claude/skills/<name>/`）→ **无 LLM 回放**（`zhishi appcraft replay` — `src/server/appcraft/replay-engine.ts` 逐步驱动 terminator 选择器，vision 步骤走 cuse 原子命令，assert 校验）→ **失败自愈**（AI 修复后回写 trace）。GUI 时代的 trace.json 文件预览可视化（`src/renderer/components/appcraft/`）已随 renderer 删除。
-
-
-
-工具映射 / 提速默认参数 / 已知环境风险（全屏无响应窗口会阻塞窗口管理）以 `src/server/appcraft/` 代码为准（旧 `specs/tech_docs/appcraft_engine_contract.md` 已随 specs/ 删除）。
-
-
+**已于 1.2.3 整体退役移除**：`src/server/appcraft/`、`src/shared/appcraft-trace.ts`、内置 MCP preset `cuse` / `terminator`（含 `__bundled_cuse__` / `__bundled_terminator__` 哨兵与 `runtime.ts` 路径解析）、system skill `app-automation`、CLI `zhishi appcraft` 命令组、sidecar 下载/分发脚本（download_cuse/download_terminator/publish_terminator_r2）与 vendored `terminator/` 源码树全部删除。存量用户数据（`.appcraft/` 录制、`projects.json` 的 `boundApps`、config.json 里的旧 MCP 条目、`~/.zhishi/skills/app-automation/`）留盘不清，按既有容错处理。
 
 ---
 

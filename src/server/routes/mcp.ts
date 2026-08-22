@@ -139,7 +139,7 @@ export async function handleMcpEnable(request: Request, jsonResponse: JsonRespon
 
           // Resolve sentinel commands to display names for logs, so
 
-          // __bundled_cuse__ / __builtin__ never leak into unified logs or
+          // __builtin__ never leaks into unified logs or
 
           // user-facing error surfaces.
 
@@ -147,9 +147,7 @@ export async function handleMcpEnable(request: Request, jsonResponse: JsonRespon
 
             ? '(builtin)'
 
-            : server.command === '__bundled_cuse__' ? 'cuse'
-
-            : server.command === '__bundled_terminator__' ? 'terminator' : server.command;
+            : server.command;
 
           console.log(`[api/mcp/enable] Enabling MCP: ${server.id}, type: ${server.type}, command: ${displayCommand}`);
 
@@ -184,90 +182,6 @@ export async function handleMcpEnable(request: Request, jsonResponse: JsonRespon
             }
 
             console.log(`[api/mcp/enable] Built-in MCP: ${server.id} — enabled`);
-
-            return jsonResponse({ success: true });
-
-          }
-
-
-
-          // Bundled cuse (computer-use) binary — resolve the sentinel to
-
-          // the real path via runtime helper. This is the primary enable
-
-          // path hit by the Settings UI toggle, so it MUST short-circuit
-
-          // the generic `which` preflight below (which would fail with a
-
-          // sentinel-leaking "命令 __bundled_cuse__ 未找到" error).
-
-          if (server.command === '__bundled_cuse__') {
-
-            const { getBundledCusePath } = await import('../utils/runtime');
-
-            const cusePath = getBundledCusePath();
-
-            if (!cusePath) {
-
-              return jsonResponse({
-
-                success: false,
-
-                error: {
-
-                  type: 'command_not_found',
-
-                  command: 'cuse',
-
-                  message: `Cuse 二进制未安装 (platform=${process.platform})。仅支持 macOS 与 Windows。`,
-
-                },
-
-              });
-
-            }
-
-            console.log(`[api/mcp/enable] Bundled cuse: ${server.id} — resolved to ${cusePath}`);
-
-            return jsonResponse({ success: true });
-
-          }
-
-
-
-          // Bundled Terminator MCP agent (UIA desktop automation, PRD 0.2.36) —
-
-          // same short-circuit as cuse: resolve the sentinel before the generic
-
-          // `which` preflight.
-
-          if (server.command === '__bundled_terminator__') {
-
-            const { getBundledTerminatorPath } = await import('../utils/runtime');
-
-            const terminatorPath = getBundledTerminatorPath();
-
-            if (!terminatorPath) {
-
-              return jsonResponse({
-
-                success: false,
-
-                error: {
-
-                  type: 'command_not_found',
-
-                  command: 'terminator',
-
-                  message: `Terminator 二进制未安装 (platform=${process.platform})。仅支持 Windows。`,
-
-                },
-
-              });
-
-            }
-
-            console.log(`[api/mcp/enable] Bundled terminator: ${server.id} — resolved to ${terminatorPath}`);
 
             return jsonResponse({ success: true });
 

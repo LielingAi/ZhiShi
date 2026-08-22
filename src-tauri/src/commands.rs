@@ -36,7 +36,7 @@ use crate::{ulog_info, ulog_warn};
 // matching exclusion list in src/server/skills-config.ts MUST be kept
 // in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "35";
+const SYSTEM_SKILLS_VERSION: &str = "36";
 
 /// Skills that ship with the app and MUST stay at the bundled version —
 /// the app's flows depend on them, users are not meant to customise.
@@ -63,9 +63,9 @@ const SYSTEM_SKILLS: &[&str] = &[
     // skills, widgets) through the CLI. SKILL.md changes track CLI surface
     // changes, so it must force-overwrite on version bumps.
     "zhishi-cli",
-    // v19: app-automation — AppCraft（PRD 0.2.36）录制→沉淀→回放→自愈工作流。
-    // SKILL.md 引用 zhishi appcraft CLI 与 trace schema，须随版本强制覆盖。
-    "app-automation",
+    // v36: app-automation 随 1.2.3 AppCraft 退役移除——录制/回放/自愈链路与其
+    // sidecar 二进制（cuse / terminator-mcp-agent）整体切除。已 seed 的老目录
+    // 留在 ~/.zhishi/skills/app-automation/ 由用户自处（无孤儿清理逻辑，同 v10/v29 惯例）。
     // v29: capability-forge 与通用生产力 skills（docx/pdf/pptx/xlsx/
     // skill-creator）随安全研究员版减法删除（设计 docs/
     // security_researcher_agent_design.md §9）。已 seed 的老目录留在

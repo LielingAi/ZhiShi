@@ -38,7 +38,7 @@ check_install() {
     fi
 }
 
-echo -e "${BLUE}[1/6] 检查依赖${NC}"
+echo -e "${BLUE}[1/5] 检查依赖${NC}"
 MISSING=0
 
 check_install "Node.js" "node --version" "https://nodejs.org (≥ v20)" || MISSING=1
@@ -54,29 +54,12 @@ fi
 
 # 下载 Node.js 二进制（Sidecar + MCP Server + 社区工具 统一 runtime）
 echo ""
-echo -e "${BLUE}[2/6] 下载 Node.js 运行时${NC}"
+echo -e "${BLUE}[2/5] 下载 Node.js 运行时${NC}"
 "${PROJECT_DIR}/scripts/download_nodejs.sh"
 echo ""
 
-# 下载 cuse computer-use 二进制（macOS only — cuse 不出 Linux 包，
-# Windows 走 ./scripts/setup/setup_windows.ps1）。download_cuse.sh 自带版本短路：
-# 已有正确版本 + Mach-O 烟雾测试通过 → exit 0，重跑也是 noop。
-# 网络失败 / R2 短暂不可用属软失败：dev 模式 getBundledCusePath() 返
-# null → MCP 优雅 skip + warn，用户事后可手动重跑 download_cuse.sh，
-# 不应阻断整个 setup（其他 99% 的功能跟 cuse 无关）。
-echo -e "${BLUE}[3/6] 下载 cuse computer-use 二进制${NC}"
-if [[ "$(uname -s)" == "Darwin" ]]; then
-    if ! "${PROJECT_DIR}/scripts/download_cuse.sh"; then
-        echo -e "${YELLOW}⚠ cuse 下载失败（网络或 R2 不可用）— computer-use 功能在 dev 模式下将不可用${NC}"
-        echo -e "${YELLOW}  网络恢复后可重跑：./scripts/download_cuse.sh${NC}"
-    fi
-else
-    echo -e "${YELLOW}  非 macOS，跳过（cuse 当前只发 macOS / Windows 包）${NC}"
-fi
-echo ""
-
 # 安装依赖（使用 npm — v0.2.0 起不再依赖 Bun）
-echo -e "${BLUE}[4/6] 安装依赖${NC}"
+echo -e "${BLUE}[3/5] 安装依赖${NC}"
 npm install
 # Rebuild native addons (e.g. better-sqlite3) against bundled Node.js ABI —
 # system `node` may differ in NODE_MODULE_VERSION and produce binaries that
@@ -90,7 +73,7 @@ echo -e "${GREEN}✓ 依赖安装完成${NC}"
 echo ""
 
 # 安装 Rust 依赖
-echo -e "${BLUE}[5/6] 检查 Rust 依赖${NC}"
+echo -e "${BLUE}[4/5] 检查 Rust 依赖${NC}"
 cd src-tauri
 cargo check --quiet 2>/dev/null || cargo fetch
 cd ..
@@ -99,7 +82,7 @@ echo ""
 
 # 准备默认工作区 (novo)
 # .git 不保留：避免 Tauri 资源打包权限问题 + rerun-if-changed 性能问题
-echo -e "${BLUE}[6/6] 准备默认工作区 (novo)${NC}"
+echo -e "${BLUE}[5/5] 准备默认工作区 (novo)${NC}"
 NOVO_DIR="${PROJECT_DIR}/novo"
 if [ ! -d "$NOVO_DIR" ] || [ ! -f "$NOVO_DIR/CLAUDE.md" ]; then
     echo -e "${RED}错误: novo/ 目录不存在或不完整!${NC}"

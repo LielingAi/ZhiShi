@@ -28,12 +28,12 @@ const CLI_COMMANDS: &[&str] = &[
     // `runtime diagnose <type>` still works via the "runtime" entry above.
     "diagnose",
     "support",
-    // Panel API / memory / session inbox / appcraft — added 2026-08-06 audit
+    // Panel API / memory / session inbox — added 2026-08-06 audit
     // (F-05): these existed in zhishi.ts for a long time but were missing here,
     // so terminal invocation silently launched the GUI. ("browser" was removed
     // in the W6 subtraction — the embedded browser is gone with the windowless
-    // host.)
-    "term", "memory", "session", "appcraft",
+    // host. "appcraft" removed in 1.2.3 — AppCraft 桌面自动化整体退役。)
+    "term", "memory", "session",
 ];
 
 /// Check if the given args indicate CLI mode.

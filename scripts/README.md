@@ -28,7 +28,6 @@
 
 - 检查 Node.js、npm、Rust、Cargo 是否安装
 - 下载内置 Node.js v24.14.0
-- 下载 cuse computer-use MCP 二进制（macOS）
 - 执行 `npm install`
 - 重建 native addons
 - 执行 `cargo check` / `cargo fetch`
@@ -48,7 +47,6 @@
 
 - 检查 Node.js、npm、Rust、Cargo 是否安装
 - 下载内置 Node.js v24.14.0
-- 下载 cuse computer-use MCP 二进制
 - 下载 Git for Windows 安装包（供 NSIS 打包使用）
 - 执行 `npm install`
 - 重建 native addons
@@ -123,7 +121,6 @@
 
 - 版本同步检查
 - TypeScript 检查
-- 下载 cuse 二进制
 - 打包 server / bridge / cli
 - 预装 sharp 图像运行时
 - 签名 externalBin / vendor / sharp / tsx-runtime / Node.js / Claude SDK native binary
@@ -368,20 +365,6 @@ node scripts/setup-tsx-runtime.mjs
 
 ```bash
 ./scripts/download_nodejs.sh
-```
-
-### `scripts/download_cuse.sh` / `scripts/download_cuse.ps1`
-
-**用途**：下载 computer-use MCP 二进制。
-
-**用法**：
-
-```bash
-# macOS / Linux
-./scripts/download_cuse.sh
-
-# Windows
-.\scripts\download_cuse.ps1
 ```
 
 ### `scripts/sync-version.js`

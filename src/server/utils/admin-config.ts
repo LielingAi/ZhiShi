@@ -44,7 +44,7 @@ import { getZhiShiDataDir } from './app-dirs';
 
 import { stripBom } from '../../shared/utils';
 
-import type { BoundApp, EnvironmentEntry, McpServerDefinition, VmTemplateEntry } from '../../shared/config-types';
+import type { EnvironmentEntry, McpServerDefinition, VmTemplateEntry } from '../../shared/config-types';
 
 import { applyProviderEnablementAndOrder, isProviderEnabled, PRESET_MCP_SERVERS, PRESET_PROVIDERS } from '../../shared/config-types';
 
@@ -240,10 +240,6 @@ export interface ProjectSlim {
   path: string;
 
   mcpEnabledServers?: string[];
-
-  /** AppCraft (PRD 0.2.36 §6.1) — apps bound to this workspace. */
-
-  boundApps?: BoundApp[];
 
   model?: string;
 
@@ -545,7 +541,7 @@ function getPresetMcpServers(): McpServerDefinition[] {
 
   // Filter out presets whose `platforms` field doesn't include the host —
 
-  // keeps platform-specific presets (e.g. cuse on darwin/win32) invisible
+  // keeps platform-specific presets (e.g. one restricted to darwin/win32)
 
   // everywhere on unsupported hosts (catalogue, validation, effective
 

@@ -142,8 +142,7 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   'queue:added': 'critical',
   'queue:started': 'critical',
   'queue:cancelled': 'critical',
-  // PRD 0.2.36 §8.4 — 录制完成后提议「存成 skill」；一次性、低频、驱动 UI banner。
-  'appcraft:sediment-proposal': 'critical',
+  // ('appcraft:sediment-proposal' removed — AppCraft 已随 1.2.3 退役移除)
   'chat:session-title-changed': 'critical',
 });
 

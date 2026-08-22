@@ -46,8 +46,6 @@
       "infoplist/zh-Hans.lproj/InfoPlist.strings": "zh-Hans.lproj/InfoPlist.strings"
     },
     "externalBin": [
-      "binaries/cuse",
-      "binaries/terminator-mcp-agent",
       "binaries/zhishi-updater"
     ],
     "macOS": {

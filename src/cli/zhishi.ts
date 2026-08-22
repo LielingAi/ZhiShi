@@ -171,10 +171,9 @@ function parseArgs(args: string[]): { positional: string[]; flags: Record<string
 
         key === 'new-dek' ||
 
-        // 2026-08-06 审计 F-12：这些 presence-only flag 之前不在清单里，
-        // `--yes-high-risk myskill` 会把 myskill 吞成 flag 值、positional 丢失。
-        key === 'yes-high-risk' ||
-
+        // 2026-08-06 审计 F-12：presence-only flag 必须在此清单里，
+        // 否则 `--force myskill` 会把 myskill 吞成 flag 值、positional 丢失。
+        // ('yes-high-risk' 已随 1.2.3 AppCraft 退役移除)
         key === 'force' ||
 
         key === 'purge-data' ||
@@ -435,8 +434,6 @@ Commands:
 
   domain    域包清单（list / check <域>——就绪自检：引用完整性+验收清单）
 
-  appcraft  AppCraft workspace app automation (record/list/replay traces)
-
   task      Manage Task Center tasks (list/get/update-status/run/rerun ...)
 
   research  Research outcome signals (log/list) — security researcher edition
@@ -498,16 +495,6 @@ Examples:
   zhishi skill list
 
   zhishi skill remove my-skill
-
-  zhishi appcraft list
-
-  zhishi appcraft record start --app kingdee
-
-  zhishi appcraft record stop
-
-  zhishi appcraft replay monthly-report --var 月份=2026-06
-
-  zhishi appcraft replay monthly-report --yes-high-risk   # 确认过高危步骤后放行（PRD §6.8）
 
   zhishi env engines                        # probe docker/hypervisors/ssh + install guidance
 
@@ -824,48 +811,6 @@ function printResult(group: string, action: string, result: Record<string, unkno
 
     }
 
-    // AppCraft replay failures carry the structured failed-step report in data
-
-    // — surface it in human mode so the AI 自愈 flow sees step index + reason
-
-    // + locator without re-running with --json.
-
-    if (group === 'appcraft' && action === 'replay') {
-
-      const data = (result.data as Record<string, unknown> | undefined) ?? {};
-
-      const failure = data.failure as
-
-        | { stepIndex?: number; action?: string; reason?: string; locator?: unknown; requiresAiHeal?: boolean; requiresApproval?: boolean }
-
-        | undefined;
-
-      if (failure && typeof failure === 'object') {
-
-        console.error(`  failed step: #${failure.stepIndex ?? '?'} (${failure.action ?? '?'})`);
-
-        if (failure.reason) console.error(`  reason: ${failure.reason}`);
-
-        if (failure.locator) console.error(`  locator: ${JSON.stringify(failure.locator)}`);
-
-        if (failure.requiresApproval) console.error('  高危步骤未批准——请用户确认后加 --yes-high-risk 重跑');
-
-        if (failure.requiresAiHeal) console.error('  fallback: ai_vision — AI 自愈可接手重新定位该步骤');
-
-      } else {
-
-        const stdout = typeof data.stdout === 'string' ? data.stdout.trim() : '';
-
-        const stderr = typeof data.stderr === 'string' ? data.stderr.trim() : '';
-
-        if (stdout) console.error(`--- cuse output ---\n${stdout}`);
-
-        if (stderr) console.error(`--- cuse stderr ---\n${stderr}`);
-
-      }
-
-    }
-
     return;
 
   }
@@ -949,30 +894,6 @@ function printResult(group: string, action: string, result: Record<string, unkno
   if (group === 'skill' && action === 'info') {
 
     printSkillInfo(result.data as Record<string, unknown>);
-
-    return;
-
-  }
-
-  if (group === 'appcraft' && action === 'list') {
-
-    printAppcraftList(result.data as Record<string, unknown> | undefined);
-
-    return;
-
-  }
-
-  if (group === 'appcraft' && action === 'replay') {
-
-    printAppcraftReplay(result);
-
-    return;
-
-  }
-
-  if (group === 'appcraft' && action === 'record') {
-
-    printAppcraftRecord(result);
 
     return;
 
@@ -2329,152 +2250,6 @@ function printSkillInfo(data: Record<string, unknown>): void {
 
 
 
-function printAppcraftList(data: Record<string, unknown> | undefined): void {
-
-  const recordings = (data?.recordings as Array<Record<string, unknown>> | undefined) ?? [];
-
-  const skills = (data?.skills as Array<Record<string, unknown>> | undefined) ?? [];
-
-  const pad = (s: string, n: number) => s.padEnd(n);
-
-  console.log(`Workspace: ${String(data?.workspacePath ?? '(unknown)')}`);
-
-  console.log('');
-
-  console.log(pad('Name', 30) + pad('App', 16) + pad('Steps', 8) + 'Recorded at');
-
-  let total = 0;
-
-  for (const s of skills) {
-
-    total++;
-
-    console.log(
-
-      pad(String(s.id ?? '?').slice(0, 28), 30) +
-
-      pad(String(s.app ?? '?').slice(0, 14), 16) +
-
-      pad(String(s.stepCount ?? '?'), 8) +
-
-      String(s.recordedAt ?? ''),
-
-    );
-
-  }
-
-  for (const r of recordings) {
-
-    total++;
-
-    console.log(
-
-      pad(`[rec] ${String(r.id ?? '?')}`.slice(0, 28), 30) +
-
-      pad(String(r.app ?? '?').slice(0, 14), 16) +
-
-      pad(String(r.stepCount ?? '?'), 8) +
-
-      String(r.recordedAt ?? ''),
-
-    );
-
-  }
-
-  if (total === 0) {
-
-    console.log('(none — no .appcraft/ recordings or automation skills with trace.json)');
-
-  }
-
-  console.log(`\n${skills.length} skill(s), ${recordings.length} recording(s)`);
-
-  console.log('Replay: zhishi appcraft replay <name> [--var k=v ...]');
-
-}
-
-
-
-function printAppcraftRecord(result: Record<string, unknown>): void {
-
-  const data = (result.data as Record<string, unknown> | undefined) ?? {};
-
-  // stop → { recordingId, tracePath, stepCount }
-
-  if (typeof data.tracePath === 'string') {
-
-    console.log(`✓ Recording saved: ${String(data.recordingId ?? '')}`);
-
-    console.log(`  trace: ${data.tracePath}`);
-
-    console.log(`  steps: ${String(data.stepCount ?? '?')}`);
-
-    console.log('Next: zhishi appcraft list / replay it, or ask the agent to 沉淀成 skill');
-
-    return;
-
-  }
-
-  // status → { recording, recordingId?, appId?, stepCount? }
-
-  if (typeof data.recording === 'boolean') {
-
-    if (data.recording) {
-
-      console.log(`Recording in progress: ${String(data.recordingId ?? '')} (app=${String(data.appId ?? '?')}, steps so far=${String(data.stepCount ?? 0)})`);
-
-    } else {
-
-      console.log('Not recording. Start: zhishi appcraft record start --app <appId>');
-
-    }
-
-    return;
-
-  }
-
-  // start → { recordingId, appId, workspacePath }
-
-  console.log(`✓ Recording started: ${String(data.recordingId ?? '')} (app=${String(data.appId ?? '?')})`);
-
-  console.log('  Operate the app now; then: zhishi appcraft record stop');
-
-}
-
-
-
-function printAppcraftReplay(result: Record<string, unknown>): void {
-
-  const data = (result.data as Record<string, unknown> | undefined) ?? {};
-
-  console.log(`\u2713 Replay succeeded: ${String(data.id ?? '')} (app=${String(data.app ?? '?')}, steps=${String(data.stepCount ?? '?')})`);
-
-  console.log(`  trace: ${String(data.tracePath ?? '')}`);
-
-  const stdout = typeof data.stdout === 'string' ? data.stdout.trim() : '';
-
-  if (stdout) {
-
-    console.log('--- cuse output ---');
-
-    console.log(stdout);
-
-  }
-
-  const stderr = typeof data.stderr === 'string' ? data.stderr.trim() : '';
-
-  if (stderr) {
-
-    console.log('--- cuse stderr ---');
-
-    console.log(stderr);
-
-  }
-
-}
-
-
-
 function printTaskList(tasks: Array<Record<string, unknown>>): void {
 
   if (!tasks || tasks.length === 0) {
@@ -3621,16 +3396,6 @@ async function main(): Promise<void> {
 
 function buildRoute(group: string, action: string, rest: string[]): string {
 
-  // AppCraft nested record commands: appcraft record start/stop/status
-
-  if (group === 'appcraft' && action === 'record') {
-
-    const recordAction = rest[0] || 'status';
-
-    return `appcraft/record/${recordAction}`;
-
-  }
-
   // MCP OAuth subcommands: mcp oauth discover/start/status/revoke
 
   if (group === 'mcp' && action === 'oauth') {
@@ -4431,62 +4196,6 @@ function buildRequestBody(
     if (action === 'remove' || action === 'info' || action === 'enable' || action === 'disable') {
 
       return { name: rest[0] || flags.name, scope: (flags.scope as string) || 'user' };
-
-    }
-
-    return {};
-
-  }
-
-
-
-  // AppCraft (PRD 0.2.36 §6.4-6.6) — workspace app-automation recordings + replay
-
-  if (group === 'appcraft') {
-
-    if (action === 'list') {
-
-      return { workspacePath: flags.workspace };
-
-    }
-
-    if (action === 'record') {
-
-      const recordAction = rest[0] || 'status';
-
-      if (recordAction === 'start') {
-
-        return {
-
-          // appId 可选（design C 零配置）：省略时录制器从首个工具调用自动识别应用
-
-          appId: (flags.app as string | undefined) ?? '',
-
-          workspacePath: flags.workspace,
-
-        };
-
-      }
-
-      return {};
-
-    }
-
-    if (action === 'replay') {
-
-      return {
-
-        target: requirePositional(rest[0] ?? (flags.target as string | undefined), 'skillName|recordingDir', 'appcraft replay', 'target'),
-
-        vars: parseEnvFlags(flags.var as string[] | undefined),
-
-        workspacePath: flags.workspace,
-
-        dryRun: flags.dryRun,
-
-        allowHighRisk: flags.yesHighRisk === true,
-
-      };
 
     }
 

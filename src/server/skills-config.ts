@@ -266,10 +266,8 @@ const SYSTEM_SKILLS: readonly string[] = [
 
   'zhishi-cli',
 
-  // v19: app-automation — AppCraft（PRD 0.2.36）录制→沉淀→回放→自愈工作流，
-  // 与 zhishi appcraft CLI / trace schema 同步演进，须强制覆盖。
-
-  'app-automation',
+  // v36: app-automation 随 1.2.3 AppCraft 退役移除，存量 seed 目录由用户自处，
+  // 见 commands.rs::SYSTEM_SKILLS。
 
   // v29: capability-forge 与通用生产力 skills 随安全研究员版减法删除，
 
