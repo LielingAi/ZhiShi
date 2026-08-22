@@ -14,6 +14,7 @@ import type { RuntimeType } from '../shared/types/runtime';
 import type { DistilledMemory } from './memory/distill';
 import { parseActiveReminders } from './memory/distill';
 import type { ResearchDistilledMemory } from './memory/distill-research';
+import type { ResearchTaskKind } from './memory/store';
 import { buildCliToolsAppend, buildWidgetSection } from './system-prompt-cli-tools';
 import {
   buildNativeCodeSection,
@@ -182,6 +183,13 @@ export interface SystemPromptOptions {
    */
   securityResearchMemory?: ResearchDistilledMemory;
   /**
+   * 当前会话的研究域（1.2.4 域过滤，仅 security 场景消费）。调用方在会话
+   * 启动时经 resolveSessionResearchDomain(securityCapabilities) 推导——
+   * 提供时 <zhishi-research-memory> 只注入该域子节 + 跨域通用行；
+   * undefined = 无可靠域信号（host 现场等），降级全量注入。
+   */
+  securityResearchDomain?: ResearchTaskKind;
+  /**
    * 已启用的 skills（提示词级能力包）——调用方在会话启动时经
    * collectEnabledSkills() 采集（bundled + 用户库合并、禁用表过滤）。
    * undefined/空数组 = <skills> 段零注入。SKILL.md 全文直给是结构性
@@ -237,7 +245,10 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
     if (nativeCodeSection) parts.push(nativeCodeSection);
     const researchLogSection = buildResearchLogSection();
     if (researchLogSection) parts.push(researchLogSection);
-    const researchMemorySection = buildResearchMemorySection(options?.securityResearchMemory);
+    const researchMemorySection = buildResearchMemorySection(
+      options?.securityResearchMemory,
+      { domain: options?.securityResearchDomain },
+    );
     if (researchMemorySection) parts.push(researchMemorySection);
   }
 

@@ -59,8 +59,29 @@ export const RESEARCH_DISTILL_INTERVAL_MINUTES = 360;
 /** 单次 tick 最多蒸馏的未结算事件数（输入有界，输出恒定）。 */
 export const RESEARCH_DISTILL_MAX_EVENTS = 60;
 
-/** 每个蒸馏分节的硬上限（字符）——与认知弧同一守恒约束（§4.1）。 */
-export const RESEARCH_DISTILL_MAX_CHARS_PER_SECTION = 2000;
+/**
+ * 注入预算（字符）——`<zhishi-research-memory>` 整段硬顶
+ * （system-prompt-security.ts 的 RESEARCH_MEMORY_MAX_CHARS 就是它）。
+ * 蒸馏侧分节额度从它推导（1.2.4 修预算倒挂：三节上限之和曾 6000 > 注入顶
+ * 2000，第三节尾部被 hardCapLines 静默整行砍掉）——预算是单一事实源，
+ * 蒸馏产物写得下、注入侧才装得下。
+ */
+export const RESEARCH_MEMORY_INJECT_BUDGET = 2000;
+
+/**
+ * 注入侧包装开销的保守预留（`<zhishi-research-memory>` 标签 + 引言行 +
+ * 三个「## 分节」标题行 + 空行），实测约 190 字符，预留放宽到 320。
+ */
+const INJECT_WRAPPER_RESERVE_CHARS = 320;
+
+/**
+ * 每个蒸馏分节的硬上限（字符）——按注入预算三等分（1.2.4 起）：
+ * 三节 × 本节上限 + 包装预留 ≤ RESEARCH_MEMORY_INJECT_BUDGET，
+ * 保证「蒸馏没截断的产物注入侧也绝不触发整行丢弃」。
+ */
+export const RESEARCH_DISTILL_MAX_CHARS_PER_SECTION = Math.floor(
+  (RESEARCH_MEMORY_INJECT_BUDGET - INJECT_WRAPPER_RESERVE_CHARS) / 3,
+);
 
 // ===== 类型 =====
 
@@ -91,6 +112,16 @@ const SECTION_TARGETS: Record<ResearchDistillKey, { kind: MemoryKind; key: strin
   toolCombos: { kind: 'tool-combo', key: 'research-distill:tool-combos' },
 };
 
+/**
+ * 分节存储映射的只读清单形态（1.2.4 注入侧 judge 降权用——system-prompt-security
+ * 的 collectResearchMemory 按它把「被判 wrong 的分节」映射回 (kind, key) 查证）。
+ */
+export const RESEARCH_DISTILL_SECTIONS: ReadonlyArray<{
+  key: keyof ResearchDistilledMemory;
+  kind: MemoryKind;
+  storeKey: string;
+}> = KEY_ORDER.map((key) => ({ key, kind: SECTION_TARGETS[key].kind, storeKey: SECTION_TARGETS[key].key }));
+
 // ===== 哨兵 =====
 
 export function isResearchDistillArcPrompt(prompt: string): boolean {
@@ -104,21 +135,19 @@ export interface ResearchDistillPromptInput {
   events: ResearchEvent[];
   /** 相关安全会话的 transcript 尾部摘录（轨迹原料，可选）。 */
   sessionExcerpts?: string[];
+  /**
+   * fail/stuck 事件的轨迹深摘（1.2.4，可选）：事件带 trajectory_ref 且宿主可读时，
+   * 按 loop-sessions/文本尾部截取的关键片段（错误输出 / 最后几条命令）——
+   * 「卡在哪」在轨迹中段，尾部 6 条会话摘录喂不出根因级原料。
+   */
+  trajectoryExcerpts?: string[];
+  /**
+   * expert_refs 条目标题表（1.2.2 引用追踪 → 1.2.4 闭环，可选）：
+   * expert 条目 id → 标题，让事件行里的 expert 引用可读（「依据 expert #3《标题》」），
+   * 蒸馏产物据此标注经验来源。
+   */
+  expertTitles?: Record<number, string>;
   existing: ResearchDistilledMemory;
-}
-
-function formatEventLine(e: ResearchEvent): string {
-  const date = new Date(e.ts).toISOString().slice(0, 10);
-  const parts = [date, e.outcome];
-  if (e.bugClass) parts.push(e.bugClass);
-  parts.push(e.summary.replace(/\s+/g, ' ').trim().slice(0, 200));
-  if (e.trajectoryRef) parts.push(`轨迹 ${e.trajectoryRef}`);
-  return `- ${parts.join('｜')}`;
-}
-
-function existingSection(title: string, body: string): string {
-  const trimmed = body.trim();
-  return `${title}\n${trimmed || '（尚无）'}`;
 }
 
 /**
@@ -128,6 +157,24 @@ function existingSection(title: string, body: string): string {
  * {@link applyResearchDistillResult} 的解析器严格对应。
  */
 export function buildResearchDistillPrompt(input: ResearchDistillPromptInput): string {
+  // expert_refs 进事件行（1.2.4）：id + 条目标题（有标题时），闭上
+  // 「专家知识 → 事件 → 蒸馏经验」的追溯环。
+  const formatEventLine = (e: ResearchEvent): string => {
+    const date = new Date(e.ts).toISOString().slice(0, 10);
+    const parts = [date, e.outcome];
+    if (e.bugClass) parts.push(e.bugClass);
+    parts.push(e.summary.replace(/\s+/g, ' ').trim().slice(0, 200));
+    if (e.trajectoryRef) parts.push(`轨迹 ${e.trajectoryRef}`);
+    if (e.expertRefs && e.expertRefs.length > 0) {
+      const refs = e.expertRefs.map((id) => {
+        const title = input.expertTitles?.[id]?.trim();
+        return title ? `#${id}《${title}》` : `#${id}`;
+      });
+      parts.push(`依据 expert ${refs.join('、')}`);
+    }
+    return `- ${parts.join('｜')}`;
+  };
+
   // 按域分组：域序固定按 RESEARCH_TASK_KINDS 枚举序（稳定输出，便于比对），
   // 无事件的域不出现。
   const byDomain = new Map<string, ResearchEvent[]>();
@@ -147,6 +194,16 @@ export function buildResearchDistillPrompt(input: ResearchDistillPromptInput): s
   const excerptSection = excerpts.length > 0
     ? excerpts.map((x) => `- ${x.replace(/\s+/g, ' ').trim().slice(0, 400)}`).join('\n')
     : '（无相关会话摘录）';
+
+  const trajectories = (input.trajectoryExcerpts ?? []).filter((x) => x.trim().length > 0);
+  const trajectorySection = trajectories.length > 0
+    ? trajectories.map((x) => `- ${x.trim().slice(0, 800)}`).join('\n')
+    : '（无轨迹深摘——fail/stuck 事件未挂宿主可读的轨迹文件）';
+
+  function existingSection(title: string, body: string): string {
+    const trimmed = body.trim();
+    return `${title}\n${trimmed || '（尚无）'}`;
+  }
 
   return `你是 ZhiShi 的「安全蒸馏弧」执行者（安全研究员版 §1.4）。你的任务：把安全研究的结构化成败事件压成分域安全经验——不是流水账，是下次上手就能用的决策级经验。
 
@@ -170,6 +227,8 @@ ${SECTION_HEADERS.toolCombos}
 - 只写下方原料里有据可查的事，绝不编造；每条经验尽量带 bug_class 或工具名等可检索锚点。
 - 每个分节硬上限 ${RESEARCH_DISTILL_MAX_CHARS_PER_SECTION} 字符：蒸馏质量进，窗口长度不进。写不下时优先保留被反复验证过的经验。
 - 某一节没有新证据时，原样保留旧内容即可。
+- 时效与溯源标注（1.2.4 治理）：每条经验尾部带日期标注（YYYY-MM-DD，取支持它的最新事件日期）；依据了专家知识（事件行带「依据 expert #N」）的经验再标注「（源自 expert #N）」；环境相关的经验带环境锚点（如「vm:fuzz-vm」「VMware /mnt/hgfs 只读」），写清适用环境。
+- 去重即置信：同一目标 / 同一 bug_class 反复出现的同类事件 = 置信加强——合并成一条经验并标注次数（如「×3 次复现」），不要拆成多条经验。
 
 # 已有蒸馏内容
 
@@ -185,7 +244,11 @@ ${eventSection}
 
 # 相关安全会话的尾部摘录（轨迹原料）
 
-${excerptSection}`;
+${excerptSection}
+
+# 失败/卡住事件的轨迹深摘（根因级原料：错误输出 / 最后几条命令）
+
+${trajectorySection}`;
 }
 
 // ===== LLM 输出解析与合并 =====

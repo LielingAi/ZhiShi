@@ -902,6 +902,36 @@ export function listWrongMemories(
     .map((r) => ({ memoryId: r.memory_id, content: r.content as string, ts: r.ts }));
 }
 
+/**
+ * judge 判错查询（1.2.4 D4 深化，注入侧降权用）：keyed 蒸馏产物的当前版本
+ * 是否被 recall judge 判过 wrong。两条证据路径：
+ * - live 条目本身有 wrong 结算（recall_events 直接指着当前版本）；
+ * - 当前内容与某个被判 wrong 的 archive 旧版内容一致（content_key 相同——
+ *   判错后蒸馏弧没改掉这段内容，它仍在反喂错误经验）。
+ * 条目不存在 / 无 wrong 记录 → false（不误伤未判过的分节）。
+ */
+export function keyedDistilledEntryJudgedWrong(
+  kind: MemoryKind,
+  key: string,
+  baseDir: string = getZhiShiDataDir(),
+): boolean {
+  const live = latestKeyedDistilledEntry(kind, key, baseDir);
+  if (!live) return false;
+  const database = db(baseDir);
+  const liveWrong = database
+    .prepare("SELECT COUNT(*) AS c FROM recall_events WHERE memory_id = ? AND outcome = 'wrong'")
+    .get(live.id) as { c: number };
+  if (liveWrong.c > 0) return true;
+  const archivedSame = database
+    .prepare(
+      `SELECT COUNT(*) AS c FROM recall_events r
+       JOIN archive a ON a.id = r.memory_id
+       WHERE r.outcome = 'wrong' AND a.kind = ? AND a.source = ? AND a.content_key = ?`,
+    )
+    .get(kind, key, contentKey(live.content)) as { c: number };
+  return archivedSame.c > 0;
+}
+
 // ===== 能力缺口（gap_events）：缺工具/缺能力事件 → 复发计数 → 阶梯升级凭据 =====
 // WORK_LOOP §5/§7：缺口是环上的一等事件。记录本身不改任何分值——价值在
 // 复发计数：同一个 gap_key 反复出现 = "沉淀造/提 PRD"的凭据（不靠感觉）。

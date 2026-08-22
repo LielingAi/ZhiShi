@@ -351,6 +351,23 @@ export function findMissingExpertEntryIds(baseDir: string, ids: number[]): numbe
   return ids.filter((id) => getEntryById(db, id) === null);
 }
 
+/**
+ * 批量取条目标题（1.2.4 蒸馏追溯闭环：安全蒸馏弧把事件行里的 expert_refs
+ * 渲染成「#id《标题》」，让蒸馏 LLM 能标注经验来源）。expert.db 不存在或
+ * 条目已删 → 该 id 不出现在结果里（调用方按「只有 id」降级渲染）。
+ */
+export function getExpertEntryTitles(baseDir: string, ids: number[]): Record<number, string> {
+  const out: Record<number, string> = {};
+  const unique = [...new Set(ids)].filter((id) => Number.isInteger(id) && id > 0);
+  if (unique.length === 0 || !hasExpertDb(baseDir)) return out;
+  const db = openExpertStore(baseDir);
+  for (const id of unique) {
+    const entry = getEntryById(db, id);
+    if (entry) out[id] = entry.title;
+  }
+  return out;
+}
+
 // ===== drafts =====
 
 export function insertDraft(

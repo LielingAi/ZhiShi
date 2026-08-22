@@ -603,6 +603,11 @@ function writeDistilledToStore(d: DistilledMemory, baseDir: string): void {
 }
 
 // ===== 话题弧（UPDATE_MEMORY 的后台继任者） =====
+//
+// 定位（1.2.4 明确）：memory/topics/*.md 是**给人看的工地档案**，不接进任何
+// prompt 注入链路——agent 侧的记忆反喂走蒸馏层（distilled + research-memory
+// 段），话题文件是研究员自己翻阅/交接用的叙事文档。只写不读是有意设计，
+// 不是漏接消费者。
 
 export interface TopicSessionSummary {
   title: string;
@@ -615,6 +620,7 @@ export interface TopicSessionSummary {
  * 话题弧提示词：维护一个工作区的经验文件 memory/topics/<name>.md。
  * 与认知弧同一哲学（合并语义、决策级事实、尺寸硬上限），但对象是
  * 「这个工地」而不是「这个人」——工地知识层，每工作区一份。
+ * 消费定位：给人看的档案（研究员翻阅/交接），不进任何 prompt 注入链路（1.2.4）。
  */
 export function buildTopicPrompt(input: {
   workspaceName: string;

@@ -25,6 +25,7 @@ import {
   buildSecurityKernelSection,
   collectResearchMemory,
   collectSecurityCapabilities,
+  resolveSessionResearchDomain,
   NATIVE_CODE_MAX_CHARS,
   RESEARCH_LOG_MAX_CHARS,
   RESEARCH_MEMORY_MAX_CHARS,
@@ -348,5 +349,148 @@ describe('buildSystemPromptAppend — security 场景段顺序', () => {
       securityResearchMemory: SAMPLE_MEMORY,
     });
     expect(prompt).not.toContain('<zhishi-research-memory>');
+  });
+});
+
+// ===== 1.2.4 深化：域过滤 =====
+
+describe('buildResearchMemorySection — 按会话域过滤（1.2.4）', () => {
+  it('给定域：注入该域子节 + 跨域通用行；ctf 子节视同跨域通用（kernel 定位）', () => {
+    const section = buildResearchMemorySection(memory({
+      successPaths: '### 域：binary\n- stack-overflow｜AFL++ 字典 + persist 模式出独有崩溃\n### 域：ctf\n- 先 checksec 再定打法\n### 域：pentest\n- 渗透专用：kerberoasting 拿票据',
+      failureRoots: '### 域：binary\n- 死路：直接 patch 反调试——样本有完整性自校验',
+      toolCombos: '### 域：binary\n- 有效：pwn 类型 + pwndbg + gef',
+    }), { domain: 'binary' });
+    expect(section).toContain('<zhishi-research-memory>');
+    expect(section).toContain('### 域：binary');
+    expect(section).toContain('stack-overflow｜AFL++ 字典');
+    // pentest 子节整节去掉（标题与内容都不在）。
+    expect(section).not.toContain('### 域：pentest');
+    expect(section).not.toContain('kerberoasting');
+    // ctf 是全域补充场景，保留。
+    expect(section).toContain('### 域：ctf');
+    expect(section).toContain('先 checksec 再定打法');
+    // 引言行声明已按域过滤。
+    expect(section).toContain('已按当前会话域 binary 过滤');
+  });
+
+  it('跨域通用行（无 ### 域 前缀）在过滤后保留', () => {
+    const section = buildResearchMemorySection(memory({
+      successPaths: '- 通用：先建心智模型再动手\n### 域：pentest\n- 渗透专用经验',
+    }), { domain: 'binary' });
+    expect(section).toContain('通用：先建心智模型再动手');
+    expect(section).not.toContain('渗透专用经验');
+  });
+
+  it('过滤后三分节全空 → 整段零注入', () => {
+    // 只有 malware 内容，binary 会话（ctf 除外）无任何可注入子节。
+    const only = memory({ failureRoots: '### 域：malware\n- 样本反调试死路' });
+    expect(buildResearchMemorySection(only, { domain: 'binary' })).toBe('');
+  });
+
+  it('无域信号（不传 domain）→ 全量注入（降级语义不变）', () => {
+    const section = buildResearchMemorySection(SAMPLE_MEMORY, {});
+    expect(section).toContain('### 域：ctf');
+    expect(section).toContain('先 checksec 再定打法');
+  });
+
+  it('过滤后内容变短，硬顶截断标记仍是研究记忆专用文案', () => {
+    const longLine = (i: number) => `- 经验条目 ${String(i).padStart(3, '0')}：这是一条足够长的分域安全经验内容用来撑爆硬顶`;
+    const section = buildResearchMemorySection(memory({
+      successPaths: ['### 域：binary', ...Array.from({ length: 120 }, (_, i) => longLine(i))].join('\n'),
+    }), { domain: 'binary' });
+    expect(section.length).toBeLessThanOrEqual(RESEARCH_MEMORY_MAX_CHARS);
+    expect(section).toContain('研究记忆超出注入预算，已按上限截断');
+  });
+});
+
+// ===== 1.2.4 深化：会话域推导 =====
+
+describe('resolveSessionResearchDomain（1.2.4 域过滤信号源）', () => {
+  const MANIFESTS = [
+    { kind: 'binary', name: '二进制', recipes: ['pwn', 'pwn-vm', 'fuzz'], skills: [], subagents: [], signals: [], acceptance: [] },
+    { kind: 'pentest', name: '渗透', recipes: ['pentest'], skills: [], subagents: [], signals: [], acceptance: [] },
+  ];
+
+  it('host 现场 / 数据缺失 → undefined（降级全量）', () => {
+    expect(resolveSessionResearchDomain(undefined, MANIFESTS)).toBeUndefined();
+    expect(resolveSessionResearchDomain(data(), MANIFESTS)).toBeUndefined();
+  });
+
+  it('recipe 现场：按配方 id 反查域清单', () => {
+    const d = data({ selection: { kind: 'recipe', name: 'pwn', instanceId: 'zhishi-pwn-a3f2' } });
+    expect(resolveSessionResearchDomain(d, MANIFESTS)).toBe('binary');
+  });
+
+  it('env 现场：recipeId 优先，回落 id/vmName 同名配方', () => {
+    const withRecipe = data({
+      environments: [{ ...DOCKER_ENV, id: 'my-box', recipeId: 'fuzz' }],
+      selection: { kind: 'env', id: 'my-box' },
+    });
+    expect(resolveSessionResearchDomain(withRecipe, MANIFESTS)).toBe('binary');
+    // 老条目无 recipeId → id 同名配方（pwn-vm）。
+    const legacy = data({
+      environments: [{ id: 'pwn-vm', kind: 'vm' as const, vmName: 'pwn-vm', createdAt: '' }],
+      selection: { kind: 'env', id: 'pwn-vm' },
+    });
+    expect(resolveSessionResearchDomain(legacy, MANIFESTS)).toBe('binary');
+  });
+
+  it('配方未被任何域清单覆盖 / env 条目不存在 → undefined', () => {
+    const unknown = data({ selection: { kind: 'recipe', name: 'dev', instanceId: 'x' } });
+    expect(resolveSessionResearchDomain(unknown, MANIFESTS)).toBeUndefined();
+    const ghost = data({ selection: { kind: 'env', id: 'ghost' } });
+    expect(resolveSessionResearchDomain(ghost, MANIFESTS)).toBeUndefined();
+  });
+});
+
+// ===== 1.2.4 深化：judge wrong 降权 =====
+
+describe('collectResearchMemory — judge wrong 分节不注入（1.2.4）', () => {
+  it('judgedWrong 命中的分节被清空；其余分节不动；不改动 read 返回的原对象', () => {
+    const fixture = memory({
+      successPaths: '### 域：binary\n- 有效路径',
+      failureRoots: '### 域：binary\n- 被判错的根因经验',
+    });
+    const result = collectResearchMemory({
+      baseDir: '/tmp/fake-zhishi',
+      read: () => fixture,
+      judgedWrong: (_kind, storeKey) => storeKey === 'research-distill:failure-roots',
+    });
+    expect(result.successPaths).toBe(fixture.successPaths);
+    expect(result.failureRoots).toBe('');
+    // 原 fixture 不被改写（调用方可能复用）。
+    expect(fixture.failureRoots).toContain('被判错的根因经验');
+  });
+
+  it('judgedWrong 查证抛错 → 按未判错处理（降权不是闸门）', () => {
+    const result = collectResearchMemory({
+      baseDir: '/tmp/fake-zhishi',
+      read: () => SAMPLE_MEMORY,
+      judgedWrong: () => { throw new Error('db gone'); },
+    });
+    expect(result).toEqual(SAMPLE_MEMORY);
+  });
+
+  it('read 注入但未给 judgedWrong → 不做判错查证（测试不碰库）', () => {
+    const result = collectResearchMemory({ baseDir: '/tmp/fake-zhishi', read: () => SAMPLE_MEMORY });
+    expect(result).toEqual(SAMPLE_MEMORY);
+  });
+});
+
+// ===== 1.2.4 接线：securityResearchDomain 经 buildSystemPromptAppend 生效 =====
+
+describe('buildSystemPromptAppend — security 场景域过滤接线（1.2.4）', () => {
+  it('传 securityResearchDomain 时 research-memory 段按域过滤', () => {
+    const prompt = buildSystemPromptAppend({ type: 'security' }, {
+      securityCapabilities: data({ engines: enginesReport(['docker']) }),
+      securityResearchMemory: memory({
+        successPaths: '### 域：binary\n- stack-overflow｜AFL++ 字典\n### 域：pentest\n- 渗透专用经验',
+      }),
+      securityResearchDomain: 'binary',
+    });
+    expect(prompt).toContain('<zhishi-research-memory>');
+    expect(prompt).toContain('stack-overflow｜AFL++ 字典');
+    expect(prompt).not.toContain('渗透专用经验');
   });
 });

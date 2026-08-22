@@ -12,6 +12,7 @@ import {
   deleteEntry,
   getDraftById,
   getEntryById,
+  getExpertEntryTitles,
   getExpertMeta,
   hasExpertDb,
   insertDraft,
@@ -150,5 +151,25 @@ describe('meta', () => {
     setExpertMeta(db, 'k', 'v1');
     setExpertMeta(db, 'k', 'v2');
     expect(getExpertMeta(db, 'k')).toBe('v2');
+  });
+});
+
+describe('getExpertEntryTitles（1.2.4 蒸馏追溯闭环）', () => {
+  it('批量取标题；不存在/已删的 id 不进结果；空输入不碰库', () => {
+    const a = seedEntry({ title: '栈溢出 triage' });
+    const b = seedEntry({ title: '堆风水范式' });
+    expect(getExpertEntryTitles(dir, [a.id, b.id, 999])).toEqual({
+      [a.id]: '栈溢出 triage',
+      [b.id]: '堆风水范式',
+    });
+    // expert.db 不存在 → 空表（不建库）。
+    const empty = mkdtempSync(join(tmpdir(), 'zhishi-expertstore-empty-'));
+    try {
+      expect(getExpertEntryTitles(empty, [1])).toEqual({});
+      expect(hasExpertDb(empty)).toBe(false);
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+    expect(getExpertEntryTitles(dir, [])).toEqual({});
   });
 });

@@ -16,10 +16,13 @@ import {
   RESEARCH_DISTILL_CRON_PROMPT,
   RESEARCH_DISTILL_INTERVAL_MINUTES,
   RESEARCH_DISTILL_MAX_CHARS_PER_SECTION,
+  RESEARCH_MEMORY_INJECT_BUDGET,
   type ResearchDistilledMemory,
 } from './distill-research';
 import { DISTILL_CRON_PROMPT } from './distill';
 import {
+  latestKeyedDistilledEntry,
+  keyedDistilledEntryJudgedWrong,
   listActive,
   listArchive,
   listUndistilledResearchEvents,
@@ -29,6 +32,7 @@ import {
   putEntry,
   recordResearchEvent,
   resetMemoryStoreForTest,
+  settleRecallEvent,
   type ResearchEvent,
 } from './store';
 
@@ -254,5 +258,94 @@ describe('D3：recall 结算按 kind 分流（安全类走 24h 窗，认知类�
 
     const all = listUnsettledRecalls(0, 20, dir, NOW);
     expect(all).toHaveLength(2);
+  });
+});
+
+describe('1.2.4 深化：预算对齐（修预算倒挂）', () => {
+  it('三节上限之和 + 包装预留 ≤ 注入预算（单一事实源推导）', () => {
+    // 蒸馏侧每节额度按注入预算三等分：三节写满也必然装得进注入段。
+    expect(RESEARCH_MEMORY_INJECT_BUDGET).toBe(2000);
+    expect(RESEARCH_DISTILL_MAX_CHARS_PER_SECTION * 3).toBeLessThan(RESEARCH_MEMORY_INJECT_BUDGET);
+    // 包装预留（标签+引言+标题行，实测约 190）至少有 100 字符余量。
+    expect(RESEARCH_MEMORY_INJECT_BUDGET - RESEARCH_DISTILL_MAX_CHARS_PER_SECTION * 3).toBeGreaterThanOrEqual(100);
+  });
+});
+
+describe('1.2.4 深化：expert_refs 进蒸馏 prompt（追溯闭环）', () => {
+  it('事件行带 expert_refs 与条目标题；prompt 含来源标注指令', () => {
+    const prompt = buildResearchDistillPrompt({
+      events: [
+        ev({ id: 1, taskKind: 'binary', summary: '堆风水布局后 tcache poisoning 成功', expertRefs: [3, 12] }),
+        ev({ id: 2, taskKind: 'binary', outcome: 'fail', summary: '无引用事件' }),
+      ],
+      expertTitles: { 3: 'glibc tcache 利用范式' },
+      existing: EMPTY,
+    });
+    // 有标题 → #id《标题》；无标题 → 仅 #id。
+    expect(prompt).toContain('依据 expert #3《glibc tcache 利用范式》、#12');
+    // 无 expert_refs 的事件行不带「依据 expert」。
+    const failLine = prompt.split('\n').find((l) => l.includes('无引用事件'))!;
+    expect(failLine).not.toContain('依据 expert');
+    // 来源标注指令进契约。
+    expect(prompt).toContain('（源自 expert #N）');
+  });
+
+  it('时效/环境锚点/去重置信指令进契约', () => {
+    const prompt = buildResearchDistillPrompt({ events: [ev({ taskKind: 'binary' })], existing: EMPTY });
+    expect(prompt).toContain('YYYY-MM-DD');
+    expect(prompt).toContain('环境锚点');
+    expect(prompt).toContain('置信加强');
+  });
+});
+
+describe('1.2.4 深化：轨迹深摘进蒸馏 prompt', () => {
+  it('trajectoryExcerpts 进 prompt 的独立分节；缺省有占位', () => {
+    const withTraj = buildResearchDistillPrompt({
+      events: [ev({ taskKind: 'binary', outcome: 'fail', summary: '卡在 canary' })],
+      trajectoryExcerpts: ['事件#2（binary/fail）轨迹末段：\n工具: *** stack smashing detected ***'],
+      existing: EMPTY,
+    });
+    expect(withTraj).toContain('# 失败/卡住事件的轨迹深摘');
+    expect(withTraj).toContain('stack smashing detected');
+
+    const without = buildResearchDistillPrompt({ events: [ev({ taskKind: 'binary' })], existing: EMPTY });
+    expect(without).toContain('（无轨迹深摘');
+  });
+});
+
+describe('1.2.4 深化：judge wrong 反馈的注入侧查证（keyedDistilledEntryJudgedWrong）', () => {
+  function writeAndGetLiveId(content: string): string {
+    writeResearchDistilled({ successPaths: content, failureRoots: '', toolCombos: '' }, dir);
+    return latestKeyedDistilledEntry('vuln-pattern', 'research-distill:success-paths', dir)!.id;
+  }
+
+  function judgeWrong(memoryId: string): void {
+    logRecallEvents([memoryId], 'q', dir, NOW - 1000);
+    const pending = listUnsettledRecalls(0, 20, dir, NOW);
+    settleRecallEvent(pending.find((e) => e.memoryId === memoryId)!.id, 'wrong', dir, NOW);
+  }
+
+  it('live 条目被判 wrong → true；未判过 → false', () => {
+    const id = writeAndGetLiveId('### 域：binary\n- 错误经验。');
+    expect(keyedDistilledEntryJudgedWrong('vuln-pattern', 'research-distill:success-paths', dir)).toBe(false);
+    judgeWrong(id);
+    expect(keyedDistilledEntryJudgedWrong('vuln-pattern', 'research-distill:success-paths', dir)).toBe(true);
+    // 其它分节不受影响。
+    expect(keyedDistilledEntryJudgedWrong('vuln-pattern', 'research-distill:failure-roots', dir)).toBe(false);
+  });
+
+  it('archive 旧版被判 wrong 且当前内容未变（content_key 相同）→ 仍 true；内容已修正 → false', () => {
+    const v1 = writeAndGetLiveId('### 域：binary\n- 错误经验。');
+    judgeWrong(v1);
+    // 蒸馏弧重写但内容没变（判错后没修正）→ 依然算 wrong。
+    writeAndGetLiveId('### 域：binary\n- 错误经验。');
+    expect(keyedDistilledEntryJudgedWrong('vuln-pattern', 'research-distill:success-paths', dir)).toBe(true);
+    // 下轮蒸馏修正了内容 → 自动恢复（新内容不是被判错的那版）。
+    writeAndGetLiveId('### 域：binary\n- 修正后的经验。');
+    expect(keyedDistilledEntryJudgedWrong('vuln-pattern', 'research-distill:success-paths', dir)).toBe(false);
+  });
+
+  it('条目不存在 → false', () => {
+    expect(keyedDistilledEntryJudgedWrong('tool-combo', 'research-distill:tool-combos', dir)).toBe(false);
   });
 });

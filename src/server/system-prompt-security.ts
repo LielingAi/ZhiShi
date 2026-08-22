@@ -45,7 +45,14 @@ import {
   loadSelectionStore,
   type EnvSelection,
 } from './environment/selection';
-import { readResearchDistilled, type ResearchDistilledMemory } from './memory/distill-research';
+import {
+  readResearchDistilled,
+  RESEARCH_DISTILL_SECTIONS,
+  RESEARCH_MEMORY_INJECT_BUDGET,
+  type ResearchDistilledMemory,
+} from './memory/distill-research';
+import { isResearchTaskKind, keyedDistilledEntryJudgedWrong, type MemoryKind, type ResearchTaskKind } from './memory/store';
+import { loadDomainManifests, type DomainManifest } from './domains/manifest';
 import { getZhiShiDataDir } from './utils/app-dirs';
 import { loadConfig } from './utils/admin-config';
 
@@ -55,18 +62,25 @@ export const SECURITY_KERNEL_MAX_CHARS = 2000;
 export const SECURITY_CAPABILITIES_MAX_CHARS = 2000;
 export const NATIVE_CODE_MAX_CHARS = 1000;
 export const RESEARCH_LOG_MAX_CHARS = 500;
-export const RESEARCH_MEMORY_MAX_CHARS = 2000;
+/**
+ * 研究记忆段硬顶 = 蒸馏弧的注入预算（distill-research.ts，单一事实源）。
+ * 1.2.4 修预算倒挂：蒸馏三节额度按此预算三等分推导，蒸馏没截断的产物
+ * 注入侧必然装得下；本硬顶只剩「老库超顶产物」的兜底语义。
+ */
+export const RESEARCH_MEMORY_MAX_CHARS = RESEARCH_MEMORY_INJECT_BUDGET;
 
 /** 截断标记——保留它，让 LLM 知道清单被裁过（不是幻觉，是边界声明）。 */
 const TRUNCATION_MARKER = '\n…（清单过长，已按上限截断）';
+/** 研究记忆段的截断标记：指明被裁的是哪段、权威全文在哪（丢弃可观测，不静默）。 */
+const RESEARCH_MEMORY_TRUNCATION_MARKER = '\n…（研究记忆超出注入预算，已按上限截断——完整内容在记忆库 research-distill:* keyed 条目）';
 
 /**
  * 硬字符上限：整行丢弃直到放得下，追加截断标记。静态段永远不会触发
  * （模板本身在上限内，单测断言保证）；动态段（能力清单）是真正消费者。
  */
-function hardCapLines(text: string, maxChars: number): string {
+function hardCapLines(text: string, maxChars: number, marker: string = TRUNCATION_MARKER): string {
   if (text.length <= maxChars) return text;
-  const budget = maxChars - TRUNCATION_MARKER.length;
+  const budget = maxChars - marker.length;
   const lines = text.split('\n');
   let out = '';
   for (const line of lines) {
@@ -74,7 +88,7 @@ function hardCapLines(text: string, maxChars: number): string {
     if (next.length > budget) break;
     out = next;
   }
-  return out + TRUNCATION_MARKER;
+  return out + marker;
 }
 
 // ===== 段 1：<zhishi-security-kernel>（静态认知语言） =====
@@ -259,27 +273,112 @@ export function buildResearchLogSection(): string {
 // ===== 段 5：<zhishi-research-memory>（动态，D4 研究记忆反喂） =====
 
 /**
+ * 分节体按域过滤（1.2.4）：保留「### 域：<task_kind>」中匹配当前会话域的
+ * 子节，以及没有任何域标题的跨域通用行（ preamble ）；其余域的子节整块
+ * 去掉（做 binary 任务时 pentest 经验不进 prompt 挤预算）。
+ * 过滤后只剩空白 → 返回 ''（调用方按零注入处理该分节）。
+ */
+function filterSectionByDomain(body: string, domain: string): string {
+  const kept: string[] = [];
+  let keep = true; // 第一个「### 域」之前的行 = 跨域通用部分
+  for (const line of body.split('\n')) {
+    const m = /^###\s*域：(.+?)\s*$/.exec(line);
+    if (m) {
+      // ctf 子节视同跨域通用：kernel 的产品定位是「CTF 是所有域的补充场景，
+      // 任何环境按需适配」，ctf 经验对任何当前域都有参考价值（也保住既有
+      // 行为：binary 会话里 ctf-only 的研究记忆照常注入）。
+      keep = m[1] === domain || m[1] === 'ctf';
+      if (keep) kept.push(line); // 命中的域标题保留（结构可辨）
+      continue;
+    }
+    if (keep) kept.push(line);
+  }
+  return kept.join('\n').trim();
+}
+
+export interface ResearchMemorySectionOptions {
+  /**
+   * 当前会话的研究域（1.2.4，调用方经 resolveSessionResearchDomain 从现场
+   * 选择/环境配方绑定推导）。提供时按域过滤；undefined = 无可靠域信号
+   * （host 现场等），降级为全量注入——宁多勿缺。
+   */
+  domain?: ResearchTaskKind;
+}
+
+/**
  * 组装 `<zhishi-research-memory>` 段——安全蒸馏弧（D3）产物的反喂注入，
  * 蒸馏闭环的最后一环：研究成败记录（D1）→ 安全蒸馏弧（D3）→ 反喂进
  * security 场景的 system prompt（本段）。
  *
  * 按「成功路径 / 失败根因 / 工具组合」三分节呈现；蒸馏产物节内的
- * 「### 域：<task_kind>」分组原样保留（经验不跨域混压的呈现侧）。
- * 零注入：数据缺失或三分节全空 → 返回 ''。硬顶 RESEARCH_MEMORY_MAX_CHARS
- * （整行截断 + 截断标记）。
+ * 「### 域：<task_kind>」分组原样保留（经验不跨域混压的呈现侧）；给定
+ * 会话域时按域过滤（1.2.4，见 filterSectionByDomain）。
+ * 零注入：数据缺失或三分节（过滤后）全空 → 返回 ''。硬顶
+ * RESEARCH_MEMORY_MAX_CHARS（整行截断 + 截断标记——丢弃可观测）。
  */
-export function buildResearchMemorySection(memory: ResearchDistilledMemory | undefined): string {
+export function buildResearchMemorySection(
+  memory: ResearchDistilledMemory | undefined,
+  opts: ResearchMemorySectionOptions = {},
+): string {
   if (!memory) return '';
+  const filter = (body: string): string =>
+    opts.domain ? filterSectionByDomain(body, opts.domain) : body.trim();
   const parts: string[] = [];
-  if (memory.successPaths.trim()) parts.push(`## 成功路径\n${memory.successPaths.trim()}`);
-  if (memory.failureRoots.trim()) parts.push(`## 失败根因\n${memory.failureRoots.trim()}`);
-  if (memory.toolCombos.trim()) parts.push(`## 工具组合\n${memory.toolCombos.trim()}`);
+  const successPaths = filter(memory.successPaths);
+  const failureRoots = filter(memory.failureRoots);
+  const toolCombos = filter(memory.toolCombos);
+  if (successPaths) parts.push(`## 成功路径\n${successPaths}`);
+  if (failureRoots) parts.push(`## 失败根因\n${failureRoots}`);
+  if (toolCombos) parts.push(`## 工具组合\n${toolCombos}`);
   if (parts.length === 0) return '';
   const body = `<zhishi-research-memory>
-以下是安全蒸馏弧从你的研究成败记录里定期沉淀的分域经验（按研究域分组）——上手新任务前先据此校准打法：复用已验证的成功路径与工具组合，别重蹈已标记的死路。
+以下是安全蒸馏弧从你的研究成败记录里定期沉淀的分域经验（按研究域分组${opts.domain ? `，已按当前会话域 ${opts.domain} 过滤；条目尾部标注日期/来源/适用环境` : '；条目尾部标注日期/来源/适用环境'}）——上手新任务前先据此校准打法：复用已验证的成功路径与工具组合，别重蹈已标记的死路。
 ${parts.join('\n\n')}
 </zhishi-research-memory>`;
-  return hardCapLines(body, RESEARCH_MEMORY_MAX_CHARS);
+  return hardCapLines(body, RESEARCH_MEMORY_MAX_CHARS, RESEARCH_MEMORY_TRUNCATION_MARKER);
+}
+
+// ===== 会话域推导（1.2.4 域过滤的信号源） =====
+
+/** 域清单的进程内缓存（bundled-domains 只在升级时变，会话期不变）。 */
+let domainManifestsCache: DomainManifest[] | null = null;
+
+/**
+ * 从能力清单数据推导当前会话的研究域（research task_kind）。信号链：
+ * 现场选择（T4）→ 具名环境的配方绑定（recipeId，回落 id/vmName 同名配方，
+ * 与 buildSecurityCapabilitiesSection 同一规则）→ bundled-domains/domain.json
+ * 的 recipes 列表反查域（域清单的 kind 即 research task_kind）。
+ *
+ * 无可靠信号 → undefined（host 现场 / 无配方绑定 / 域清单未覆盖该配方），
+ * 调用方降级为全量注入——域过滤是预算优化，不是正确性闸门，宁多勿缺。
+ */
+export function resolveSessionResearchDomain(
+  data: SecurityCapabilitiesData | undefined,
+  manifests?: DomainManifest[],
+): ResearchTaskKind | undefined {
+  const sel = data?.selection;
+  if (!sel) return undefined;
+  const candidates: string[] = [];
+  if (sel.kind === 'recipe') {
+    candidates.push(sel.name);
+  } else if (sel.kind === 'env') {
+    const entry = findEnvironmentEntry(data?.environments ?? [], sel.id);
+    if (!entry) return undefined;
+    // 配方绑定：recipeId 优先，回落 id/vmName 同名配方（同 capabilities 段）。
+    for (const c of [entry.recipeId, entry.id, entry.vmName]) {
+      if (c) candidates.push(c);
+    }
+  } else {
+    return undefined; // host 现场：无环境即无域信号
+  }
+  if (candidates.length === 0) return undefined;
+  const list = manifests ?? (domainManifestsCache ??= loadDomainManifests());
+  for (const m of list) {
+    if (isResearchTaskKind(m.kind) && m.recipes.some((r) => candidates.includes(r))) {
+      return m.kind;
+    }
+  }
+  return undefined;
 }
 
 // ===== 薄 IO — 会话启动时的数据采集（依赖可注入，测试不碰真实环境） =====
@@ -318,13 +417,41 @@ export interface CollectResearchMemoryDeps {
   read?: (baseDir: string) => ResearchDistilledMemory;
   /** 数据根目录（默认 ~/.zhishi）。 */
   baseDir?: string;
+  /**
+   * judge 判错查证（1.2.4 D4 深化，recall judge 的 wrong 反馈接入注入侧）：
+   * 返回 true 的分节本轮不注入。默认仅在 read 未注入时启用真实查证
+   * （store.keyedDistilledEntryJudgedWrong）——注入自定义 read 的测试不碰库。
+   */
+  judgedWrong?: (kind: MemoryKind, storeKey: string, baseDir: string) => boolean;
 }
 
 /**
  * 采集研究记忆反喂数据源（D4）。只在 security 场景的会话启动路径调用——
  * 三次 keyed 条目查询（本地 db 小读），成本可忽略。三分节全空时
  * buildResearchMemorySection 零注入。
+ *
+ * 1.2.4 judge 降权：某分节的当前版本被 recall judge 判过 wrong（judge 结算
+ * 存储在 recall_events + memories/archive，查证逻辑见 store.keyedDistilledEntryJudgedWrong）
+ * 时，该分节本轮不注入——写错的经验持续反喂比缺经验更危险（框架 §3 罚重于奖
+ * 的同一权衡）。降权不删库：下轮蒸馏修正内容后（content_key 变化）自动恢复注入。
  */
 export function collectResearchMemory(deps: CollectResearchMemoryDeps = {}): ResearchDistilledMemory {
-  return (deps.read ?? readResearchDistilled)(deps.baseDir ?? getZhiShiDataDir());
+  const baseDir = deps.baseDir ?? getZhiShiDataDir();
+  const memory = (deps.read ?? readResearchDistilled)(baseDir);
+  const judgedWrong = deps.judgedWrong ?? (deps.read ? undefined : keyedDistilledEntryJudgedWrong);
+  if (!judgedWrong) return memory;
+  const out = { ...memory };
+  for (const { key, kind, storeKey } of RESEARCH_DISTILL_SECTIONS) {
+    if (!out[key].trim()) continue;
+    try {
+      if (judgedWrong(kind, storeKey, baseDir)) {
+        console.warn(`[research-memory] 分节 ${key}（${storeKey}）曾被 recall judge 判 wrong，本轮不注入，待下轮蒸馏修正`);
+        out[key] = '';
+      }
+    } catch (err) {
+      // 查证失败不阻塞注入（降权是增强，不是闸门）。
+      console.warn('[research-memory] judge 判错查证失败（按未判错处理）:', err instanceof Error ? err.message : err);
+    }
+  }
+  return out;
 }

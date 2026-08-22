@@ -76,7 +76,7 @@ import {
 } from '../environment/env-sessions';
 import { loadDistilledMemoryForPrompt } from '../memory/distill';
 import { buildSystemPromptAppend, type InteractionScenario } from '../system-prompt';
-import { collectResearchMemory, collectSecurityCapabilities } from '../system-prompt-security';
+import { collectResearchMemory, collectSecurityCapabilities, resolveSessionResearchDomain } from '../system-prompt-security';
 import { loadConfig } from '../utils/admin-config';
 import {
   createSession,
@@ -581,16 +581,19 @@ class ChatEngine {
     const base = buildBaseSystemPrompt(env);
     try {
       const scenario = resolvePiScenario();
+      const caps = scenario.type === 'security'
+        ? await collectSecurityCapabilities(this.agentDir)
+        : undefined;
       const append = buildSystemPromptAppend(scenario, {
         runtime: 'builtin',
         distilledMemory: loadDistilledMemoryForPrompt(),
         skills: collectEnabledSkills(),
-        securityCapabilities: scenario.type === 'security'
-          ? await collectSecurityCapabilities(this.agentDir)
-          : undefined,
+        securityCapabilities: caps,
         securityResearchMemory: scenario.type === 'security'
           ? collectResearchMemory()
           : undefined,
+        // 1.2.4 域过滤：从现场选择/配方绑定推导会话域；无可靠信号 → undefined 降级全量。
+        securityResearchDomain: caps ? resolveSessionResearchDomain(caps) : undefined,
       });
       return append ? `${base}\n\n${append}` : base;
     } catch (err) {

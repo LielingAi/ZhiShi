@@ -25,7 +25,7 @@
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'fs';
-import { basename, join } from 'path';
+import { basename, join, resolve, sep } from 'path';
 import {
   buildDistillPrompt,
   applyDistillResult,
@@ -85,7 +85,9 @@ import { withFileLock } from '../utils/file-lock';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { stripBom } from '../../shared/utils';
 import { oneShot } from '../loop/one-shot';
+import { parseLoopSession } from '../loop/session';
 import { resolveLoopModel, resolveLoopModelFromEnv } from '../loop/pi-provider';
+import { getExpertEntryTitles } from '../expert/store';
 import type { SessionMetadata } from '../types/session';
 
 /** 蒸馏单发 LLM 调用超时。内容是一次性压缩，5 分钟足够；超时按失败处理。 */
@@ -210,6 +212,9 @@ function collectSessionsByWorkspace(now: number = Date.now()): Map<string, Topic
 /**
  * 话题弧：给最近活跃的前 N 个工作区各维护一份 memory/topics/<name>.md。
  * Best-effort：单个工作区失败不影响其他，也不阻断认知弧的结果。
+ *
+ * 定位（1.2.4 明确）：topics 文件是给人看的工地档案，不接进 prompt 注入
+ * （agent 侧反喂走蒸馏层）；刻意只写不读。
  */
 async function runTopicsArc(
   model: string,
@@ -610,6 +615,98 @@ function collectResearchSessionExcerpts(events: ResearchEvent[]): string[] {
     .filter((x) => x.trim().length > 0);
 }
 
+// ===== 轨迹深摘（1.2.4：fail/stuck 的根因级原料） =====
+
+/** 单事件轨迹深摘上限（字符）。 */
+const RESEARCH_TRAJECTORY_PER_EVENT_CHARS = 600;
+/** 全批轨迹深摘总预算（字符）——预算内取，超出的事件本轮不带深摘。 */
+const RESEARCH_TRAJECTORY_TOTAL_CHARS = 2400;
+/** 轨迹文件大小闸（字节）：超大文件（fuzz 日志等）不读。 */
+const RESEARCH_TRAJECTORY_MAX_FILE_BYTES = 512 * 1024;
+/** loop-sessions jsonl 轨迹取末段消息数。 */
+const RESEARCH_TRAJECTORY_TAIL_MESSAGES = 8;
+
+/** pi AgentMessage → 一行可读文本（user/assistant/toolResult 的 text 块拼接）。 */
+function renderTrajectoryMessage(m: { role?: string; content?: unknown }): string {
+  let text = '';
+  if (typeof m.content === 'string') {
+    text = m.content;
+  } else if (Array.isArray(m.content)) {
+    text = (m.content as Array<{ type?: string; text?: unknown }>)
+      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text as string)
+      .join(' ');
+  }
+  text = text.replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  const role = m.role === 'user' ? '用户' : m.role === 'toolResult' ? '工具' : 'AI';
+  return `${role}: ${text.slice(0, 160)}`;
+}
+
+/**
+ * 读单个事件的轨迹深摘。trajectory_ref 的约定是「工作区相对路径」
+ * （loop/tools.ts research_log 参数说明）——但 agent 也常挂环境内绝对路径
+ * （报告导出的证据回收约定），那类宿主读不到，静默跳过（预期常见路径）。
+ * .jsonl 按 loop-sessions 格式解析取末段消息（错误输出 / 最后几条命令）；
+ * 其余文本文件取尾部。全部失败 → ''（不阻塞蒸馏主流程）。
+ */
+function readTrajectoryExcerpt(e: ResearchEvent, maxChars: number): string {
+  const ref = e.trajectoryRef?.trim();
+  if (!ref) return '';
+  try {
+    const ws = resolve(e.workspace);
+    const p = resolve(ws, ref);
+    // 路径穿越闸：解析结果必须仍在工作区内。
+    if (p !== ws && !p.startsWith(ws + sep)) return '';
+    if (!existsSync(p)) return '';
+    const st = statSync(p);
+    if (!st.isFile() || st.size > RESEARCH_TRAJECTORY_MAX_FILE_BYTES) return '';
+    const raw = readFileSync(p, 'utf-8');
+    if (raw.includes('\0')) return ''; // 二进制文件不喂 LLM
+    if (p.endsWith('.jsonl')) {
+      const tail = parseLoopSession(raw)
+        .messages.slice(-RESEARCH_TRAJECTORY_TAIL_MESSAGES)
+        .map(renderTrajectoryMessage)
+        .filter((x) => x.length > 0);
+      return tail.join('\n').slice(0, maxChars);
+    }
+    return raw.trim().slice(-maxChars);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 收集 fail/stuck 事件的轨迹深摘（导出供单测）。失败/卡住的「卡在哪」在
+ * 轨迹中段，会话尾部 6 条摘录喂不出根因级原料——这里按事件逐条补摘。
+ * 输入按事件正序消费，总预算 RESEARCH_TRAJECTORY_TOTAL_CHARS 内取满即止。
+ */
+export function collectTrajectoryExcerpts(events: ResearchEvent[]): string[] {
+  const out: string[] = [];
+  let total = 0;
+  for (const e of events) {
+    if (e.outcome !== 'fail' && e.outcome !== 'stuck') continue;
+    const excerpt = readTrajectoryExcerpt(e, RESEARCH_TRAJECTORY_PER_EVENT_CHARS);
+    if (!excerpt) continue;
+    const wrapped = `事件#${e.id}（${e.taskKind}/${e.outcome}）轨迹末段：\n${excerpt}`;
+    if (total + wrapped.length > RESEARCH_TRAJECTORY_TOTAL_CHARS) break;
+    total += wrapped.length;
+    out.push(wrapped);
+  }
+  return out;
+}
+
+/** 收集本批事件引用到的 expert 条目标题（1.2.4 追溯闭环；best-effort）。 */
+function collectExpertTitles(events: ResearchEvent[]): Record<number, string> {
+  const ids = [...new Set(events.flatMap((e) => e.expertRefs ?? []))];
+  if (ids.length === 0) return {};
+  try {
+    return getExpertEntryTitles(getZhiShiDataDir(), ids);
+  } catch {
+    return {};
+  }
+}
+
 /**
  * 跑一次安全蒸馏弧。由 /cron/execute-sync 的 RESEARCH_DISTILL_SENTINEL 分支调用。
  * 结构与 runDistillArc 同构，三个参数化点不同：
@@ -634,7 +731,10 @@ export async function runResearchDistillArc(opts: { workspacePath: string; taskI
 
     const existing = readResearchDistilled();
     const sessionExcerpts = collectResearchSessionExcerpts(events);
-    const prompt = buildResearchDistillPrompt({ events, sessionExcerpts, existing });
+    // 1.2.4 深摘原料：fail/stuck 事件的轨迹末段（根因级）+ expert_refs 条目标题（追溯闭环）。
+    const trajectoryExcerpts = collectTrajectoryExcerpts(events);
+    const expertTitles = collectExpertTitles(events);
+    const prompt = buildResearchDistillPrompt({ events, sessionExcerpts, trajectoryExcerpts, expertTitles, existing });
 
     const resolved = resolveArcModelProvider(tag);
     if (!resolved) {
