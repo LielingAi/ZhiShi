@@ -20,6 +20,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.2.5] - 2026-08-22
+
+
+
+> 原生工具选型与链路深化：六域工具清单按调研定稿重组，工具自检链路修通，配方工作流进 prompt。
+
+
+
+### Changed
+
+
+
+- **六域工具选型终稿**（两轮网络调研 + 实证修正）：pentest 加 nuclei/SecLists/netexec/enum4linux-ng/impacket/ZAP/Playwright/katana/jsluice/Retire.js/Kiterunner/Clairvoyance/graphql-cop；binary 加 radare2/ghidriff/patchelf/pwninit/seccomp-tools/one_gadget/libc 工具链 + 协议分析（tshark/Scapy/boofuzz）+ 文件格式分析（Kaitai/binwalk），删 ropper，rev 并入 binary 域；fuzz 加 libFuzzer；whitebox 用 OpenGrep 换 Semgrep CE（CE 缩水只剩单文件分析）+ ast-grep + Joern（污点传播）+ bandit；ai-security 加 PyRIT（多轮攻击编排）。
+- **工具自检链路修通**：声明词→真实探测命令映射表（pwntools/pwndbg/ripgrep 等能力名不再报假漂移）；VM 路径补自检挂点（快照之前——缺工具不冻结模板）；配方播种改内容哈希同步（修正可触达老安装，旧版自动备份）；`zhishi domain check` 覆盖 VM 条目。
+- **配方工作流摘要进能力清单**（此前 agent 只看到裸工具名，配方正文白写了）+ 能力清单段顶抬 4000；skills 固化 LLM 友好用法（gdb -batch / curl -w / nmap 机读输出 / garak 真实报告形态 / Joern CLI 化）。
+- **新增 pentest-vm 配方**（VM 形态渗透环境，独立网络命名空间）；`ENVIRONMENT_RECIPES_VERSION`→6、`SYSTEM_SKILLS_VERSION`→37。
+
+
+
 ## [1.2.4] - 2026-08-22
 
 
