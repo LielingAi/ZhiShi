@@ -225,22 +225,25 @@ fn apply_cli_env(cmd: &mut Command, port: u16) {
 /// launcher process is spawned (the terminal window is independent).
 #[cfg(windows)]
 fn spawn_terminal(bin_dir: &Path, cwd: &Path, port: u16) -> std::io::Result<()> {
-    // `cmd /c start` allocates a NEW console window for the TUI — the inverse
-    // of the cli.rs "CLI mode NEEDS the console" note: here the console window
-    // is the whole point. Raw Command (not process_cmd) for the same reason —
-    // CREATE_NO_WINDOW would defeat it.
-    //
+    use std::os::windows::process::CommandExt;
+
+    // 1.2.3 实测修复：原先 `cmd /c start "标题" ... cmd /k ""..." agent"` 的
+    // 引号链在 cmd /c 的剥引号规则下会碎（Windows 报「找不到文件 "ZhiShi
+    // Agent"」）。改用 CREATE_NEW_CONSOLE 直接起 `cmd /k`——绕开 start 的
+    // 标题/引号语义，标准参数 quoting 即可靠工作。
     // `cmd /k` keeps the window open if the CLI exits immediately (missing
     // provider config etc.), so the error stays readable instead of flashing.
+    // Raw Command + 显式 creation_flags（不用 process_cmd 的 CREATE_NO_WINDOW——
+    // 这里控制台窗口就是目的，与 cli.rs「CLI 需要控制台」同源）。
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
     let zhishi_cmd = bin_dir.join("zhishi.cmd");
-    let line = format!(
-        "start \"ZhiShi Agent\" /D \"{}\" cmd /k \"\"{}\" agent\"",
-        cwd.display(),
-        zhishi_cmd.display()
-    );
-    #[allow(clippy::disallowed_methods)] // see comment above — we WANT a console window
+    #[allow(clippy::disallowed_methods)] // 控制台窗口是目的（见上注释）
     let mut cmd = Command::new("cmd");
-    cmd.arg("/c").arg(line);
+    cmd.arg("/k")
+        .arg(&zhishi_cmd)
+        .arg("agent")
+        .current_dir(cwd)
+        .creation_flags(CREATE_NEW_CONSOLE);
     apply_cli_env(&mut cmd, port);
     // zhishi.cmd locates node.exe via PATH — inject the bundled runtime dir.
     if let Some(node) = crate::cli::find_node_binary() {
