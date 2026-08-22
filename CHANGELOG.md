@@ -20,6 +20,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.2.3] - 2026-08-22
+
+
+
+> 构建产物修复与验证：#5 修复（CLI esm 化 + 依赖切断）、构建脚本腐化清理、产物级 smoke 链路。
+
+
+
+### Fixed
+
+
+
+- **#5 CLI bundle 日志污染**：CLI bundle 从 cjs 改 esm——`import.meta` 恢复，`getScriptDir` 不再 fallback 到 cwd（日志污染与错误路径一起消失）。顺带治根：CLI 仅为一个常量/一个校验函数就把 server 运行时拖进 bundle——共享件挪入 `src/shared/`，CLI bundle 里 server 文件 7→0（metafile 实测），结构上不再可能复发。
+- **构建脚本腐化**：`build_macos.sh` 的 novo 目录检查（不修则 macOS 构建必挂）、NSIS 的 novo 死宏、`tauri.conf.json` 死引用、`build_windows.ps1` 的 analytics 死逻辑（117 行）、发布文档作废项。
+
+
+
+### Added
+
+
+
+- **产物级验证**：`tmp/m123-dist-smoke.mjs`——构建零警告门槛（esbuild 警告从此是阻断项）+ 产物 sidecar 全链路（起服/ready/选定/一轮真会话）+ CLI 产物行为回归（#5 钉）。
+
+
+
 ## [1.2.2] - 2026-08-22
 
 

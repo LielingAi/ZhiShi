@@ -5,13 +5,15 @@
 
 ---
 
-## 1.2.3 —— 构建产物修复与验证（进行中）
+## 1.2.3 —— 构建产物修复与验证（已完成）
 
 主题：修复 issue #5 + 建立「构建产物」验证链路——此前所有验证（npm test / smoke）都跑在 tsx 源码上，打包产物（用户真正运行的形态）从未被验过。分析记录见 `docs/1.2.3-design.md`。
 
-- [ ] **修复 #5：CLI bundle cjs 导致 import.meta fallback 日志污染 TUI**——`getScriptDir()`（server/utils/runtime.ts）被卷进 CLI cjs bundle，`import.meta.url` 失效 → fallback 打日志 → 漏进 TUI 输入框上方。修复方案待对齐（CLI 改 esm / getScriptDir 静默化 / 切断 server 依赖进 CLI 链）。
-- [ ] **构建链路审查**：`scripts/esbuild-bundle.mjs` + `scripts/build/` + `scripts/release/` + `scripts/setup/` + `docs/windows-release-build.md` 逐个过——构建怎么做、产物是什么、脚本是否正确（有没有像 #5 这样「编译期警告早就提示了」的被忽略信号）。
-- [ ] **产物级验证**：smoke 链路补「跑在打包产物上」的能力（build:cli + build:server 后的 dist 跑关键路径），把「源码绿但产物坏」这类问题挡在发版前。
+- [x] **修复 #5：CLI bundle cjs 导致 import.meta fallback 日志污染 TUI**——双管齐下：CLI bundle 改 esm（import.meta 恢复，路径与日志一起消失）+ 切断 CLI→server 依赖（RESEARCH_TASK_KINDS/validate/app-dirs/sse-parser/manifest 挪 shared，CLI bundle 里 server 文件 7→0）。
+- [x] **构建链路审查**：五项腐化清理——macOS novo 必挂检查（不修则 macOS 构建一直挂）、NSIS novo 死宏、tauri.conf 死引用、windows analytics 死逻辑（117 行）、文档作废项。附带发现两条断链（`~/.zhishi/bin/zhishi` 安装者缺失、macOS SDK_DEST 未定义）记入设计文档，归发行链路版本。
+- [x] **产物级验证**：`tmp/m123-dist-smoke.mjs`——构建零警告门槛 + 产物 sidecar 全链路 + #5 回归钉，全 PASS。教训沉淀：admin 路由在 deferred init 未完成时回 warming-up，产物验证必须等 /health/ready。
+
+> 实际落地（2026-08-22）：全量 1914 测试绿（零新增零改动——纯搬移 + 格式切换）+ smoke 5/5 + 产物 smoke 全 PASS。mac/linux 脚本与 NSIS 打包未实机验证（无对应环境），已在设计文档标注。issue #5 已关闭（带修复说明）。
 
 ---
 
