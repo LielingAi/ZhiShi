@@ -3,7 +3,7 @@
  *
  * Three-layer prompt architecture:
  *   L1 — Base identity (always included)
- *   L2 — Interaction channel (desktop vs IM, mutually exclusive)
+ *   L2 — Interaction channel (desktop / cron headless / security terminal, per scenario)
  *   L3 — Scenario instructions (cron-task / heartbeat, stacked as needed)
  *
  * Template content is inlined below (not loaded from filesystem) because
@@ -52,7 +52,7 @@ function getRuntimeDisplayName(runtime: RuntimeType | undefined): string {
     case 'gemini':      return 'Google Gemini CLI';
     case 'builtin':
     default:
-      return 'ZhiShi 内置 Claude 智能体 SDK';
+      return 'ZhiShi 内置研究引擎（pi）';
   }
 }
 
@@ -66,17 +66,25 @@ ZhiShi 负责会话管理、工具权限、定时任务、工作区文件访问�
 当前执行 Runtime: {{runtimeName}}
 
 用户全局配置目录: ~/.zhishi
-当对话涉及日期、时间或星期时,先用 Bash 执行 \`date\` 获取准确的当前时间再作判断——系统信息中的日期可能已过期。
+当对话涉及日期、时间或星期时,以会话消息与系统信息中的时间为准;需要精确当前时间且已锚定研究环境时,经 env_exec 执行 \`date\` 取环境内时间(环境时钟可能与宿主有偏差,引用时注明来源)——你没有宿主 shell,不要凭空猜日期。
 </zhishi-identity>`;
 
 const TMPL_CHANNEL_DESKTOP = `<zhishi-interaction-channel>
 用户正通过 ZhiShi 桌面客户端与你对话。
 </zhishi-interaction-channel>`;
 
+const TMPL_CHANNEL_CRON = `<zhishi-interaction-channel>
+本会话由定时任务触发(headless,没有实时对话方)——你的最终输出会记入任务运行日志,用户事后查看;不要向用户提问等回复,按任务目标自主推进到底。
+</zhishi-interaction-channel>`;
+
+const TMPL_CHANNEL_SECURITY = `<zhishi-interaction-channel>
+用户正通过 ZhiShi 研究终端(zhishi agent CLI / TUI)与你对话。
+</zhishi-interaction-channel>`;
+
 const TMPL_CRON_TASK = `<zhishi-cron-task-instructions>
 你正处于心跳循环任务模式 (Task ID: {{taskId}})。每隔 {{intervalText}} 系统触发唤醒你一次。{{#if aiCanExit}}
 
-如果任务目标已完全达成、或继续执行无意义/有害，请按下方 \`<zhishi-cli-cron-exit>\` 段落给出的 \`zhishi cron exit\` 命令结束任务。{{/if}}
+如果任务目标已完全达成、或继续执行无意义/有害，请在最终输出中包含 \`[CRON_TASK_COMPLETE: <结论>]\` 标记结束任务——运行时检测到该标记即结清任务并停止后续触发。只有确认任务彻底完成时才用；暂时性错误请重试，不要借此脱身。{{/if}}
 </zhishi-cron-task-instructions>`;
 
 // ===== 全局人格层（乙方案：一个灵魂，注入直读 db） =====
@@ -111,7 +119,7 @@ export function buildDistilledMemorySection(distilled: DistilledMemory | undefin
   }
   if (parts.length === 0) return '';
   return `<zhishi-distilled-memory>
-以下是蒸馏记忆（工作生命宪章 §4.1 三层心智的蒸馏层）——由「蒸馏弧」定期从你们的共同工作史中压出，尺寸恒定。它是你眼中的搭档、你眼中的自己、你们的老规矩与主动提醒；据此校准你的判断与分寸。这里只有蒸馏后的认知；需要回忆更具体的偏好、决定、踩坑细节时，运行「zhishi memory search <关键词>」（可选 --kind reminder 过滤）检索长期记忆库——命中会被记录，遭用户纠正的记忆会自动降权，所以放心引用、如实使用，不确定就说来自记忆。
+以下是蒸馏记忆（工作生命宪章 §4.1 三层心智的蒸馏层）——由「蒸馏弧」定期从你们的共同工作史中压出，尺寸恒定。它是你眼中的搭档、你眼中的自己、你们的老规矩与主动提醒；据此校准你的判断与分寸。这里只有蒸馏后的认知；更具体的偏好、决定、踩坑细节存在长期记忆库里——检索通道（zhishi memory search <关键词>，可选 --kind reminder 过滤）在宿主侧、由人执行，你在当前通道里够不到：需要回忆时向用户说明要找什么、请其检索。命中会被记录，遭用户纠正的记忆会自动降权，所以放心引用、如实使用，不确定就说来自记忆。
 ${parts.join('\n\n')}
 </zhishi-distilled-memory>`;
 }
@@ -142,24 +150,27 @@ export interface SystemPromptOptions {
   playwrightStorageEnabled?: boolean;
   /**
    * Current runtime driving this session, used to render a runtime-accurate
-   * identity line in L1. Defaults to 'builtin' (Claude Agent SDK) if omitted.
+   * identity line in L1. Defaults to 'builtin'（ZhiShi 内置研究引擎 pi）if omitted.
    */
   runtime?: RuntimeType;
   /**
    * Append the `zhishi` CLI capability hints (cron / IM media) to the
-   * prompt. Set by ALL runtime paths in v0.2.11+ — builtin and external —
-   * because the corresponding in-process MCP servers (`cron-tools` /
-   * `im-cron` / `im-media`) were retired in favour of the CLI surface, so
-   * builtin sessions need the same prompt guidance to discover those
-   * capabilities. Single CLI source of truth across builtin / Codex /
-   * Gemini / Claude Code runtimes. See prd_0.1.67 for the original (then
-   * external-only) introduction; current state described here.
+   * prompt. pi 引擎路径（1.2.6 起）按场景传入——cron + aiCanExit 时至少
+   * 注入 task-exit 段（`[CRON_TASK_COMPLETE: …]` 标记机制）；依赖宿主
+   * shell 的段由 `cliHostShell` 门控（pi 无宿主 shell，默认 false 不注入）。
    *
    * Note: generative-UI widget guidance is universal across runtimes (no MCP
    * equivalent — the CLI is the only path) and is emitted unconditionally for
    * desktop scenarios via `buildWidgetSection()`.
    */
   cliToolsEnabled?: boolean;
+  /**
+   * 当前通道里 agent 是否有宿主 shell（可执行 zhishi CLI）。pi 内置引擎
+   * 没有宿主 shell——传 false 时 CLI 附录只保留不依赖 shell 的段（cron
+   * 自退标记），不教 agent 用它在当前通道里执行不了的东西。默认 true
+   * （向后兼容有 shell 的外部 runtime 形态）。
+   */
+  cliHostShell?: boolean;
   /**
    * 蒸馏记忆（工作生命宪章 §4.1 蒸馏层 / §4.2 蒸馏弧）。调用方从
    * ~/.zhishi/memory/distilled/ 读入（loadDistilledMemoryForPrompt），
@@ -206,8 +217,12 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
     runtimeName: getRuntimeDisplayName(options?.runtime),
   }));
 
-  // L2: Interaction channel (desktop and cron both use the desktop channel)
-  parts.push(TMPL_CHANNEL_DESKTOP);
+  // L2: Interaction channel (按场景分述——cron 是 headless 触发，没有实时对话方)
+  parts.push(
+    scenario.type === 'cron' ? TMPL_CHANNEL_CRON
+    : scenario.type === 'security' ? TMPL_CHANNEL_SECURITY
+    : TMPL_CHANNEL_DESKTOP,
+  );
 
   // L3: Scenario instructions (stacked as needed)
   if (scenario.type === 'cron') {
@@ -261,11 +276,12 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
     parts.push(TMPL_BROWSER_STORAGE_STATE);
   }
 
-  // L4: CLI-backed capability hints (external runtimes only)
-  // — bridges ZhiShi-specific capabilities (cron / IM media) to runtimes
-  //   that can't see the in-process SDK MCP servers.
+  // L4: CLI-backed capability hints — gated by cliToolsEnabled; sections that
+  // require a host shell (task CRUD / memory search / panels) are additionally
+  // gated by cliHostShell so prompt 不教 agent 用当前通道执行不了的东西。
+  // pi 内置引擎（无宿主 shell）只保留 cron 自退标记段。
   if (options?.cliToolsEnabled) {
-    const cliTools = buildCliToolsAppend(scenario);
+    const cliTools = buildCliToolsAppend(scenario, { hostShell: options?.cliHostShell ?? true });
     if (cliTools) parts.push(cliTools);
   }
 

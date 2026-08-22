@@ -62,7 +62,9 @@ import { loadConfig } from './utils/admin-config';
 export const SECURITY_KERNEL_MAX_CHARS = 2000;
 export const SECURITY_CAPABILITIES_MAX_CHARS = 4000; // 1.2.5 抬顶：2000 装不下 10 配方的工作流摘要（试装机制下只见 1 条），4000 可常规见
 export const NATIVE_CODE_MAX_CHARS = 1000;
-export const RESEARCH_LOG_MAX_CHARS = 500;
+// 1.2.6 抬顶 500→640：500 顶下模板正文(496)超出「硬顶−截断标记」预算，
+// 段落尾部被静默截掉收尾标签——硬顶沦为模板自己的截断器。640 给足余量。
+export const RESEARCH_LOG_MAX_CHARS = 640;
 /**
  * 研究记忆段硬顶 = 蒸馏弧的注入预算（distill-research.ts，单一事实源）。
  * 1.2.4 修预算倒挂：蒸馏三节额度按此预算三等分推导，蒸馏没截断的产物
@@ -115,7 +117,7 @@ Recon 侦察 → Analyze 分析 → Construct 构造 → Execute 执行 → Eval
 - 0.60-0.79 = 可疑模式（危险 sink 可见，数据流未完全证明）
 - <0.60 = 推测噪音——**不报告**。research_log 的 summary 以置信度 0.xx 开头。
 
-知识权威级：expert_search 返回专家审定知识（决策级依据，高于你的权重知识与蒸馏经验）；与你的判断冲突时以它为准，并在 research_log 记录冲突点。查不到不阻塞——未命中≠不存在，标注无先例继续。
+知识权威级：expert_search 返回专家审定知识（决策级依据，高于你的权重知识与蒸馏经验）；与你的判断冲突时以它为准，并在 research_log 记录冲突点。查不到不阻塞——未命中≠不存在，标注无先例继续。公开情报侧用 intel_search（CVE/产品指纹检索宿主情报库）——它是公共原料，给线索不给结论，结论仍由你验证。
 
 求助时机（1.2.1 实战校准）：专家知识是**最后的落脚点**——先尽力（你的知识、skills 方法、蒸馏经验），识别到知识缺口再查 expert_search。缺口的信号是「反复失败 / 没有把握 / 找不到先例」，**不是进展慢**——慢慢做对不需要救援。查不到不阻塞，继续。
 
@@ -134,8 +136,8 @@ Recon 侦察 → Analyze 分析 → Construct 构造 → Execute 执行 → Eval
 
 const TMPL_NATIVE_CODE = `<zhishi-native-code>
 代码原生通道（一等路径，不是裸 shell 的临时组合）：
-- 工具链在环境类型里：dev 环境一开即有 clang / python3 / gdb，宿主不装编译与安全工具——需要编译调试就先开对应环境。
-- 闭环通道：zhishi env up <类型> 开出新环境，zhishi env open <id> 接入已有环境，zhishi term --cmd "<命令>" 在环境里执行——编译、运行、调试在同一个环境终端里闭环。
+- 工具链在环境类型里：dev 环境一开即有 clang / python3 / gdb，宿主不装编译与安全工具——需要编译调试就先有对应环境。
+- 闭环通道：你在当前通道里没有宿主 shell，开/接环境是人侧动作（人经 zhishi env up <类型> / zhishi env open <id> 选定现场）；现场锚定后你获得 env_exec（一次性执行）/ env_bg（长任务后台）工具，编译、运行、调试在同一个环境里闭环。未锚定时说明需要哪类环境、请人开出。
 - 环境标记约定：host / docker:<容器> / vm:<名称> / range:<主机>；终端与操作按标记归属环境，跨界动作走边界确认。
 - 行为约定：写完 C/汇编直接在环境里编译跑，不要绕脚本语言重新实现；代码写在工作区、挂载进环境执行、产物落回工作区。
 - 恶意样本必须在 env≠host 的环境里操作（D14 硬闸会拦，但这是纪律，不是靠闸兜底）。
@@ -169,7 +171,7 @@ function describeSelection(data: SecurityCapabilitiesData): string {
   const sel = data.selection;
   switch (sel.kind) {
     case 'host':
-      return 'host（仅工作区控制面——尚未选定研究环境，zhishi env up / env open 可随时开）';
+      return 'host（仅工作区控制面——尚未选定研究环境，人侧可随时 zhishi env up / env open 开出）';
     case 'recipe':
       return `docker:${sel.instanceId}（类型 ${sel.name} 的实例）`;
     case 'env': {
@@ -220,12 +222,16 @@ export function buildSecurityCapabilitiesSection(
   // 时逐条让位，见下方试装）。
   const summaries: Array<{ anchor: string; text: string }> = [];
 
+  // 配方清单独立成块（1.2.6 截断顺序：超顶时先丢摘要、再丢本块清单行，
+  // 具名环境条目保到最后——见函数尾部注释）。
+  const recipeBlock: string[] = [];
+
   if (validRecipes.length > 0) {
-    lines.push('环境类型（zhishi env up <id> 即开出该环境，工具在环境里开箱即用；「工作流摘要」= 配方 SKILL.md 正文提炼，全文在配方目录 SKILL.md）：');
+    recipeBlock.push('环境类型（人侧 zhishi env up <id> 开出——你在通道内够不到 CLI，需要哪类说明请人开出；工具在环境里开箱即用；「工作流摘要」= 配方 SKILL.md 正文提炼，全文在配方目录 SKILL.md）：');
     for (const recipe of validRecipes) {
       const tools = recipe.tools.length > 0 ? recipe.tools.join('、') : '（未声明工具）';
       const line = `- ${recipe.id}（${recipe.base ?? '?'}）：${tools}`;
-      lines.push(line);
+      recipeBlock.push(line);
       // recipes.ts 已按 RECIPE_WORKFLOW_SUMMARY_MAX_CHARS 截断；无摘要不出行。
       if (recipe.workflowSummary) {
         summaries.push({ anchor: line, text: `  工作流摘要：${recipe.workflowSummary}` });
@@ -233,8 +239,10 @@ export function buildSecurityCapabilitiesSection(
     }
   }
 
+  const envBlock: string[] = [];
+
   if (data.environments.length > 0) {
-    lines.push('具名环境（zhishi env open <id> 接入；类型绑定 = 该环境带哪些工具）：');
+    envBlock.push('具名环境（人侧 zhishi env open <id> 接入；类型绑定 = 该环境带哪些工具）：');
     for (const entry of data.environments) {
       // 老条目的 name 可能是 "pwn-vm（pwn-vm）" 形态——以 id 开头就不再包一层。
       const label = entry.name && entry.name !== entry.id && !entry.name.startsWith(entry.id)
@@ -247,7 +255,7 @@ export function buildSecurityCapabilitiesSection(
       const binding = recipe
         ? `（类型 ${recipe.id}：${recipe.tools.length > 0 ? recipe.tools.join('、') : '未声明工具'}）`
         : '（无类型绑定——手动接入/旧条目）';
-      lines.push(`- ${label} → ${envTagForEntry(entry)}${binding}`);
+      envBlock.push(`- ${label} → ${envTagForEntry(entry)}${binding}`);
     }
   }
 
@@ -256,17 +264,19 @@ export function buildSecurityCapabilitiesSection(
 ${ls.join('\n')}
 </zhishi-capabilities>`;
 
+  const renderAll = (recipes: string[]) => render([...lines, ...recipes, ...envBlock]);
+
   // 摘要逐条试装：装进「硬顶 − 截断标记」预算内的插到各自配方行后；
   // 装不下的丢弃并显式声明（丢弃可观测，不静默——与截断标记同一纪律）。
   if (summaries.length > 0) {
     const budget = SECURITY_CAPABILITIES_MAX_CHARS - TRUNCATION_MARKER.length;
-    const fitted = [...lines];
+    const fitted = [...recipeBlock];
     let dropped = 0;
     for (const { anchor, text } of summaries) {
       const idx = fitted.indexOf(anchor);
       if (idx === -1) continue;
       const next = [...fitted.slice(0, idx + 1), text, ...fitted.slice(idx + 1)];
-      if (render(next).length <= budget) {
+      if (renderAll(next).length <= budget) {
         fitted.splice(idx + 1, 0, text);
       } else {
         dropped += 1;
@@ -275,11 +285,33 @@ ${ls.join('\n')}
     if (dropped > 0) {
       fitted.push(`（另有 ${dropped} 个环境类型的工作流摘要因预算未注入——全文在配方目录 SKILL.md）`);
     }
-    lines.length = 0;
-    lines.push(...fitted);
+    recipeBlock.length = 0;
+    recipeBlock.push(...fitted);
   }
 
-  return hardCapLines(render(lines), SECURITY_CAPABILITIES_MAX_CHARS);
+  // 截断顺序第二档（1.2.6）：试装后仍超预算时，从配方清单块尾部整行让位
+  // （环境类型清单是发现环的入口提示，具名环境条目才是现场事实——先丢
+  // 配方行，环境条目保到最后；丢弃显式声明，不静默）。
+  {
+    const budget = SECURITY_CAPABILITIES_MAX_CHARS - TRUNCATION_MARKER.length;
+    let droppedLines = 0;
+    // 丢弃声明本身占预算——让位判定要把声明算进去，否则声明把环境条目
+    // 顶进 hardCapLines 的尾部丢弃区（恰恰违反本档要保的东西）。
+    const withDropNote = () => droppedLines > 0
+      ? [...recipeBlock, `（另有 ${droppedLines} 行环境类型清单因预算未注入——全文在配方目录 SKILL.md）`]
+      : recipeBlock;
+    while (recipeBlock.length > 0 && renderAll(withDropNote()).length > budget) {
+      recipeBlock.pop();
+      droppedLines += 1;
+    }
+    const finalBlock = [...withDropNote()];
+    recipeBlock.length = 0;
+    recipeBlock.push(...finalBlock);
+  }
+
+  // 兜底硬顶：走到这说明连「头 + 具名环境」都装不下——环境条目从尾部整行
+  // 让位（它们已是最后才被丢的内容）。
+  return hardCapLines(renderAll(recipeBlock), SECURITY_CAPABILITIES_MAX_CHARS);
 }
 
 // ===== 段 4：<zhishi-research-log>（静态，D1 研究成败信号教学） =====

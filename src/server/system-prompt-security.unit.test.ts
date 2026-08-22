@@ -92,7 +92,12 @@ describe('buildSecurityKernelSection / buildNativeCodeSection', () => {
     const section = buildNativeCodeSection();
     expect(section).toContain('<zhishi-native-code>');
     expect(section).toContain('zhishi env up');
-    expect(section).toContain('zhishi term --cmd');
+    // 1.2.6 批次 C：pi 通道无宿主 shell——闭环通道改教 env_exec/env_bg，
+    // 开/接环境归为人侧动作；不再教 `zhishi term --cmd`（够不到的 CLI）。
+    expect(section).not.toContain('zhishi term --cmd');
+    expect(section).toContain('env_exec');
+    expect(section).toContain('env_bg');
+    expect(section).toContain('人侧');
     expect(section).toContain('docker:<容器>');
     expect(section).toContain('env≠host');
     expect(section.length).toBeLessThanOrEqual(NATIVE_CODE_MAX_CHARS);
@@ -204,7 +209,10 @@ describe('buildSecurityCapabilitiesSection — 硬顶截断', () => {
     }));
     expect(section).not.toBe('');
     expect(section.length).toBeLessThanOrEqual(SECURITY_CAPABILITIES_MAX_CHARS);
-    expect(section).toContain('已按上限截断');
+    // 1.2.6 批次 C：截断顺序修正后,配方清单行由第二档主动让位并显式声明
+    // (「因预算未注入」),不再走到 hardCapLines 的尾部截断标记;声明语义等价
+    // (丢弃可观测,不静默)。
+    expect(section).toContain('因预算未注入');
     // 截断按整行丢弃：最后一行内容行必须完整（无半个工具名残片）
     const contentLines = section.split('\n').filter((l) => l.startsWith('- recipe-'));
     for (const line of contentLines) {
@@ -543,5 +551,61 @@ describe('buildSecurityCapabilitiesSection — 配方工作流摘要（1.2.5「�
     }));
     expect(section).toContain('  工作流摘要：短摘要');
     expect(section).not.toContain('因预算未注入');
+  });
+});
+
+// ===== 1.2.6 批次 C 深化 =====
+
+describe('buildSecurityKernelSection — intel_search 进内核（1.2.6）', () => {
+  it('知识权威级段落声明 intel_search（公共原料，线索不是结论）', () => {
+    const section = buildSecurityKernelSection();
+    expect(section).toContain('intel_search');
+    expect(section.length).toBeLessThanOrEqual(SECURITY_KERNEL_MAX_CHARS);
+  });
+});
+
+describe('buildResearchLogSection — 余量修复（1.2.6）', () => {
+  it('模板完整注入：收尾标签在、无截断标记（旧 500 顶会把收尾标签截掉）', () => {
+    const section = buildResearchLogSection();
+    expect(section).toContain('</zhishi-research-log>');
+    expect(section).not.toContain('已按上限截断');
+    expect(section.length).toBeLessThanOrEqual(RESEARCH_LOG_MAX_CHARS);
+  });
+});
+
+describe('buildSecurityCapabilitiesSection — 截断顺序（1.2.6）', () => {
+  it('超顶时先丢配方清单行，具名环境条目保到最后（旧实现从尾部整行丢，环境条目最先丢）', () => {
+    const many = Array.from({ length: 80 }, (_, i) =>
+      recipe(`recipe-${String(i).padStart(3, '0')}`, ['a-very-long-tool-name-for-padding-the-list']),
+    );
+    const section = buildSecurityCapabilitiesSection(data({
+      engines: enginesReport(['docker']),
+      recipes: many,
+      environments: [SSH_ENV, DOCKER_ENV],
+    }));
+    expect(section).not.toBe('');
+    expect(section.length).toBeLessThanOrEqual(SECURITY_CAPABILITIES_MAX_CHARS);
+    // 环境条目是现场事实——截断也不能丢
+    expect(section).toContain('- range-1 → range:10.10.0.5');
+    expect(section).toContain('- dev-box → docker:zhishi-dev-a3f2');
+    // 配方清单行整行让位（无半行残片），丢弃显式声明
+    const recipeLines = section.split('\n').filter((l) => l.startsWith('- recipe-'));
+    for (const line of recipeLines) {
+      expect(line).toMatch(/^- recipe-\d{3}（docker）：a-very-long-tool-name-for-padding-the-list$/);
+    }
+    expect(recipeLines.length).toBeLessThan(80);
+    expect(section).toContain('因预算未注入');
+  });
+
+  it('配方让位顺序：从清单尾部丢（靠前的配方先保住）', () => {
+    const many = Array.from({ length: 80 }, (_, i) =>
+      recipe(`recipe-${String(i).padStart(3, '0')}`, ['a-very-long-tool-name-for-padding-the-list']),
+    );
+    const section = buildSecurityCapabilitiesSection(data({
+      recipes: many,
+      environments: [SSH_ENV],
+    }));
+    expect(section).toContain('- recipe-000（docker）');
+    expect(section).not.toContain('- recipe-079（docker）');
   });
 });

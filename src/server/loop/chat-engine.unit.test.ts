@@ -146,6 +146,8 @@ import {
   switchEnvSession,
   switchPiSession,
 } from './chat-engine';
+// B10(1.2.6)回归:配置面会话标识的真实读取口(chat-engine 不经 mock 写它)。
+import { getSessionId } from '../agent-session';
 
 const RESOLUTION = {
   models: {},
@@ -904,5 +906,92 @@ describe('delegate_task 接回生产(W1)', () => {
     );
     expect(persisted).toBeDefined();
     expect((persisted![3] as { dir: string }).dir).toContain('loop-sessions');
+  });
+});
+
+
+describe('1.2.6 批次A 回归(B1 cron new_session / B3 串线 / B10 配置面会话标识)', () => {
+  it('B1:switchPiSession 接受无 loopSessionId 绑定的 meta——当场开新线并绑定,不再 false/500', async () => {
+    // cron new_session:createSession 落盘的 meta 没有 loopSessionId(唯一
+    // 写入点原是 ensureSessionBound,而它以引擎已在线上是前提——死锁)。
+    getSessionMetadataMock.mockReturnValue({ id: 'meta-cron' });
+    const ok = await switchPiSession('meta-cron');
+    expect(ok).toBe(true);
+    // 新线 id 当场写进 meta.loopSessionId 绑定
+    const bindCall = updateSessionMetadataMock.mock.calls.find(
+      (c) => c[0] === 'meta-cron' && typeof (c[1] as { loopSessionId?: unknown }).loopSessionId === 'string',
+    );
+    expect(bindCall).toBeDefined();
+    const newLine = (bindCall![1] as { loopSessionId: string }).loopSessionId;
+    // B10 联动:配置面会话标识同步到目标 meta
+    expect(getSessionId()).toBe('meta-cron');
+    // 续跑:引擎已在新线上且绑定已就位——ensureSessionBound 不重复建 meta,
+    // turn 收尾写进新开的线
+    await sendPiChatMessage({ text: 'cron 任务内容' });
+    await waitTurnSettled();
+    expect(createSessionMock).not.toHaveBeenCalled();
+    expect(appendLoopMessagesMock.mock.calls[0][0]).toBe(newLine);
+  });
+
+  it('B1:meta 不存在 → 仍返回 false(只有「无绑定」才愈合,「无会话」不捏造)', async () => {
+    getSessionMetadataMock.mockReturnValue(null);
+    expect(await switchPiSession('ghost')).toBe(false);
+  });
+
+  it('B3:busy 强停换线后,被中止 turn 的收尾写入起跑快照线,不串进新线', async () => {
+    const release = gateFirstTurn();
+    await sendPiChatMessage({ text: 'one' });
+    const originLine = getPiSystemInitInfo()?.session_id;
+    expect(originLine).toBeTruthy();
+    // switchPiSession busy 强停:不等待旧 turn 收尾即换线(abort 后 loop
+    // 解开窗口里到达的 done.messages 属于起跑时那条线)。
+    getSessionMetadataMock.mockReturnValue({ id: 'meta-other', loopSessionId: 'ls-other' });
+    loadLoopSessionMock.mockReturnValue({ messages: [userMsg('别的线的历史')], meta: null });
+    expect(await switchPiSession('meta-other')).toBe(true);
+    release();
+    await waitTurnSettled();
+    const appendedTo = appendLoopMessagesMock.mock.calls.map((c) => c[0]);
+    // 旧 turn 尾部落到起跑线;新线 ls-other 零写入(串线则此断言红)
+    expect(appendedTo).toContain(originLine);
+    expect(appendedTo).not.toContain('ls-other');
+  });
+
+  it('B10:首条消息绑定 → getSessionId() = 新 meta id(不再恒为 initializeAgent 的随机 UUID)', async () => {
+    await sendPiChatMessage({ text: 'hi' });
+    await waitTurnSettled();
+    expect(getSessionId()).toBe('meta-new');
+  });
+
+  it('B10:switchPiSession → getSessionId() = 目标 meta;reset → 离开旧 meta(新随机值)', async () => {
+    getSessionMetadataMock.mockReturnValue({ id: 'meta-x', loopSessionId: 'ls-x' });
+    loadLoopSessionMock.mockReturnValue({ messages: [userMsg('h')], meta: null });
+    expect(await switchPiSession('meta-x')).toBe(true);
+    expect(getSessionId()).toBe('meta-x');
+    resetPiChat();
+    expect(getSessionId()).not.toBe('meta-x');
+  });
+
+  it('B10:switchEnvSession——接绑定线 → 绑定 meta id;开新线 → 不再是旧 meta', async () => {
+    await sendPiChatMessage({ text: 'one' });
+    await waitTurnSettled();
+    expect(getSessionId()).toBe('meta-new');
+    // 无映射 → 开新线:配置面标识离开旧 meta(僵尸值修复)
+    expect((await switchEnvSession('E:/ws', 'env:fresh-vm')).ok).toBe(true);
+    expect(getSessionId()).not.toBe('meta-new');
+    // 有映射且线有绑定 → 配置面标识 = 绑定的 meta
+    envSessionsData.set('E:/ws::env:pwn-vm', { loopSessionId: 'ls-env', updatedAt: '' });
+    getSessionsByAgentDirMock.mockReturnValue([{ id: 'meta-env', loopSessionId: 'ls-env' }]);
+    loadLoopSessionMock.mockReturnValue({ messages: [userMsg('环境里的旧问题')], meta: null });
+    expect((await switchEnvSession('E:/ws', 'env:pwn-vm')).ok).toBe(true);
+    expect(getSessionId()).toBe('meta-env');
+  });
+
+  it('B10:启动按分线映射恢复出绑定 → getSessionId() = 恢复的 meta', async () => {
+    getSessionsByAgentDirMock.mockReturnValue([{ id: 'meta-old', loopSessionId: 'ls-77' }]);
+    loadLoopSessionMock.mockReturnValue({ messages: [userMsg('旧问题')], meta: null });
+    resetPiChat();
+    envSessionsData.set('E:/ws::host', { loopSessionId: 'ls-77', updatedAt: '' });
+    await initPiChatEngine('E:/ws');
+    expect(getSessionId()).toBe('meta-old');
   });
 });

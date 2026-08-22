@@ -18,6 +18,11 @@
  * pi 在 convertToLlm 前应用);jsonl 持久化保留全量(M2 语义不动),
  * 触发时由调用方经 {@link markLoopSessionCompacted} 在 meta 行打
  * compactedAt 标记。
+ *
+ * 1.2.6 深化:阈值估算纳入系统提示长度(policy.systemPromptChars,纯
+ * 字符估算路径才计——usageTokens>0 时 API 实测已含);裁完仍超阈值走
+ * 第二档(keepRecentTurns=1 再裁 → 逐条正文截断 → 仍超则明确日志引导
+ * /reset),不留「直接 API 400」的无升级路径。
  */
 
 import { estimateContextTokens, type AgentMessage } from '@earendil-works/pi-agent-core';
@@ -33,6 +38,14 @@ export interface CompactionPolicy {
   thresholdRatio?: number;
   /** 完整保留的最近轮数(一轮 = 一条 user 消息起到下一条 user 前;默认 4)。 */
   keepRecentTurns?: number;
+  /**
+   * 系统提示长度(字符,1.2.6)——纳入阈值估算。pi 的字符启发式
+   * (estimateTokens,chars/4)只算消息数组,系统提示是上下文的大头
+   * (安全场景五段+skills)却不在其中,纯估算路径会系统性低估。
+   * 仅在纯估算路径计入:usageTokens>0 时 tokens 来自 API 实测 input
+   * (已含系统提示),再加会重复计数。可选,缺省 0(向后兼容)。
+   */
+  systemPromptChars?: number;
 }
 
 export const DEFAULT_THRESHOLD_RATIO = 0.8;
@@ -41,14 +54,30 @@ export const DEFAULT_KEEP_RECENT_TURNS = 4;
 /**
  * 关键消息标记:研究状态存活线。exitCode≠0(死路/障碍)、error、
  * CVE 编号(目标漏洞)、flag/密钥形态(突破证据)、[redacted](审计痕迹)。
+ *
+ * error 不走单纯 `\berror\b`(1.2.6 收窄):"no error"/"error handling"
+ * 之类的噪音会让 keep 集膨胀裁不动——改走 hasErrorSignal:逐行剥掉
+ * 良性搭配(否定式「no/without/zero error」、「error handling/handler」
+ * 等)后再判 error 命中,剥完仍命中才算真错误信号。
  */
 export const KEY_MESSAGE_PATTERNS: ReadonlyArray<RegExp> = [
   /exit=[1-9]\d*/,
-  /\berror\b/i,
   /CVE-\d{4}-\d{4,}/i,
   /flag\{[^}]*\}/i,
   /\[redacted/,
 ];
+
+const ERROR_SIGNAL = /\berror\b/i;
+/** 良性 error 搭配(剥离后再判):否定式与错误处理机制名。 */
+const ERROR_BENIGN = /\b(?:no|not|without|zero|0)\s+errors?\b|\berrors?\s*[-_]?(?:handling|handler|handlers|handle)\b|\berror-free\b/gi;
+
+/** error 信号判定:逐行剥离良性搭配后仍命中 \berror\b 才算(不误裁真错误)。 */
+export function hasErrorSignal(text: string): boolean {
+  for (const line of text.split('\n')) {
+    if (ERROR_SIGNAL.test(line.replace(ERROR_BENIGN, ''))) return true;
+  }
+  return false;
+}
 
 /** 提取消息的全部文本(user 字符串 content / 各类 content 块)。 */
 export function messageText(message: AgentMessage): string {
@@ -71,7 +100,7 @@ export function messageText(message: AgentMessage): string {
 export function isKeyMessage(message: AgentMessage): boolean {
   const text = messageText(message);
   if (!text) return false;
-  return KEY_MESSAGE_PATTERNS.some((p) => p.test(text));
+  return KEY_MESSAGE_PATTERNS.some((p) => p.test(text)) || hasErrorSignal(text);
 }
 
 // ---------------------------------------------------------------------------
@@ -175,11 +204,15 @@ export function pruneLoopContext(
   if (prunedCount <= 0) return { messages, prunedCount: 0 };
 
   const kept = messages.filter((_, i) => keep.has(i));
+  // 占位文案对齐真实契约(1.2.6):保留的是「任务锚 + 命中关键标记的消息 +
+  // 最近 N 轮」——不命中标记的早期细节(含可能的突破口)确实会被省略,
+  // 不过度承诺「均保留」。
   const placeholder: AgentMessage = {
     role: 'user',
     content:
-      `[compaction: 为控制上下文长度,已省略 ${prunedCount} 条早期非关键消息;` +
-      '已验证事实/错误/关键轮次均保留,完整记录见会话存档。]',
+      `[compaction: 为控制上下文长度,已省略 ${prunedCount} 条早期消息;` +
+      '保留的是任务锚、命中关键标记(非零 exit/错误信号/CVE/flag/[redacted])的消息与最近几轮——' +
+      '未命中标记的早期细节不在上下文中,需要时查会话存档。]',
     timestamp: Date.now(),
   } as AgentMessage;
   // 占位插在首条 user 之后(若首条 user 存在且在保留序列首位)。
@@ -198,20 +231,55 @@ export interface CompactionEvaluation {
   threshold: number;
 }
 
-/** 阈值判定:pi estimateContextTokens 估算 > contextWindow × ratio。 */
+/** 阈值判定:pi estimateContextTokens 估算(纯估算路径补系统提示) > contextWindow × ratio。 */
 export function evaluateCompaction(messages: AgentMessage[], policy: CompactionPolicy): CompactionEvaluation {
   const ratio = policy.thresholdRatio ?? DEFAULT_THRESHOLD_RATIO;
   const threshold = Math.floor(policy.contextWindow * ratio);
-  const { tokens } = estimateContextTokens(messages);
+  const est = estimateContextTokens(messages);
+  // usageTokens>0 = API 实测 input(已含系统提示),不重复计;否则按 chars/4
+  // 同一启发式补系统提示估算。
+  const systemTokens = est.usageTokens > 0 ? 0 : Math.ceil((policy.systemPromptChars ?? 0) / 4);
+  const tokens = est.tokens + systemTokens;
   return { compact: tokens > threshold, tokens, threshold };
 }
 
 export interface CompactionTransformInfo extends CompactionEvaluation {
   prunedCount: number;
+  /**
+   * 第二档(激进截断)走完仍超阈值(1.2.6)——压缩已尽力,下一次 LLM 调用
+   * 仍可能 API 400;调用方/日志据此引导用户 /reset 开新会话。
+   */
+  stillOverThreshold?: boolean;
+}
+
+/** 单条消息正文截断(string content 与 text/thinking 块;toolCall 不动)。 */
+export function truncateMessageText(message: AgentMessage, maxChars: number): AgentMessage {
+  const marker = '\n…[已截断]';
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === 'string') {
+    if (content.length <= maxChars) return message;
+    return { ...message, content: content.slice(0, maxChars) + marker } as AgentMessage;
+  }
+  if (!Array.isArray(content)) return message;
+  const blocks = content.map((block) => {
+    if (!block || typeof block !== 'object') return block;
+    const b = block as Record<string, unknown>;
+    if (typeof b.text === 'string' && b.text.length > maxChars) {
+      return { ...b, text: b.text.slice(0, maxChars) + marker };
+    }
+    if (typeof b.thinking === 'string' && b.thinking.length > maxChars) {
+      return { ...b, thinking: b.thinking.slice(0, maxChars) + marker };
+    }
+    return block;
+  });
+  return { ...message, content: blocks } as AgentMessage;
 }
 
 /**
  * 组装 runLoop 的 transformContext:未超阈值原样透传;超阈值保守裁剪。
+ * 裁完仍超阈值走第二档(1.2.6):keepRecentTurns 压到 1 再裁,仍超则对
+ * 保留消息做逐条正文截断(按阈值反推字符预算均摊),依旧装不下时打
+ * 明确日志引导 /reset——不留「直接 API 400」的无升级路径。
  * onCompact 回调(可选)用于审计/meta 标记——同步调用,不 await。
  * 裁剪绝不 throw:任何异常原样返回输入(丢上下文比炸 loop 安全)。
  */
@@ -223,14 +291,40 @@ export function makeCompactionTransform(
     try {
       const evaluation = evaluateCompaction(messages, policy);
       if (!evaluation.compact) return messages;
-      const { messages: pruned, prunedCount } = pruneLoopContext(messages, {
+      let { messages: pruned, prunedCount } = pruneLoopContext(messages, {
         keepRecentTurns: policy.keepRecentTurns,
       });
+      let after = evaluateCompaction(pruned, policy);
+      if (after.compact) {
+        // 第二档 a:最近轮数压到 1 再裁(关键消息存活线不动)。
+        const tighter = pruneLoopContext(messages, { keepRecentTurns: 1 });
+        if (tighter.messages.length < pruned.length) {
+          pruned = tighter.messages;
+          prunedCount = tighter.prunedCount;
+        }
+        after = evaluateCompaction(pruned, policy);
+      }
+      if (after.compact) {
+        // 第二档 b:逐条正文截断——保留集(任务锚/关键消息/最近轮)不动结构,
+        // 只压每条的体积;预算按 chars/4 启发式从阈值反推、均摊到每条。
+        const charBudget = Math.max(1, after.threshold * 4);
+        const perMessageCap = Math.max(200, Math.floor(charBudget / Math.max(1, pruned.length)));
+        pruned = pruned.map((m) => truncateMessageText(m, perMessageCap));
+        after = evaluateCompaction(pruned, policy);
+      }
+      const stillOver = after.compact;
       console.warn(
         `[compaction] context ${evaluation.tokens} tokens > threshold ${evaluation.threshold} ` +
-        `→ pruned ${prunedCount} non-key messages (kept ${pruned.length})`,
+        `→ pruned ${prunedCount} non-key messages (kept ${pruned.length})` +
+        (stillOver ? `;仍超阈值(${after.tokens} > ${after.threshold})` : ''),
       );
-      onCompact?.({ ...evaluation, prunedCount });
+      if (stillOver) {
+        console.error(
+          `[compaction] 第二档截断后仍超阈值(${after.tokens} > ${after.threshold})——` +
+          '下一次 LLM 调用可能因上下文过长被 API 拒绝(400),建议 /reset 开新会话再续。',
+        );
+      }
+      onCompact?.({ ...evaluation, prunedCount, stillOverThreshold: stillOver });
       return pruned;
     } catch (err) {
       console.warn(`[compaction] transform 异常,原样透传:${err instanceof Error ? err.message : String(err)}`);

@@ -5,13 +5,22 @@
  * delegate_task 结果回注、子 loop 独立 sessionId。全部用注入的 spawn
  * 假实现/真 spawn+mock 不行——这里用 spawn 注入,绝无网络/ssh。
  */
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { EnvironmentEntry } from '../../shared/config-types';
+
+// B8(1.2.6)回归:直接驱动真 spawnSubLoop 时 mock runLoop 边界(绝无网络/ssh)。
+const runLoopMock = vi.fn();
+vi.mock('./loop', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./loop')>();
+  return { ...orig, runLoop: (...args: unknown[]) => runLoopMock(...args) };
+});
+
 import {
   assertNarrowedWhitelist,
   createDelegateTaskTool,
   DELEGATE_TASK_TOOL_NAME,
+  spawnSubLoop,
   type SubLoopResult,
 } from './subagent';
 import type { LoopModelResolution } from './pi-provider';
@@ -207,5 +216,68 @@ describe('W1 生命周期通知 + 子 loop 事件出口', () => {
     expect(seen.map((s) => s.type)).toEqual(['tool-call', 'done']);
     expect(seen[0].taskId).toBe(seen[1].taskId);
     expect(seen[0].taskId).toBeTruthy();
+  });
+});
+
+
+describe('B8(1.2.6):子 loop 接 abort + 压缩', () => {
+  beforeEach(() => {
+    runLoopMock.mockReset();
+  });
+
+  it('execute 第三参 signal 透传 spawn options(主 turn 中止 → 子 loop 同步中止)', async () => {
+    let seen: { signal?: AbortSignal } | undefined;
+    const spawn = async (opts: { signal?: AbortSignal }): Promise<SubLoopResult> => {
+      seen = opts;
+      return { text: 'ok', messages: [] as AgentMessage[], sessionId: 'sub-abort' };
+    };
+    const tool = createDelegateTaskTool({ env: VM_ENV, resolution: RESOLUTION, parentAllowedTools: PARENT_TOOLS, spawn });
+    const ac = new AbortController();
+    await tool.execute('tc-b8', { task: 'x' }, ac.signal);
+    expect(seen?.signal).toBe(ac.signal);
+    // 无第三参(旧调用形)不挂 signal
+    await tool.execute('tc-b8b', { task: 'y' });
+    expect(seen?.signal).toBeUndefined();
+  });
+
+  it('spawnSubLoop:signal 与主 loop 同款压缩 transformContext 透传 runLoop', async () => {
+    runLoopMock.mockImplementation(async function* () {
+      yield { type: 'done', messages: [] };
+    });
+    const ac = new AbortController();
+    const r = await spawnSubLoop({
+      prompt: '查证 x',
+      env: VM_ENV,
+      resolution: RESOLUTION,
+      parentAllowedTools: PARENT_TOOLS,
+      signal: ac.signal,
+    });
+    expect(r.sessionId).toBeTruthy();
+    expect(runLoopMock).toHaveBeenCalledTimes(1);
+    const opts = runLoopMock.mock.calls[0][0] as {
+      signal?: AbortSignal;
+      transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
+    };
+    // abort 透传:pi 层收到同一个 signal
+    expect(opts.signal).toBe(ac.signal);
+    // 压缩挂载点存在(主 loop 同款 makeCompactionTransform);未超阈值原样透传
+    expect(typeof opts.transformContext).toBe('function');
+    const msgs = [{ role: 'user', content: '短', timestamp: 1 } as AgentMessage];
+    expect(await opts.transformContext!(msgs)).toEqual(msgs);
+  });
+
+  it('spawnSubLoop:缺省 signal 也能跑(向后兼容旧调用形)', async () => {
+    runLoopMock.mockImplementation(async function* () {
+      yield { type: 'done', messages: [] };
+    });
+    const r = await spawnSubLoop({
+      prompt: 'x',
+      env: VM_ENV,
+      resolution: RESOLUTION,
+      parentAllowedTools: PARENT_TOOLS,
+    });
+    expect(r.error).toBeUndefined();
+    const opts = runLoopMock.mock.calls[0][0] as { signal?: AbortSignal };
+    expect(opts.signal).toBeUndefined();
   });
 });

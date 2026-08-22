@@ -26,9 +26,10 @@ import { randomUUID } from 'node:crypto';
 
 import type { EnvironmentEntry } from '../../shared/config-types';
 import { buildDefaultBoundaryRules, makeBoundaryHook, type BoundaryRule } from './boundary';
+import { makeCompactionTransform } from './compaction';
 import { runLoop, type LoopEvent } from './loop';
 import type { LoopModelResolution } from './pi-provider';
-import { appendLoopMessages, newLoopSessionId } from './session';
+import { appendLoopMessages, markLoopSessionCompacted, newLoopSessionId } from './session';
 import { createEnvExecTool, ENV_EXEC_TOOL_NAME } from './tools';
 
 export const DELEGATE_TASK_TOOL_NAME = 'delegate_task';
@@ -58,6 +59,11 @@ export interface SpawnSubLoopOptions {
    */
   onLoopEvent?: (event: LoopEvent) => void;
   maxTokens?: number;
+  /**
+   * B8(1.2.6):父 loop 的 abort 信号(delegate_task execute 第三参透传)。
+   * 主 turn 被 Esc/stop/切换强停时子 loop 同步中止,不再跑成孤儿 loop。
+   */
+  signal?: AbortSignal;
 }
 
 export interface SubLoopResult {
@@ -109,6 +115,19 @@ export async function spawnSubLoop(options: SpawnSubLoopOptions): Promise<SubLoo
     getApiKey: options.resolution.getApiKey,
     tools,
     beforeToolCall,
+    // B8(1.2.6):子 loop 接父 loop abort(signal 透传)。
+    signal: options.signal,
+    // B8(1.2.6):子 loop 挂主 loop 同款压缩策略(compaction.ts,保守裁剪);
+    // 压缩只影响当次 LLM 上下文,持久化全量不动,触发时在子线 meta 打
+    // compactedAt 标记(仅持久化开启时——无 storeDir 没有 meta 可标)。
+    transformContext: makeCompactionTransform(
+      { contextWindow: options.resolution.model.contextWindow || 200_000 },
+      () => {
+        if (options.storeDir) {
+          void markLoopSessionCompacted(sessionId, { dir: options.storeDir }).catch(() => {});
+        }
+      },
+    ),
     maxTokens: options.maxTokens,
   })) {
     if (options.onLoopEvent) {
@@ -207,7 +226,7 @@ export function createDelegateTaskTool(
       '子代理可用 env_exec 查证环境事实,完成后把结论摘要返回给你。' +
       '适合需要多步环境操作的独立子目标;子代理不能再派发子任务。',
     parameters: delegateTaskParameters,
-    execute: async (_toolCallId, params): Promise<AgentToolResult<DelegateTaskDetails>> => {
+    execute: async (_toolCallId, params, signal): Promise<AgentToolResult<DelegateTaskDetails>> => {
       if (params.envId && params.envId !== options.env.id) {
         throw new Error(
           `子任务目标环境 "${params.envId}" 未授权:父 loop 绑定的是 "${options.env.id}"(v1 单环境,子任务不能跳环境)`,
@@ -235,6 +254,9 @@ export function createDelegateTaskTool(
           parentAllowedTools: options.parentAllowedTools,
           allowedTools: childAllowedTools,
           storeDir: options.storeDir,
+          // B8(1.2.6):pi 把主 loop 的 abort signal 作为 execute 第三参传入,
+          // 透传给子 loop——主 turn 中止时子 loop 同步中止。
+          ...(signal ? { signal } : {}),
           ...(options.onLoopEvent ? { onLoopEvent: (event: LoopEvent) => options.onLoopEvent!(taskId, event) } : {}),
         });
       } catch (err) {

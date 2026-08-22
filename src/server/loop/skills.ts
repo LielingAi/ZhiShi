@@ -12,7 +12,9 @@
  * 注入语义:SKILL.md 全文进系统提示——这是结构性必然,不是偷懒:
  * 研究环境边界(D14)下模型读不到宿主文件,「按名索引、按需再读」的
  * 惰性模式在本产品不成立,能力包必须随提示词直给。为防止失控,
- * 单个 skill 截断 4000 字符,总量封顶 12000,超出按序丢弃。
+ * 单个 skill 截断 4000 字符(截断点取整行边界,不断半句),总量封顶
+ * 12000,超出按序丢弃——用户库最后丢(用户显式装的能力优先于随产品
+ * 发行的 bundled)。
  *
  * 零注入:无启用 skill 时整段不出现。
  */
@@ -37,6 +39,15 @@ export interface SkillPack {
 
 export const SKILL_BODY_CAP = 4000;
 export const SKILLS_TOTAL_CAP = 12000;
+
+/** 单篇正文截断:取整行边界(硬切可能断在半句);无换行可退硬切。 */
+export function truncateSkillBody(body: string, cap: number = SKILL_BODY_CAP): string {
+  if (body.length <= cap) return body;
+  const sliced = body.slice(0, cap);
+  const lastNewline = sliced.lastIndexOf('\n');
+  const cut = lastNewline > 0 ? sliced.slice(0, lastNewline) : sliced;
+  return `${cut}\n…(截断)`;
+}
 
 export interface CollectSkillsOptions {
   /** 测试注入:用户库目录(缺省 ~/.zhishi/skills)。 */
@@ -99,7 +110,7 @@ function scanSkillsDir(dir: string | null, source: SkillPack['source']): Map<str
       id: folder.name,
       name: meta.name ?? folder.name,
       description: meta.description ?? '',
-      body: body.length > SKILL_BODY_CAP ? `${body.slice(0, SKILL_BODY_CAP)}\n…(截断)` : body,
+      body: truncateSkillBody(body),
       source,
     });
   }
@@ -122,10 +133,17 @@ export function collectEnabledSkills(options: CollectSkillsOptions = {}): SkillP
 
 /**
  * 渲染系统提示的 skills 段。零注入语义:空数组 → ''。总量封顶
- * SKILLS_TOTAL_CAP,按序(安全四件与用户库按文件夹名序)取舍。
+ * SKILLS_TOTAL_CAP,按序取舍——用户库排最前(最后丢):预算满时先丢
+ * bundled(随产品发行、可再 enable),用户显式装的能力优先保留(1.2.6
+ * 修 Map 合并序导致的用户库先丢)。
  */
 export function buildSkillsSection(skills: SkillPack[] | undefined): string {
   if (!skills || skills.length === 0) return '';
+  // 稳定分区:user 在前、bundled 在后;截断从尾部丢 → 用户库最后丢。
+  const ordered = [
+    ...skills.filter((s) => s.source === 'user'),
+    ...skills.filter((s) => s.source !== 'user'),
+  ];
   const lines: string[] = [
     '<skills>',
     '以下能力包已启用,其内容即操作指南——涉及环境内动作时经 env_exec 落实,研究留痕用 research_log。',
@@ -133,15 +151,15 @@ export function buildSkillsSection(skills: SkillPack[] | undefined): string {
   ];
   let total = 0;
   let included = 0;
-  for (const s of skills) {
+  for (const s of ordered) {
     const chunk = `## ${s.name}${s.description ? ` — ${s.description}` : ''}\n\n${s.body}\n`;
     if (total + chunk.length > SKILLS_TOTAL_CAP) break;
     lines.push(chunk);
     total += chunk.length;
     included++;
   }
-  if (included < skills.length) {
-    lines.push(`(另有 ${skills.length - included} 个已启用 skill 因总量上限未注入——用 zhishi skill list 查看,可 disable 腾位)`);
+  if (included < ordered.length) {
+    lines.push(`(另有 ${ordered.length - included} 个已启用 skill 因总量上限未注入——人侧可用 zhishi skill list 查看并 disable 腾位)`);
   }
   lines.push('</skills>');
   return lines.join('\n');

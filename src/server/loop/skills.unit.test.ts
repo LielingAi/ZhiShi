@@ -108,3 +108,42 @@ describe('buildSkillsSection', () => {
     expect(s).toContain('未注入');
   });
 });
+
+// ===== 1.2.6 批次 C 深化 =====
+
+describe('truncateSkillBody — 整行边界截断（1.2.6）', () => {
+  it('截断点取整行边界,不断半句', async () => {
+    const { truncateSkillBody } = await import('./skills');
+    const body = `${'a'.repeat(3990)}\n${'b'.repeat(500)}`;
+    const out = truncateSkillBody(body);
+    // 在最后一个换行处切——b 行整行不进,不出现半行残片
+    expect(out).toBe(`${'a'.repeat(3990)}\n…(截断)`);
+    expect(out).not.toContain('b');
+  });
+
+  it('cap 内无换行 → 退硬切(单行超长正文没别的边界可取)', async () => {
+    const { truncateSkillBody } = await import('./skills');
+    const out = truncateSkillBody('x'.repeat(SKILL_BODY_CAP + 100));
+    expect(out).toBe(`${'x'.repeat(SKILL_BODY_CAP)}\n…(截断)`);
+  });
+});
+
+describe('buildSkillsSection — 丢弃顺序用户库最后丢（1.2.6）', () => {
+  it('预算满时先丢 bundled,用户 skill 保留', () => {
+    const big = 'y'.repeat(Math.floor(SKILLS_TOTAL_CAP / 3) - 100);
+    // 传入序 bundled 在前(模拟旧 Map 合并序)——取舍应与传入序无关
+    const packs = [
+      { id: 'b0', name: 'b0', description: '', body: big, source: 'bundled' as const },
+      { id: 'b1', name: 'b1', description: '', body: big, source: 'bundled' as const },
+      { id: 'u0', name: 'u0', description: '', body: big, source: 'user' as const },
+      { id: 'u1', name: 'u1', description: '', body: big, source: 'user' as const },
+    ];
+    const s = buildSkillsSection(packs);
+    // 4 个 ~3900 字符的包只能装 3 个:用户库两个必须都在,bundled 后装的那个被丢
+    expect(s).toContain('## u0');
+    expect(s).toContain('## u1');
+    expect(s).toContain('## b0');
+    expect(s).not.toContain('## b1');
+    expect(s).toContain('未注入');
+  });
+});

@@ -16,21 +16,23 @@
 
  * ----------
 
- * - `buildCliToolsAppend(scenario)` — ZhiShi-CLI capability hints
+ * - `buildCliToolsAppend(scenario, options)` — ZhiShi-CLI capability hints
 
- *   (cron CRUD, cron self-exit, memory retrieval, panels). Universal
+ *   (cron CRUD, cron self-exit, memory retrieval, panels). Historically
 
- *   across runtimes (builtin Claude Agent SDK + Codex / Gemini / Claude Code
+ *   universal across runtimes since v0.2.11 dropped the in-process MCP
 
- *   CLI) since v0.2.11 dropped the corresponding in-process MCP servers
+ *   servers (`cron-tools`, `im-cron`, `im-media`) in favour of the CLI.
 
- *   (`cron-tools`, `im-cron`, `im-media`) and unified on the CLI. Gated by
+ *   1.2.6 起按通道能力门控：多数段要求 agent 有宿主 shell 才能执行
 
- *   `cliToolsEnabled` in `buildSystemPromptAppend` (set true on all current
+ *   `zhishi` CLI；`options.hostShell === false`（pi 内置引擎，无宿主
 
- *   runtime paths; the flag is retained for theoretical future runtimes
+ *   shell）时只保留不依赖 shell 的段（cron 自退标记），不教 agent 用它
 
- *   that might not need the appendix).
+ *   在当前通道里执行不了的东西。总开关是 `cliToolsEnabled`（见
+
+ *   `buildSystemPromptAppend`）。
 
  * - `buildWidgetSection(scenario)` — generative-UI widget guidance. Universal:
 
@@ -234,13 +236,15 @@ Before your first widget in a session, run \`zhishi widget readme <module> [<mod
 
  * Conditional stacking:
 
- *   - cron CRUD         always (every scenario can benefit from scheduling)
+ *   - cron CRUD         hostShell only（需要宿主 shell 执行 zhishi CLI）
 
  *   - cron self-exit    only when scenario.type === 'cron' && aiCanExit
 
- *   - memory retrieval  always
+ *                       （纯输出标记机制，不依赖 shell，始终可达）
 
- *   - panels            always
+ *   - memory retrieval  hostShell only
+
+ *   - panels            hostShell only
 
  *
 
@@ -252,25 +256,45 @@ Before your first widget in a session, run \`zhishi widget readme <module> [<mod
 
  *
 
- * Returns an empty string when nothing applies (defensive; not expected in
+ * Returns an empty string when nothing applies（hostShell=false 且非 cron
 
- * practice since cron is always emitted).
+ * 自退场景时即如此——调用方按零注入处理）。
 
  */
 
-export function buildCliToolsAppend(scenario: InteractionScenario): string {
+export interface CliToolsAppendOptions {
+
+  /**
+
+   * 当前通道里 agent 是否有宿主 shell（可执行 zhishi CLI）。默认 true
+
+   * （外部 runtime 形态）；pi 内置引擎传 false，只保留不依赖 shell 的段。
+
+   */
+
+  hostShell?: boolean;
+
+}
+
+export function buildCliToolsAppend(scenario: InteractionScenario, options: CliToolsAppendOptions = {}): string {
+
+  const hostShell = options.hostShell ?? true;
 
   const parts: string[] = [];
 
 
 
-  // scheduled tasks (任务+schedule, no separate cron concept) — universal
+  // scheduled tasks (任务+schedule, no separate cron concept) — 需要宿主 shell
 
-  parts.push(SECTION_TASK_SCHEDULE);
+  if (hostShell) {
+
+    parts.push(SECTION_TASK_SCHEDULE);
+
+  }
 
 
 
-  // cron self-exit — only inside a cron run that allows it
+  // cron self-exit — only inside a cron run that allows it（纯输出标记，不依赖 shell）
 
   if (scenario.type === 'cron' && scenario.aiCanExit) {
 
@@ -280,19 +304,17 @@ export function buildCliToolsAppend(scenario: InteractionScenario): string {
 
 
 
-  // Long-term memory retrieval — universal: every scenario (including
+  if (hostShell) {
 
-  // headless cron runs) can need past context.
+    // Long-term memory retrieval — 需要宿主 shell（zhishi memory search）
 
-  parts.push(SECTION_MEMORY);
+    parts.push(SECTION_MEMORY);
 
+    // Visible panels (terminal) — 需要宿主 shell（zhishi term …）
 
+    parts.push(SECTION_PANEL);
 
-  // Visible panels (terminal) — universal capability; cron runs
-
-  // may legitimately leave the user a running dev server.
-
-  parts.push(SECTION_PANEL);
+  }
 
 
 

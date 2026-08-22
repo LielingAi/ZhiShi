@@ -86,7 +86,7 @@ import {
 } from '../SessionStore';
 import type { SessionMetadata } from '../types/session';
 import type { ProviderEnv } from '../agent-session';
-import { getInteractionScenario } from '../agent-session';
+import { getInteractionScenario, setActiveSessionId } from '../agent-session';
 
 import { makeBoundaryHook } from './boundary';
 import { makeCompactionTransform } from './compaction';
@@ -467,6 +467,9 @@ class ChatEngine {
     if (stored.messages.length === 0) return;
     this.boundSessionMetaId = this.findBoundMetaId(line.loopSessionId);
     this.sessionId = line.loopSessionId;
+    // B10(1.2.6):启动恢复出绑定后同步配置面会话标识——cron/sessions 路由
+    // 经 getSessionId() 读它,不更新则恒为 initializeAgent 的随机 UUID(僵尸值)。
+    if (this.boundSessionMetaId) setActiveSessionId(this.boundSessionMetaId);
     this.messages = this.loopMessagesToWire(stored.messages);
     console.log(`[pi-engine] 续接环境分线 ${envKey}(loop=${this.sessionId},${stored.messages.length} 条消息,meta=${this.boundSessionMetaId ?? '无'})`);
   }
@@ -481,6 +484,9 @@ class ChatEngine {
       });
       this.boundSessionMetaId = meta.id;
       await updateSessionMetadata(meta.id, { loopSessionId: this.sessionId } as Partial<typeof meta>);
+      // B10(1.2.6):绑定建立即写配置面会话标识(getSessionId 的消费者——cron
+      // execute-sync 回报/skip-switch、sessions 路由 in-memory 合并——都读它)。
+      setActiveSessionId(meta.id);
       // 1.1.6 #4:绑定建立后同步分线映射(新线的写盘点——确保映射指向真实
       // 存在的线,而不是切换时先写一个尚无绑定的 sessionId)。
       await this.persistEnvSessionLine();
@@ -594,6 +600,11 @@ class ChatEngine {
           : undefined,
         // 1.2.4 域过滤：从现场选择/配方绑定推导会话域；无可靠信号 → undefined 降级全量。
         securityResearchDomain: caps ? resolveSessionResearchDomain(caps) : undefined,
+        // 1.2.6 批次 C：pi 无宿主 shell——CLI 附录只保留不依赖 shell 的段
+        // （cron + aiCanExit 时的 [CRON_TASK_COMPLETE] 自退标记），task CRUD /
+        // memory search / panel 等依赖 zhishi CLI 的段不注入（cliHostShell:false）。
+        cliToolsEnabled: true,
+        cliHostShell: false,
       });
       return append ? `${base}\n\n${append}` : base;
     } catch (err) {
@@ -607,6 +618,15 @@ class ChatEngine {
     const text = input.text.trim();
     this.busy = true;
     this.currentAbort = new AbortController();
+    // B3(1.2.6):turn 起跑即快照 sessionId,runPiTurn 收尾(续存/压缩标记/
+    // 标题钩子/缺口埋点)一律用快照,不动态读 this.sessionId。
+    // 快照语义:turn 运行中 this.sessionId 的唯一合法变更路径是「先 abort 本
+    // turn 再换线」(switchPiSession 的 busy 强停、resetPiChat;其余入口——
+    // switchEnvSession/rewind/fork——busy 时直接拒绝,不可能改到)。即任何
+    // 中途换线都以本 turn 被判死刑为前提,其产出(含 abort 后 loop 解开窗口
+    // 里到达的 done.messages)属于起跑时那条线;动态读 this.sessionId 会把
+    // 旧 turn 尾部追加进新会话 jsonl(串线)。
+    const turnSessionId = this.sessionId;
     // W1 — 状态行数据源:turn 开始(running)。
     this.broadcastChatStatus();
 
@@ -668,7 +688,7 @@ class ChatEngine {
     };
     this.messages.push(assistantMessage);
 
-    void this.runPiTurn(input, resolution, env, toolNames, assistantMessage, this.currentAbort, grounding)
+    void this.runPiTurn(input, resolution, env, toolNames, assistantMessage, this.currentAbort, grounding, turnSessionId)
       .catch((err) => {
         console.error('[pi-engine] turn 异常:', err);
         broadcast('chat:message-error', err instanceof Error ? err.message : String(err));
@@ -726,12 +746,17 @@ class ChatEngine {
     assistantMessage: MessageWire,
     abort: AbortController,
     grounding: string,
+    // B3(1.2.6):起跑时的 sessionId 快照(语义见 startPiTurn 快照点注释)。
+    // 本函数内一切按线读写(历史加载/续存/压缩标记/标题钩子/缺口埋点)
+    // 一律用快照,不动态读 this.sessionId——否则 busy 强停换线后,旧 turn
+    // 的尾部会写进新会话的 jsonl(串线)。
+    turnSessionId: string,
   ): Promise<void> {
     const startedAt = Date.now();
     // grounding(W1 @ 注入)只进 loop prompt,不进用户气泡(气泡显示原文)。
     const text = input.text.trim();
     const promptText = grounding ? `${grounding}\n\n${text}` : text;
-    const history = loadLoopSession(this.sessionId).messages;
+    const history = loadLoopSession(turnSessionId).messages;
 
     const tools: AgentTool[] = [
       ...(env ? [createEnvExecTool(env)] : []),
@@ -823,9 +848,12 @@ class ChatEngine {
       return r;
     };
     const afterToolCall = makeOutputGuardHook();
+    // 1.2.6（C-11）：压缩阈值估算纳入系统提示——提示先于 transform 组装,
+    // 字符数经同一 chars/4 启发式折算进阈值（compaction 侧向后兼容）。
+    const systemPrompt = await this.assemblePiSystemPrompt(env);
     const transformContext = makeCompactionTransform(
-      { contextWindow: resolution.model.contextWindow || 200_000 },
-      () => { void markLoopSessionCompacted(this.sessionId).catch(() => {}); },
+      { contextWindow: resolution.model.contextWindow || 200_000, systemPromptChars: systemPrompt.length },
+      () => { void markLoopSessionCompacted(turnSessionId).catch(() => {}); },
     );
 
     // 图片输入:pi user 消息的 image 块(与文本同一条消息)。
@@ -846,7 +874,7 @@ class ChatEngine {
         ? { messages: [{ role: 'user', content: promptContent, timestamp: Date.now() } as AgentMessage] }
         : { prompt: promptText }),
       history,
-      systemPrompt: await this.assemblePiSystemPrompt(env),
+      systemPrompt,
       model: resolution.model,
       models: resolution.models,
       getApiKey: resolution.getApiKey,
@@ -892,10 +920,11 @@ class ChatEngine {
     }
 
     // 落终态:assistant 气泡内容 + 会话续存(done.messages 只含新增,无重复)。
+    // B3:续存目标 = 起跑快照线,不是 this.sessionId(中途换线不串线)。
     assistantMessage.content = fullText;
     if (doneMessages.length > 0) {
       await appendLoopMessages(
-        this.sessionId,
+        turnSessionId,
         doneMessages,
         { model: resolution.modelId, providerId: resolution.providerId },
       ).catch((err) => console.warn('[pi-engine] 会话续存失败:', err));
@@ -915,10 +944,10 @@ class ChatEngine {
 
     // M4c — turn 完成点挂点(蒸馏弧/标题;原 SDK turn 完成处的同等埋点)。
     // 1) 自动标题:火 forget,失败不影响 turn(turn-hooks 契约)。
-    firePostTurnTitleHook(this.sessionId, resolution.modelId, input.providerEnv);
+    firePostTurnTitleHook(turnSessionId, resolution.modelId, input.providerEnv);
     // 2) 能力缺口事件(WORK_LOOP §5):幻觉工具被 boundary 白名单拦截 /
     //    上游报 unknown skill/tool → gap_events(懒加载 store,静默失败)。
-    this.recordGapEvents(failed, blockedToolNames);
+    this.recordGapEvents(failed, blockedToolNames, turnSessionId);
 
     if (failed && !abort.signal.aborted) {
       console.error(`[pi-engine] turn 失败: ${failed}`);
@@ -929,8 +958,9 @@ class ChatEngine {
    * 能力缺口埋点(对齐原 SDK turn 完成点 logGapEvent 的 schema):
    * 幻觉工具(白名单外 toolName 被拦)= 模型想要不存在的能力;
    * 上游 unknown skill/tool 错误 = provider 侧缺口。
+   * B3(1.2.6):context 由调用方传入 turn 起跑快照线,不动态读 this.sessionId。
    */
-  private recordGapEvents(failed: string | null, blockedToolNames: string[]): void {
+  private recordGapEvents(failed: string | null, blockedToolNames: string[], turnSessionId: string): void {
     const gaps: Array<{ gapKey: string; detail: string }> = [];
     for (const name of blockedToolNames) {
       gaps.push({ gapKey: `hallucinated-tool:${name}`, detail: `模型调用了未注册工具 "${name}"(boundary 白名单拦截)` });
@@ -949,7 +979,7 @@ class ChatEngine {
         .then((m) => m.logGapEvent({
           gapKey: gap.gapKey,
           detail: gap.detail,
-          context: this.sessionId,
+          context: turnSessionId,
           resolution: 'abandoned',
         }))
         .catch(() => { /* 缺口记录失败静默——主流程优先 */ });
@@ -983,21 +1013,37 @@ class ChatEngine {
   }
 
   /**
-   * /sessions/switch 的 pi 路径:切到 SessionStore 里另一条绑定会话
+   * /sessions/switch 的 pi 路径:切到 SessionStore 里另一条会话
    * (其 loopSessionId 指向的 loop-sessions 文件),重建回放。
+   * 1.2.6(B1):meta 无 loopSessionId 绑定(cron new_session 新建)时
+   * 当场开新线并绑定;只有 meta 不存在才返回 false。
    */
   async switchPiSession(metaId: string): Promise<boolean> {
     // 已在当前会话:幂等返回——不重建回放、更不要 busy 强停(TUI 启动会按
     // 环境分线映射重接当前会话,误伤进行中的 turn,如 cron)。
     if (metaId === this.boundSessionMetaId) return true;
     if (this.busy) this.stopPiChat();
-    const meta = getSessionMetadata(metaId) as { loopSessionId?: string } | null;
-    if (!meta?.loopSessionId) return false;
-    const stored = loadLoopSession(meta.loopSessionId);
+    const meta = getSessionMetadata(metaId) as { loopSessionId?: string | null } | null;
+    if (!meta) return false;
+    // B1(1.2.6):meta 存在但无 loopSessionId 绑定(cron new_session 的
+    // createSession 不落 loopSessionId,唯一写入点是 ensureSessionBound——
+    // 而绑定建立以引擎已在这条线上为前提,死锁)→ 当场开新线并绑定,而非
+    // 返回 false 让调用方 500。reset 解绑过的 meta 走同一路径愈合(重开新线)。
+    // 分线语义(1.1.6)不变:env-sessions 映射仍只在绑定后由写盘点回填,
+    // 新线等首个 turn 的 appendLoopMessages 落盘,与 ensureSessionBound 同构。
+    let loopId = meta.loopSessionId;
+    if (!loopId) {
+      loopId = newLoopSessionId();
+      await updateSessionMetadata(metaId, { loopSessionId: loopId } as Partial<SessionMetadata>);
+    }
+    const stored = loadLoopSession(loopId);
     this.queue = [];
     this.steering = [];
-    this.sessionId = meta.loopSessionId;
+    this.sessionId = loopId;
     this.boundSessionMetaId = metaId;
+    // B10(1.2.6):切换即写配置面会话标识(getSessionId 的消费者——cron
+    // execute-sync 回报/skip-switch、sessions 路由 in-memory 合并——都读它)。
+    setActiveSessionId(metaId);
     this.messageSeq = 0;
     this.messages = this.loopMessagesToWire(stored.messages);
     this.streamingAssistantId = null;
@@ -1054,6 +1100,10 @@ class ChatEngine {
       this.messages = [];
       console.log(`[pi-engine] 环境分线 → 新线 ${envKey}(loop=${this.sessionId})`);
     }
+    // B10(1.2.6):切线即写配置面会话标识——有绑定写 meta id,无绑定(新线/
+    // 绑定丢失)置新随机值(对齐 initializeAgent 的占位语义),getSessionId()
+    // 不再回报引擎已离开的僵尸会话。
+    setActiveSessionId(this.boundSessionMetaId ?? randomUUID());
     this.currentEnvKey = envKey;
     return { ok: true };
   }
@@ -1163,6 +1213,9 @@ class ChatEngine {
     );
     this.sessionId = newLoopSessionId();
     this.boundSessionMetaId = null;
+    // B10(1.2.6):reset 后引擎已离开旧 meta——配置面会话标识置新随机值
+    // (对齐 initializeAgent 占位语义),cron 回报不再拿到僵尸 id。
+    setActiveSessionId(randomUUID());
     this.messages = [];
     this.messageSeq = 0;
     this.streamingAssistantId = null;
@@ -1234,6 +1287,8 @@ class ChatEngine {
     const forkId = await forkLoopSession(this.sessionId, cutIndex);
     this.sessionId = forkId;
     this.boundSessionMetaId = null; // 首条消息时 ensureSessionBound 建新 meta
+    // B10(1.2.6):fork 换血后尚无绑定——同 reset,配置面标识置新随机值。
+    setActiveSessionId(randomUUID());
     this.messageSeq = 0;
     this.messages = this.loopMessagesToWire(loadLoopSession(forkId).messages);
     this.streamingAssistantId = null;

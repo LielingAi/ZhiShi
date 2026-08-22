@@ -219,3 +219,94 @@ describe('持久层不受影响(jsonl 全量 + compactedAt 标记)', () => {
     expect(loadLoopSession('no-such-session', { dir: DIR }).messages).toEqual([]);
   });
 });
+
+// ===== 1.2.6 批次 C 深化 =====
+
+describe('isKeyMessage — error 信号收窄（1.2.6）', () => {
+  it('良性搭配不再误判:否定式与错误处理机制名 → 非关键', async () => {
+    const { isKeyMessage } = await import('./compaction');
+    expect(isKeyMessage(toolResult('exit=0\n编译通过,no error'))).toBe(false);
+    expect(isKeyMessage(assistant('这条路径的 error handling 已覆盖'))).toBe(false);
+    expect(isKeyMessage(assistant('解析器自带 error handler,0 errors 返回'))).toBe(false);
+  });
+  it('真错误信号不误裁:Error:/error code/同行情良+真错误仍关键', async () => {
+    const { isKeyMessage } = await import('./compaction');
+    expect(isKeyMessage(toolResult('Error: segfault at 0x0'))).toBe(true);
+    expect(isKeyMessage(assistant('grep failed with error code 2'))).toBe(true);
+    // 同一行里既有良性搭配又有真错误 —— 剥掉良性后仍命中
+    expect(isKeyMessage(toolResult('ret: no error; later: error: timeout'))).toBe(true);
+  });
+});
+
+describe('pruneLoopContext — 占位消息对齐真实契约（1.2.6）', () => {
+  it('不再过度承诺「均保留」,声明保留口径与省略风险', () => {
+    const msgs = [
+      user('任务'),
+      assistant('早期细节:某个不命中标记的突破口线索'),
+      user('最近一轮'),
+      assistant('最近回复'),
+    ];
+    const { messages: out } = pruneLoopContext(msgs, { keepRecentTurns: 1 });
+    const placeholder = out[1] as { content: string };
+    expect(placeholder.content).toContain('[compaction:');
+    expect(placeholder.content).toContain('1 条');
+    expect(placeholder.content).toContain('命中关键标记');
+    expect(placeholder.content).not.toContain('均保留');
+  });
+});
+
+describe('evaluateCompaction — 系统提示纳入估算（1.2.6）', () => {
+  it('systemPromptChars 把纯估算推过阈值;缺省 0 向后兼容', async () => {
+    const { evaluateCompaction } = await import('./compaction');
+    const msgs = [user('短消息')];
+    // 无系统提示:远低于阈值
+    expect(evaluateCompaction(msgs, { contextWindow: 1000, thresholdRatio: 0.5 }).compact).toBe(false);
+    // 系统提示 4000 字符 ≈ 1000 tokens > 500 阈值
+    const r = evaluateCompaction(msgs, { contextWindow: 1000, thresholdRatio: 0.5, systemPromptChars: 4000 });
+    expect(r.compact).toBe(true);
+    expect(r.tokens).toBeGreaterThan(1000 - 10);
+  });
+});
+
+describe('makeCompactionTransform — 第二档升级路径（1.2.6）', () => {
+  it('保守裁剪后仍超阈值 → 逐条正文截断,仍超则 stillOverThreshold 上报', async () => {
+    const { makeCompactionTransform, messageText } = await import('./compaction');
+    // 全部命中关键标记(error:)且体积巨大 → 保守裁剪裁不动
+    const msgs = Array.from({ length: 6 }, (_, i) => user(`error: 第${i}条 ${'x'.repeat(800)}`));
+    const infos: Array<{ stillOverThreshold?: boolean }> = [];
+    const transform = makeCompactionTransform(
+      { contextWindow: 200, thresholdRatio: 0.5 }, // 阈值 100 tokens ≈ 400 字符
+      (info) => infos.push(info),
+    );
+    const out = await transform(msgs);
+    // 结构还在(关键消息不丢),但每条体积被压到均摊预算内
+    expect(out).toHaveLength(6);
+    for (const m of out) {
+      expect(messageText(m).length).toBeLessThanOrEqual(220);
+      expect(messageText(m)).toContain('[已截断]');
+    }
+    // 6 × 200 字符 ≈ 300 tokens 仍超 100 → 明确上报,不留 API 400 无升级路径
+    expect(infos).toHaveLength(1);
+    expect(infos[0].stillOverThreshold).toBe(true);
+  });
+
+  it('第二档收紧最近轮数能压回阈值内时 stillOverThreshold=false', async () => {
+    const { makeCompactionTransform } = await import('./compaction');
+    // 非关键消息堆量:第一档(保留 4 轮)裁完仍超,第二档(1 轮)压回阈值内
+    const msgs = Array.from({ length: 9 }, (_, i) => user(`第${i}轮 ${'x'.repeat(800)}`));
+    const infos: Array<{ stillOverThreshold?: boolean; prunedCount: number }> = [];
+    const transform = makeCompactionTransform(
+      { contextWindow: 1000, thresholdRatio: 0.5 }, // 阈值 500 tokens
+      (info) => infos.push(info),
+    );
+    const out = await transform(msgs);
+    // 第二档:任务锚 + 最近 1 轮 + 占位 = 3 条
+    expect(out).toHaveLength(3);
+    expect(out[0]).toBe(msgs[0]);
+    expect((out[1] as { content: string }).content).toContain('[compaction:');
+    expect(out[2]).toBe(msgs[8]);
+    expect(infos).toHaveLength(1);
+    expect(infos[0].stillOverThreshold).toBe(false);
+    expect(infos[0].prunedCount).toBe(7);
+  });
+});
