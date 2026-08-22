@@ -175,6 +175,7 @@ import {
   deleteEntry,
   getDraftById,
   getEntryById,
+  hasExpertDb,
   insertDraft,
   insertEntry,
   listDrafts,
@@ -6796,6 +6797,14 @@ export async function handleReportExport(payload: {
         for (const [name, content] of Object.entries(files)) {
           writeFileSync(join(reportDir, name), content, 'utf-8');
         }
+      },
+      // 1.2.2 引用追踪：事件 expert_refs → expert.db 查 title/kind；库不存在/
+      // 条目已删 → null（骨架按「不可考」渲染，不阻塞导出）。
+      lookupExpertEntry: (id) => {
+        const baseDir = getZhiShiDataDir();
+        if (!hasExpertDb(baseDir)) return null;
+        const entry = getEntryById(openExpertStore(baseDir), id);
+        return entry ? { title: entry.title, kind: entry.kind } : null;
       },
     },
   );

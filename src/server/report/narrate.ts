@@ -28,13 +28,14 @@ export const NARRATION_SYSTEM_PROMPT =
   '不得改动、不得四舍五入、不得编造骨架里没有的新事实；拿不准就照抄原文。' +
   '叙述是事实的引子，不是替代品——不要重复罗列全部事实条目，概括脉络即可。';
 
-/** 逐节列出输出格式契约 + 全量事实。 */
+/** 逐节列出输出格式契约 + 全量事实。factOnly 节（引用的专家知识）不进 prompt。 */
 export function buildNarrationPrompt(skeleton: ReportSkeleton): string {
+  const narratable = skeleton.sections.filter((s) => !s.factOnly);
   const lines: string[] = [];
   lines.push(`报告域：${skeleton.template.label}（domain=${skeleton.domain}）`);
   lines.push('');
   lines.push('输出格式（严格遵守；每节一段，节与节之间不要有多余文字）：');
-  for (const section of skeleton.sections) {
+  for (const section of narratable) {
     lines.push(`${sectionOpenMarker(section.key)}`);
     lines.push(`（「${section.title}」一节的叙述）`);
     lines.push(SECTION_CLOSE);
@@ -42,7 +43,7 @@ export function buildNarrationPrompt(skeleton: ReportSkeleton): string {
   lines.push('');
   lines.push('以下是各节事实（只许引用，不许改动）：');
   lines.push('');
-  for (const section of skeleton.sections) {
+  for (const section of narratable) {
     lines.push(`## ${section.title}（key=${section.key}）`);
     if (section.facts.length === 0) {
       lines.push('（本节无事实记录——写一句「本节无记录」即可）');
@@ -61,7 +62,7 @@ const SECTION_BLOCK_RE = /<<<SECTION:([\w-]+)>>>([\s\S]*?)<<<END>>>/g;
  * 未知 key、空段落）静默丢弃——调用方按「缺节 → 骨架原文」处理。
  */
 export function parseNarratedSections(text: string, skeleton: ReportSkeleton): Map<string, string> {
-  const validKeys = new Set(skeleton.sections.map((s) => s.key));
+  const validKeys = new Set(skeleton.sections.filter((s) => !s.factOnly).map((s) => s.key));
   const out = new Map<string, string>();
   for (const m of text.matchAll(SECTION_BLOCK_RE)) {
     const key = m[1];

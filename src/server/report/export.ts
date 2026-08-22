@@ -68,6 +68,11 @@ export interface ExportReportDeps {
   exec?: EnvExec;
   /** 时钟注入（测试钉目录名与生成时间）。 */
   now?: () => number;
+  /**
+   * 专家条目查证（1.2.2 引用追踪）：事件 expert_refs → title/kind。
+   * 缺省/查不到 → 引用节按「条目已删除或不可考」渲染，不阻塞导出。
+   */
+  lookupExpertEntry?: (id: number) => { title: string; kind: string } | null;
 }
 
 export interface ExportReportInput {
@@ -118,6 +123,7 @@ export async function exportReport(
     events,
     transcript,
     now: now(),
+    ...(deps.lookupExpertEntry ? { lookupExpertEntry: deps.lookupExpertEntry } : {}),
   });
   skeleton = truncateSkeleton(skeleton);
 
@@ -196,6 +202,16 @@ export async function exportReport(
     envId: input.env.envId,
     model: deps.modelId,
     eventIds: skeleton.eventIds,
+    ...(skeleton.expertRefs.length > 0
+      ? {
+          expertRefs: skeleton.expertRefs.map((c) => ({
+            entryId: c.entryId,
+            ...(c.title !== undefined ? { title: c.title } : {}),
+            ...(c.kind !== undefined ? { kind: c.kind } : {}),
+            eventIds: c.eventIds,
+          })),
+        }
+      : {}),
     degraded,
     truncated: skeleton.truncated,
     sanitized: sanitize,

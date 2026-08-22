@@ -20,6 +20,8 @@ import {
   ENV_EXEC_TOOL_NAME,
 } from './tools';
 import { listResearchEvents, resetMemoryStoreForTest } from '../memory/store';
+import { insertEntry, openExpertStore, resetExpertStoreForTest } from '../expert/store';
+import type { ValidatedExpertEntry } from '../expert/validate';
 import { createBgRegistry } from './bg-registry';
 
 const VM_ENTRY: EnvironmentEntry = {
@@ -285,6 +287,68 @@ describe('createResearchLogTool', () => {
           summary: 'x',
         }),
       ).rejects.toThrow('task_kind');
+    } finally {
+      resetMemoryStoreForTest();
+      rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  function seedEntry(baseDir: string, title: string): number {
+    const value: ValidatedExpertEntry = {
+      domain: 'binary', kind: 'technique', title,
+      applicability: 'a', content: 'c', criteria: 'k',
+      provenance: 'user', reviewer: 'tester', sourceEventId: null, tags: '', enabled: true,
+    };
+    return insertEntry(openExpertStore(baseDir), value, `hash-${title}`).id;
+  }
+
+  it('expert_refs 挂条目 id 落库(逗号串解析+去重);不存在的 id 拒绝', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'zhishi-research-log-tool-'));
+    try {
+      const e1 = seedEntry(baseDir, '条目一');
+      const e2 = seedEntry(baseDir, '条目二');
+      const tool = createResearchLogTool('E:/work', { baseDir });
+      const result = await tool.execute('tc3', {
+        task_kind: 'binary', outcome: 'success', summary: '按条目打通',
+        expert_refs: `${e1}, #${e2},${e1}`,
+      });
+      const events = listResearchEvents({ limit: 10, baseDir });
+      expect(events[0].expertRefs).toEqual([e1, e2]);
+      expect(result.details?.eventId).toBe(events[0].id);
+
+      await expect(
+        tool.execute('tc4', {
+          task_kind: 'binary', outcome: 'success', summary: 'x', expert_refs: '4242',
+        }),
+      ).rejects.toThrow(/不存在的专家条目 id：4242/);
+      await expect(
+        tool.execute('tc5', {
+          task_kind: 'binary', outcome: 'success', summary: 'x', expert_refs: 'abc',
+        }),
+      ).rejects.toThrow(/非法条目 id/);
+    } finally {
+      resetMemoryStoreForTest();
+      resetExpertStoreForTest();
+      rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it('结案晋升提示:success/stuck 带 promote 提示,fail 不带', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'zhishi-research-log-tool-'));
+    try {
+      const tool = createResearchLogTool('E:/work', { baseDir });
+      const ok = await tool.execute('tc6', { task_kind: 'binary', outcome: 'success', summary: '成了' });
+      expect((ok.content[0] as { text: string }).text).toContain(
+        `zhishi expert promote #${ok.details!.eventId}`,
+      );
+      expect((ok.content[0] as { text: string }).text).toContain('人审后生效');
+
+      const stuck = await tool.execute('tc7', { task_kind: 'binary', outcome: 'stuck', summary: '卡住结案' });
+      expect((stuck.content[0] as { text: string }).text).toContain('expert promote');
+
+      const fail = await tool.execute('tc8', { task_kind: 'binary', outcome: 'fail', summary: '没成' });
+      expect((fail.content[0] as { text: string }).text).not.toContain('promote');
+      expect((fail.content[0] as { text: string }).text).toContain('研究事件已记录');
     } finally {
       resetMemoryStoreForTest();
       rmSync(baseDir, { recursive: true, force: true });

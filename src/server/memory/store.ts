@@ -22,6 +22,9 @@ import { createRequire } from 'module';
 
 import { getZhiShiDataDir } from '../utils/app-dirs';
 import { getBundledSqliteEntryPoint } from '../utils/runtime';
+// 1.2.2 引用追踪：recordResearchEvent 落库前查证 expert_refs 存在于 expert.db。
+// expert/store 对本模块只有 type-only 引用（ResearchTaskKind），无运行时环。
+import { findMissingExpertEntryIds } from '../expert/store';
 
 // ===== Types =====
 
@@ -270,7 +273,8 @@ function openDb(baseDir: string): SqliteDatabase {
       bug_class TEXT,
       summary TEXT NOT NULL,
       trajectory_ref TEXT,
-      distilled_at INTEGER
+      distilled_at INTEGER,
+      expert_refs TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_research_events_query ON research_events(task_kind, outcome, ts);
     INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', '1');
@@ -283,6 +287,16 @@ function openDb(baseDir: string): SqliteDatabase {
     }
   } catch (err) {
     console.warn('[memory/store] research_events.distilled_at migration failed (non-fatal):', err);
+  }
+  // 1.2.2：research_events 加专家引用列（expert_refs，逗号分隔条目 id）——同
+  // distilled_at 的幂等 ALTER 先例：老库走 ALTER，新库 CREATE 已含。
+  try {
+    const cols = db.prepare('PRAGMA table_info(research_events)').all() as Array<{ name: string }>;
+    if (cols.length > 0 && !cols.some((c) => c.name === 'expert_refs')) {
+      db.exec('ALTER TABLE research_events ADD COLUMN expert_refs TEXT');
+    }
+  } catch (err) {
+    console.warn('[memory/store] research_events.expert_refs migration failed (non-fatal):', err);
   }
   migrateLegacy(baseDir, db);
   dbCache.set(baseDir, db);
@@ -988,6 +1002,8 @@ export interface ResearchEvent {
   summary: string;
   /** 轨迹文件指针（工作区相对路径）。 */
   trajectoryRef?: string;
+  /** 依据的专家条目 id 列表（1.2.2 引用追踪；expert.db 条目 id，落库时已查证存在）。 */
+  expertRefs?: number[];
 }
 
 export interface RecordResearchEventInput {
@@ -997,6 +1013,7 @@ export interface RecordResearchEventInput {
   bugClass?: ResearchBugClass;
   summary: string;
   trajectoryRef?: string;
+  expertRefs?: number[];
 }
 
 interface ResearchEventRow {
@@ -1008,9 +1025,18 @@ interface ResearchEventRow {
   bug_class: string | null;
   summary: string;
   trajectory_ref: string | null;
+  expert_refs: string | null;
+}
+
+/** expert_refs 列（逗号分隔 id 串）→ id 数组；空/NULL → undefined。 */
+function parseExpertRefs(raw: string | null): number[] | undefined {
+  if (!raw) return undefined;
+  const ids = raw.split(',').map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0);
+  return ids.length > 0 ? ids : undefined;
 }
 
 function toResearchEvent(r: ResearchEventRow): ResearchEvent {
+  const expertRefs = parseExpertRefs(r.expert_refs);
   return {
     id: r.id,
     ts: r.ts,
@@ -1020,6 +1046,7 @@ function toResearchEvent(r: ResearchEventRow): ResearchEvent {
     ...(r.bug_class != null ? { bugClass: r.bug_class as ResearchBugClass } : {}),
     summary: r.summary,
     ...(r.trajectory_ref != null ? { trajectoryRef: r.trajectory_ref } : {}),
+    ...(expertRefs ? { expertRefs } : {}),
   };
 }
 
@@ -1040,14 +1067,30 @@ export function recordResearchEvent(
     throw new Error(`research_events: 非法 bug_class "${input.bugClass}"（允许：${RESEARCH_BUG_CLASSES.join(' / ')}）`);
   }
   if (!input.summary.trim()) throw new Error('research_events: summary 不能为空');
+  if (input.expertRefs !== undefined) {
+    if (input.expertRefs.some((id) => !Number.isInteger(id) || id <= 0)) {
+      throw new Error('research_events: expert_refs 必须是正整数条目 id 列表');
+    }
+    // record 层查证：引用的条目 id 必须存在于 expert.db（引用追踪的可审计性
+    // 依赖这一拒——不存在的 id 落库等于假引用）。库不存在 → 全部缺失。
+    const missing = findMissingExpertEntryIds(baseDir, input.expertRefs);
+    if (missing.length > 0) {
+      throw new Error(`research_events: expert_refs 含不存在的专家条目 id：${missing.join(', ')}（expert.db 中查无此条目）`);
+    }
+  }
   const database = db(baseDir);
   database.prepare(
-    'INSERT INTO research_events (ts, workspace, task_kind, outcome, bug_class, summary, trajectory_ref) VALUES (?, ?, ?, ?, ?, ?, ?)',
-  ).run(now, input.workspace, input.taskKind, input.outcome, input.bugClass ?? null, input.summary, input.trajectoryRef ?? null);
+    'INSERT INTO research_events (ts, workspace, task_kind, outcome, bug_class, summary, trajectory_ref, expert_refs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(
+    now, input.workspace, input.taskKind, input.outcome, input.bugClass ?? null,
+    input.summary, input.trajectoryRef ?? null,
+    input.expertRefs && input.expertRefs.length > 0 ? input.expertRefs.join(',') : null,
+  );
   const id = (database.prepare('SELECT last_insert_rowid() AS id').get() as { id: number }).id;
   return toResearchEvent({
     id, ts: now, workspace: input.workspace, task_kind: input.taskKind, outcome: input.outcome,
     bug_class: input.bugClass ?? null, summary: input.summary, trajectory_ref: input.trajectoryRef ?? null,
+    expert_refs: input.expertRefs && input.expertRefs.length > 0 ? input.expertRefs.join(',') : null,
   });
 }
 

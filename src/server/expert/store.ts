@@ -339,6 +339,18 @@ export function deleteEntry(db: ExpertDb, id: number): void {
   db.raw.prepare('DELETE FROM expert_entries WHERE id = ?').run(id);
 }
 
+/**
+ * 批量查证条目 id 是否存在于 expert.db（1.2.2 引用追踪：research_events
+ * 落库前校验 expert_refs）。expert.db 尚不存在 → 全部 id 视为缺失。
+ * 返回缺失的 id 列表（保持入参序）；空输入 → 空数组（不碰库）。
+ */
+export function findMissingExpertEntryIds(baseDir: string, ids: number[]): number[] {
+  if (ids.length === 0) return [];
+  if (!hasExpertDb(baseDir)) return [...ids];
+  const db = openExpertStore(baseDir);
+  return ids.filter((id) => getEntryById(db, id) === null);
+}
+
 // ===== drafts =====
 
 export function insertDraft(

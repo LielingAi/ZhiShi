@@ -17,6 +17,13 @@ import {
   RESEARCH_OUTCOMES,
   RESEARCH_TASK_KINDS,
 } from './store';
+import {
+  insertEntry,
+  openExpertStore,
+  resetExpertStoreForTest,
+  type ExpertDb,
+} from '../expert/store';
+import type { ValidatedExpertEntry } from '../expert/validate';
 
 let dir: string;
 const NOW = Date.parse('2026-08-14T12:00:00Z');
@@ -24,12 +31,33 @@ const NOW = Date.parse('2026-08-14T12:00:00Z');
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'zhishi-research-'));
   resetMemoryStoreForTest();
+  resetExpertStoreForTest();
 });
 
 afterEach(() => {
   resetMemoryStoreForTest();
+  resetExpertStoreForTest();
   rmSync(dir, { recursive: true, force: true });
 });
+
+/** 造一条合法专家条目并落 expert.db，返回条目 id（expert_refs 校验的靶子）。 */
+function seedExpertEntry(title: string, db?: ExpertDb): number {
+  const expertDb = db ?? openExpertStore(dir);
+  const value: ValidatedExpertEntry = {
+    domain: 'pentest',
+    kind: 'technique',
+    title,
+    applicability: '适用条件',
+    content: '正文',
+    criteria: '判据',
+    provenance: 'user',
+    reviewer: 'tester',
+    sourceEventId: null,
+    tags: '',
+    enabled: true,
+  };
+  return insertEntry(expertDb, value, `hash-${title}`, NOW).id;
+}
 
 describe('research_events：枚举定义与校验', () => {
   it('枚举集合与设计一致（七研究域 + ctf 补充 / 三成败 / 漏洞类别）', () => {
@@ -144,5 +172,92 @@ describe('research_events：recordResearchEvent / listResearchEvents', () => {
     const rows = listResearchEvents({ baseDir: dir, taskKind: 'malware' });
     expect(rows).toHaveLength(1);
     expect(rows[0].outcome).toBe('fail');
+  });
+});
+
+describe('research_events：expert_refs 引用追踪（1.2.2）', () => {
+  it('合法 expert_refs 落库并读回；无 refs 的事件 expertRefs 缺省（旧行为零变化）', () => {
+    const e1 = seedExpertEntry('条目一');
+    const e2 = seedExpertEntry('条目二');
+    const ev = recordResearchEvent({
+      workspace: '/ws/x', taskKind: 'pentest', outcome: 'success',
+      summary: '按专家条目拿下目标', expertRefs: [e1, e2],
+    }, dir, NOW);
+    expect(ev.expertRefs).toEqual([e1, e2]);
+    const back = listResearchEvents({ baseDir: dir });
+    expect(back[0].expertRefs).toEqual([e1, e2]);
+
+    const plain = recordResearchEvent({
+      workspace: '/ws/x', taskKind: 'pentest', outcome: 'fail', summary: '无引用',
+    }, dir, NOW + 1);
+    expect(plain.expertRefs).toBeUndefined();
+    expect(listResearchEvents({ baseDir: dir })[0].expertRefs).toBeUndefined();
+  });
+
+  it('不存在的条目 id 拒绝落库（库存在/不存在两路），且不落脏数据', () => {
+    const existing = seedExpertEntry('真实条目');
+    expect(() => recordResearchEvent({
+      workspace: '/ws/x', taskKind: 'pentest', outcome: 'success',
+      summary: 'x', expertRefs: [existing, 9999],
+    }, dir, NOW)).toThrow(/不存在的专家条目 id：9999/);
+    expect(listResearchEvents({ baseDir: dir })).toHaveLength(0);
+
+    // expert.db 整个不存在 → 任何 id 都查无此条目
+    const dir2 = mkdtempSync(join(tmpdir(), 'zhishi-research-noexpert-'));
+    try {
+      expect(() => recordResearchEvent({
+        workspace: '/ws/x', taskKind: 'pentest', outcome: 'success',
+        summary: 'x', expertRefs: [1],
+      }, dir2, NOW)).toThrow(/expert_refs/);
+    } finally {
+      resetMemoryStoreForTest();
+      rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+
+  it('非法 id（0 / 负数 / 小数）拒绝落库', () => {
+    seedExpertEntry('条目');
+    const base = { workspace: '/ws/x', taskKind: 'pentest' as const, outcome: 'success' as const, summary: 'x' };
+    expect(() => recordResearchEvent({ ...base, expertRefs: [0] }, dir, NOW)).toThrow(/正整数/);
+    expect(() => recordResearchEvent({ ...base, expertRefs: [-3] }, dir, NOW)).toThrow(/正整数/);
+    expect(() => recordResearchEvent({ ...base, expertRefs: [1.5] }, dir, NOW)).toThrow(/正整数/);
+    expect(listResearchEvents({ baseDir: dir })).toHaveLength(0);
+  });
+
+  it('老库（D1 时期表：无 distilled_at / expert_refs）幂等迁移出两列，旧数据无损', () => {
+    resetMemoryStoreForTest();
+    const nodeRequire = createRequire(import.meta.url);
+    const Database = nodeRequire('better-sqlite3') as (p: string) => {
+      exec: (sql: string) => unknown;
+      prepare: (sql: string) => { run: (...args: unknown[]) => unknown; all: () => unknown[] };
+      close: () => void;
+    };
+    const legacy = Database(join(dir, 'memory.db'));
+    legacy.exec(`
+      CREATE TABLE research_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL, workspace TEXT NOT NULL, task_kind TEXT NOT NULL,
+        outcome TEXT NOT NULL, bug_class TEXT, summary TEXT NOT NULL, trajectory_ref TEXT
+      );
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+      INSERT INTO research_events (ts, workspace, task_kind, outcome, summary)
+        VALUES (${NOW - 1000}, '/ws/old', 'binary', 'success', '老事件');
+    `);
+    legacy.close();
+
+    // 第一次打开：两列都 ALTER 出来；旧事件读回无 expertRefs
+    const rows = listResearchEvents({ baseDir: dir });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary).toBe('老事件');
+    expect(rows[0].expertRefs).toBeUndefined();
+
+    // 第二次打开（重置连接缓存后重开同一文件）：迁移幂等不炸，新列可写
+    resetMemoryStoreForTest();
+    const e1 = seedExpertEntry('迁移后条目');
+    const ev = recordResearchEvent({
+      workspace: '/ws/old', taskKind: 'binary', outcome: 'stuck', summary: '新事件', expertRefs: [e1],
+    }, dir, NOW);
+    expect(ev.expertRefs).toEqual([e1]);
+    expect(listResearchEvents({ baseDir: dir })).toHaveLength(2);
   });
 });

@@ -47,6 +47,23 @@ describe('buildNarrationPrompt', () => {
     expect(NARRATION_SYSTEM_PROMPT).toContain('只许引用');
     expect(NARRATION_SYSTEM_PROMPT).toContain('不得改动');
   });
+
+  it('factOnly 节（引用的专家知识）不进 prompt：无分节标记、无事实', () => {
+    const events: ResearchEvent[] = [
+      { id: 1, ts: 100, workspace: WS, taskKind: 'pentest', outcome: 'success', summary: 'SQLi 成功', expertRefs: [12] },
+      { id: 2, ts: 200, workspace: WS, taskKind: 'pentest', outcome: 'success', summary: '拿到 flag{abc}' },
+    ];
+    const s = buildReportSkeleton({
+      workspace: WS, envId: 'pwn-vm', events,
+      transcript: { loopSessionId: 's', entries: [], truncated: false, totalMessages: 0, meta: null },
+      now: 1000,
+      lookupExpertEntry: () => ({ title: 'Web 注入三板斧', kind: 'technique' }),
+    });
+    expect(s.sections.some((sec) => sec.key === 'expert-refs')).toBe(true);
+    const prompt = buildNarrationPrompt(s);
+    expect(prompt).not.toContain('expert-refs');
+    expect(prompt).not.toContain('Web 注入三板斧');
+  });
 });
 
 describe('parseNarratedSections', () => {
@@ -77,5 +94,24 @@ describe('parseNarratedSections', () => {
     expect(parseNarratedSections('随便写的一大段没有任何标记', s).size).toBe(0);
     const dup = `${sectionOpenMarker('target')}\n第一份\n<<<END>>>\n${sectionOpenMarker('target')}\n第二份\n<<<END>>>`;
     expect(parseNarratedSections(dup, s).get('target')).toBe('第一份');
+  });
+
+  it('factOnly 节的 key 即使出现在输出里也静默丢弃（LLM 写不进引用节）', () => {
+    const events: ResearchEvent[] = [
+      { id: 1, ts: 100, workspace: WS, taskKind: 'pentest', outcome: 'success', summary: 'SQLi 成功', expertRefs: [12] },
+    ];
+    const s = buildReportSkeleton({
+      workspace: WS, envId: 'pwn-vm', events,
+      transcript: { loopSessionId: 's', entries: [], truncated: false, totalMessages: 0, meta: null },
+      now: 1000,
+      lookupExpertEntry: () => ({ title: '条目', kind: 'sop' }),
+    });
+    const text = [
+      `${sectionOpenMarker('expert-refs')}\nLLM 乱写引用节\n<<<END>>>`,
+      `${sectionOpenMarker('recon')}\n侦察叙述\n<<<END>>>`,
+    ].join('\n');
+    const parsed = parseNarratedSections(text, s);
+    expect(parsed.has('expert-refs')).toBe(false);
+    expect(parsed.get('recon')).toBe('侦察叙述');
   });
 });

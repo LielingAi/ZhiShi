@@ -2872,9 +2872,9 @@ function validateExpertDoc(raw: string, provenance: unknown, sourceEventId?: num
   return validateEntry({ ...parsed.fields, content: parsed.content, provenance, sourceEventId });
 }
 
-/** 解析正整数 id 参数；非法时打印 usage 并返回 null（调用方返回失败结果即可，勿重复打印）。 */
+/** 解析正整数 id 参数（容许 "#5" 写法——research_log 结案提示里的 promote 命令带 #）；非法时打印 usage 并返回 null（调用方返回失败结果即可，勿重复打印）。 */
 function parseExpertIdArg(raw: string | undefined, usage: string): number | null {
-  const id = Number(raw);
+  const id = Number(raw?.replace(/^#/, ''));
   if (raw === undefined || !Number.isInteger(id) || id <= 0) {
     console.error(`Error: ${usage}`);
     return null;

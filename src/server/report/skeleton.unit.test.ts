@@ -215,3 +215,68 @@ describe('formatReportTimestamp', () => {
     expect(formatReportTimestamp(NOW)).toMatch(/^\d{8}-\d{4}$/);
   });
 });
+
+describe('引用的专家知识（1.2.2 expert_refs）', () => {
+  const citedEvents = [
+    ev({ id: 1, ts: 100, taskKind: 'pentest', outcome: 'success', summary: 'SQLi 成功', expertRefs: [12] }),
+    ev({ id: 2, ts: 200, taskKind: 'pentest', outcome: 'success', summary: '拿到 flag', expertRefs: [7, 12] }),
+  ];
+  const lookup = (id: number) =>
+    id === 12
+      ? { title: 'Web 注入三板斧', kind: 'technique' }
+      : id === 7
+        ? { title: 'LFI 过滤绕过思路', kind: 'idea' }
+        : null;
+
+  it('有引用 → 追加 factOnly 节:条目按 id 升序聚合,事件双向可追;narration 不回填该节', () => {
+    const s = buildReportSkeleton({
+      workspace: WS, envId: 'pwn-vm', events: citedEvents, transcript: transcript([]), now: NOW,
+      lookupExpertEntry: lookup,
+    });
+    expect(s.expertRefs).toEqual([
+      { entryId: 7, title: 'LFI 过滤绕过思路', kind: 'idea', eventIds: [2] },
+      { entryId: 12, title: 'Web 注入三板斧', kind: 'technique', eventIds: [1, 2] },
+    ]);
+    const sec = s.sections.find((x) => x.key === 'expert-refs')!;
+    expect(sec.title).toBe('引用的专家知识');
+    expect(sec.factOnly).toBe(true);
+    expect(sec.facts).toEqual([
+      '#7《LFI 过滤绕过思路》（idea）：事件 #2 的决策依据',
+      '#12《Web 注入三板斧》（technique）：事件 #1 #2 的决策依据',
+    ]);
+
+    // 渲染:节在;即使 narration 恶意带上该节 key 也被忽略
+    const md = renderReportMarkdown(s, {
+      narration: new Map([['expert-refs', 'LLM 不该写进来的话'], ['recon', '正常叙述']]),
+    });
+    expect(md).toContain('## 引用的专家知识');
+    expect(md).toContain('- #12《Web 注入三板斧》（technique）：事件 #1 #2 的决策依据');
+    expect(md).not.toContain('LLM 不该写进来的话');
+    expect(md).toContain('正常叙述');
+  });
+
+  it('条目已删除/未注入 lookup → 按「不可考」降级渲染,不阻塞', () => {
+    const s = buildReportSkeleton({
+      workspace: WS, envId: 'pwn-vm', events: citedEvents, transcript: transcript([]), now: NOW,
+      lookupExpertEntry: () => null,
+    });
+    const sec = s.sections.find((x) => x.key === 'expert-refs')!;
+    expect(sec.facts).toEqual([
+      '#7（条目已删除或不可考）：事件 #2 曾引用',
+      '#12（条目已删除或不可考）：事件 #1 #2 曾引用',
+    ]);
+
+    // 完全不注入 lookup 同样降级
+    const s2 = buildReportSkeleton({ workspace: WS, envId: 'e', events: citedEvents, transcript: transcript([]), now: NOW });
+    expect(s2.sections.find((x) => x.key === 'expert-refs')!.facts[0]).toContain('不可考');
+  });
+
+  it('无引用 → 不出该节,sections 与模板完全一致(旧报告零变化)', () => {
+    const plain = [ev({ id: 1, ts: 100, taskKind: 'pentest', outcome: 'success', summary: 'x' })];
+    const s = buildReportSkeleton({ workspace: WS, envId: 'e', events: plain, transcript: transcript([]), now: NOW });
+    expect(s.expertRefs).toEqual([]);
+    expect(s.sections.map((x) => x.key)).toEqual(['target', 'recon', 'findings', 'exploit-chain', 'repro', 'fix']);
+    const md = renderReportMarkdown(s);
+    expect(md).not.toContain('引用的专家知识');
+  });
+});

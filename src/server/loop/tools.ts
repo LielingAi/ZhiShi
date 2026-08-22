@@ -274,12 +274,17 @@ export const RESEARCH_LOG_TOOL_NAME = 'research_log';
 const researchLogParameters = Type.Object({
   task_kind: Type.String({ enum: [...RESEARCH_TASK_KINDS], description: `研究域:${RESEARCH_TASK_KINDS.join(' / ')}` }),
   outcome: Type.String({ enum: [...RESEARCH_OUTCOMES], description: `成败:${RESEARCH_OUTCOMES.join(' / ')}` }),
-  summary: Type.String({ description: '成了什么 / 卡在哪 / 有效组合（一句话,蒸馏原料）' }),
+  summary: Type.String({ description: '成了什么 / 卡在哪 / 有效组合（一句话,蒸馏原料）。与专家知识冲突时在此写明冲突点(谁对谁错都是学习材料)' }),
   bug_class: Type.Optional(Type.String({ enum: [...RESEARCH_BUG_CLASSES], description: `漏洞类别(可空):${RESEARCH_BUG_CLASSES.join(' / ')}` })),
   trajectory_ref: Type.Optional(Type.String({
     description:
       '轨迹文件的工作区相对路径(可空)。纪律:产出 PoC/样本/截图等工件时必须挂环境内路径——' +
       '报告导出的证据回收按此登记批量拉回宿主,不挂=报告里该证据只能降级标注。',
+  })),
+  expert_refs: Type.Optional(Type.String({
+    description:
+      'expert 条目 id 列表,逗号分隔(可空,如 "3,12")。本结论/决策若依据了 expert_search 返回的专家条目,把条目 id 挂上——' +
+      '报告标注与蒸馏追溯按此;不存在的 id 会被拒绝落库。',
   })),
 });
 
@@ -287,6 +292,21 @@ export type ResearchLogParams = Static<typeof researchLogParameters>;
 
 export interface ResearchLogToolDetails {
   eventId: number;
+}
+
+/** 解析 expert_refs 参数（逗号分隔 id 串 → 去重的正整数数组）；非法 token 抛错。 */
+function parseExpertRefsParam(raw: string): number[] {
+  const ids: number[] = [];
+  for (const token of raw.split(',')) {
+    const t = token.trim().replace(/^#/, '');
+    if (!t) continue;
+    const id = Number(t);
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new Error(`research_log: expert_refs 含非法条目 id "${token.trim()}"（逗号分隔的正整数 id 列表）`);
+    }
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids;
 }
 
 /** 构造 research_log 工具;workspace 落库用(默认当前工作区路径)。 */
@@ -299,9 +319,12 @@ export function createResearchLogTool(
     label: '记录研究成败',
     description:
       '拿到 flag / 确认根因 / fuzz 出独有崩溃 / 研判完成 / 放弃时,记录一条研究成败事件(蒸馏弧原料)。' +
-      '这是 harness 原生能力——直接落库,不要在环境里跑 zhishi CLI(环境里够不到)。',
+      '这是 harness 原生能力——直接落库,不要在环境里跑 zhishi CLI(环境里够不到)。' +
+      '若结论/决策依据了 expert_search 返回的专家条目,把条目 id 挂上 expert_refs(报告与蒸馏按此追溯);' +
+      '与专家知识冲突时在 summary 写明冲突点。结案留痕(success/stuck)后工具会返回晋升提示,请原样转达给研究员。',
     parameters: researchLogParameters,
     execute: async (_toolCallId, params): Promise<AgentToolResult<ResearchLogToolDetails>> => {
+      const expertRefs = params.expert_refs ? parseExpertRefsParam(params.expert_refs) : undefined;
       const event = recordResearchEvent({
         workspace,
         taskKind: params.task_kind as ResearchTaskKind,
@@ -309,9 +332,16 @@ export function createResearchLogTool(
         ...(params.bug_class ? { bugClass: params.bug_class as ResearchBugClass } : {}),
         summary: params.summary,
         ...(params.trajectory_ref ? { trajectoryRef: params.trajectory_ref } : {}),
+        ...(expertRefs && expertRefs.length > 0 ? { expertRefs } : {}),
       }, options.baseDir);
+      // 1.2.2 promote 常态化:结案(success/stuck)留痕成功后在返回文本里带晋升
+      // 提示——harness 原生、零时序猜测;fail 不带(失败教训走蒸馏弧,不是专家知识)。
+      const promoteHint =
+        event.outcome === 'fail'
+          ? ''
+          : `。这条经验若可复用,提示研究员可用 \`zhishi expert promote #${event.id}\` 晋升为专家知识(人审后生效)`;
       return {
-        content: [{ type: 'text', text: `研究事件已记录(#${event.id} ${event.taskKind}/${event.outcome})` }],
+        content: [{ type: 'text', text: `研究事件已记录(#${event.id} ${event.taskKind}/${event.outcome})${promoteHint}` }],
         details: { eventId: event.id },
       };
     },

@@ -107,6 +107,45 @@ describe('exportReport 快乐路径', () => {
     expect(meta.sanitized).toBe(false);
     expect(meta.evidence.recovered).toBe(1);
     expect(meta.generatedAt).toBe(new Date(NOW).toISOString());
+    // 无 expert_refs 的事件 → meta 不出 expertRefs 字段,报告不出引用节(旧行为零变化)
+    expect(meta.expertRefs).toBeUndefined();
+    expect(md).not.toContain('引用的专家知识');
+  });
+});
+
+describe('exportReport 专家知识引用（1.2.2）', () => {
+  it('事件带 expert_refs + lookup 注入 → 报告出「引用的专家知识」节,meta.expertRefs 清单双向可追', async () => {
+    const eventsWithRefs: ResearchEvent[] = [
+      { ...EVENTS[0], expertRefs: [12] },
+      { ...EVENTS[1], expertRefs: [12, 99] },
+    ];
+    const { deps, captured } = makeDeps({
+      listWorkspaceEvents: () => eventsWithRefs,
+      lookupExpertEntry: (id) => (id === 12 ? { title: 'Web 注入三板斧', kind: 'technique' } : null),
+    });
+    const result = await exportReport({ workspace: WS, env: { envId: 'pwn-vm', entry: SSH_ENTRY } }, deps);
+    expect(result.success).toBe(true);
+
+    const md = captured.wrote!.files['report.md'];
+    expect(md).toContain('## 引用的专家知识');
+    expect(md).toContain('- #12《Web 注入三板斧》（technique）：事件 #1 #2 的决策依据');
+    expect(md).toContain('- #99（条目已删除或不可考）：事件 #2 曾引用');
+
+    const meta = JSON.parse(captured.wrote!.files['meta.json']);
+    expect(meta.expertRefs).toEqual([
+      { entryId: 12, title: 'Web 注入三板斧', kind: 'technique', eventIds: [1, 2] },
+      { entryId: 99, eventIds: [2] },
+    ]);
+  });
+
+  it('事件带 expert_refs 但未注入 lookup → 引用节按「不可考」降级,导出照常成功', async () => {
+    const eventsWithRefs: ResearchEvent[] = [{ ...EVENTS[0], expertRefs: [5] }];
+    const { deps, captured } = makeDeps({ listWorkspaceEvents: () => eventsWithRefs });
+    const result = await exportReport({ workspace: WS, env: { envId: 'pwn-vm', entry: SSH_ENTRY } }, deps);
+    expect(result.success).toBe(true);
+    expect(captured.wrote!.files['report.md']).toContain('#5（条目已删除或不可考）：事件 #1 曾引用');
+    const meta = JSON.parse(captured.wrote!.files['meta.json']);
+    expect(meta.expertRefs).toEqual([{ entryId: 5, eventIds: [1] }]);
   });
 });
 

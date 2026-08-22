@@ -3,8 +3,9 @@
  *
  * 输入 = workspace 的 research_events（时间正序）+ 当前会话 transcript；
  * 输出 = 按域模板的结构化骨架。骨架里的每一个字都是代码钉死的事实
- * （事件时间线 / bug_class / summary / 证据引用 / 文件:行号原文摘录），
- * LLM 只许围绕它写叙述（narrate.ts），永远没有改事实的机会。
+ * （事件时间线 / bug_class / summary / 证据引用 / 文件:行号原文摘录 /
+ * 专家知识引用），LLM 只许围绕它写叙述（narrate.ts），永远没有改事实的机会。
+ * 「引用的专家知识」节（1.2.2，factOnly）连叙述都不进——prompt 不含、回填不收。
  *
  * 子代理 transcript 本版不组装（v1 只组装主线 + 事件，design 边界）。
  */
@@ -22,6 +23,21 @@ export interface ReportSection {
   title: string;
   /** 钉死的事实行（渲染时带 '- ' 前缀；LLM 只许引用不许改动）。 */
   facts: string[];
+  /**
+   * 纯事实节（1.2.2「引用的专家知识」）：不进填肉 prompt、不接受叙述回填——
+   * LLM 连写引子的机会都没有，本节每个字都是代码钉死的。
+   */
+  factOnly?: boolean;
+}
+
+/** 专家知识引用（1.2.2）：事件 expert_refs 解析后的条目引用。 */
+export interface ExpertCitation {
+  entryId: number;
+  /** 条目已删除/不可考时为 undefined（记录时保证存在，之后可能被删）。 */
+  title?: string;
+  kind?: string;
+  /** 引用该条目的研究事件 id（时间正序去重）。 */
+  eventIds: number[];
 }
 
 export interface EvidenceRef {
@@ -51,6 +67,8 @@ export interface ReportSkeleton {
   events: ResearchEvent[];
   eventIds: number[];
   evidenceRefs: EvidenceRef[];
+  /** 引用的专家知识（1.2.2；无引用 → 空数组，报告不出该节）。 */
+  expertRefs: ExpertCitation[];
   /** transcript 摘录池（截断预算超限时砍这里，事件层不动）。 */
   excerpts: string[];
   /** 文件:行号 摘录（白盒证据定位；建骨架时从 transcript 扫出后随骨架走）。 */
@@ -215,6 +233,17 @@ function evidenceFacts(refs: EvidenceRef[], results?: EvidenceRecovery[]): strin
   });
 }
 
+/** 「引用的专家知识」节事实（1.2.2）：条目 + 引用它的事件，双向可追。 */
+function expertRefsFacts(citations: ExpertCitation[]): string[] {
+  return citations.map((c) => {
+    const events = c.eventIds.map((id) => `#${id}`).join(' ');
+    if (c.title === undefined) {
+      return `#${c.entryId}（条目已删除或不可考）：事件 ${events} 曾引用`;
+    }
+    return `#${c.entryId}《${c.title}》（${c.kind}）：事件 ${events} 的决策依据`;
+  });
+}
+
 function factsForSection(
   key: string,
   ctx: {
@@ -224,6 +253,7 @@ function factsForSection(
     excerpts: string[];
     fileLineRefs: string[];
     evidenceRefs: EvidenceRef[];
+    expertRefs: ExpertCitation[];
     evidenceResults?: EvidenceRecovery[];
   },
 ): string[] {
@@ -245,6 +275,8 @@ function factsForSection(
       return ctx.excerpts;
     case 'evidence':
       return evidenceFacts(ctx.evidenceRefs, ctx.evidenceResults);
+    case 'expert-refs':
+      return expertRefsFacts(ctx.expertRefs);
     case 'fix':
       return fixFacts(ctx.events);
     case 'summary':
@@ -265,6 +297,11 @@ export interface BuildSkeletonInput {
   transcript: LoopTranscript;
   /** ms epoch（注入时钟，测试可钉）。 */
   now: number;
+  /**
+   * 专家条目查证（1.2.2 引用追踪）：按 id 取 title/kind，查不到（已删除）
+   * 返回 null。缺省 → expert_refs 一律按「不可考」渲染（纯骨架不联网不猜）。
+   */
+  lookupExpertEntry?: (id: number) => { title: string; kind: string } | null;
 }
 
 /**
@@ -286,6 +323,24 @@ export function buildReportSkeleton(input: BuildSkeletonInput): ReportSkeleton {
     seenRefs.add(dedupeKey);
     evidenceRefs.push({ eventId: e.id, guestPath: ref });
   }
+  // 专家引用：事件 expert_refs → 按条目聚合（条目 id 升序，事件 id 时间序）。
+  const citationsById = new Map<number, ExpertCitation>();
+  for (const e of events) {
+    for (const entryId of e.expertRefs ?? []) {
+      const cur = citationsById.get(entryId);
+      if (cur) {
+        if (!cur.eventIds.includes(e.id)) cur.eventIds.push(e.id);
+        continue;
+      }
+      const entry = input.lookupExpertEntry?.(entryId) ?? null;
+      citationsById.set(entryId, {
+        entryId,
+        ...(entry ? { title: entry.title, kind: entry.kind } : {}),
+        eventIds: [e.id],
+      });
+    }
+  }
+  const expertRefs = [...citationsById.values()].sort((a, b) => a.entryId - b.entryId);
   const skeleton: ReportSkeleton = {
     domain: template.domain,
     template,
@@ -295,6 +350,7 @@ export function buildReportSkeleton(input: BuildSkeletonInput): ReportSkeleton {
     events,
     eventIds: events.map((e) => e.id),
     evidenceRefs,
+    expertRefs,
     excerpts,
     fileLineRefs,
     sections: [],
@@ -312,9 +368,10 @@ function buildSections(skeleton: ReportSkeleton): ReportSection[] {
     excerpts: skeleton.excerpts,
     fileLineRefs: skeleton.fileLineRefs,
     evidenceRefs: skeleton.evidenceRefs,
+    expertRefs: skeleton.expertRefs,
     ...(skeleton.evidenceResults ? { evidenceResults: skeleton.evidenceResults } : {}),
   };
-  const sections = skeleton.template.sections.map((spec) => ({
+  const sections: ReportSection[] = skeleton.template.sections.map((spec) => ({
     key: spec.key,
     title: spec.title,
     facts: factsForSection(spec.key, ctx),
@@ -324,6 +381,11 @@ function buildSections(skeleton: ReportSkeleton): ReportSection[] {
   if (!sections.some((s) => s.key === 'evidence')) {
     const host = sections.find((s) => s.key === 'findings') ?? sections[sections.length - 1];
     if (host) host.facts.push(...evidenceFacts(ctx.evidenceRefs, ctx.evidenceResults));
+  }
+  // 1.2.2「引用的专家知识」：模板通用——有引用才追加纯事实节（factOnly：
+  // LLM 填肉不进这节），无引用的报告零变化。
+  if (skeleton.expertRefs.length > 0) {
+    sections.push({ key: 'expert-refs', title: '引用的专家知识', facts: factsForSection('expert-refs', ctx), factOnly: true });
   }
   return sections;
 }
@@ -359,7 +421,9 @@ export function renderReportMarkdown(skeleton: ReportSkeleton, options: RenderOp
   for (const section of skeleton.sections) {
     lines.push(`## ${section.title}`);
     lines.push('');
-    const narration = options.narration?.get(section.key)?.trim();
+    // factOnly 节（引用的专家知识）纯事实渲染——填肉 prompt 不含此节，
+    // 这里也不接受叙述回填（双重防线）。
+    const narration = section.factOnly ? undefined : options.narration?.get(section.key)?.trim();
     if (narration) {
       lines.push(narration);
       lines.push('');
