@@ -16,6 +16,9 @@
 [![Homepage](https://img.shields.io/badge/Homepage-zhishi.help-blue)](https://zhishi.help)
 
 > 📖 **新用户从这里开始：[使用指南](docs/user-guide.md)** —— 安装、选环境、配模型、TUI 命令大全、常见问题。
+> 📦 **Windows 安装包：[GitHub Releases 下载最新版](https://github.com/LielingAi/ZhiShi/releases/latest)**（NSIS 安装包 / 便携 ZIP）。
+
+![TUI 会话界面](assets/tui-session.png)
 
 > 以实战出发的**漏洞研究专用 harness**。
 
@@ -87,17 +90,25 @@ ZhiShi 安全研究台
    跳 win 拿到 flag{ret2win_pwned_successfully}
 ```
 
+一次 CTF 实战的完整链路（命令执行绕过 → 任意命令构造 → 环境侦察 → 凭据泄露 → 数据库取 flag）：
+
+![CTF 实战：PHP 黑名单绕过到拿到 flag 的完整链路](assets/ctf-flag-run.png)
+
 ## 核心特性
 
 ### 控制面：全屏 TUI
 
+![正门：选择本次会话的工作环境](assets/tui-env-gate.png)
+
 - 正门强制选环境（无 host 模式），`--env <id>` / `--new-env <类型>` 直通
 - 流式会话 + 工具卡折叠（只留关键信号：exit 码、崩溃、flag、CVE、端口、会话已开）
+- 会话按环境分线（每环境独立历史，来回切换各接各的，不串场）
 - 中断五档：`Esc` 停止 · 运行中输入即纠偏 · `Ctrl+Z` 回思路（rewind）· `/rollback` 回环境 · `/attach` 接管环境 shell
-- 无模式回看（PgUp/PgDn），输入永不锁；文本随时可选中复制
-- `/` 命令面板、`@` 引用、`Ctrl+R` 历史搜索、`Ctrl+L` 帮助、`/fork` 分叉线程
+- 回看：PgUp/PgDn 整页 + 滚轮逐行 + Ctrl+Home 跳顶，输入永不锁；Esc 清草稿可恢复
+- `/` 命令面板、`@` 引用、`Ctrl+R` 历史搜索、`Ctrl+L` 帮助、`/fork` 分叉线程、`/tasks` 子任务面板
 - 越界动作红色模态（写宿主等四类，逐次问人，无「永远允许」）
 - 后台长驻进程状态行可见（`⛁ fuzz · 跑着`）+ 退出插行
+- 桌面图标点击即开 TUI（安装包形态；自启静默不弹窗）
 
 ### 引擎：自研 loop（harness 本体）
 
@@ -108,14 +119,18 @@ ZhiShi 安全研究台
 | 上下文 | 安全定制压缩：死路（非零 exit）与突破口（flag/CVE）永不裁 |
 | 记忆闭环 | research_events → 按研究域蒸馏（经验不跨域，置信度 0.xx 分级）→ 逐 turn 反喂系统提示 |
 | 认知内核 | 第一性原理五层认知（深度理解 → 对抗共情 → 溯因推理 → 认识论谦卑 → 远距类比）+ 置信度校准锚点（< 0.60 不报告）+ 硬排除清单 |
+| 专家知识 | `expert.db`——权威知识层（思路/技术/SOP，人审定才进库）：卡住了 LLM 无把握时的最后落脚点，`expert_search` 检索；留痕可挂 `expert_refs` 追溯「决策依据 E#N」 |
+| 研究报告 | `/export` 一键出报告目录（report.md + evidence/ PoC 本体）：骨架事实钉死 + LLM 填肉、按域模板、敏感项清单知情、显式脱敏可选 |
 | 能力包 | skills 提示词注入（binary-exploit / vuln-triage / native-code-loop / range-ops / pentest / whitebox-audit / ai-security + 用户库 `~/.zhishi/skills/`） |
-| 子代理 | bundled-agents：fuzz-runner / crash-triager / vuln-hunter / hypothesis-tester / critic |
+| 子代理 | bundled-agents：fuzz-runner / crash-triager / vuln-hunter / hypothesis-tester / critic；`/tasks` 面板看工作现场与完整 transcript |
 | 域包 | `bundled-domains/<域>/domain.json` —— 环境类型 / skill / 子代理 / 信号 / 验收一键声明，`zhishi domain check` 就绪自检 |
-| 模型 | 供应商可换（kimi / deepseek / …），`zhishi model set-key <id> <key>` + `set-default` |
+| 模型 | 8 家内置供应商端点（kimi / deepseek / openai / moonshot / 通义 / 智谱 / 硅基流动…），`zhishi model set-key <id> <key>` 后自动拉模型列表，TUI `/model` 闭环 |
 
 ## 快速开始
 
-> 要求 Node.js ≥ 22。当前处于开发态直跑源码；发行版安装包见发布计划。
+> 发行版（推荐）：[GitHub Releases](https://github.com/LielingAi/ZhiShi/releases/latest) 下载 Windows 安装包/便携 ZIP → 安装 → 点击图标即开 TUI（无窗口后台宿主 + 终端会话）。要求 Node.js ≥ 22（安装包已内置）。
+
+开发态直跑源码：
 
 ```bash
 npm install
@@ -164,7 +179,7 @@ zhishi domain check binary     # 就绪自检（引用完整 + 工具漂移 + �
 
 ```bash
 npm run build:server        # sidecar → src-tauri/resources/server-dist.js（ESM）
-npm run build:cli           # CLI → src-tauri/resources/cli/zhishi.js + zhishi.cmd（CJS + shebang）
+npm run build:cli           # CLI → src-tauri/resources/cli/zhishi.js + zhishi.cmd（ESM + shebang）
 npm run build:tsx-runtime   # 插件 TS 转译运行时 → src-tauri/resources/tsx-runtime/
 npm run sync:bundled-skills # 内置 skills 同步
 ```
@@ -215,16 +230,18 @@ flowchart LR
 
 | 项 | 状态 |
 |---|---|
-| 单元测试 | 1300+ 全绿；`tsc --noEmit` / `eslint` 零错 |
-| 活体 dogfood | ret2win 全程打通（环境内编译 → 溢出分析 → exp → flag），详见 `docs/` |
+| 单元测试 | 1900+ 全绿；`tsc --noEmit` / `eslint` 零错 / depcruise 架构边界强制 |
+| 活体回归 | `npm run smoke` 一键（真端点 + 真 VM，m1-m4 全链路）；产物级 smoke（打包产物跑关键路径） |
+| 活体 dogfood | ret2win 全程打通；1.1.8 三域实战验证（whitebox 埋雷审计全中 / pentest 全链拿 flag / ai-security 注入探针全拒），详见 `docs/` |
 | TUI 全链路真机 | 选环境 / 流式 / 中断 / 回退 / 快照回滚 / 接管 / 后台任务 / 越界模态 / fork 全部通过 |
-| 域内容件 | 四域齐备（binary / pentest / whitebox / ai-security）；三个 dogfood 待 Docker/Kali 环境 |
+| 域内容件 | 四域齐备（binary / pentest / whitebox / ai-security）并经实战验证 |
 
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
-| `docs/roadmap.md` | 版本任务池（1.1.0：能力补齐 + 引擎深化） |
+| `docs/roadmap.md` | 版本任务池（当前线：1.2.x 校准协作——研究交付 + 专家知识层） |
+| `docs/expert-knowledge-plan.md` | 专家知识层迭代与技术方案（1.2.1-1.2.3） |
 | `docs/security_researcher_agent_design.md` | 产品设计（决策记录 D1–D31） |
 | `docs/security_researcher_agent_tech_plan.md` | 技术方案 |
 | `docs/tui_tech_spec.md` / `docs/tui-rebuild-plan.md` | TUI 契约与重建蓝图 |
