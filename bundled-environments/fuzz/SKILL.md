@@ -1,6 +1,6 @@
 ---
 name: fuzz
-description: 模糊测试（fuzzing）环境。当任务是漏洞挖掘、崩溃复现、fuzz harness 编写与长跑 fuzz 时使用——内置 AFL++ 全家（afl-clang-fast/afl-fuzz/afl-tmin/afl-cmin），语料与崩溃按目录约定经工作区进出，适合小时级后台 fuzz + 崩溃收集研判。
+description: 模糊测试（fuzzing）环境。当任务是漏洞挖掘、崩溃复现、fuzz harness 编写与长跑 fuzz 时使用——内置 AFL++ 全家（afl-clang-fast/afl-fuzz/afl-tmin/afl-cmin）+ libFuzzer（clang 自带 -fsanitize=fuzzer，库内目标 in-process fuzz，示例 harness 见 /opt/zhishi/examples/libfuzzer-harness.c）+ sanitizers（ASan/UBSan，llvm-symbolizer 符号化报告），语料与崩溃按目录约定经工作区进出，适合小时级后台 fuzz + 崩溃收集研判。
 base: docker
 tools:
   - afl-clang-fast
@@ -12,6 +12,7 @@ tools:
   - afl-showmap
   - clang
   - gcc
+  - llvm-symbolizer
   - python3
   - gdb
 ---
@@ -53,6 +54,26 @@ afl-tmin -i <crash> -o crash-min -- ./fuzz_target @@       # 最小化
 
 - 崩溃去重与根因初判交给 `crash-triager`；长跑 fuzz 交给 `fuzz-runner`（subagent，后台跑、结构化回报）。
 - `AFL_SKIP_CPUFREQ=1`、`AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1` 在容器里通常需要。
+
+## libFuzzer（库内目标,in-process fuzz）
+
+目标是库函数/解析器而不是独立二进制时,libFuzzer 比 AFL++ 快一个量级——
+clang 自带 `-fsanitize=fuzzer`，零安装件。示例 harness（照它改写）:
+`/opt/zhishi/examples/libfuzzer-harness.c`。
+
+```bash
+# ① 编译(LLVMFuzzerTestOneInput 是唯一契约)
+clang -g -O1 -fsanitize=fuzzer,address harness.c target.c -o fuzz_lf
+# ② 跑(语料目录即输入即输出;崩溃 artifact 落 artifact_prefix)
+./fuzz_lf corpus-lf/ -max_total_time=3600 -artifact_prefix=crashes-lf/
+# ③ 崩溃复现/最小化:同一二进制就是 reproducer
+./fuzz_lf crashes-lf/crash-*
+./fuzz_lf -minimize_crash=1 -runs=100000 crashes-lf/crash-*
+```
+
+ASan 报告解读：`ASAN_SYMBOLIZER_PATH=$(which llvm-symbolizer)`（环境已装，
+默认能找到）；报告里 `SUMMARY: AddressSanitizer: heap-buffer-overflow` 行
+就是 bug_class 判定起点，堆栈帧经 llvm-symbolizer 符号化后直接可读。
 
 ## 结果怎么采
 

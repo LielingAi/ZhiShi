@@ -334,8 +334,17 @@ fn merge_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 // bump 只控制「何时再跑一轮播种」（首轮 / bump / 自愈缺失），每一轮内单个
 // 配方仍是缺失才落盘。新增随包配方 = bundled-environments/ 建目录 + bump
 // 下面的版本号。
+//
+// v6（1.2.5「组」阶段）：① 新增 pentest-vm 配方（pentest 双形态）；② 六个
+// docker 配方按选型终稿 v2 换工具集（pentest +nuclei/SecLists/netexec/ZAP/
+// Playwright 等；pwn -ropper/-standalone checksec +patchelf/pwninit/
+// seccomp-tools/one_gadget/libc 两件套；rev +radare2/ghidriff；fuzz
+// +libFuzzer 支持件；code-audit semgrep→opengrep +ast-grep/joern/bandit；
+// ai-security +pyrit）；③ tools[] 全部改真实二进制名（toolCheck 依赖）。
+// 注意 seed-if-missing：已落盘的老配方目录不覆盖——v6 的配方修正只触达
+// 新安装与缺失自愈，老用户拿到的只是新增的 pentest-vm。
 
-const ENVIRONMENT_RECIPES_VERSION: &str = "5";
+const ENVIRONMENT_RECIPES_VERSION: &str = "6";
 
 /// 配方源目录的判定：bundled-environments/ 下的子目录且含 SKILL.md
 /// （与 Node 侧 src/server/environment/recipes.ts 的扫描口径一致——无

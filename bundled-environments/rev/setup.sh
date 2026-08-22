@@ -19,9 +19,17 @@ if [ ! -d /opt/ghidra ]; then
   ln -sf /opt/ghidra/support/analyzeHeadless /usr/local/bin/analyzeHeadless
 fi
 
+echo "[rev-env] installing ghidriff (patch diff,1day 刚需)..."
+# ghidriff 是 pip 包 + 独立 CLI（经 pyhidra 驱动本机 Ghidra；
+# GHIDRA_INSTALL_DIR 已在 Dockerfile 里 ENV 固定到 /opt/ghidra）。
+# ubuntu 24.04 有 PEP 668,系统级 pip 必须 --break-system-packages。
+pip3 install --break-system-packages --no-cache-dir ghidriff
+
 echo "[rev-env] checking toolchain..."
 java -version 2>&1 | head -1
 analyzeHeadless 2>&1 | head -2 || true
+r2 -v | head -1
+ghidriff --version 2>&1 | head -1 || true
 gdb --version | head -1
 
 echo "[rev-env] ready"

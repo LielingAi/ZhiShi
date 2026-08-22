@@ -3,7 +3,7 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    afl++ clang build-essential \
+    afl++ clang llvm build-essential \
     python3 python3-pip \
     gdb git curl ca-certificates \
     file xxd less \
@@ -14,6 +14,7 @@ ENV AFL_SKIP_CPUFREQ=1 \
     AFL_NO_AFFINITY=1
 
 COPY setup.sh /opt/zhishi/setup.sh
+COPY examples/libfuzzer-harness.c /opt/zhishi/examples/libfuzzer-harness.c
 RUN chmod +x /opt/zhishi/setup.sh && /opt/zhishi/setup.sh
 
 WORKDIR /workspace

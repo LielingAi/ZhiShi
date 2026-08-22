@@ -9,8 +9,8 @@ const BUNDLED_ROOT = resolve(process.cwd(), 'bundled-environments');
 describe('bundled environment recipes（出厂配方守卫）', () => {
   const recipes = scanRecipes(BUNDLED_ROOT);
 
-  it('dev / pwn / fuzz / rev / pwn-vm / fuzz-vm / code-audit / pentest / ai-security 九个配方齐备', () => {
-    expect(recipes.map((r) => r.id).sort()).toEqual(['ai-security', 'code-audit', 'dev', 'fuzz', 'fuzz-vm', 'pentest', 'pwn', 'pwn-vm', 'rev']);
+  it('dev / pwn / fuzz / rev / pwn-vm / fuzz-vm / code-audit / pentest / pentest-vm / ai-security 十个配方齐备', () => {
+    expect(recipes.map((r) => r.id).sort()).toEqual(['ai-security', 'code-audit', 'dev', 'fuzz', 'fuzz-vm', 'pentest', 'pentest-vm', 'pwn', 'pwn-vm', 'rev']);
   });
 
   it('全部 valid（无 invalidReasons）', () => {
@@ -39,9 +39,9 @@ describe('bundled environment recipes（出厂配方守卫）', () => {
     expect(pwnVm?.vmUser).toBeTruthy();
   });
 
-  it('关键工具聚合可达（gdb/pwndbg/afl-fuzz/clang）', () => {
+  it('关键工具聚合可达（gdb/ROPgadget/afl-fuzz/clang——均为真实二进制名，toolCheck 依赖）', () => {
     const tools = new Set(aggregateRecipeTools(recipes).map((t) => t.tool));
-    for (const t of ['gdb', 'clang', 'afl-fuzz', 'pwndbg']) {
+    for (const t of ['gdb', 'clang', 'afl-fuzz', 'ROPgadget']) {
       expect(tools.has(t), `tool ${t}`).toBe(true);
     }
   });

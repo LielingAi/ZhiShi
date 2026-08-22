@@ -11,6 +11,6 @@
   ],
   "acceptance": [
     "对已知 CVE 的开源项目:审计→定位→复现,全程 research_log(kind=whitebox) 留痕",
-    "semgrep 基线扫描→告警分级→数据流手工追→CWE 映射 全链路走通"
+    "opengrep 基线扫描→告警分级→数据流手工追→CWE 映射 全链路走通"
   ]
 }

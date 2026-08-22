@@ -1,14 +1,17 @@
 ---
 name: pwn
-description: 二进制利用（pwn）研究环境。当任务是 0day 挖掘、1day 复现、漏洞利用开发、二进制逆向分析、exp 编写调试时使用——内置 gdb+pwndbg、pwntools、ROPgadget/ropper、checksec、socat 的完整利用链工具集，目标二进制经工作区挂载进环境分析。
+description: 二进制利用（pwn）研究环境。当任务是 0day 挖掘、1day 复现、漏洞利用开发、二进制逆向分析、exp 编写调试时使用——内置 gdb+pwndbg、pwntools（checksec/cyclic 随附）、ROPgadget、one_gadget、seccomp-tools、patchelf/pwninit + libc-database/glibc-all-in-one（换 libc 调试链）、socat 的完整利用链工具集，目标二进制经工作区挂载进环境分析。
 base: docker
 tools:
   - gdb
-  - pwndbg
-  - pwntools
   - ROPgadget
-  - ropper
   - checksec
+  - cyclic
+  - pwn
+  - patchelf
+  - pwninit
+  - seccomp-tools
+  - one_gadget
   - socat
   - nc
   - python3
@@ -33,7 +36,7 @@ zhishi env open <id>       # 或 docker exec -it <container> bash
 
 ```bash
 cd /workspace
-checksec --file=./vuln              # ① 看保护：NX/Canary/PIE/RELRO
+checksec --file=./vuln              # ① 看保护：NX/Canary/PIE/RELRO（pwntools 自带）
 gdb ./vuln                          # ② pwndbg 自动加载：cyclic 200 定偏移、vmmap 看布局
 python3 exp.py                      # ③ pwntools 写 exp
 ```
@@ -48,7 +51,9 @@ p = process('./vuln')               # 本地调试；远程换 remote('host', po
 p.interactive()
 ```
 
-- 找 gadget：`ROPgadget --binary ./vuln --ropchain` 或 `ropper -f ./vuln`
+- 找 gadget：`ROPgadget --binary ./vuln --ropchain`；glibc 场景 `one_gadget /opt/libc-database/db/libc6_*.so`（one_gadget 仅支持 glibc ≤ 2.35，更高版本用 ROPgadget 凑链）
+- seccomp 沙箱分析：`seccomp-tools dump ./vuln`
+- 换 libc 调试：`pwninit --bin ./vuln --libc ./libc.so.6 --ld ./ld-linux-x86-64.so.2`（自动 patchelf + 补符号）；缺对应版本 libc 去 `/opt/libc-database`（`./get` 按需下载）或 `/opt/glibc-all-in-one` 取
 - 起服务给 exp 打：`socat TCP-LISTEN:1337,reuseaddr,fork EXEC:./vuln`
 - 远程靶机：`nc host port` 或 exp 里 `remote()`——出向网络按任务授权来
 

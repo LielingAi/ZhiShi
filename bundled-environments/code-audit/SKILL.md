@@ -1,13 +1,17 @@
 ---
 name: code-audit
-description: 白盒审计研究环境——源码漏洞审计的环境。任务涉及源码级漏洞挖掘（审计开源项目、找注入/越权/逻辑漏洞、SCA 依赖审计）时使用。内置 semgrep（静态分析主力）+ pip-audit（依赖漏洞对照）+ ripgrep/universal-ctags（手工数据流追索）。CodeQL 不预装（下载大），需要时环境内自装。
+description: 白盒审计研究环境——源码漏洞审计的环境。任务涉及源码级漏洞挖掘（审计开源项目、找注入/越权/逻辑漏洞、SCA 依赖审计）时使用。内置 OpenGrep（静态分析主力,Semgrep CE 的全兼容超集）+ Joern（污点传播,多语言 CPG,预置 joern-taint.sc 模板 CLI 化）+ ast-grep（即席 AST 搜索/重写）+ bandit（Python 专项）+ pip-audit/osv-scanner（SCA）+ ripgrep/universal-ctags（手工数据流追索）。CodeQL 不预装（下载大）,仅开源靶标条件启用,需要时环境内自装。
 base: docker
 tools:
-  - semgrep
+  - opengrep
+  - joern
+  - joern-parse
+  - sg
+  - bandit
   - osv-scanner
   - pip-audit
-  - ripgrep
-  - universal-ctags
+  - rg
+  - ctags
 ---
 
 # code-audit —— 白盒审计研究环境
@@ -28,14 +32,33 @@ zhishi env open <id>       # 或 docker exec -it <container> bash
 
 ```bash
 cd /workspace/<目标项目>
-semgrep scan --config auto .                 # ① 基线扫描(规则集 auto)
-semgrep scan --config p/owasp-top-ten .      # ② 按场景换规则集
-osv-scanner scan -r .                        # ③ SCA:多生态依赖漏洞对照
-pip-audit -r requirements.txt                # ④ pip 生态补充
-rg -n "exec\(|eval\(|SELECT" src/            # ⑤ 手工追索入口
+opengrep scan --config p/owasp-top-ten .       # ① 基线扫描(registry 规则运行时拉取,不随包分发)
+opengrep scan --config <规则目录> .             # ② 本地/自定义规则集
+bandit -r . -f txt                              # ③ Python 专项
+osv-scanner scan -r .                           # ④ SCA:多生态依赖漏洞对照
+pip-audit -r requirements.txt                   # ⑤ pip 生态补充
+rg -n "exec\(|eval\(|SELECT" src/              # ⑥ 手工追索入口
 ```
 
-## CodeQL（需要时自装,不预装）
+## Joern 污点分析（1day/数据流主力）
+
+```bash
+joern-parse -o /workspace/out/target.cpg.bin .            # ① 建 CPG(多语言)
+joern --script /opt/zhishi/joern-taint.sc \
+      --params cpgFile=/workspace/out/target.cpg.bin      # ② 模板一把出 source→sink 流
+```
+
+`joern-taint.sc` 的 sources/sinks 名单按 bug_class 改；要交互深挖再进
+`joern` REPL（`importCpg` 后 CPGQL 查询）。大项目给堆内存：`JAVA_OPTS=-Xmx8g joern ...`。
+
+## ast-grep（即席 AST 搜索/重写）
+
+```bash
+sg run -p 'eval($CODE)' --lang python .        # 结构匹配,比 rg 少误报
+sg run --rewrite '...' -p '...' . -i           # 交互式结构重写
+```
+
+## CodeQL（仅开源靶标条件启用,需要时自装）
 
 ```bash
 # 下载 CLI + 建数据库 + 跑查询——见 bundled-skills/whitebox-audit 的降级路径

@@ -25,9 +25,13 @@ bundled-environments/<name>/
   frontmatter `vm_base`。
 - 打包时本目录经 `src-tauri/tauri.conf.json` resources 映射进应用资源，
   Rust 侧 `cmd_seed_environment_recipes`（`src-tauri/src/commands.rs`）按
-  **seed-if-missing** 策略落盘到 `~/.zhishi/environments/`——用户/LLM 对
-  已落盘配方的迭代不会被覆盖；`ENVIRONMENT_RECIPES_VERSION` bump 触发
-  新一轮播种（只补缺失配方）。
+  **seed-if-missing** 策略落盘到 `~/.zhishi/environments/`（首轮播种/自愈
+  缺失）；在此之上 Node 侧 `syncEnvironmentRecipes`
+  （`src/server/skills-config.ts`）做**内容哈希同步**（1.2.5「配」）——
+  内容一致 no-op；bundled 配方有修正则覆盖落盘，旧版整个备份到
+  `<配方>.bak-<YYYYMMDD>`（用户/LLM 的本地迭代可从此回滚）。
+  `ENVIRONMENT_RECIPES_VERSION` bump 触发 Rust 侧新一轮播种（只补缺失
+  配方）；内容修正在 server 启动时由 Node 侧同步触达老安装。
 
 具体配方由 E5 任务补充；新增配方 = 在此建目录 + bump
 `ENVIRONMENT_RECIPES_VERSION`。
