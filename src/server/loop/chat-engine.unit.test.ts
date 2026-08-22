@@ -127,13 +127,16 @@ vi.mock('./refs', () => ({
 
 import {
   cancelPiQueueItem,
+  ensureMetaLoopLine,
   envSwitchBlocker,
   forcePiQueueItem,
   getPiAgentState,
+  getPiCurrentSessionRef,
   getPiMessages,
   getPiQueueStatus,
   getPiSystemInitInfo,
   initPiChatEngine,
+  invokePiSession,
   isPiEngine,
   queuePiChatMessage,
   resetPiChat,
@@ -142,6 +145,7 @@ import {
   rewindPiChat,
   forkPiChat,
   sendPiChatMessage,
+  sendPiChatMessageAndWait,
   stopPiChat,
   switchEnvSession,
   switchPiSession,
@@ -993,5 +997,284 @@ describe('1.2.6 批次A 回归(B1 cron new_session / B3 串线 / B10 配置面�
     envSessionsData.set('E:/ws::host', { loopSessionId: 'ls-77', updatedAt: '' });
     await initPiChatEngine('E:/ws');
     expect(getSessionId()).toBe('meta-old');
+  });
+});
+
+
+describe('1.2.6 批次B 回归(B2 cron invoke 通道 / B4 force 单起点 / B5 steering 孤儿+归属 / B6 wire 补写)', () => {
+  describe('B2:invokePiSession 独立 invoke 通道(不碰引擎单例)', () => {
+    it('引擎 busy 时 invoke 并发跑:不进 steering、不改 wire、只写目标线、cron 场景显式生效', async () => {
+      const release = gateFirstTurn();
+      await sendPiChatMessage({ text: 'one' });
+      const wireBefore = getPiMessages().length;
+      const engineLine = getPiSystemInitInfo()?.session_id;
+      expect(engineLine).toBeTruthy();
+      // 引擎 turn 仍挂着(gate 未释放)时并发 invoke——旧路径这里会把
+      // cron prompt 当 steering 注入用户 turn(B2a)。
+      const r = await invokePiSession(
+        { text: 'cron 任务', providerEnv: { apiKey: 'k' } },
+        { loopSessionId: 'ls-cron', scenario: { type: 'cron', taskId: 't1', intervalMinutes: 15, aiCanExit: true } },
+      );
+      expect(r.error).toBeUndefined();
+      expect(r.text).toBe('done-text'); // gateFirstTurn:非首次调用即时完成
+      expect(r.loopSessionId).toBe('ls-cron');
+      // 单例零扰动:wire 不变、引擎仍 busy(它的 turn 还挂着)、无 steering 事件
+      expect(getPiMessages().length).toBe(wireBefore);
+      expect(getPiAgentState().sessionState).toBe('running');
+      expect(broadcastMock.mock.calls.some((c) => c[0] === 'chat:steering-added')).toBe(false);
+      // 续存只写目标线,引擎线零写入
+      expect(appendLoopMessagesMock.mock.calls.map((c) => c[0])).toEqual(['ls-cron']);
+      // cron 场景显式传入(不吃全局 scenario 时序):系统提示含 cron 段 + 自退标记
+      const invokeOpts = runLoopMock.mock.calls[1][0] as { systemPrompt: string; prompt?: string };
+      expect(invokeOpts.systemPrompt).toContain('zhishi-cron-task-instructions');
+      expect(invokeOpts.systemPrompt).toContain('Task ID: t1');
+      expect(invokeOpts.systemPrompt).toContain('[CRON_TASK_COMPLETE');
+      expect(invokeOpts.prompt).toBe('cron 任务');
+      release();
+      await waitTurnSettled();
+      // 引擎线/会话标识未被 invoke 改写
+      expect(getPiSystemInitInfo()?.session_id).toBe(engineLine);
+    });
+
+    it('无 loopSessionId → 一次性新线;目标线历史作为 history 进 loop', async () => {
+      loadLoopSessionMock.mockReturnValue({ messages: [userMsg('旧上下文')], meta: null });
+      const r = await invokePiSession({ text: 'cron' });
+      expect(r.error).toBeUndefined();
+      expect(r.loopSessionId).toBeTruthy();
+      const opts = runLoopMock.mock.calls[0][0] as { history?: unknown[] };
+      expect(opts.history).toHaveLength(1);
+      // 续存写回同一条(新)线
+      expect(appendLoopMessagesMock.mock.calls[0][0]).toBe(r.loopSessionId);
+    });
+
+    it('模型解析失败 → error 且带 loopSessionId,不跑 loop', async () => {
+      resolveLoopModelFromEnvMock.mockReturnValue(null);
+      const r = await invokePiSession({ text: 'x', providerEnv: { apiKey: 'k' } }, { loopSessionId: 'ls-c' });
+      expect(r.error).toContain('无可用的 provider/model');
+      expect(r.loopSessionId).toBe('ls-c');
+      expect(runLoopMock).not.toHaveBeenCalled();
+    });
+
+    it('ensureMetaLoopLine:有绑定 → 原线;无绑定 → 开新线并回写 meta;无 meta → null', async () => {
+      getSessionMetadataMock.mockReturnValue({ id: 'm1', loopSessionId: 'ls-bound' });
+      expect(await ensureMetaLoopLine('m1')).toBe('ls-bound');
+      expect(updateSessionMetadataMock).not.toHaveBeenCalled();
+      getSessionMetadataMock.mockReturnValue({ id: 'm2' });
+      const healed = await ensureMetaLoopLine('m2');
+      expect(healed).toBeTruthy();
+      const bindCall = updateSessionMetadataMock.mock.calls.find(
+        (c) => c[0] === 'm2' && (c[1] as { loopSessionId?: unknown }).loopSessionId === healed,
+      );
+      expect(bindCall).toBeDefined();
+      getSessionMetadataMock.mockReturnValue(null);
+      expect(await ensureMetaLoopLine('ghost')).toBeNull();
+    });
+
+    it('getPiCurrentSessionRef:当前线 + 绑定 meta 的只读快照', async () => {
+      await sendPiChatMessage({ text: 'one' });
+      await waitTurnSettled();
+      const ref = getPiCurrentSessionRef();
+      expect(ref.sessionMetaId).toBe('meta-new');
+      expect(appendLoopMessagesMock.mock.calls[0][0]).toBe(ref.loopSessionId);
+    });
+  });
+
+  describe('B4:force 塞回队首 + promote 统一接管(无双 turn 并发)', () => {
+    it('两项排队 force 其一:abort 当前后由 promote 依序接起,全程 maxActive=1', async () => {
+      let active = 0;
+      let maxActive = 0;
+      let releaseFirst!: () => void;
+      const gate = new Promise<void>((r) => { releaseFirst = r; });
+      let call = 0;
+      runLoopMock.mockImplementation(async function* (opts: { prompt?: string; signal?: AbortSignal }) {
+        call++;
+        active++;
+        maxActive = Math.max(maxActive, active);
+        try {
+          if (call === 1) {
+            await Promise.race([gate, new Promise<void>((r) => opts.signal?.addEventListener('abort', () => r()))]);
+            if (opts.signal?.aborted) return;
+          }
+          for (const e of doneEvents(`ans-${call}`)) yield e;
+        } finally {
+          active--;
+        }
+      });
+      await sendPiChatMessage({ text: 'one' });
+      const qa = await queuePiChatMessage({ text: 'A' });
+      const qb = await queuePiChatMessage({ text: 'B' });
+      expect(qb.queueId).toBeTruthy();
+      expect(await forcePiQueueItem(qa.queueId!)).toBe(true);
+      releaseFirst();
+      await waitTurnSettled();
+      // turn1 被 abort(无产出);promote 依序跑 A、B——force 不自起,
+      // 旧实现的「轮询超上限后无视 busy 再 startResolvedTurn」双 turn 不再可能。
+      expect(runLoopMock).toHaveBeenCalledTimes(3);
+      expect((runLoopMock.mock.calls[1][0] as { prompt?: string }).prompt).toBe('A');
+      expect((runLoopMock.mock.calls[2][0] as { prompt?: string }).prompt).toBe('B');
+      expect(maxActive).toBe(1);
+      expect(getPiQueueStatus()).toEqual([]);
+      // isInFlight:true 的 queue:added 只由 promote 发(A、B 各一次),force 自己不重发
+      const promotedAdds = broadcastMock.mock.calls.filter(
+        (c) => c[0] === 'queue:added' && (c[1] as { isInFlight: boolean }).isInFlight === true,
+      );
+      expect(promotedAdds).toHaveLength(2);
+    });
+
+    it('force 不存在的项 → false(语义不变)', async () => {
+      expect(await forcePiQueueItem('nope')).toBe(false);
+    });
+  });
+
+  describe('B5:steering 孤儿 drain + send-and-wait 归属', () => {
+    it('turn done 时残留 steering 转 FIFO 队首续跑(不被注入别人的 turn)', async () => {
+      let call = 0;
+      let releaseFirst!: () => void;
+      const gate = new Promise<void>((r) => { releaseFirst = r; });
+      // 第一 turn 挂起且从不轮询 steering(模拟「最后一跳 LLM 期间到达」——
+      // pi 收尾走 getFollowUpMessages,本引擎没传,steering 永远等不到注入点)。
+      runLoopMock.mockImplementation(async function* (opts: { prompt?: string }) {
+        call++;
+        if (call === 1) await gate;
+        for (const e of doneEvents(`answer-of-${opts.prompt}`)) yield e;
+      });
+      await sendPiChatMessage({ text: 'one' });
+      const steer = await sendPiChatMessage({ text: '迟到的纠偏' });
+      expect(steer.steering).toBe(true);
+      releaseFirst();
+      await waitTurnSettled();
+      // 孤儿被 drain 到队首,作为独立 turn 开跑(prompt 原样,不混进 turn1)
+      expect(runLoopMock).toHaveBeenCalledTimes(2);
+      expect((runLoopMock.mock.calls[1][0] as { prompt?: string }).prompt).toBe('迟到的纠偏');
+      // 离开 steering 队列有广播;队列排空
+      expect(broadcastMock.mock.calls.some(
+        (c) => c[0] === 'chat:steering-cancelled' && (c[1] as { queueId?: string }).queueId === steer.queueId,
+      )).toBe(true);
+      expect(getPiQueueStatus()).toEqual([]);
+    });
+
+    it('孤儿转队首:先于更早排队的 FIFO 项开跑(steering 的「尽快送达」语义)', async () => {
+      let call = 0;
+      let releaseFirst!: () => void;
+      const gate = new Promise<void>((r) => { releaseFirst = r; });
+      runLoopMock.mockImplementation(async function* (opts: { prompt?: string }) {
+        call++;
+        if (call === 1) await gate;
+        for (const e of doneEvents(`ans-${call}`)) yield e;
+      });
+      await sendPiChatMessage({ text: 'one' });
+      const fifo = await queuePiChatMessage({ text: 'fifo-old' });
+      expect(fifo.queued).toBe(true);
+      await sendPiChatMessage({ text: 'steer-new' }); // busy → steering
+      releaseFirst();
+      await vi.waitFor(() => expect(runLoopMock).toHaveBeenCalledTimes(3), { timeout: 3000, interval: 10 });
+      await waitTurnSettled();
+      const prompts = runLoopMock.mock.calls.map((c) => (c[0] as { prompt?: string }).prompt);
+      expect(prompts).toEqual(['one', 'steer-new', 'fifo-old']);
+    });
+
+    it('send-and-wait 按 queueId 归属:等待期间别人的 turn 完成也不错拿答案', async () => {
+      let call = 0;
+      let releaseFirst!: () => void;
+      const gate = new Promise<void>((r) => { releaseFirst = r; });
+      runLoopMock.mockImplementation(async function* (opts: { prompt?: string }) {
+        call++;
+        if (call === 1) await gate;
+        for (const e of doneEvents(`answer-of-${opts.prompt}`)) yield e;
+      });
+      await sendPiChatMessage({ text: 'user-turn' }); // turn1 gated
+      // busy → cron-q 进 steering;turn1 不注入它(done 后孤儿转队首跑 turn2)。
+      // 旧实现:turn1 收尾推进 turnSeq + 队列空 → 立即返回 turn1 的答案(错归因)。
+      const waitPromise = sendPiChatMessageAndWait({ text: 'cron-q' }, 5000);
+      releaseFirst();
+      const r = await waitPromise;
+      expect(r.error).toBeUndefined();
+      expect(r.text).toBe('answer-of-cron-q');
+      expect(runLoopMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('send-and-wait:steering 被运行中 turn 注入时,拿消费 turn 的答案', async () => {
+      // 第一(唯一)turn 等 steering 就位后轮询注入,done 产出合并答案。
+      runLoopMock.mockImplementation(async function* (opts: { getSteeringMessages?: () => Promise<AgentMessage[]> }) {
+        await vi.waitFor(() => {
+          expect(getPiQueueStatus().some((q) => q.kind === 'steering')).toBe(true);
+        }, { timeout: 3000, interval: 10 });
+        const injected = await opts.getSteeringMessages!();
+        expect(injected).toHaveLength(1);
+        for (const e of doneEvents('合并后的答案')) yield e;
+      });
+      await sendPiChatMessage({ text: 'user-turn' });
+      const r = await sendPiChatMessageAndWait({ text: 'cron-q' }, 5000);
+      expect(r.error).toBeUndefined();
+      expect(r.text).toBe('合并后的答案');
+      expect(runLoopMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('send-and-wait 超时仍报错且不中断:turn 跑完后孤儿照常续跑', async () => {
+      const release = gateFirstTurn();
+      await sendPiChatMessage({ text: 'one' });
+      const waitPromise = sendPiChatMessageAndWait({ text: 'cron-q' }, 300);
+      const r = await waitPromise;
+      expect(r.error).toContain('超时');
+      release();
+      await waitTurnSettled();
+      // 超时不取消:turn1 收尾后孤儿 cron-q 转队首续跑(共 2 次 loop)
+      expect(runLoopMock).toHaveBeenCalledTimes(2);
+      expect((runLoopMock.mock.calls[1][0] as { prompt?: string }).prompt).toBe('cron-q');
+    });
+  });
+
+  describe('B6:steering 注入补 wire + replay(rewind/fork 序数 1:1)', () => {
+    /** mock:turn 中等 steering 就位后注入,done.messages 含注入消息(pi 真实行为)。 */
+    function steeringTurnMock() {
+      runLoopMock.mockImplementation(async function* (opts: { getSteeringMessages?: () => Promise<AgentMessage[]> }) {
+        await vi.waitFor(() => {
+          expect(getPiQueueStatus().some((q) => q.kind === 'steering')).toBe(true);
+        }, { timeout: 3000, interval: 10 });
+        const injected = (await opts.getSteeringMessages!()) ?? [];
+        yield { type: 'text-delta', delta: '答' };
+        yield { type: 'done', messages: [userMsg('one'), ...(injected as AgentMessage[]), assistantMsg('答')] };
+      });
+    }
+
+    it('注入的 steering 消息同步进 wire + replay 广播 + 清 steering 队列条目', async () => {
+      steeringTurnMock();
+      await sendPiChatMessage({ text: 'one' });
+      const steer = await sendPiChatMessage({ text: '改方向' });
+      await waitTurnSettled();
+      // wire 与持久化 1:1:两条 user 同序
+      const users = getPiMessages().filter((m) => m.role === 'user');
+      expect(users.map((m) => m.content)).toEqual(['one', '改方向']);
+      const replays = broadcastMock.mock.calls
+        .filter((c) => c[0] === 'chat:message-replay')
+        .map((c) => (c[1] as { message: { content: string } }).message.content);
+      expect(replays).toContain('改方向');
+      expect(broadcastMock.mock.calls.some(
+        (c) => c[0] === 'chat:steering-cancelled' && (c[1] as { queueId?: string }).queueId === steer.queueId,
+      )).toBe(true);
+      // 持久化(done.messages)含注入消息,顺序一致——重启回放不再冒幽灵消息
+      const appended = appendLoopMessagesMock.mock.calls[0][1] as AgentMessage[];
+      expect(appended.filter((m) => m.role === 'user').map((m) => m.content)).toEqual(['one', '改方向']);
+      expect(getPiQueueStatus()).toEqual([]);
+    });
+
+    it('rewind 序数映射在 steering 注入后仍准确(截到注入消息之前)', async () => {
+      steeringTurnMock();
+      await sendPiChatMessage({ text: 'one' });
+      await sendPiChatMessage({ text: '改方向' });
+      await waitTurnSettled();
+      const wireUsers = getPiMessages().filter((m) => m.role === 'user');
+      expect(wireUsers).toHaveLength(2);
+      // loop 历史:one(0) → 改方向(1) → assistant(2)
+      const loopHistory = [userMsg('one'), userMsg('改方向'), assistantMsg('答')];
+      loadLoopSessionMock.mockReturnValueOnce({ messages: loopHistory, meta: null }) // rewind 读
+        .mockReturnValue({ messages: loopHistory.slice(0, 1), meta: null }); // 截断后重建读
+      const r = await rewindPiChat(wireUsers[1].id);
+      expect(r.success).toBe(true);
+      // wire 第 2 条 user(ordinal=1)→ 截到 loop 下标 1(注入消息本身被裁掉);
+      // 旧实现 wire 无注入消息,序数映射错位(截点偏后、裁少了)。
+      expect(truncateLoopSessionMock).toHaveBeenCalledWith(expect.any(String), 1);
+      expect(getPiMessages().filter((m) => m.role === 'user').map((m) => m.content)).toEqual(['one']);
+    });
   });
 });

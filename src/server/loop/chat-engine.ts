@@ -34,8 +34,15 @@
  *   - 会话按环境分线(1.1.6 #4):workspace × 环境键 → loopSessionId 存
  *     ~/.zhishi/env-sessions.json(environment/env-sessions.ts);environment/select
  *     落盘后联动 switchEnvSession 切线(busy 拒绝,rewind/fork 同口径);
- *     reset 同步清当前环境键的映射条目;cron 不特殊处理——跟随当前选定
- *     环境的线(引擎单例现状即是如此)。
+ *     reset 同步清当前环境键的映射条目。
+ *   - cron 独立 invoke 通道(B2,1.2.6):cron 不再经单例的
+ *     sendPiChatMessage/switchPiSession——invokePiSession 按目标 loop 线
+ *     读历史、跑独立 runLoop、续存回同一条线(appendLoopMessages 有文件
+ *     锁,与单例并发写不丢更新),全程不碰引擎的 sessionId/messages/
+ *     steering/queue/busy,不广播 TUI 事件。single_session 的上下文延续
+ *     由「读任务自己的 loop 线历史」承载,不需要切换引擎会话线——B2 的
+ *      steering 混入 / TUI 重接强停 cron turn / env 映射回填错位三切面
+ *     随之整体消失(详见 switchPiSession 的 B2 论证注释)。
  *   - rewind(M4b):/chat/rewind 按 userMessageId 截断 loop-sessions
  *     (追加日志,截断即时间回溯)并重建内存消息。
  *   - 图片(M4b):payload.images → pi user 消息的 image 块。
@@ -46,7 +53,9 @@
  *     映射 chat:subagent-tool-*。
  *
  * v1 已知限制:fork 不在 pi 路径;steering 注入为纯文本(图片不随
- * steering 进队列)。
+ * steering 进队列)。1.2.6 批次 B:steering 注入同步补 wire + replay
+ * 广播(B6,保 rewind/fork 序数映射 1:1);turn done 时残留 steering
+ * drain 到 FIFO 队首续跑(B5,pi 只在 turn 间轮询 steering,收尾不看)。
  */
 
 import { randomUUID } from 'node:crypto';
@@ -128,6 +137,9 @@ interface MessageWire {
   /** role === 'tool' 时:工具名与成败(重放工具卡用)。 */
   name?: string;
   ok?: boolean;
+  /** B5(1.2.6)— 来源队列项 id(steering/FIFO/send-and-wait 归属追踪用;
+   *  仅 user 消息可能携带;不上屏、不进持久化,纯内存标签)。 */
+  queueId?: string;
   attachments?: {
     id: string;
     name: string;
@@ -287,6 +299,22 @@ export function getEnvSessionBinding(
   return { envKey, loopSessionId: line.loopSessionId, sessionMetaId: meta?.id ?? null };
 }
 
+/**
+ * B2(1.2.6)— meta → loop 线的解析/愈合:B1 愈合逻辑的引擎无关版。
+ * meta 存在且有 loopSessionId 绑定 → 返回该线;无绑定(cron new_session
+ * 新建的 meta 不落 loopSessionId)→ 当场开新线并把绑定写回 meta;
+ * meta 不存在 → null。不碰引擎单例的任何状态——cron invoke 通道与
+ * switchPiSession 共用此解析。
+ */
+export async function ensureMetaLoopLine(metaId: string): Promise<string | null> {
+  const meta = getSessionMetadata(metaId) as { loopSessionId?: string | null } | null;
+  if (!meta) return null;
+  if (meta.loopSessionId) return meta.loopSessionId;
+  const loopId = newLoopSessionId();
+  await updateSessionMetadata(metaId, { loopSessionId: loopId } as Partial<SessionMetadata>);
+  return loopId;
+}
+
 // ---------------------------------------------------------------------------
 // ChatEngine(1.1.7 ② — 原模块级 let 与导出函数的机械收拢;行为零变化)
 // ---------------------------------------------------------------------------
@@ -321,6 +349,10 @@ class ChatEngine {
   private currentEnvKey: string = envKeyForSelection(HOST_SELECTION);
   /** turn 完成计数(cron/headless 等待点;每个 turn 收尾 +1)。 */
   private turnSeq = 0;
+  /** B5(1.2.6)— 答案归属表:来源 queueId → 该 turn 收尾的 assistant 气泡 id。
+   *  sendPiChatMessageAndWait 按 queueId 取答案(归属精确到消息,不看
+   *  turnSeq/「最后一条 assistant」)。有界:超 200 条淘汰最旧。 */
+  private turnAnswerByQueueId = new Map<string, string>();
 
   // -------------------------------------------------------------------------
   // Engine switch(env > config,缺省 sdk)
@@ -518,15 +550,15 @@ class ChatEngine {
   }
 
   /** 模型解析 + 启动 turn(send/queue 两入口共用;调用前须确认 !busy)。 */
-  private startResolvedTurn(input: PiSendInput, grounding: string): PiSendResult {
+  private startResolvedTurn(input: PiSendInput, grounding: string, queueId?: string): PiSendResult {
     const resolution = input.providerEnv
       ? resolveLoopModelFromEnv(input.providerEnv, input.model ?? '')
       : resolveLoopModel();
     if (!resolution) {
       return { error: '无可用的 provider/model(pi 引擎):缺 provider 定义或 API key' };
     }
-    this.startPiTurn(input, resolution, grounding);
-    return { queued: false, isInFlight: true };
+    this.startPiTurn(input, resolution, grounding, queueId);
+    return { queued: false, isInFlight: true, queueId };
   }
 
   /**
@@ -542,15 +574,17 @@ class ChatEngine {
 
     const grounding = await this.resolveInputGrounding(input);
 
+    // B5(1.2.6):queueId 恒分配(直接开 turn 的也带)——send-and-wait 按它
+    // 追踪答案归属,不再靠 turnSeq + 「最后一条 assistant」猜。
+    const queueId = randomUUID();
     if (this.busy) {
-      const queueId = randomUUID();
       this.steering.push({ queueId, input, grounding });
       broadcast('chat:steering-added', { queueId, messageText: text.slice(0, 100) });
       console.log(`[pi-engine] 消息进 steering 队列 queueId=${queueId}(深度=${this.steering.length})`);
       return { queued: true, queueId, isInFlight: false, steering: true };
     }
 
-    return this.startResolvedTurn(input, grounding);
+    return this.startResolvedTurn(input, grounding, queueId);
   }
 
   /**
@@ -583,10 +617,14 @@ class ChatEngine {
    * query 重组);能力清单采集走 engine-detect-cache 30s 缓存,不会每 turn 重复
    * 探测。组装失败落回基座段,不阻塞会话。
    */
-  private async assemblePiSystemPrompt(env: EnvironmentEntry | null): Promise<string> {
+  private async assemblePiSystemPrompt(
+    env: EnvironmentEntry | null,
+    // B2(1.2.6):调用方可显式指定场景(cron invoke 通道直接传 cron 场景,
+    // 不吃全局 currentScenario 的 set/reset 时序);缺省读全局(交互 turn)。
+    scenario: InteractionScenario = resolvePiScenario(),
+  ): Promise<string> {
     const base = buildBaseSystemPrompt(env);
     try {
-      const scenario = resolvePiScenario();
       const caps = scenario.type === 'security'
         ? await collectSecurityCapabilities(this.agentDir)
         : undefined;
@@ -613,8 +651,10 @@ class ChatEngine {
     }
   }
 
-  /** 启动一个 turn(fire-and-forget);调用前须确认 !busy。 */
-  private startPiTurn(input: PiSendInput, resolution: LoopModelResolution, grounding: string): void {
+  /** 启动一个 turn(fire-and-forget);调用前须确认 !busy。
+   *  queueId(B5):本条消息的来源队列项 id——记入 wire 用户消息与 turn
+   *  收尾的答案归属表(send-and-wait 按 queueId 取答案)。 */
+  private startPiTurn(input: PiSendInput, resolution: LoopModelResolution, grounding: string, queueId?: string): void {
     const text = input.text.trim();
     this.busy = true;
     this.currentAbort = new AbortController();
@@ -627,6 +667,9 @@ class ChatEngine {
     // 里到达的 done.messages)属于起跑时那条线;动态读 this.sessionId 会把
     // 旧 turn 尾部追加进新会话 jsonl(串线)。
     const turnSessionId = this.sessionId;
+    // B5(1.2.6):本 turn 消费的消息来源 id(开 turn 的 prompt + 运行中注入
+    // 的 steering)——turn 收尾时统一登记「queueId → assistant 气泡 id」。
+    const consumedQueueIds: string[] = queueId ? [queueId] : [];
     // W1 — 状态行数据源:turn 开始(running)。
     this.broadcastChatStatus();
 
@@ -636,6 +679,7 @@ class ChatEngine {
       role: 'user',
       content: text,
       timestamp: new Date().toISOString(),
+      ...(queueId ? { queueId } : {}),
       ...(input.images?.length
         ? { attachments: input.images.map((img, i) => ({ id: String(i), name: img.name, mimeType: img.mimeType, isImage: true })) }
         : {}),
@@ -688,7 +732,43 @@ class ChatEngine {
     };
     this.messages.push(assistantMessage);
 
-    void this.runPiTurn(input, resolution, env, toolNames, assistantMessage, this.currentAbort, grounding, turnSessionId)
+    // W1 steering(纠偏档):pi 在每个 turn 结束、下一次 LLM 调用前轮询;
+    // 取空队列即把运行中发送的消息注入对话(图片不随 steering 注入,v1 纯文本)。
+    // B6(1.2.6):注入的 steering user 消息同步补 wire + 广播 replay——它们随
+    // done.messages 进 loop 持久化,不进 wire 的话 rewind/fork 的「wire 第 N 条
+    // user ↔ loop 第 N 条 user」序数映射错位(截点偏后、裁少了),且重启/重连
+    // 回放会冒出 live 时从没上屏的幽灵用户消息。drain 即 push,顺序与持久化
+    // 注入顺序一致(steering 必在本 turn 结束前注入,先于下一 turn 的 prompt),
+    // 1:1 保持。
+    const getSteeringMessages = async (): Promise<AgentMessage[]> => {
+      if (this.steering.length === 0) return [];
+      const drained = this.steering.splice(0, this.steering.length);
+      console.log(`[pi-engine] steering 注入 ${drained.length} 条`);
+      for (const item of drained) {
+        consumedQueueIds.push(item.queueId);
+        const wireMsg: MessageWire = {
+          id: String(this.messageSeq++),
+          role: 'user',
+          content: item.input.text.trim(),
+          timestamp: new Date().toISOString(),
+          queueId: item.queueId,
+        };
+        this.messages.push(wireMsg);
+        broadcast('chat:message-replay', { message: wireMsg });
+        // 已离开 steering 队列(注入即消费):清 TUI 队列条目,与 stop/cancel 同事件。
+        broadcast('chat:steering-cancelled', { queueId: item.queueId });
+      }
+      return drained.map((item) => {
+        const itemText = item.input.text.trim();
+        return {
+          role: 'user',
+          content: item.grounding ? `${item.grounding}\n\n${itemText}` : itemText,
+          timestamp: Date.now(),
+        } as AgentMessage;
+      });
+    };
+
+    void this.runPiTurn(input, resolution, env, toolNames, assistantMessage, this.currentAbort, grounding, turnSessionId, getSteeringMessages)
       .catch((err) => {
         console.error('[pi-engine] turn 异常:', err);
         broadcast('chat:message-error', err instanceof Error ? err.message : String(err));
@@ -699,15 +779,44 @@ class ChatEngine {
         // 模块头注释。放在最前:回收的快照同步取,防紧接的 promote 竞态;
         // fire-and-forget,kill 失败绝不阻塞收尾(reapAllBgProcesses 不抛)。
         void reapBgOnLifecyclePoint('turn-end');
+        // B5(1.2.6):答案归属登记——send-and-wait 按 queueId 取自己 turn 的
+        // assistant 气泡,不再靠 turnSeq + 「最后一条 assistant」(steering 没
+        // 被注入时旧逻辑会把上一条消息的答复返回给等待方;cron 等待期间用户
+        // 消息推进 turnSeq → cron 拿到用户的答案)。
+        for (const qid of consumedQueueIds) this.rememberTurnAnswer(qid, assistantMessage.id);
         this.busy = false;
         this.streamingAssistantId = null;
         this.currentAbort = null;
         this.turnSeq++;
+        // B5(1.2.6):drain 残留 steering。pi 只在 turn 间轮询 steering
+        // (agent-loop.js),agent 收尾走的是 getFollowUpMessages(本引擎没传)
+        // ——最后一跳 LLM 期间到达的纠偏永远等不到注入点,会滞留到下一条
+        // 无关消息开 turn 时被注入别人的 turn。这里把残留转到 FIFO 队首,
+        // 由紧接的 promote 作为独立 turn 开跑。选队首而非队尾的取舍:
+        // steering 的语义是「尽快送达的当下纠偏」,排尾会让它落后于更早
+        // 排队但意图更旧的 FIFO 项;多条残留保持相互到达序(unshift 展开)。
+        if (this.steering.length > 0) {
+          const orphaned = this.steering.splice(0, this.steering.length);
+          for (const item of orphaned) {
+            broadcast('chat:steering-cancelled', { queueId: item.queueId });
+          }
+          this.queue.unshift(...orphaned);
+          console.log(`[pi-engine] ${orphaned.length} 条 steering 未赶上注入,转 FIFO 队首续跑`);
+        }
         // W1 — turn done(idle):FIFO 有待接项时不发 idle,紧接的 promote
         // 会立刻发 running,避免状态行闪变。
         if (this.queue.length === 0) this.broadcastChatStatus();
         this.promotePiQueue();
       });
+  }
+
+  /** B5 — 登记答案归属(queueId → assistant 气泡 id),有界淘汰。 */
+  private rememberTurnAnswer(queueId: string, assistantId: string): void {
+    if (this.turnAnswerByQueueId.size >= 200) {
+      const oldest = this.turnAnswerByQueueId.keys().next().value;
+      if (oldest !== undefined) this.turnAnswerByQueueId.delete(oldest);
+    }
+    this.turnAnswerByQueueId.set(queueId, assistantId);
   }
 
   /** 当前 turn done 后自动接下一条(SDK 的 promote 语义,queue:added isInFlight:true)。 */
@@ -722,7 +831,7 @@ class ChatEngine {
     console.log(`[pi-engine] 自动接下一条 queueId=${next.queueId}(剩余=${this.queue.length})`);
     // startResolvedTurn 同步返回;解析失败(模型不可用)时报错并继续 promote。
     const attempt = (): void => {
-      const result = this.startResolvedTurn(next.input, next.grounding);
+      const result = this.startResolvedTurn(next.input, next.grounding, next.queueId);
       if (result.error) {
         console.error('[pi-engine] 队列消息启动失败:', result.error);
         broadcast('chat:message-error', result.error);
@@ -738,26 +847,24 @@ class ChatEngine {
     }
   }
 
-  private async runPiTurn(
-    input: PiSendInput,
-    resolution: LoopModelResolution,
+  /**
+   * turn 执行栈组装:工具集(env_exec/env_bg/delegate_task 仅锚定环境后注册;
+   * research_log/intel/expert 宿主原生常驻;MCP 每 turn 热读)+ boundary
+   * (含幻觉工具记录,供缺口埋点)+ output-guard。runPiTurn(交互 turn,
+   * broadcastEvents=true)与 invokePiSession(B2 cron 独立 invoke 通道,
+   * broadcastEvents=false——headless,不往 TUI 广播 bg/subagent 事件)共用。
+   */
+  private buildTurnStack(
     env: EnvironmentEntry | null,
+    resolution: LoopModelResolution,
     toolNames: string[],
-    assistantMessage: MessageWire,
-    abort: AbortController,
-    grounding: string,
-    // B3(1.2.6):起跑时的 sessionId 快照(语义见 startPiTurn 快照点注释)。
-    // 本函数内一切按线读写(历史加载/续存/压缩标记/标题钩子/缺口埋点)
-    // 一律用快照,不动态读 this.sessionId——否则 busy 强停换线后,旧 turn
-    // 的尾部会写进新会话的 jsonl(串线)。
-    turnSessionId: string,
-  ): Promise<void> {
-    const startedAt = Date.now();
-    // grounding(W1 @ 注入)只进 loop prompt,不进用户气泡(气泡显示原文)。
-    const text = input.text.trim();
-    const promptText = grounding ? `${grounding}\n\n${text}` : text;
-    const history = loadLoopSession(turnSessionId).messages;
-
+    broadcastEvents: boolean,
+  ): {
+    tools: AgentTool[];
+    beforeToolCall: ReturnType<typeof makeBoundaryHook>;
+    afterToolCall: ReturnType<typeof makeOutputGuardHook>;
+    blockedToolNames: string[];
+  } {
     const tools: AgentTool[] = [
       ...(env ? [createEnvExecTool(env)] : []),
       createResearchLogTool(this.agentDir),
@@ -772,19 +879,21 @@ class ChatEngine {
       // 结构性保证(子 loop 默认工具集只有 env_exec);生命周期广播
       // chat:subagent-started/finished(finished 带结论摘要,截断 200 字,
       // 不带过程),子 loop 工具事件映射 chat:subagent-tool-*。
-      tools.push(createEnvBgTool(env, {
-        onLifecycle: (ev) => {
-          if (ev.kind === 'started') {
-            broadcast('chat:bg-started', { tag: ev.tag, pid: ev.pid, commandPreview: ev.commandPreview });
-          } else {
-            broadcast('chat:bg-finished', {
-              tag: ev.tag,
-              status: ev.status,
-              ...(ev.exitCode !== undefined ? { exitCode: ev.exitCode } : {}),
-            });
+      tools.push(createEnvBgTool(env, broadcastEvents
+        ? {
+            onLifecycle: (ev) => {
+              if (ev.kind === 'started') {
+                broadcast('chat:bg-started', { tag: ev.tag, pid: ev.pid, commandPreview: ev.commandPreview });
+              } else {
+                broadcast('chat:bg-finished', {
+                  tag: ev.tag,
+                  status: ev.status,
+                  ...(ev.exitCode !== undefined ? { exitCode: ev.exitCode } : {}),
+                });
+              }
+            },
           }
-        },
-      }));
+        : {}));
       tools.push(createDelegateTaskTool({
         env,
         resolution,
@@ -794,40 +903,44 @@ class ChatEngine {
         storeDir: defaultLoopSessionDir(),
         // 子代理定义(bundled-agents)engine 装载——模型按名派发,v1 不挂 skill 注入。
         agents: loadBundledAgents().map((a) => ({ name: a.name, body: a.body })),
-        notify: {
-          started: (taskId, description) => {
-            broadcast('chat:subagent-started', { taskId, description });
-          },
-          finished: (taskId, description, summary, error, sessionId) => {
-            const trimmed = summary.length > 200 ? `${summary.slice(0, 200)}…` : summary;
-            broadcast('chat:subagent-finished', {
-              taskId,
-              description,
-              summary: trimmed,
-              status: error ? 'failed' : 'completed',
-              ...(error ? { error } : {}),
-              // A′ — 子 loop 的 loop-sessions id,TUI 据此拉 transcript。
-              ...(sessionId ? { loopSessionId: sessionId } : {}),
-            });
-          },
-        },
-        onLoopEvent: (taskId, event) => {
-          if (event.type === 'tool-call') {
-            broadcast('chat:subagent-tool-use', {
-              subagentId: taskId,
-              id: event.toolCallId,
-              name: event.toolName,
-              input: event.args ?? {},
-            });
-          } else if (event.type === 'tool-result') {
-            broadcast('chat:subagent-tool-result-complete', {
-              subagentId: taskId,
-              toolUseId: event.toolCallId,
-              content: toolResultText(event.result),
-              isError: event.isError,
-            });
-          }
-        },
+        ...(broadcastEvents
+          ? {
+              notify: {
+                started: (taskId, description) => {
+                  broadcast('chat:subagent-started', { taskId, description });
+                },
+                finished: (taskId, description, summary, error, sessionId) => {
+                  const trimmed = summary.length > 200 ? `${summary.slice(0, 200)}…` : summary;
+                  broadcast('chat:subagent-finished', {
+                    taskId,
+                    description,
+                    summary: trimmed,
+                    status: error ? 'failed' : 'completed',
+                    ...(error ? { error } : {}),
+                    // A′ — 子 loop 的 loop-sessions id,TUI 据此拉 transcript。
+                    ...(sessionId ? { loopSessionId: sessionId } : {}),
+                  });
+                },
+              },
+              onLoopEvent: (taskId, event) => {
+                if (event.type === 'tool-call') {
+                  broadcast('chat:subagent-tool-use', {
+                    subagentId: taskId,
+                    id: event.toolCallId,
+                    name: event.toolName,
+                    input: event.args ?? {},
+                  });
+                } else if (event.type === 'tool-result') {
+                  broadcast('chat:subagent-tool-result-complete', {
+                    subagentId: taskId,
+                    toolUseId: event.toolCallId,
+                    content: toolResultText(event.result),
+                    isError: event.isError,
+                  });
+                }
+              },
+            }
+          : {}),
       }));
     }
     // M4d — MCP 工具(宿主侧能力,不依赖 env)。tools 数组每 turn 重建,
@@ -848,6 +961,34 @@ class ChatEngine {
       return r;
     };
     const afterToolCall = makeOutputGuardHook();
+    return { tools, beforeToolCall, afterToolCall, blockedToolNames };
+  }
+
+  private async runPiTurn(
+    input: PiSendInput,
+    resolution: LoopModelResolution,
+    env: EnvironmentEntry | null,
+    toolNames: string[],
+    assistantMessage: MessageWire,
+    abort: AbortController,
+    grounding: string,
+    // B3(1.2.6):起跑时的 sessionId 快照(语义见 startPiTurn 快照点注释)。
+    // 本函数内一切按线读写(历史加载/续存/压缩标记/标题钩子/缺口埋点)
+    // 一律用快照,不动态读 this.sessionId——否则 busy 强停换线后,旧 turn
+    // 的尾部会写进新会话的 jsonl(串线)。
+    turnSessionId: string,
+    // W1 steering 轮询闭包——由 startPiTurn 构造注入(B6 补 wire 需要
+    // startPiTurn 作用域的 consumedQueueIds;闭包本体注释见构造点)。
+    getSteeringMessages: () => Promise<AgentMessage[]>,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    // grounding(W1 @ 注入)只进 loop prompt,不进用户气泡(气泡显示原文)。
+    const text = input.text.trim();
+    const promptText = grounding ? `${grounding}\n\n${text}` : text;
+    const history = loadLoopSession(turnSessionId).messages;
+
+    const { tools, beforeToolCall, afterToolCall, blockedToolNames } =
+      this.buildTurnStack(env, resolution, toolNames, true);
     // 1.2.6（C-11）：压缩阈值估算纳入系统提示——提示先于 transform 组装,
     // 字符数经同一 chars/4 启发式折算进阈值（compaction 侧向后兼容）。
     const systemPrompt = await this.assemblePiSystemPrompt(env);
@@ -883,21 +1024,9 @@ class ChatEngine {
       beforeToolCall,
       afterToolCall,
       transformContext,
-      // W1 steering(纠偏档):pi 在每个 turn 结束、下一次 LLM 调用前轮询;
-      // 取空队列即把运行中发送的消息注入对话(图片不随 steering 注入,v1 纯文本)。
-      getSteeringMessages: async () => {
-        if (this.steering.length === 0) return [];
-        const drained = this.steering.splice(0, this.steering.length);
-        console.log(`[pi-engine] steering 注入 ${drained.length} 条`);
-        return drained.map((item) => {
-          const itemText = item.input.text.trim();
-          return {
-            role: 'user',
-            content: item.grounding ? `${item.grounding}\n\n${itemText}` : itemText,
-            timestamp: Date.now(),
-          } as AgentMessage;
-        });
-      },
+      // W1 steering(纠偏档):闭包由 startPiTurn 构造注入(B6 补 wire +
+      // B5 归属登记都在构造点);pi 在 turn 间轮询,返回 [] = 无注入。
+      getSteeringMessages,
       // k3 等 reasoning 模型开 thinking(v1 固定 low 档;thinkingLevelMap 在 pi 目录)。
       reasoning: resolution.model.reasoning ? 'low' : undefined,
     })) {
@@ -988,22 +1117,36 @@ class ChatEngine {
 
   /**
    * cron 定时任务等 headless 调用(M4c 自 SDK enqueueUserMessage 迁移):
-   * 发消息并等 turn 完成(含排队轮次),返回最终 assistant 文本。
+   * 发消息并等**自己那条消息**的 turn 完成(含 steering 注入/转 FIFO 续跑
+   * 两种消费路径),返回该 turn 的 assistant 文本。
    * 超时按失败处理(不中断 turn——cron 语义是等结果,不是取消)。
+   *
+   * B5(1.2.6)归属语义:按 queueId 追踪——turn 收尾时登记「消费的 queueId →
+   * 该 turn 的 assistant 气泡 id」(含运行中注入的 steering),等待方轮询
+   * 归属表。旧实现只看 turnSeq 推进 + 取最后一条 assistant:steering 没被
+   * 注入时 turn 结束即返回上一条消息的答复;等待期间别的消息推进 turnSeq
+   * → 等待方拿到别人的答案。
+   *
+   * 注:1.2.6 起 cron 主路径走 invokePiSession(独立 invoke 通道,B2),
+   * 本函数保留给需要「经单例会话发并等」的调用方。
    */
   async sendPiChatMessageAndWait(
     input: PiSendInput,
     timeoutMs = 10 * 60_000,
   ): Promise<{ text: string; error?: string }> {
-    const before = this.turnSeq;
     const result = await this.sendPiChatMessage(input);
     if (result.error) return { text: '', error: result.error };
+    const myQueueId = result.queueId!;
     const start = Date.now();
     for (;;) {
-      // 等 busy 回落且队列排空,且至少完成一个新 turn(自己那条)。
-      if (!this.busy && this.queue.length === 0 && this.turnSeq > before) {
-        const lastAssistant = [...this.messages].reverse().find((m) => m.role === 'assistant');
-        return { text: lastAssistant?.content ?? '' };
+      const assistantId = this.turnAnswerByQueueId.get(myQueueId);
+      if (assistantId !== undefined) {
+        this.turnAnswerByQueueId.delete(myQueueId);
+        const msg = this.messages.find((m) => m.id === assistantId);
+        if (!msg) {
+          return { text: '', error: 'turn 已完成,但会话在等待期间被 reset/切换,答案消息已不在当前回放中' };
+        }
+        return { text: msg.content };
       }
       if (Date.now() - start > timeoutMs) {
         return { text: '', error: `等待 turn 完成超时(${timeoutMs}ms)` };
@@ -1012,30 +1155,152 @@ class ChatEngine {
     }
   }
 
+  /** B2(1.2.6):引擎当前线的只读快照(cron 无 sessionId 时「跟随当前线」
+   *  语义的数据源)。只读——invoke 通道据此写同一条线而不动引擎状态。 */
+  getPiCurrentSessionRef(): { loopSessionId: string; sessionMetaId: string | null } {
+    return { loopSessionId: this.sessionId, sessionMetaId: this.boundSessionMetaId };
+  }
+
+  /**
+   * B2(1.2.6)— cron 独立 invoke 通道:对指定 loop 线跑一次完整 agent turn
+   * (读该线历史 → runLoop 带全套工具/边界/审计/压缩 → 新增消息续存回同一
+   * 条线),全程不碰引擎单例的 sessionId/messages/steering/queue/busy,不广播
+   * 任何 TUI 事件(headless)。与单例写同一条线时靠 appendLoopMessages 的
+   * 文件锁串行化,无丢更新(历史快照各自为政,与旧「cron 跟随当前线」语义
+   * 一致,但不再互相杀 turn、不再混 steering)。
+   *
+   * 与单例 turn 的差异(刻意):
+   *   - 无 steering(headless 没有纠偏方)、无 SSE 广播、无 wire 回放;
+   *   - scenario 由调用方显式传入(cron 场景),不吃全局 currentScenario 的
+   *     set/reset 时序(异步 execute 路径旧有时序窗:reset 先于系统提示组装);
+   *   - 答案取 done.messages 里最后一条 assistant 的文本(多跳 turn 拼接的
+   *     fullText 只是兜底);
+   *   - timeoutMs 到期按失败返回但【不中断】loop(沿用 sendPiChatMessageAndWait
+   *     的「等结果,不是取消」语义)——loop 在后台跑完并自行续存。
+   */
+  async invokePiSession(
+    input: PiSendInput,
+    options: {
+      /** 目标 loop 线;缺省 → 一次性新线(仍落盘,可审计)。 */
+      loopSessionId?: string;
+      /** 显式交互场景(cron 传 cron 场景);缺省读全局(与交互 turn 同)。 */
+      scenario?: InteractionScenario;
+      /** 调用方等待上限;到期返回 error 但 loop 继续在后台跑完。 */
+      timeoutMs?: number;
+    } = {},
+  ): Promise<{ text: string; error?: string; loopSessionId: string }> {
+    const loopSessionId = options.loopSessionId ?? newLoopSessionId();
+    const resolution = input.providerEnv
+      ? resolveLoopModelFromEnv(input.providerEnv, input.model ?? '')
+      : resolveLoopModel();
+    if (!resolution) {
+      return { text: '', error: '无可用的 provider/model(pi 引擎):缺 provider 定义或 API key', loopSessionId };
+    }
+    const env = resolveSessionEnv(this.agentDir);
+    const toolNames = [
+      ...(env ? [ENV_EXEC_TOOL_NAME, ENV_BG_TOOL_NAME, DELEGATE_TASK_TOOL_NAME] : []),
+      RESEARCH_LOG_TOOL_NAME,
+      INTEL_SEARCH_TOOL_NAME,
+      EXPERT_SEARCH_TOOL_NAME,
+      EXPERT_DRAFT_TOOL_NAME,
+    ];
+    const { tools, beforeToolCall, afterToolCall, blockedToolNames } =
+      this.buildTurnStack(env, resolution, toolNames, false);
+    const systemPrompt = await this.assemblePiSystemPrompt(env, options.scenario);
+    const transformContext = makeCompactionTransform(
+      { contextWindow: resolution.model.contextWindow || 200_000, systemPromptChars: systemPrompt.length },
+      () => { void markLoopSessionCompacted(loopSessionId).catch(() => {}); },
+    );
+    const history = loadLoopSession(loopSessionId).messages;
+
+    const run = async (): Promise<{ text: string; error?: string }> => {
+      let fullText = '';
+      let doneMessages: AgentMessage[] = [];
+      let failed: string | null = null;
+      for await (const event of runLoop({
+        prompt: input.text.trim(),
+        history,
+        systemPrompt,
+        model: resolution.model,
+        models: resolution.models,
+        getApiKey: resolution.getApiKey,
+        tools,
+        beforeToolCall,
+        afterToolCall,
+        transformContext,
+        reasoning: resolution.model.reasoning ? 'low' : undefined,
+      })) {
+        if (event.type === 'text-delta') fullText += event.delta;
+        if (event.type === 'error') failed = event.error;
+        if (event.type === 'done') doneMessages = event.messages;
+      }
+      if (doneMessages.length > 0) {
+        await appendLoopMessages(
+          loopSessionId,
+          doneMessages,
+          { model: resolution.modelId, providerId: resolution.providerId },
+        ).catch((err) => console.warn('[pi-engine] invoke 续存失败:', err));
+      }
+      // 与单例 turn 收尾同款的挂点(标题/缺口埋点/bg 回收),目标都是本条线。
+      firePostTurnTitleHook(loopSessionId, resolution.modelId, input.providerEnv);
+      this.recordGapEvents(failed, blockedToolNames, loopSessionId);
+      void reapBgOnLifecyclePoint('turn-end');
+      const lastAssistant = [...doneMessages].reverse().find((m) => m.role === 'assistant');
+      const text = lastAssistant
+        ? lastAssistant.content.filter((c): c is TextContent => c.type === 'text').map((c) => c.text).join('\n')
+        : fullText;
+      return failed ? { text, error: failed } : { text };
+    };
+
+    // run 不抛(runLoop 以 error 事件收尾,续存已 catch);再包一层保险,
+    // detach(超时)路径也不留 unhandled rejection。
+    const safeRun = run().then(
+      (r) => r,
+      (err): { text: string; error: string } => ({ text: '', error: err instanceof Error ? err.message : String(err) }),
+    );
+    if (!options.timeoutMs) {
+      return { ...(await safeRun), loopSessionId };
+    }
+    const outcome = await Promise.race([
+      safeRun,
+      new Promise<null>((r) => setTimeout(() => r(null), options.timeoutMs)),
+    ]);
+    if (outcome === null) {
+      return { text: '', error: `等待 turn 完成超时(${options.timeoutMs}ms)`, loopSessionId };
+    }
+    return { ...outcome, loopSessionId };
+  }
+
   /**
    * /sessions/switch 的 pi 路径:切到 SessionStore 里另一条会话
    * (其 loopSessionId 指向的 loop-sessions 文件),重建回放。
    * 1.2.6(B1):meta 无 loopSessionId 绑定(cron new_session 新建)时
    * 当场开新线并绑定;只有 meta 不存在才返回 false。
+   *
+   * B2(1.2.6)论证:本函数刻意【不】刷新 env-sessions 映射与 currentEnvKey。
+   * 分线映射(workspace × envKey → loopSessionId)的所有权在环境选定流
+   * (environment/select → switchEnvSession / restore / persistEnvSessionLine /
+   * reset);/sessions/switch 是「按 meta 开任意会话」的显式动作,目标会话
+   * 可能属于任何环境线(或 fork 线)——把它的 sessionId 钉进「当前 envKey」
+   * 映射正是 B2c 的错位污染;反过来把 currentEnvKey 改成「目标线的环境」
+   * 则会让环境选定落盘状态与引擎认知脱节(select 并没发生)。1.2.6 起 cron
+   * 走 invokePiSession 独立通道,不再经本函数切引擎,B2b(TUI 重接幂等闸
+   * 不命中 → 强停 cron turn)/B2c(旧线回填写错映射)的 cron 切面随之消失。
    */
   async switchPiSession(metaId: string): Promise<boolean> {
     // 已在当前会话:幂等返回——不重建回放、更不要 busy 强停(TUI 启动会按
     // 环境分线映射重接当前会话,误伤进行中的 turn,如 cron)。
     if (metaId === this.boundSessionMetaId) return true;
     if (this.busy) this.stopPiChat();
-    const meta = getSessionMetadata(metaId) as { loopSessionId?: string | null } | null;
-    if (!meta) return false;
-    // B1(1.2.6):meta 存在但无 loopSessionId 绑定(cron new_session 的
+    // B1 愈合走 ensureMetaLoopLine(B2 抽出的引擎无关版,cron invoke 通道
+    // 同用):meta 存在但无 loopSessionId 绑定(cron new_session 的
     // createSession 不落 loopSessionId,唯一写入点是 ensureSessionBound——
     // 而绑定建立以引擎已在这条线上为前提,死锁)→ 当场开新线并绑定,而非
     // 返回 false 让调用方 500。reset 解绑过的 meta 走同一路径愈合(重开新线)。
     // 分线语义(1.1.6)不变:env-sessions 映射仍只在绑定后由写盘点回填,
     // 新线等首个 turn 的 appendLoopMessages 落盘,与 ensureSessionBound 同构。
-    let loopId = meta.loopSessionId;
-    if (!loopId) {
-      loopId = newLoopSessionId();
-      await updateSessionMetadata(metaId, { loopSessionId: loopId } as Partial<SessionMetadata>);
-    }
+    const loopId = await ensureMetaLoopLine(metaId);
+    if (!loopId) return false;
     const stored = loadLoopSession(loopId);
     this.queue = [];
     this.steering = [];
@@ -1149,26 +1414,34 @@ class ChatEngine {
     return null;
   }
 
-  /** /chat/queue/force 的 pi 路径:中断当前 turn,改跑指定排队项。 */
+  /** /chat/queue/force 的 pi 路径:中断当前 turn,改跑指定排队项。
+   *
+   *  B4(1.2.6)重写:force 不再自己起跑 turn。旧实现 abort 后轮询等 busy
+   *  回落、然后直接 startResolvedTurn——但 turn 收尾的 finally 在 busy=false
+   *  后同步 promotePiQueue 抢跑下一项;若 force 的轮询在 promote 起跑后
+   *  才看到 busy(或 5s 轮询上限超掉 busy 仍未回落),force 会无视在跑的
+   *  turn 再起一个 → 双 turn 并发(streamingAssistantId 互覆、同一
+   *  sessionId 交错 append)。修法选「塞回队首 + promote 统一接管」而非
+   *  「startResolvedTurn 加 busy 断言」:断言只能让 force 放弃/重排(调用方
+   *  语义变模糊),而统一单起点结构性排除并发——turn 起跑只有 promote
+   *  (busy=false 后)与空闲入口(!busy 直查)两处,不可能撞车。
+   */
   async forcePiQueueItem(queueId: string): Promise<boolean> {
     const idx = this.queue.findIndex((item) => item.queueId === queueId);
     if (idx < 0) return false;
     const [item] = this.queue.splice(idx, 1);
+    // 队首就位:busy → abort 当前 turn,其收尾 finally 的 promote 统一接起
+    // 本项(queue:added isInFlight:true 由 promote 广播,与 FIFO 自动接同形);
+    // 空闲 → 直接 promote。abort 不听话(顽固工具)时本项留在队首等下一
+    // 收尾,语义退化为「下一个跑」,绝不双 turn。
+    this.queue.unshift(item);
     if (this.busy && this.currentAbort) {
       this.currentAbort.abort();
       broadcast('chat:message-stopped', null);
-      // 等当前 turn 收尾(finally 会 promote——但队列已不含本项,不会抢跑)。
-      for (let i = 0; i < 100 && this.busy; i++) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
+      return true;
     }
-    broadcast('queue:added', {
-      queueId: item.queueId,
-      messageText: item.input.text.trim().slice(0, 100),
-      isInFlight: true,
-    });
-    const result = this.startResolvedTurn(item.input, item.grounding);
-    return !result.error;
+    this.promotePiQueue();
+    return true;
   }
 
   /** /chat/queue/status 的 pi 路径:FIFO 排队 + steering 队列(kind 区分)。 */
@@ -1240,8 +1513,9 @@ class ChatEngine {
     const idx = this.messages.findIndex((m) => m.id === userMessageId && m.role === 'user');
     if (idx < 0) return { success: false, error: 'Message not found' };
 
-    // wire 里第 N 条 user 消息(0 起)对应 loop 历史里第 N 条 role=user 消息
-    // (每个 turn 恰一条 prompt user 消息)。
+    // wire 里第 N 条 user 消息(0 起)对应 loop 历史里第 N 条 role=user 消息。
+    // B6(1.2.6)后该映射含 steering 注入:注入即补 wire(drain 顺序 = 持久化
+    // 注入顺序,且必先于下一 turn 的 prompt),wire 与 loop 的 user 序列 1:1。
     const userOrdinal = this.messages.slice(0, idx).filter((m) => m.role === 'user').length;
     const loopMessages = loadLoopSession(this.sessionId).messages;
     let seen = -1;
@@ -1265,8 +1539,8 @@ class ChatEngine {
    * /sessions/fork 的 pi 路径:在指定消息所在 turn 的末尾分叉——原会话不动,
    * 新 loop session 复制前半段,当前 loop 原地换血到分叉(对齐 reset 的
    * 状态重置清单)。wire→loop 的映射与 rewind 同构:user 消息按序数对应
-   * (每 turn 恰一条 prompt user 消息),截点 = 第 N+1 条 loop user 消息前
-   * (即目标消息所在 turn 结束之后)。
+   * (B6 后含 steering 注入的镜像,1:1;见 rewind 注释),截点 = 第 N+1 条
+   * loop user 消息前(即目标消息所在 turn 结束之后)。
    */
   async forkPiChat(messageId: string): Promise<{ success: boolean; error?: string; sessionId?: string }> {
     if (this.busy) return { success: false, error: '响应进行中,先停止再 fork' };
@@ -1351,6 +1625,19 @@ export async function sendPiChatMessageAndWait(
   timeoutMs = 10 * 60_000,
 ): Promise<{ text: string; error?: string }> {
   return defaultEngine.sendPiChatMessageAndWait(input, timeoutMs);
+}
+
+/** B2(1.2.6)— cron 独立 invoke 通道(不碰单例会话/steering/队列)。 */
+export async function invokePiSession(
+  input: PiSendInput,
+  options: { loopSessionId?: string; scenario?: InteractionScenario; timeoutMs?: number } = {},
+): Promise<{ text: string; error?: string; loopSessionId: string }> {
+  return defaultEngine.invokePiSession(input, options);
+}
+
+/** B2(1.2.6)— 引擎当前线的只读快照(cron「跟随当前线」语义的数据源)。 */
+export function getPiCurrentSessionRef(): { loopSessionId: string; sessionMetaId: string | null } {
+  return defaultEngine.getPiCurrentSessionRef();
 }
 
 export async function switchPiSession(metaId: string): Promise<boolean> {

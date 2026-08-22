@@ -38,11 +38,11 @@ import { snapshotForOwnedSession } from '../utils/session-snapshot';
 import { resolveSessionConfig } from '../utils/resolve-session-config';
 
 import {
+  ensureMetaLoopLine,
   getPiAgentState,
+  getPiCurrentSessionRef,
   getPiMessages,
-  sendPiChatMessage,
-  sendPiChatMessageAndWait,
-  switchPiSession,
+  invokePiSession,
 } from '../loop/chat-engine';
 
 import { isDistillArcPrompt } from '../memory/distill';
@@ -642,8 +642,25 @@ export async function handleCronExecute(request: Request, jsonResponse: JsonResp
           // M4c: backgroundAgentPermissionMode 随 permission 体系删除。
 
           // M4c: cron 会话执行迁移到 pi 引擎(原 SDK enqueueUserMessage)。
-
-          await sendPiChatMessage({ text: wrappedPrompt, model: effectiveModel, providerEnv: effectiveProviderEnv, permissionMode: effectivePermissionMode });
+          // B2(1.2.6):改走独立 invoke 通道——不切引擎会话线、不进 steering
+          // 队列(busy 时旧路径会把 cron prompt 注入用户正在进行的 turn)。
+          // 「跟随当前选定环境的线」语义保留:目标线 = 引擎当前线的只读快照,
+          // invoke 读其历史、跑完续存回同一条线(appendLoopMessages 文件锁
+          // 串行化,与用户 turn 并发写不丢更新)。fire-and-forget(旧语义:
+          // 端点只负责起跑,完成检测由调度方轮询)。
+          const cronScenario = {
+            type: 'cron' as const,
+            taskId,
+            intervalMinutes: intervalMinutes ?? 15,
+            aiCanExit: aiCanExit ?? false,
+          };
+          const currentLine = getPiCurrentSessionRef();
+          void invokePiSession(
+            { text: wrappedPrompt, model: effectiveModel, providerEnv: effectiveProviderEnv, permissionMode: effectivePermissionMode },
+            { loopSessionId: currentLine.loopSessionId, scenario: cronScenario },
+          ).then((r) => {
+            if (r.error) console.warn(`[cron] execute taskId=${taskId} invoke 失败: ${r.error}`);
+          }).catch((err) => console.error(`[cron] execute taskId=${taskId} invoke 异常:`, err));
 
           // Reset scenario after enqueue — already consumed at turn start
 
@@ -777,6 +794,10 @@ export async function handleCronExecuteSync(request: Request, jsonResponse: Json
 
         let effectiveSessionId = sessionId;
 
+        // B2(1.2.6):本 tick 的目标 loop 线。cron 走 invokePiSession 独立
+        // 通道,不再切引擎会话线——按 runMode 解析出目标线即可。
+        let invokeLoopSessionId: string | undefined;
+
 
 
         if (effectiveRunMode === 'new_session') {
@@ -901,61 +922,57 @@ export async function handleCronExecuteSync(request: Request, jsonResponse: Json
 
           const newSession = await createSession(agentDir, cronSnapshot);
 
-          const switched = await switchPiSession(newSession.id);
+          // B2(1.2.6):不再 switchPiSession 切引擎会话线——为新 meta 当场开
+          // loop 线并把绑定写回 meta(ensureMetaLoopLine,B1 愈合的引擎无关
+          // 版),invoke 通道直接对该新线跑,引擎单例全程不动。
+          const newLine = await ensureMetaLoopLine(newSession.id);
 
-          if (!switched) {
+          if (!newLine) {
 
-            console.error(`[cron] execute-sync taskId=${taskId} failed to switch to new session ${newSession.id}`);
+            console.error(`[cron] execute-sync taskId=${taskId} failed to open loop line for new session ${newSession.id}`);
 
             return jsonResponse({ success: false, error: 'Failed to create new session for execution.' }, 500);
 
           }
 
+          invokeLoopSessionId = newLine;
+
           effectiveSessionId = newSession.id;
 
-          console.log(`[cron] execute-sync taskId=${taskId} new_session mode: created fresh session ${newSession.id} (from=${sessionId ? 'rust-payload' : 'bun-fallback'})`);
+          console.log(`[cron] execute-sync taskId=${taskId} new_session mode: created fresh session ${newSession.id} loop=${newLine} (from=${sessionId ? 'rust-payload' : 'bun-fallback'})`);
 
         } else if (sessionId) {
 
-          // single_session mode: switch to the task's stored session (keeps context)
+          // single_session mode: 解析任务存量会话的 loop 线(keep context)。
+          // B2(1.2.6):不再切引擎——上下文延续由「invoke 读该线历史、续存回
+          // 该线」承载;无绑定的 meta 当场愈合开新线(与 B1 同路径);meta
+          // 不存在则回退引擎当前线(旧「switch 失败用当前会话」语义)。
+          const loopLine = await ensureMetaLoopLine(sessionId);
 
-          // If already in the target session, skip switchToSession to avoid aborting
+          if (!loopLine) {
 
-          // an active AI response and clearing the message queue.
+            console.warn(`[cron] execute-sync taskId=${taskId} session ${sessionId} not found, falling back to current session line`);
 
-          const currentSessionId = getSessionId();
+            const currentState = getPiAgentState();
 
-          if (currentSessionId === sessionId) {
+            console.log(`[cron] execute-sync taskId=${taskId} current session state: agentDir=${currentState.agentDir}, sessionState=${currentState.sessionState}, hasInitialPrompt=${currentState.hasInitialPrompt}`);
 
-            console.log(`[cron] execute-sync taskId=${taskId} single_session mode: already in session ${sessionId}, skipping switch`);
+            invokeLoopSessionId = getPiCurrentSessionRef().loopSessionId;
 
           } else {
 
-            console.log(`[cron] execute-sync taskId=${taskId} attempting to switch to session ${sessionId}`);
+            invokeLoopSessionId = loopLine;
 
-            const switched = await switchPiSession(sessionId);
-
-            if (!switched) {
-
-              console.warn(`[cron] execute-sync taskId=${taskId} failed to switch to session ${sessionId}, will use current session instead`);
-
-              // Log current session state for debugging
-
-              const currentState = getPiAgentState();
-
-              console.log(`[cron] execute-sync taskId=${taskId} current session state: agentDir=${currentState.agentDir}, sessionState=${currentState.sessionState}, hasInitialPrompt=${currentState.hasInitialPrompt}`);
-
-            } else {
-
-              console.log(`[cron] execute-sync taskId=${taskId} single_session mode: switched to session ${sessionId}`);
-
-            }
+            console.log(`[cron] execute-sync taskId=${taskId} single_session mode: invoke on session ${sessionId} (loop=${loopLine})`);
 
           }
 
         } else {
 
-          console.log(`[cron] execute-sync taskId=${taskId} no sessionId provided, using current session`);
+          // B2(1.2.6):无 sessionId —— 跟随引擎当前线(只读快照,不动引擎)。
+          invokeLoopSessionId = getPiCurrentSessionRef().loopSessionId;
+
+          console.log(`[cron] execute-sync taskId=${taskId} no sessionId provided, invoke on current line ${invokeLoopSessionId}`);
 
         }
 
@@ -1484,12 +1501,25 @@ export async function handleCronExecuteSync(request: Request, jsonResponse: Json
             //      (single_session) or payload defaults (new_session / fallback).
 
             // M4c: cron 同步执行迁移到 pi 引擎(send-and-wait,含完成等待)。
+            // B2(1.2.6):改走 invokePiSession 独立通道——不碰引擎单例的会话/
+            // steering/队列(旧路径 busy 时 cron prompt 会被当 steering 注入
+            // 用户正在进行的 turn;send-and-wait 还可能在等待期间被用户的
+            // turn 推进而错拿答案)。场景显式传入,不吃全局 scenario 时序。
 
-            const piRun = await sendPiChatMessageAndWait(
+            const piRun = await invokePiSession(
 
               { text: wrappedPrompt, model: effectiveModel, providerEnv: effectiveProviderEnv, permissionMode: effectivePermissionMode },
 
-              3600000,
+              {
+                loopSessionId: invokeLoopSessionId,
+                scenario: {
+                  type: 'cron',
+                  taskId,
+                  intervalMinutes: intervalMinutes ?? 15,
+                  aiCanExit: aiCanExit ?? false,
+                },
+                timeoutMs: 3600000,
+              },
 
             );
 
@@ -1558,8 +1588,10 @@ export async function handleCronExecuteSync(request: Request, jsonResponse: Json
           // Return the Sidecar session ID (our internal storage key) so Rust can
 
           // pass it to frontend for loading conversation data from our message store.
+          // B2(1.2.6):cron 不再切引擎,getSessionId() 只作无 sessionId 分支的
+          // 兜底;其余分支回报本 tick 解析出的任务会话(effectiveSessionId)。
 
-          const actualSessionId = getSessionId();
+          const actualSessionId = effectiveSessionId ?? getSessionId();
 
 
 
