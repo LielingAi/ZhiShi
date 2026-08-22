@@ -20,6 +20,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.2.2] - 2026-08-22
+
+
+
+> 专家知识层·飞轮期：引用追踪 + 结案晋升提示 + 缺口识别教学，知识开始自我积累。
+
+
+
+### Added
+
+
+
+- **引用追踪**：`research_log` 支持 `expert_refs`（挂专家条目 id，落库前查证存在）；报告新增「引用的专家知识」节（factOnly 三重防线：不进填肉 prompt/不接受回填/渲染忽略叙述——事实层 LLM 一个字写不进），meta.json 带 expertRefs 清单。
+- **结案晋升提示**：research_log 落库成功（success/stuck）时返回文本自带 `zhishi expert promote #N` 指引——harness 原生、零时序猜测；fail 不带。
+- **缺口信号实例清单**：四域 skills 各补一组可对照的「该查 expert_search」判据（如二进制域：cyclic 反查不出偏移 / 防护清单对不上已知利用路径）。
+
+
+
+### Fixed
+
+
+
+- **纯 sidecar 模式 system skills 不更新**：原同步只在 Tauri 宿主跑（Rust 版本门），dev/CLI-only 链路永久冻结在首装版；Node 侧 seed 改为内容哈希比对同步，与 Rust 版本门共存不打架。
+
+
+
 ## [1.2.1] - 2026-08-22
 
 
