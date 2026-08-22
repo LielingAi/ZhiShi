@@ -494,3 +494,54 @@ describe('buildSystemPromptAppend — security 场景域过滤接线（1.2.4）'
     expect(prompt).not.toContain('渗透专用经验');
   });
 });
+
+// ===== 1.2.5「用」：配方正文工作流摘要进能力清单 =====
+
+describe('buildSecurityCapabilitiesSection — 配方工作流摘要（1.2.5「用」）', () => {
+  it('带 workflowSummary 的配方在工具行后注入摘要行；无摘要的配方不出摘要行', () => {
+    const withSummary: EnvironmentRecipe = {
+      ...recipe('pwn', ['pwndbg', 'pwntools']),
+      workflowSummary: 'pwn 环境；checksec 判保护 → cyclic 定偏移 → ROP 链',
+    };
+    const section = buildSecurityCapabilitiesSection(data({
+      recipes: [withSummary, recipe('dev', ['clang'])],
+    }));
+    expect(section).toContain('- pwn（docker）：pwndbg、pwntools');
+    expect(section).toContain('  工作流摘要：pwn 环境；checksec 判保护 → cyclic 定偏移 → ROP 链');
+    // 无摘要配方不出摘要行（零注入语义逐配方生效；段头说明行不算摘要行）
+    expect(section).toContain('- dev（docker）：clang');
+    expect(section.split('\n').filter((l) => l.startsWith('  工作流摘要：'))).toHaveLength(1);
+  });
+
+  it('预算分配：工具清单（核心）全量保留，摘要（增强）逐条试装，装不下的显式声明', () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      ...recipe(`recipe-${String(i).padStart(3, '0')}`, ['tool']),
+      workflowSummary: `摘要 ${i}：${'工作流内容'.repeat(80)}`, // ~400 字符/环境
+    }));
+    const section = buildSecurityCapabilitiesSection(data({
+      engines: enginesReport(['docker']),
+      recipes: many,
+    }));
+    expect(section).not.toBe('');
+    expect(section.length).toBeLessThanOrEqual(SECURITY_CAPABILITIES_MAX_CHARS);
+    // 核心（工具清单）一条不丢——摘要让位不能牺牲发现环链路
+    for (let i = 0; i < 20; i += 1) {
+      expect(section).toContain(`- recipe-${String(i).padStart(3, '0')}（docker）：tool`);
+    }
+    // 摘要装进预算内的保留（完整行，无半行残片）；装不下的显式声明
+    const summaryLines = section.split('\n').filter((l) => l.startsWith('  工作流摘要：'));
+    expect(summaryLines.length).toBeGreaterThan(0);
+    for (const line of summaryLines) {
+      expect(line).toMatch(/^  工作流摘要：摘要 \d+：(?:工作流内容)+$/);
+    }
+    expect(section).toContain('个环境类型的工作流摘要因预算未注入');
+  });
+
+  it('摘要全装得下时不出现丢弃声明（零噪音）', () => {
+    const section = buildSecurityCapabilitiesSection(data({
+      recipes: [{ ...recipe('pwn', ['pwndbg']), workflowSummary: '短摘要' }],
+    }));
+    expect(section).toContain('  工作流摘要：短摘要');
+    expect(section).not.toContain('因预算未注入');
+  });
+});

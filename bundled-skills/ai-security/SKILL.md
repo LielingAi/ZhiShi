@@ -35,6 +35,10 @@ garak --model_type openai-compatible --model_name <m> \
 
 - **信号**：FAIL 探针清单 + 每个 FAIL 的复现 payload
 - garak 的 FAIL ≠ 确认漏洞——**每条都要手工复现**，探针命中只是线索
+- **先 `garak --list_probes` 查探针族**再按威胁模型选 `--probes`——盲跑全部又慢又打限流（见常见坑）
+- **报告读 JSONL 别只读终端滚动**：`<run>.report.jsonl` 每行按 `"entry_type"` 分型（`attempt`=单次探测、`eval`=探针×detector 判定、`probe_summary`=汇总）；判定信号看 `eval` 行的 `passed`/`total_evaluated`——有 fails（pass rate <100%）的探针才值得追，失败样本的 prompt/output 原文在同目录 `<run>.hitlog.jsonl`
+- 终端摘要行的 `attack success rate` 就是 eval 行 pass rate 的人读版；两者对不上时以 JSONL 为准
+- **多轮场景升级 → PyRIT**（garak 单轮探针打不动时；无 CLI，python3 驱动）：新 API 在 `pyrit.executor.attack`——`PromptSendingAttack`（单轮编排）/ `RedTeamingAttack`、`CrescendoAttack`（多轮策略）；调用骨架见 ai-security 配方 SKILL.md
 
 ### ④ 自定义 eval（promptfoo——针对你的威胁模型）
 

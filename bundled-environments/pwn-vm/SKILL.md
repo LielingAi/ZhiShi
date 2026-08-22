@@ -1,6 +1,6 @@
 ---
 name: pwn-vm
-description: 二进制利用（pwn）VM 研究环境。当任务需要完整 VM 隔离（内核调试、双机调试、快照反复回滚的利用开发、不可信样本的动态分析）而 docker 容器不够用时使用——以 VMware Workstation 模板 VM 为基底，内置 gdb、pwntools、ROPgadget/ropper、checksec 工具集（pwndbg 按需补装，见下），快照约定保证每次进入都是干净环境。
+description: 二进制利用（pwn）VM 研究环境。当任务需要完整 VM 隔离（内核调试、双机调试、快照反复回滚的利用开发、不可信样本的动态分析）而 docker 容器不够用时使用——以 VMware Workstation 模板 VM 为基底，内置 gdb、pwntools、ROPgadget、checksec 工具集（pwndbg 按需补装，见下），快照约定保证每次进入都是干净环境。
 base: vm
 vm_user: researcher
 vm_snapshot: zhishi-clean
@@ -8,7 +8,6 @@ tools:
   - gdb
   - pwntools
   - ROPgadget
-  - ropper
   - checksec
   - socat
   - nc

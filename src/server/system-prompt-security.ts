@@ -11,7 +11,8 @@
  *      （recipes.ts::scanRecipes，~/.zhishi/environments/）+ E3 具名环境
  *      （registry，config.json）+ T4 当前现场选择（selection.ts，
  *      env-selection.json 按 workspace 查）。按环境分组呈现「哪个现场有
- *      什么工具」；无引擎/无配方/无具名环境且未选现场时整段零注入。
+ *      什么工具」，配方行附正文工作流摘要（1.2.5「用」，每环境 ≤400 字符，
+ *      提炼在 recipes.ts）；无引擎/无配方/无具名环境且未选现场时整段零注入。
  *   3. `<zhishi-native-code>`      — 代码原生语境（静态）：工具链在环境配方
  *      里、闭环通道用法、环境标记约定（E6）、行为约定、恶意样本 env≠host
  *      纪律（D14 硬闸存在，提醒而非依赖 LLM 自觉）。
@@ -59,7 +60,7 @@ import { loadConfig } from './utils/admin-config';
 // ===== 硬字符上限（零注入语义 + 每段硬顶，见技术方案 §3.1） =====
 
 export const SECURITY_KERNEL_MAX_CHARS = 2000;
-export const SECURITY_CAPABILITIES_MAX_CHARS = 2000;
+export const SECURITY_CAPABILITIES_MAX_CHARS = 4000; // 1.2.5 抬顶：2000 装不下 10 配方的工作流摘要（试装机制下只见 1 条），4000 可常规见
 export const NATIVE_CODE_MAX_CHARS = 1000;
 export const RESEARCH_LOG_MAX_CHARS = 500;
 /**
@@ -214,11 +215,21 @@ export function buildSecurityCapabilitiesSection(
     lines.push('环境引擎：未检测到可用引擎（docker / 虚拟化 / ssh 均不可用——下面的环境暂开不起来，先按引擎引导装好）');
   }
 
+  // 配方工作流摘要（1.2.5「用」）：与核心行分开收集——工具清单是核心
+  // （截断也不能丢环境条目，否则发现环链路回退），摘要是增强（预算不够
+  // 时逐条让位，见下方试装）。
+  const summaries: Array<{ anchor: string; text: string }> = [];
+
   if (validRecipes.length > 0) {
-    lines.push('环境类型（zhishi env up <id> 即开出该环境，工具在环境里开箱即用）：');
+    lines.push('环境类型（zhishi env up <id> 即开出该环境，工具在环境里开箱即用；「工作流摘要」= 配方 SKILL.md 正文提炼，全文在配方目录 SKILL.md）：');
     for (const recipe of validRecipes) {
       const tools = recipe.tools.length > 0 ? recipe.tools.join('、') : '（未声明工具）';
-      lines.push(`- ${recipe.id}（${recipe.base ?? '?'}）：${tools}`);
+      const line = `- ${recipe.id}（${recipe.base ?? '?'}）：${tools}`;
+      lines.push(line);
+      // recipes.ts 已按 RECIPE_WORKFLOW_SUMMARY_MAX_CHARS 截断；无摘要不出行。
+      if (recipe.workflowSummary) {
+        summaries.push({ anchor: line, text: `  工作流摘要：${recipe.workflowSummary}` });
+      }
     }
   }
 
@@ -240,12 +251,35 @@ export function buildSecurityCapabilitiesSection(
     }
   }
 
-  const body = `<zhishi-capabilities>
+  const render = (ls: string[]) => `<zhishi-capabilities>
 这台机器上实际可用的研究环境（事实源：环境引擎探测 + 环境类型清单 + 具名环境注册表，会话启动时刷新）：
-${lines.join('\n')}
+${ls.join('\n')}
 </zhishi-capabilities>`;
 
-  return hardCapLines(body, SECURITY_CAPABILITIES_MAX_CHARS);
+  // 摘要逐条试装：装进「硬顶 − 截断标记」预算内的插到各自配方行后；
+  // 装不下的丢弃并显式声明（丢弃可观测，不静默——与截断标记同一纪律）。
+  if (summaries.length > 0) {
+    const budget = SECURITY_CAPABILITIES_MAX_CHARS - TRUNCATION_MARKER.length;
+    const fitted = [...lines];
+    let dropped = 0;
+    for (const { anchor, text } of summaries) {
+      const idx = fitted.indexOf(anchor);
+      if (idx === -1) continue;
+      const next = [...fitted.slice(0, idx + 1), text, ...fitted.slice(idx + 1)];
+      if (render(next).length <= budget) {
+        fitted.splice(idx + 1, 0, text);
+      } else {
+        dropped += 1;
+      }
+    }
+    if (dropped > 0) {
+      fitted.push(`（另有 ${dropped} 个环境类型的工作流摘要因预算未注入——全文在配方目录 SKILL.md）`);
+    }
+    lines.length = 0;
+    lines.push(...fitted);
+  }
+
+  return hardCapLines(render(lines), SECURITY_CAPABILITIES_MAX_CHARS);
 }
 
 // ===== 段 4：<zhishi-research-log>（静态，D1 研究成败信号教学） =====

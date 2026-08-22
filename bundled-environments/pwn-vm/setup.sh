@@ -14,9 +14,9 @@ echo "[pwn-vm] installing python tooling..."
 # 大 wheel（pwntools ~13MB）在慢/抖网络下默认 timeout 会 ReadTimeout——
 # 加大 timeout/retries，官方源失败回落清华镜像；裸 pip 兜底老 pip（无
 # --break-system-packages 的旧版本，PEP 668 在那些系统上也不存在）。
-pip3 install --break-system-packages --timeout 120 --retries 10 pwntools ROPgadget ropper 2>/dev/null \
-  || pip3 install --break-system-packages --timeout 120 --retries 10 -i https://pypi.tuna.tsinghua.edu.cn/simple pwntools ROPgadget ropper 2>/dev/null \
-  || pip3 install --timeout 120 --retries 10 pwntools ROPgadget ropper
+pip3 install --break-system-packages --timeout 120 --retries 10 pwntools ROPgadget 2>/dev/null \
+  || pip3 install --break-system-packages --timeout 120 --retries 10 -i https://pypi.tuna.tsinghua.edu.cn/simple pwntools ROPgadget 2>/dev/null \
+  || pip3 install --timeout 120 --retries 10 pwntools ROPgadget
 
 echo "[pwn-vm] pwndbg: 按需补装（github 直连在部分网络不可用，不进模板关键路径）"
 echo "  补装: git clone --depth 1 https://github.com/pwndbg/pwndbg ~/pwndbg && cd ~/pwndbg && ./setup.sh"

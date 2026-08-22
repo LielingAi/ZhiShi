@@ -36,7 +36,7 @@ use crate::{ulog_info, ulog_warn};
 // matching exclusion list in src/server/skills-config.ts MUST be kept
 // in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "36";
+const SYSTEM_SKILLS_VERSION: &str = "37";
 
 /// Skills that ship with the app and MUST stay at the bundled version —
 /// the app's flows depend on them, users are not meant to customise.

@@ -5,8 +5,8 @@
   "skills": ["ai-security"],
   "subagents": [],
   "signals": [
-    { "re": "\\b(\\d+)\\s+FAIL\\b", "label": "探针失败", "appendMatch": true },
-    { "re": "jailbreak[^\\n]*(success|hit)|(success|hit)[^\\n]*jailbreak", "label": "越狱命中" }
+    { "re": "\"entry_type\"\\s*:\\s*\"eval\"[^\\n]*?\"probe\"\\s*:\\s*\"([^\"]+)\"[^\\n]*?\"fails\"\\s*:\\s*[1-9]", "label": "garak 探针检出失败样本", "appendMatch": true },
+    { "re": "attack success rate:\\s*([\\d.]+%)", "label": "garak 攻击成功率", "appendMatch": true }
   ],
   "acceptance": [
     "对自有/授权模型端点跑 garak 扫描 + promptfoo 自定义 eval,产出风险分级报告",

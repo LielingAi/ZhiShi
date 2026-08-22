@@ -15,12 +15,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   aggregateRecipeTools,
   buildRecipe,
+  buildRecipeWorkflowSummary,
   buildToolCheckCommand,
   buildToolCheckScript,
   isRecipeBackupDir,
   loadRecipe,
   parseRecipeFrontmatter,
   parseToolCheckOutput,
+  RECIPE_WORKFLOW_SUMMARY_MAX_CHARS,
   scanRecipes,
   TOOL_PROBE_COMMANDS,
   validateRecipe,
@@ -395,5 +397,54 @@ describe('isRecipeBackupDir(播种备份目录扫描排除)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('配方正文工作流摘要（1.2.5「用」——正文进能力清单）', () => {
+  it('buildRecipe 从正文提炼 workflowSummary：去 frontmatter/标题符/空行/围栏，逐行以「；」连段', () => {
+    const recipe = buildRecipe(
+      'web-recon',
+      '/x/web-recon',
+      VALID_DOCKER_SKILL,
+      new Set(['SKILL.md', 'Dockerfile']),
+    );
+    expect(recipe.valid).toBe(true);
+    // VALID_DOCKER_SKILL 正文 = '# web-recon' + '何时用、怎么进、结果怎么采、怎么收尾。'
+    expect(recipe.workflowSummary).toBe('web-recon；何时用、怎么进、结果怎么采、怎么收尾。');
+  });
+
+  it('超长正文按 RECIPE_WORKFLOW_SUMMARY_MAX_CHARS 截断并带 … 标记（预算护栏）', () => {
+    const summary = buildRecipeWorkflowSummary(`${VALID_DOCKER_SKILL}\n${'长'.repeat(600)}`);
+    expect(summary).toBeDefined();
+    expect(summary!.length).toBe(RECIPE_WORKFLOW_SUMMARY_MAX_CHARS);
+    expect(summary!.endsWith('…')).toBe(true);
+  });
+
+  it('无正文（仅 frontmatter / 全空白）→ workflowSummary undefined（注入侧不出摘要行）', () => {
+    expect(buildRecipeWorkflowSummary('---\nname: x\nbase: docker\n---\n')).toBeUndefined();
+    expect(buildRecipeWorkflowSummary('---\nname: x\n---\n\n  \n')).toBeUndefined();
+    const recipe = buildRecipe(
+      'bare',
+      '/x/bare',
+      '---\nname: bare\ndescription: d\nbase: vm\n---\n',
+      new Set(['SKILL.md']),
+    );
+    expect(recipe.valid).toBe(true);
+    expect(recipe.workflowSummary).toBeUndefined();
+  });
+
+  it('无 frontmatter 时全文即正文（老配方容错），标题符照常剥掉', () => {
+    expect(buildRecipeWorkflowSummary('# 直接正文\n\n怎么做。')).toBe('直接正文；怎么做。');
+  });
+
+  it('代码围栏行剔除、围栏内命令保留（标准工作流的命令是摘要的干货）', () => {
+    const content = `${VALID_DOCKER_SKILL}\n\`\`\`bash\nchecksec --file=./vuln\n\`\`\`\n`;
+    expect(buildRecipeWorkflowSummary(content)).toContain('checksec --file=./vuln');
+    expect(buildRecipeWorkflowSummary(content)).not.toContain('```');
+  });
+
+  it('小节标题（## 及以下）整行剔除——结构标记是噪音；H1 标题剥 # 保留（一句话定位是干货）', () => {
+    const content = '---\nname: x\n---\n# x —— 侦察环境\n\n## 何时用\n\n扫端口。\n';
+    expect(buildRecipeWorkflowSummary(content)).toBe('x —— 侦察环境；扫端口。');
   });
 });

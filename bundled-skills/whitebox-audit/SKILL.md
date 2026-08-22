@@ -13,15 +13,16 @@ description: 白盒源码审计方法论——从入口选择到漏洞确认的�
 - **信号**：输入面清单 + 技术栈判定（框架/ORM/模板引擎——它们决定漏洞类型分布）
 - 大项目先划边界：本次审哪个模块，其余放弃（审计最忌贪多）
 
-### ② 基线扫描（semgrep 扫一遍,拿到免费线索）
+### ② 基线扫描（opengrep 扫一遍,拿到免费线索）
 
 ```
-semgrep scan --config auto .        # 通用
-semgrep scan --config p/owasp-top-ten .
+opengrep scan --config auto .        # 通用
+opengrep scan --config p/owasp-top-ten .
 ```
 
 - **信号分级**：severity:error/warning 的注入类告警优先追；style 类告警（lint 级）直接忽略
-- 告警只是线索不是结论——semgrep 误报率不低,每条都要人工确认
+- 告警只是线索不是结论——opengrep 误报率不低,每条都要人工确认
+- registry 规则（`p/...`、`auto`）运行时联网拉取；离线环境用本地规则目录 `--config <规则目录>`
 
 ### ③ 告警分级（追什么,不追什么）
 
@@ -36,6 +37,8 @@ semgrep scan --config p/owasp-top-ten .
 - 用 `rg` 找 source（用户输入进入点）与 sink（危险调用：exec/eval/SQL 拼接/文件读写）
 - 一条一条追可达性：输入有没有过滤/编码/白名单？
 - 辅助工具：`universal-ctags` 建索引跳转、`rg -n` 全局搜索
+- **ast-grep 即席 AST 模式**（rg 文本匹配误报太多时）：`sg run -p 'eval($CODE)' --lang python .`——结构匹配只命中真调用形态；`--rewrite '<模式>' -i` 可交互式结构重写
+- **Joern 污点一把出**（code-audit 环境预置模板）：`joern-parse -o out/target.cpg.bin .` 建 CPG → `joern --script /opt/zhishi/joern-taint.sc --params cpgFile=out/target.cpg.bin` 直接出 source→sink 流清单；模板的 sources/sinks 两组名单按 bug_class 改，大项目加 `JAVA_OPTS=-Xmx8g`
 - **信号**：完整 source→sink 路径（或证明不可达——负结果也留痕,这是死路清单）
 
 ### ⑤ CWE 映射（每个确认问题挂 CWE）
@@ -52,16 +55,16 @@ semgrep scan --config p/owasp-top-ten .
 ## 常见坑
 
 - **把 lint 当漏洞**：severity 低 ≠ 漏洞,风格类告警直接丢
-- **误报不记**：semgrep 误报每条记录一次就够,别反复追同一条
+- **误报不记**：opengrep 误报每条记录一次就够,别反复追同一条
 - **贪多**：一次审计一个模块,拿全不如拿准
-- **CodeQL 成本**：CLI 下载大（数百 MB）+ 建数据库耗时——只在 semgrep 给不出答案的项目上用它,不值得每个项目跑
+- **CodeQL 成本**：CLI 下载大（数百 MB）+ 建数据库耗时——只在 opengrep 给不出答案的项目上用它,不值得每个项目跑
 - **依赖漏洞≠可利用**：pip-audit 命中的 CVE 要确认实际可达（用了该函数/该版本路径),不能直接当结论
 
 ## 降级路径（工具缺失时）
 
-- semgrep 不可用 → rg/grep 手工模式 + OWASP 清单逐类过
-- semgrep 和 rg/grep 都没有、而项目很小（≤ ~300 行）→ 直接全量通读：小项目全读比模式匹配更靠谱，漏不了（1.1.8 实战：125 行项目全读 + 逐 sink 活体 PoC，5 确认 0 误报）
-- CodeQL 太重 → 换 semgrep 深层规则（p/owasp-top-ten）+ 手工数据流
+- opengrep 不可用 → rg/grep 手工模式 + OWASP 清单逐类过
+- opengrep 和 rg/grep 都没有、而项目很小（≤ ~300 行）→ 直接全量通读：小项目全读比模式匹配更靠谱，漏不了（1.1.8 实战：125 行项目全读 + 逐 sink 活体 PoC，5 确认 0 误报）
+- CodeQL 太重 → 换 opengrep 深层规则（p/owasp-top-ten）+ 手工数据流
 - 环境没有 → `zhishi env up code-audit`（人建环境,D17）
 - 知识缺口（不是工具缺口：不认识的 sink/拿不准的判定）→ 查 `expert_search`——专家审定知识，决策级；**先尽力；识别到知识缺口再查**（缺口的信号是反复失败/没有把握/找不到先例，不是进展慢——慢慢做对不需要救援）；未命中 = 库里没这条 ≠ 不是漏洞，标注「无先例」后继续
 - 本域缺口信号实例（命中任何一条 = 该查 expert_search 了）：看到没见过的危险函数/模式，不知道危险在哪；告警追数据流追丢了，不知道是该继续还是没洞；两个扫描器结论冲突，没有把握仲裁；确认不了「不可利用」是真安全还是没找到路径

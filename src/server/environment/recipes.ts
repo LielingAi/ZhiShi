@@ -15,7 +15,9 @@
  * 模板 .vmx 也可由 `env up --vm-base` 现场给出）。
  *
  * frontmatter 的 tools[] 是发现环节能力清单注入的唯一事实源——不解析
- * Dockerfile。结构照 `engines.ts`：frontmatter 解析、校验、清单聚合是纯
+ * Dockerfile；正文（何时用/怎么进/标准工作流）由 buildRecipeWorkflowSummary
+ * 提炼成 ≤400 字符摘要随工具名注入（1.2.5「用」——裸工具名不够，agent 要
+ * 知道打法）。结构照 `engines.ts`：frontmatter 解析、校验、清单聚合是纯
  * 函数（可单测）；目录扫描是薄 IO，根目录可注入（默认
  * `~/.zhishi/environments/`，测试传临时目录）。单个配方损坏（缺文件、
  * 非法 base）只标记该配方 invalid 并带原因，不炸整体扫描。
@@ -73,6 +75,12 @@ export interface EnvironmentRecipe {
   vmSnapshot?: string;
   /** vm 配方：驱动引擎（frontmatter vm_engine；缺省 vmware）。 */
   vmEngine?: VmEngine;
+  /**
+   * 正文工作流摘要（1.2.5「用」）：SKILL.md 正文（frontmatter 之后）提炼，
+   * 供能力清单注入段在工具名后携带——只给裸工具名 agent 不知道何时用/怎么进。
+   * 已按 RECIPE_WORKFLOW_SUMMARY_MAX_CHARS 截断；正文为空则 undefined。
+   */
+  workflowSummary?: string;
   valid: boolean;
   invalidReasons: string[];
 }
@@ -85,6 +93,46 @@ export interface EnvironmentRecipe {
 function extractFrontmatter(content: string): string | null {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   return match ? match[1] : null;
+}
+
+// ---------------------------------------------------------------------------
+// 正文工作流摘要（1.2.5「用」——配方正文进能力清单）
+// ---------------------------------------------------------------------------
+
+/** 每环境摘要硬顶：能力清单段的预算护栏（超出的部分截断，段级硬顶见 system-prompt-security.ts）。 */
+export const RECIPE_WORKFLOW_SUMMARY_MAX_CHARS = 400;
+
+/** 摘要截断标记——保留它，让 LLM 知道摘要是截过的（与能力清单段截断标记同一语义）。 */
+const WORKFLOW_SUMMARY_TRUNCATION = '…';
+
+/** SKILL.md 正文 = frontmatter 块之后的部分；无 frontmatter 时全文即正文。 */
+function extractBody(content: string): string {
+  const match = content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+  return match ? content.slice(match[0].length) : content;
+}
+
+/**
+ * 从 SKILL.md 正文提炼工作流摘要（纯函数，可单测）：去 frontmatter，H1
+ * 标题剥 `#` 保留（配方的一句话定位是摘要干货），小节标题（`##` 及以下）
+ * 整行剔除（「何时用/怎么进」这类结构标记对 LLM 是噪音，留着白烧预算），
+ * 代码围栏行剔除（围栏内命令保留——标准工作流的命令是干货）；逐行 trim
+ * 后以「；」连成一段——摘要在能力清单段占一行。超过 maxChars 截断并带
+ * `…` 标记；正文为空（仅 frontmatter / 全空白）返回 undefined，注入侧
+ * 跳过摘要行。
+ */
+export function buildRecipeWorkflowSummary(
+  content: string,
+  maxChars: number = RECIPE_WORKFLOW_SUMMARY_MAX_CHARS,
+): string | undefined {
+  const lines = extractBody(content)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('```') && !/^#{2,6}\s/.test(line))
+    .map((line) => line.replace(/^#\s+/, ''));
+  if (lines.length === 0) return undefined;
+  const text = lines.join('；');
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars - WORKFLOW_SUMMARY_TRUNCATION.length)}${WORKFLOW_SUMMARY_TRUNCATION}`;
 }
 
 /**
@@ -207,6 +255,7 @@ export function buildRecipe(
     description: frontmatter.description,
     base: frontmatter.base,
     tools: frontmatter.tools ?? [],
+    workflowSummary: buildRecipeWorkflowSummary(skillContent),
     vmBase: frontmatter.vm_base,
     vmUser: frontmatter.vm_user,
     vmSnapshot: frontmatter.vm_snapshot,
