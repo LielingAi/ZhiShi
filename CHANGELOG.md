@@ -50,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 - **产物级验证**：`tmp/m123-dist-smoke.mjs`——构建零警告门槛（esbuild 警告从此是阻断项）+ 产物 sidecar 全链路（起服/ready/选定/一轮真会话）+ CLI 产物行为回归（#5 钉）。
+- **点击图标直接打开 TUI**：交互启动（非 `--minimized` 自启）/重复点击（single-instance 回调）/托盘左键与「打开会话」菜单，都会开一个终端窗口跑 `zhishi agent`；顺带恢复 CLI 安装链（W6 删除 cmd_sync_cli 后 `~/.zhishi/bin` 无安装者——启动时同步 resources/cli，内容一致跳过）。默认工作区 = 第一个 enabled 且目录存在的 agent，兜底用户 home。
 
 
 
