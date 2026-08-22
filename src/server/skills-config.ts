@@ -6,7 +6,9 @@
 // (1.1.7 ① leftover; pattern copied from environment/selection.ts's
 // mutateSelectionStore). Reads stay lock-free, matching loadSelectionStore.
 
-import { cpSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, unlinkSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+
+import { cpSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'fs';
 
 import { dirname, join, resolve } from 'path';
 
@@ -208,15 +210,31 @@ function resolveBundledSkillsDir(): string | null {
 
  * (`SYSTEM_SKILLS` + `SYSTEM_SKILLS_VERSION` in `src-tauri/src/commands.rs`).
 
- * These are skipped by `seedBundledSkills` below because their lifecycle
+ * Their lifecycle is "force-overwrite on every version bump", not "seed once
 
- * is "force-overwrite on every version bump", not "seed once then leave
+ * then leave alone". Keep this list in sync with the Rust constant — a
 
- * alone". Keep this list in sync with the Rust constant — a mismatch
-
- * would either double-seed (harmless but confusing logs) or skip a
+ * mismatch would either double-sync (harmless but confusing logs) or skip a
 
  * genuine user skill named identically.
+
+ *
+
+ * 1.2.2 ④: they are no longer skipped by `seedBundledSkills`. The Rust
+
+ * version gate only runs when the Tauri host boots; in sidecar-only mode
+
+ * (dev `src/server/index.ts` / CLI-only) no Rust host exists, so bundled
+
+ * updates never reached `~/.zhishi/skills/`. The Node side now does a
+
+ * content-hash sync instead (see `syncSystemSkill`): identical content →
+
+ * no-op (the normal state after a Rust sync), different → force-overwrite.
+
+ * The two paths coexist: same machine running both never fights, because
+
+ * content-identical syncs are no-ops on both sides.
 
  */
 
@@ -290,19 +308,19 @@ const SYSTEM_SKILLS: readonly string[] = [
 
  *
 
- * System skills (SYSTEM_SKILLS above) are owned by Rust's
+ * System skills (SYSTEM_SKILLS above) follow a different path: they are
 
- * `cmd_sync_system_skills` and are skipped here — they need the
+ * force-overwritten by Rust's `cmd_sync_system_skills` when the Tauri host
 
- * version-gated force-overwrite path, not the seed-once-then-hands-off
+ * boots, and content-hash synced by `syncSystemSkill` here so sidecar-only
 
- * path. If we seeded them here AND Rust overwrote them, the interaction
+ * mode (no Rust host) also receives bundled updates (1.2.2 ④). They are
 
- * would be harmless (Rust always wins, ordering-wise) but we'd log a
+ * deliberately NOT tracked in `config.seeded` — their lifecycle is the
 
- * "skipped existing folder" every boot, and the `config.seeded` array
+ * version/content gate, not seed-once — so a Rust-synced install and a
 
- * would grow stale entries users don't recognise.
+ * sidecar-synced install leave the config identical.
 
  */
 
@@ -329,6 +347,94 @@ export function seedEnvironmentRecipes(): void {
     }
   } catch (err) {
     console.warn('[seed] environment recipes seeding failed (non-fatal):', err);
+  }
+}
+
+/**
+ * Hash a skill directory's full content tree (relative paths + file bytes +
+ * symlink targets, sorted for determinism) into a single digest. Missing,
+ * dangling-symlink, or unreadable dirs hash to null, so "absent" always
+ * differs from any real bundled source.
+ */
+function hashSkillDir(dir: string): string | null {
+  if (!existsSync(dir)) return null; // follows symlinks: broken link & missing both null
+  const hash = createHash('sha256');
+  const walk = (rel: string): void => {
+    const abs = rel ? join(dir, rel) : dir;
+    const entries = readdirSync(abs, { withFileTypes: true })
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const relPath = rel ? `${rel}/${entry.name}` : entry.name;
+      const entryAbs = join(abs, entry.name);
+      if (entry.isDirectory()) {
+        hash.update(`dir:${relPath}\0`);
+        walk(relPath);
+      } else if (entry.isSymbolicLink()) {
+        hash.update(`link:${relPath}\0${readlinkSync(entryAbs)}\0`);
+      } else if (entry.isFile()) {
+        hash.update(`file:${relPath}\0`);
+        hash.update(readFileSync(entryAbs));
+        hash.update('\0');
+      }
+    }
+  };
+  try {
+    walk('');
+    return hash.digest('hex');
+  } catch {
+    return null; // unreadable (e.g. a regular file sitting at dst) → treat as differs
+  }
+}
+
+/**
+ * 1.2.2 ④ — Content-hash sync for one system skill (sidecar-only mode fix).
+ *
+ * Rust's `cmd_sync_system_skills` only runs when the Tauri host boots, so in
+ * sidecar-only mode (dev `src/server/index.ts`, CLI-only usage) bundled
+ * system-skill updates never landed. Here we compare the bundled source
+ * against the installed copy:
+ *
+ * - identical content → no-op. This is the normal state after a Rust sync,
+ *   so both paths coexist on one machine without fighting (each side's
+ *   content-identical run is a no-op).
+ * - different / missing → force-overwrite with the bundled copy. User edits
+ *   to system-skill directories are overwritten, by design — same semantics
+ *   as the Rust version gate ("随版本强制覆盖", see commands.rs module
+ *   comment).
+ *
+ * Returns true iff the installed copy was (re)written. Mirrors the Rust
+ * guards: platform-blocked skills are skipped (parity with
+ * PLATFORM_BLOCKED_SKILLS / is_skill_blocked_on_platform), and a bundled
+ * source without SKILL.md is a packaging defect that must never replace a
+ * working installed copy (issue #321).
+ */
+export function syncSystemSkill(bundledDir: string, userSkillsDir: string, folder: string): boolean {
+  if (isSkillBlockedOnPlatform(folder)) {
+    console.log(`[seed] Skipping system skill ${folder} on ${process.platform} (platform blocked)`);
+    return false;
+  }
+  const src = join(bundledDir, folder);
+  const dst = join(userSkillsDir, folder);
+  if (!existsSync(join(src, 'SKILL.md'))) {
+    console.warn(`[seed] Bundled system skill incomplete (no SKILL.md), preserved existing copy: ${folder}`);
+    return false;
+  }
+  const srcHash = hashSkillDir(src);
+  if (srcHash !== null && srcHash === hashSkillDir(dst)) {
+    return false; // already in sync — no-op
+  }
+  try {
+    // rmSync on a symlink removes the link itself (never the target), so a
+    // dangling ~/.zhishi/skills/<name> symlink is cleared here instead of
+    // wedging cpSync (the Node v24 cpSync equivalent() crash the non-system
+    // path below guards against).
+    rmSync(dst, { recursive: true, force: true });
+    cpSync(src, dst, { recursive: true });
+    console.log(`[seed] Synced system skill (content changed): ${folder}`);
+    return true;
+  } catch (err) {
+    console.warn(`[seed] Failed to sync system skill ${folder}:`, err);
+    return false;
   }
 }
 
@@ -371,7 +477,11 @@ export async function seedBundledSkills(): Promise<void> {
 
       if (SYSTEM_SKILLS.includes(folder)) {
 
-        // Owned by Rust version gate — skip silently.
+        // 1.2.2 ④: content-hash sync (was: skipped as Rust-owned). A real
+        // overwrite bumps generation via `changed` so Tab Sidecars re-sync —
+        // mirrors the skill-update CRUD path's bumpSkillsGeneration.
+
+        if (syncSystemSkill(bundledDir, userSkillsDir, folder)) changed = true;
 
         continue;
 
