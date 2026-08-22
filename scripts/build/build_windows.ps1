@@ -1168,6 +1168,13 @@ try {
 
     # ========================================
 
+    # 1.2.3：zhishi-updater（externalBin）是本地 crate，随构建产出——缺这步
+    # tauri_build 会因 binaries/zhishi-updater-<triple>.exe 缺失而失败。
+    Write-Host "  构建 zhishi-updater (externalBin)..." -ForegroundColor Cyan
+    & cargo build --release -p zhishi-updater --manifest-path "$ProjectDir\src-tauri\Cargo.toml"
+    if ($LASTEXITCODE -ne 0) { throw "zhishi-updater 构建失败" }
+    Copy-Item "$ProjectDir\src-tauri\target\release\zhishi-updater.exe" "$ProjectDir\src-tauri\binaries\zhishi-updater-x86_64-pc-windows-msvc.exe" -Force
+
     Write-Host "[6/7] 构建 Tauri 应用 (Release)..." -ForegroundColor Blue
 
     if ($SkipBundle) {

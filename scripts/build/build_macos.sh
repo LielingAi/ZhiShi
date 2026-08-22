@@ -385,6 +385,12 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
     echo ""
     echo -e "${YELLOW}━━━ 构建目标: $TARGET ━━━${NC}"
 
+    echo ""
+    echo -e "${CYAN}  构建 zhishi-updater ($TARGET, externalBin)...${NC}"
+    cargo build --release -p zhishi-updater --manifest-path "${PROJECT_DIR}/src-tauri/Cargo.toml" --target "$TARGET"
+    mkdir -p "${PROJECT_DIR}/src-tauri/binaries"
+    cp "${PROJECT_DIR}/src-tauri/target/${TARGET}/release/zhishi-updater" "${PROJECT_DIR}/src-tauri/binaries/zhishi-updater-${TARGET}"
+
     # ---- 确保 Node.js 匹配目标架构 ----
     # 将 Tauri target triple 映射为 Node.js 架构名
     if [[ "$TARGET" == "aarch64-apple-darwin" ]]; then

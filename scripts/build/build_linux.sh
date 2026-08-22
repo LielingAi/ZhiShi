@@ -186,6 +186,11 @@ echo -e "  ${CYAN}目标: ${TARGET} (SDK: ${SDK_TRIPLE})${NC}"
 
 # M4c: Claude Agent SDK 已删除——不再分发 claude native binary。
 
+# 1.2.3：zhishi-updater（externalBin）本地 crate 随构建产出——缺它 tauri_build 失败
+cargo build --release -p zhishi-updater --manifest-path "${PROJECT_DIR}/src-tauri/Cargo.toml" --target "$TARGET"
+mkdir -p "${PROJECT_DIR}/src-tauri/binaries"
+cp "${PROJECT_DIR}/src-tauri/target/${TARGET}/release/zhishi-updater" "${PROJECT_DIR}/src-tauri/binaries/zhishi-updater-${TARGET}"
+
 npm run tauri:build -- --target "$TARGET" --bundles appimage,deb
 
 echo ""
