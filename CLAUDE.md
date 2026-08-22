@@ -14,7 +14,7 @@
 
 |------|------|
 
-| 桌面宿主 | Tauri v2 (Rust)——无窗口：不创建任何窗口；保留 sidecar Owner、Panel API（仅 term）、Management API、CronTaskManager、托盘（仅 exit）、updater、统一日志。W6 减法已删：invoke_handler 全部 IPC 命令、SearchEngine（tantivy）、browser.rs、sse_proxy、global_shortcut、attachment_protocol、webview2_check、macos 窗框 hacks、workspace_files 命令层（path_safety 保留） |
+| 桌面宿主 | Tauri v2 (Rust)——无窗口：不创建任何窗口；保留 sidecar Owner、Panel API（仅 term）、Management API、CronTaskManager、托盘（打开会话/exit；左键=打开 TUI）、updater、统一日志。交互入口=CLI/TUI：应用启动/重复点击/托盘动作均经 `tui_launcher.rs` 开终端跑 `zhishi agent`（`--minimized` 开机自启不弹）。W6 减法已删：invoke_handler 全部 IPC 命令、SearchEngine（tantivy）、browser.rs、sse_proxy、global_shortcut、attachment_protocol、webview2_check、macos 窗框 hacks、workspace_files 命令层（path_safety 保留） |
 
 | 后端 | Node.js v24 + 自研 loop（`src/server/loop/`，pi 底座钉版；多实例 Sidecar） |
 
@@ -619,7 +619,7 @@ Team Hub 服务端（`zhishi-hub/`）从未随本仓库分发，且已被确认�
 
 
 
-- **renderer GUI 全家**：`src/renderer/`（React / Vite / Tailwind / xterm / monaco 等 40+ 前端依赖）、`npm run dev` / `dev:web` / `build:web` / `test:dom`、桌宠（pet.rs）。Tauri 不再创建任何窗口（保留 sidecar Owner、Panel API（仅 term）、Management API、CronTaskManager、托盘 exit、updater、统一日志；W6 减法进一步删除 SearchEngine / browser / sse_proxy / global_shortcut / 全部 IPC invoke 命令），`tauri.conf.json` 的 frontendDist 指向 `src-tauri/placeholder/` 极简占位页。
+- **renderer GUI 全家**：`src/renderer/`（React / Vite / Tailwind / xterm / monaco 等 40+ 前端依赖）、`npm run dev` / `dev:web` / `build:web` / `test:dom`、桌宠（pet.rs）。Tauri 不再创建任何窗口（保留 sidecar Owner、Panel API（仅 term）、Management API、CronTaskManager、托盘（打开会话/exit）、updater、统一日志；W6 减法进一步删除 SearchEngine / browser / sse_proxy / global_shortcut / 全部 IPC invoke 命令），`tauri.conf.json` 的 frontendDist 指向 `src-tauri/placeholder/` 极简占位页。
 
 - **IM 全家**：`src-tauri/src/im/`、`src-tauri/src/inbox/`、`src/server/inbox/`、`src/server/plugin-bridge/`（OpenClaw Plugin Bridge）、im 工具三件套、CLI `im` / `session send` / `agent channel` / `agent runtime-status` / OpenClaw `plugin list|install|remove`。OpenClaw 渠道插件桥已随 IM 删除。
 

@@ -152,10 +152,12 @@ fn maybe_mark_crashed_node(status: &std::process::ExitStatus, node_path: &std::p
 
 // ===== Port File for CLI Discovery =====
 
-/// Write the Global Sidecar port to ~/.zhishi/sidecar.port so the CLI can discover it.
+/// Write the Global Sidecar port to `<data-dir>/sidecar.port` so the CLI can discover it.
+/// Uses `zhishi_data_dir()` (not a hardcoded home path) so portable mode keeps
+/// writer and readers (cli.rs, trust.rs) on the same file.
 fn write_global_port_file(port: u16) {
-    if let Some(home) = dirs::home_dir() {
-        let port_file = home.join(".zhishi").join(PORT_FILE_NAME);
+    if let Some(dir) = crate::app_dirs::zhishi_data_dir() {
+        let port_file = dir.join(PORT_FILE_NAME);
         if let Err(e) = std::fs::write(&port_file, port.to_string()) {
             ulog_warn!("[sidecar] Failed to write port file {:?}: {}", port_file, e);
         } else {
@@ -166,8 +168,8 @@ fn write_global_port_file(port: u16) {
 
 /// Remove the port file (called on app exit / sidecar shutdown).
 fn remove_global_port_file() {
-    if let Some(home) = dirs::home_dir() {
-        let port_file = home.join(".zhishi").join(PORT_FILE_NAME);
+    if let Some(dir) = crate::app_dirs::zhishi_data_dir() {
+        let port_file = dir.join(PORT_FILE_NAME);
         let _ = std::fs::remove_file(&port_file);
     }
 }

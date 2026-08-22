@@ -1,11 +1,11 @@
 // System tray implementation for ZhiShi
-// Windowless host: the tray carries only the Exit entry (plus the
-// single-instance lock, which lives in lib.rs). The Open/Settings entries
-// were removed in the W6 subtraction — there is no window to raise or
-// settings page to navigate to.
+// Windowless host: the tray carries "Open Session" (spawns an agent TUI
+// terminal — the product's interactive surface) plus Exit. The old
+// Open/Settings entries were removed in the W6 subtraction — there is no
+// window to raise or settings page to navigate to.
 
 use tauri::{
-    tray::TrayIconBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     menu::{MenuBuilder, MenuItemBuilder},
     Manager, Runtime,
 };
@@ -18,7 +18,16 @@ use crate::ulog_info;
 use crate::ulog_warn;
 
 /// Menu item IDs for tray right-click menu
+const MENU_OPEN_SESSION: &str = "open_session";
 const MENU_EXIT: &str = "exit";
+
+/// Shared action for tray left-click and the "Open Session" menu item:
+/// open an agent TUI terminal against the Global Sidecar (1.2.3 — replaces
+/// the windowless host's dead "raise window" action).
+fn open_session<R: Runtime>(app: &tauri::AppHandle<R>) {
+    let manager = app.state::<crate::sidecar::ManagedSidecarManager>().inner().clone();
+    crate::tui_launcher::spawn_open_tui(app.clone(), manager, "tray");
+}
 
 /// Initialize the system tray with icon and menu
 pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
@@ -26,9 +35,12 @@ pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::er
     // persisted uiLanguage + OS locale (i18n §1; default zh for legacy
     // configs on zh systems).
     let locale = crate::i18n::current_locale();
+    let open_item = MenuItemBuilder::with_id(MENU_OPEN_SESSION, crate::i18n::t("tray.openSession", locale)).build(app)?;
     let exit_item = MenuItemBuilder::with_id(MENU_EXIT, crate::i18n::t("tray.exit", locale)).build(app)?;
 
     let menu = MenuBuilder::new(app)
+        .item(&open_item)
+        .separator()
         .item(&exit_item)
         .build()?;
 
@@ -46,7 +58,8 @@ pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::er
     #[cfg(not(target_os = "macos"))]
     let tray_icon = app.default_window_icon().unwrap().clone();
 
-    // Build the tray icon
+    // Build the tray icon. Left click opens an agent TUI terminal (the
+    // windowless host's primary action); the menu stays on right click.
     let tray_builder = TrayIconBuilder::new()
         .icon(tray_icon)
         .menu(&menu)
@@ -60,11 +73,28 @@ pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::er
     let tray = tray_builder
         .on_menu_event(move |app, event| {
             match event.id().as_ref() {
+                MENU_OPEN_SESSION => {
+                    ulog_info!("[Tray] Open Session menu clicked");
+                    open_session(app);
+                }
                 MENU_EXIT => {
                     ulog_info!("[Tray] Exit menu clicked");
                     app.exit(0);
                 }
                 _ => {}
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            // Left-click release → open TUI. (Gated on Up so a press that
+            // turns into a right-click menu gesture doesn't double-fire.)
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                ulog_info!("[Tray] Icon left-clicked");
+                open_session(tray.app_handle());
             }
         })
         .build(app)?;
@@ -78,9 +108,10 @@ pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::er
 
 /// Show the main window (and focus it).
 ///
-/// Single canonical "bring to foreground" routine, kept for the callers that
-/// remain in the windowless host (single-instance callback, notification
-/// click handler). With no `main` window this is a deliberate no-op.
+/// Kept for the remaining caller in the windowless host (notification click
+/// handler, notification.rs). With no `main` window this is a deliberate
+/// no-op. The single-instance callback no longer routes here — it opens an
+/// agent TUI terminal instead (tui_launcher, 1.2.3).
 pub fn show_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();

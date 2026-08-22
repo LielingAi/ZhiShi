@@ -154,6 +154,8 @@ pub fn current_locale() -> SupportedLocale {
 /// tiny hardcoded match table — tray menu only).
 pub fn t(key: &str, locale: SupportedLocale) -> &str {
     match (locale, key) {
+        (SupportedLocale::ZhCn, "tray.openSession") => "打开会话",
+        (SupportedLocale::EnUs, "tray.openSession") => "Open Session",
         (SupportedLocale::ZhCn, "tray.exit") => "退出",
         (SupportedLocale::EnUs, "tray.exit") => "Quit",
         _ => key,
@@ -252,7 +254,7 @@ mod tests {
 
     #[test]
     fn tray_strings_have_both_locales() {
-        for key in ["tray.exit"] {
+        for key in ["tray.exit", "tray.openSession"] {
             assert_ne!(t(key, SupportedLocale::ZhCn), key);
             assert_ne!(t(key, SupportedLocale::EnUs), key);
             assert_ne!(t(key, SupportedLocale::ZhCn), t(key, SupportedLocale::EnUs));

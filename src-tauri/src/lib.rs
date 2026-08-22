@@ -21,6 +21,7 @@ mod sidecar;
 pub mod task;
 pub mod trust;
 pub mod terminal;
+pub mod tui_launcher;
 pub mod usb_updater;
 pub mod workspace_files;
 mod tray;
@@ -99,6 +100,8 @@ pub fn run() {
     let sidecar_state_for_terminal_forwarder = sidecar_state.clone();
 
     let sidecar_state_for_management = sidecar_state.clone();
+    let sidecar_state_for_single_instance = sidecar_state.clone();
+    let sidecar_state_for_launcher = sidecar_state.clone();
 
     // Track if cleanup has been performed to avoid duplicate cleanup
     // All clones share the same underlying AtomicBool - whichever exit path
@@ -129,11 +132,17 @@ pub fn run() {
     // Build the app first, then run with event handler
     // This allows us to handle RunEvent::ExitRequested for Cmd+Q and Dock quit
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            // Another instance was launched — bring the existing window to the
-            // foreground. Reuses the same routine as tray click and toast click
-            // so all three "raise window" entry points stay in lockstep.
-            tray::show_main_window(app);
+        .plugin(tauri_plugin_single_instance::init(move |app, _args, _cwd| {
+            // Another instance was launched (user clicked the app icon while
+            // the host is already running). Windowless host (D13): there is no
+            // window to raise — the interactive surface is the CLI/TUI, so a
+            // repeated click opens a fresh agent TUI terminal instead (1.2.3).
+            // Runs on a blocking worker; see tui_launcher module docs.
+            tui_launcher::spawn_open_tui(
+                app.clone(),
+                sidecar_state_for_single_instance.clone(),
+                "single-instance",
+            );
             // Notify the front-end that the user just re-activated the app via
             // an external trigger (taskbar icon, dock click on Linux, etc.).
             // The notification module piggy-backs on this to consume any
@@ -298,6 +307,30 @@ pub fn run() {
             // Setup system tray
             if let Err(e) = tray::setup_tray(app) {
                 ulog_error!("[App] Failed to setup system tray: {}", e);
+            }
+
+            // CLI install chain (restored in 1.2.3 after the W6 removal left
+            // fresh machines without a `zhishi` command) + interactive-launch
+            // TUI. Runs on every boot so autostart repairs the install too;
+            // the TUI window itself is gated on interactive launch — the
+            // autostart plugin always passes `--minimized` (see the plugin
+            // registration above), which MUST never pop a terminal.
+            {
+                let interactive = !std::env::args().skip(1).any(|a| a == "--minimized");
+                let launcher_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                        tui_launcher::sync_cli_resources(&launcher_handle);
+                        if interactive {
+                            tui_launcher::open_tui_session(
+                                &launcher_handle,
+                                &sidecar_state_for_launcher,
+                                "launch",
+                            );
+                        }
+                    })
+                    .await;
+                });
             }
 
             // Inject Sidecar state into management API

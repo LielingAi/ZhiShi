@@ -70,11 +70,11 @@ pub fn run(args: &[String]) -> i32 {
         }
     };
 
-    // 2. Find the CLI script at ~/.zhishi/bin/zhishi
+    // 2. Find the CLI script at <data-dir>/bin/zhishi
     let cli_script = match find_cli_script() {
         Some(p) => p,
         None => {
-            eprintln!("Error: CLI script not found at ~/.zhishi/bin/zhishi");
+            eprintln!("Error: CLI script not found at <zhishi-data-dir>/bin/zhishi");
             eprintln!("Please launch the ZhiShi app at least once to initialize the CLI.");
             return 1;
         }
@@ -126,7 +126,10 @@ pub fn run(args: &[String]) -> i32 {
 /// macOS: /Applications/ZhiShi.app/Contents/Resources/nodejs/bin/node
 /// Windows: <install-dir>/resources/nodejs/node.exe
 /// Linux (AppImage / deb): <install-dir>/resources/nodejs/bin/node
-fn find_node_binary() -> Option<PathBuf> {
+///
+/// pub(crate): tui_launcher reuses this to inject the bundled runtime dir into
+/// the spawned terminal's PATH (zhishi.cmd locates node.exe via PATH).
+pub(crate) fn find_node_binary() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
 
@@ -172,36 +175,51 @@ fn find_node_binary() -> Option<PathBuf> {
     None
 }
 
-/// Find the CLI script at ~/.zhishi/bin/zhishi.
-/// The script is the esbuild bundle of src/cli/ (installed by the packaging
-/// pipeline; the old in-app `cmd_sync_cli` sync path was removed in W6).
+/// Find the CLI script at `<data-dir>/bin/zhishi`.
+/// The script is the esbuild bundle of src/cli/, installed by
+/// `tui_launcher::sync_cli_resources` at app startup (the old in-app
+/// `cmd_sync_cli` sync path was removed in W6; restored in 1.2.3).
+///
+/// Resolves via `app_dirs::zhishi_data_dir()` so USB portable mode finds the
+/// exe-side install; falls back to `~/.zhishi/bin` for installs written before
+/// the data-dir-aware sync existed.
 fn find_cli_script() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-
-    // Primary: ~/.zhishi/bin/zhishi
-    let script = home.join(".zhishi").join("bin").join("zhishi");
-    if script.exists() {
-        return Some(script);
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = crate::app_dirs::zhishi_data_dir() {
+        dirs.push(dir);
+    }
+    if let Some(home) = dirs::home_dir() {
+        let legacy = home.join(".zhishi");
+        if !dirs.contains(&legacy) {
+            dirs.push(legacy);
+        }
     }
 
-    // Windows: ~/.zhishi/bin/zhishi.cmd
-    #[cfg(windows)]
-    {
-        let cmd_script = home.join(".zhishi").join("bin").join("zhishi.cmd");
-        if cmd_script.exists() {
-            return Some(cmd_script);
+    for dir in dirs {
+        let bin = dir.join("bin");
+        // Primary: <dir>/bin/zhishi
+        let script = bin.join("zhishi");
+        if script.exists() {
+            return Some(script);
+        }
+        // Windows: <dir>/bin/zhishi.cmd
+        #[cfg(windows)]
+        {
+            let cmd_script = bin.join("zhishi.cmd");
+            if cmd_script.exists() {
+                return Some(cmd_script);
+            }
         }
     }
 
     None
 }
 
-/// Read the Global Sidecar port from ~/.zhishi/sidecar.port.
+/// Read the Global Sidecar port from `<data-dir>/sidecar.port`.
 /// This file is written by sidecar.rs when the Global Sidecar starts.
 /// Validates the port is a valid u16 to guard against stale/corrupt files.
 fn discover_sidecar_port() -> Option<String> {
-    let home = dirs::home_dir()?;
-    let port_file = home.join(".zhishi").join("sidecar.port");
+    let port_file = crate::app_dirs::zhishi_data_dir()?.join("sidecar.port");
     let content = std::fs::read_to_string(port_file).ok()?;
     let port = content.trim().to_string();
     // Validate: must be a valid port number (1-65535)
