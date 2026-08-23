@@ -1,0 +1,43 @@
+# ZhiShi 专家知识导入演示（1.2.10）
+
+# 用法：zhishi expert import docs/expert-import.demo.yaml
+# 三条演示条目覆盖三种 kind 与三个域；字段含义见 docs/expert-import-guide.md。
+# 演示条目都打了 demo 标签，导入后可用 zhishi expert search demo 找到、
+# zhishi expert rm <id> 清理。
+
+- title: 堆喷前先确认分配器路径（演示）
+  kind: technique
+  domain: binary
+  applicability: glibc 堆题，准备堆喷占位之前
+  content: |
+    堆喷的有效性取决于目标分配走哪条路径。先确认目标是走 tcache/fastbin
+    还是直接 mmap：大块分配（超过 mmap 阈值）不参与堆喷。演示要点——
+    喷之前用一次受控分配观察返回地址区间，确认落在堆段再放量。
+  criteria: 返回地址落在主堆段（brk 区）则堆喷成立；落在独立 mmap 页则改换风水布局。
+  tags: heap, demo
+  reviewer: demo
+
+- title: 内网横向的 SMB 签名前置探测（演示）
+  kind: sop
+  domain: pentest
+  applicability: 拿到内网首台跳板、准备横向移动时
+  content: |
+    1. netexec smb <网段> --shares 先探测签名与共享可写性；
+    2. 签名强制（signing required）的主机直接跳过 psexec 类手法；
+    3. 共享可写且签名未强制的主机再评估 wmiexec/smbexec 落地。
+    演示要点——顺序不能反：先打后探会在域控日志里留下一串失败噪声。
+  criteria: 目标网段启用 SMB signing 强制时，psexec 类必然失败；探测结果里 signing:True 即判死路。
+  tags: lateral, smb, demo
+  reviewer: demo
+
+- title: 白盒审计先画信任边界再追数据流（演示）
+  kind: idea
+  domain: whitebox
+  applicability: 对一个陌生代码库开始审计的前 30 分钟
+  content: |
+    不要上来就 grep 危险函数。先把代码库的信任边界画出来：外部输入从哪进
+    （HTTP/RPC/文件/反序列化），跨过哪几道校验，落到哪些 sink。数据流
+    只沿边界追，不沿功能追——按功能追会在业务逻辑里迷路。
+  criteria: 画不出边界的模块先标记为「待侦察」而不是「安全」；边界图错了，后面的污点分析全错。
+  tags: methodology, demo
+  reviewer: demo
