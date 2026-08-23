@@ -5,6 +5,19 @@
 
 ---
 
+## 1.2.10 —— zhishi 命令入 PATH + 专家知识导入（进行中）
+
+缘起：用户想在 TUI 中方便地用 zhishi 命令，并指出根子是**安装后 zhishi 不在环境变量里**——PATH 通了，TUI/终端里用 zhishi 都顺势解决；另专家知识「新建」目前只有编辑器往返（edit），需要支持导入 JSON/YAML 现成文件。
+
+- [ ] **安装后 zhishi 入 PATH**：NSIS POSTINSTALL 落 `<数据目录>\bin` 的 CLI 三件套（zhishi/zhishi.cmd/package.json，cmd 烘焙 bundled node 绝对路径——不依赖用户自己装 node）+ 用户 PATH 注册（HKCU Environment + WM_SETTINGCHANGE 广播，去重）；POSTUNINSTALL 移除 PATH 项；launcher 镜像侧同口径（zhishi.cmd 改为生成式烘焙 node 路径，两处产物一致不 churn）。便携/USB 模式不动（不写 PATH）。
+- [ ] **`zhishi expert import <file>`**：JSON/YAML 自动识别（js-yaml 已是依赖），单对象/数组批量，逐条 validateEntry + 复用 expert/add 路由（服务端零改动），逐条报错不阻塞（seed 先例），provenance=user、reviewer 取文件字段或 --reviewer 兜底；help + user-guide 写格式。
+- [ ] **TUI `/cli <args>` 透传**：spawn zhishi（PATH 已通），输出捕获贴会话块；交互类子命令（expert new/edit/review、model set-key 等）deny-list 引导回终端。长输出折叠、CJK 宽度按既有口径。
+- [ ] **验收**：全量测试 + 实机安装验证（装完开新终端 `zhishi --version` 可用）+ import 活体（yaml/json 各一）。
+
+> 明确不做：TUI 的 expert 面板、其余 CLI 命令的逐个斜杠化。
+
+---
+
 ## 1.2.9 —— TUI 的 BUG 检查·续（已完成）
 
 方向延续「做深不做广」。主题：TUI bug 续修——1.2.8 普查之外的实机反馈驱动。用户实机报告四条：①模型供应商面板全部显示「未配 key」，但对话实际可用（kimi key 已配）——显示与真实配置脱节，且用户无法判断当前在用哪个模型；②斜杠命令交互弱——`/model` 之后没有下一步引导，用户不知道能干什么；③Tab 无法补全；④无 ↑/↓ 历史对话快速召回。
