@@ -37,6 +37,12 @@ describe('mapLoopEventToSse(逐事件对齐 SDK 路径)', () => {
     ]);
   });
 
+  it('thinking-end → chat:thinking-complete { index }(1.2.8 H1,与 thinking-start 同 index)', () => {
+    expect(mapLoopEventToSse({ type: 'thinking-end' })).toEqual([
+      { event: 'chat:thinking-complete', data: { index: 0 } },
+    ]);
+  });
+
   it('tool-call → chat:tool-use-start { id, name, input, streamIndex }', () => {
     const out = mapLoopEventToSse({ type: 'tool-call', toolCallId: 'tc1', toolName: 'env_exec', args: { command: 'id' } });
     expect(out).toEqual([{
@@ -45,14 +51,24 @@ describe('mapLoopEventToSse(逐事件对齐 SDK 路径)', () => {
     }]);
   });
 
-  it('tool-result → chat:tool-result-complete { toolUseId, content }', () => {
+  it('tool-result → chat:tool-result-complete { toolUseId, content, isError }(1.2.8 H2)', () => {
     const ev: LoopEvent = {
       type: 'tool-result', toolCallId: 'tc1', toolName: 'env_exec',
       result: { content: [{ type: 'text', text: 'exit=0\nfuzz' }], details: {} },
       isError: false,
     };
     const out = mapLoopEventToSse(ev);
-    expect(out).toEqual([{ event: 'chat:tool-result-complete', data: { toolUseId: 'tc1', content: 'exit=0\nfuzz' } }]);
+    expect(out).toEqual([{ event: 'chat:tool-result-complete', data: { toolUseId: 'tc1', content: 'exit=0\nfuzz', isError: false } }]);
+  });
+
+  it('tool-result isError:true 原样透传(TUI reducer 按它定 fail 终态)', () => {
+    const ev: LoopEvent = {
+      type: 'tool-result', toolCallId: 'tc2', toolName: 'env_exec',
+      result: { content: [{ type: 'text', text: 'command not found' }] },
+      isError: true,
+    };
+    const out = mapLoopEventToSse(ev);
+    expect(out).toEqual([{ event: 'chat:tool-result-complete', data: { toolUseId: 'tc2', content: 'command not found', isError: true } }]);
   });
 
   it('done → chat:message-complete(usage 聚合 + tool_count + duration_ms)', () => {

@@ -22,10 +22,14 @@ const encoder = new TextEncoder();
 //   - 'critical'    → must reach the client even under pressure (errors,
 //                     completions, init events). Wait briefly, then enqueue
 //                     anyway and emit a slow-client warning. NEVER dropped.
-//   - 'coalescible' → chunk-style deltas. When the queue is over the high-water
-//                     mark, the newest entry of the same event type replaces
-//                     the previous queued entry of the same type (we're going
-//                     to emit a tail-of-stream snapshot anyway).
+//   - 'coalescible' → chunk-style deltas and latest-wins snapshots. When the
+//                     queue is over the high-water mark, same-type queued
+//                     entries collapse — but HOW they collapse depends on the
+//                     payload semantics: incremental text
+//                     (`chat:message-chunk`) is MERGED (string append —
+//                     replacing would silently drop never-delivered text),
+//                     while latest-wins state snapshots (`chat:context-usage`
+//                     etc.) are REPLACED by the newest entry.
 //   - 'droppable'   → telemetry, logs. Drop silently and bump a counter.
 //
 // Per-client bounded queue (`MAX_QUEUE_PER_CLIENT`) is a hard ceiling — once
@@ -97,6 +101,8 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   'chat:attachments-filtered': 'critical',
   'chat:attachments-fallback': 'critical',
   'chat:thinking-start': 'critical',
+  // 1.2.8(H1):thinking 块收尾(loop 路径)——结构级边界,与 thinking-start 同级。
+  'chat:thinking-complete': 'critical',
   'chat:content-block-stop': 'critical',
   'chat:message-sdk-uuid': 'critical',
   'chat:message-replay': 'critical',
@@ -456,6 +462,24 @@ function formatSse(event: string, data: unknown): Uint8Array {
   return encoder.encode(`${lines.join('\n')}\n`);
 }
 
+const sseDecoder = new TextDecoder();
+
+/**
+ * 1.2.8(M3):背压合并的逆操作——从已编码的 `chat:message-chunk` 帧取回
+ * 字符串负载(formatSse 对字符串按行拆 `data:`;合并 = 数据行取回后拼接
+ * 再编码)。帧形状不符时返回 null,调用方回退替换语义(不冒险拼损坏帧)。
+ */
+function decodeMessageChunkPayload(chunk: Uint8Array): string | null {
+  const dataLines: string[] = [];
+  for (const line of sseDecoder.decode(chunk).split('\n')) {
+    if (line.startsWith('data: ')) dataLines.push(line.slice('data: '.length));
+    else if (line === 'data:') dataLines.push('');
+    else if (line.startsWith('event:') || line === '') continue;
+    else return null;
+  }
+  return dataLines.join('\n');
+}
+
 function heartbeatChunk(): Uint8Array {
   return encoder.encode(': ping\n\n');
 }
@@ -679,13 +703,26 @@ export function createSseClient(onClose: (client: SseClient) => void): {
     // Either we already have a backlog, or downstream is paused. Time for
     // priority-aware dispositions.
 
-    // Coalescible: if queue is hot, replace the previous same-type tail entry
+    // Coalescible: if queue is hot, collapse the previous same-type tail entry
     // rather than letting the queue grow unbounded with stale chunks.
     if (priority === 'coalescible' && queue.length >= COALESCE_HIGH_WATER) {
-      // Find the most recent same-event entry and replace its chunk in place.
+      // Find the most recent same-event entry and collapse it in place.
       for (let i = queue.length - 1; i >= 0; i--) {
         if (queue[i].event === event) {
-          queue[i].chunk = payload;
+          // 1.2.8(M3): incremental text (`chat:message-chunk`) must MERGE
+          // (string append) — replacing would silently drop never-delivered
+          // middle text. Latest-wins state snapshots (`chat:context-usage`
+          // etc.) keep replace semantics. On frame-decode failure fall back
+          // to replace rather than risk corrupting the stream.
+          if (event === 'chat:message-chunk') {
+            const prev = decodeMessageChunkPayload(queue[i].chunk);
+            const next = decodeMessageChunkPayload(payload);
+            queue[i].chunk = prev !== null && next !== null
+              ? formatSse(event, prev + next)
+              : payload;
+          } else {
+            queue[i].chunk = payload;
+          }
           sseMetrics.coalesceReplace += 1;
           drainQueue();
           return true;

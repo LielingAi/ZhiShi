@@ -242,15 +242,21 @@ export function composeInputBox(opts: InputBoxOptions): InputBox {
 
     // Locate the cursor chunk (grapheme col → wrapped row + cell col).
     let consumed = 0; // graphemes consumed by previous chunks of this line
+    let cursorHomed = false; // 光标在本逻辑行已落位——首个命中的 chunk 胜出
     for (let ci = 0; ci < chunks.length; ci++) {
       const chunkGs = graphemes(chunks[ci]).length;
       const isFirst = li === 0 && ci === 0;
       const leadSpans: Span[] = isFirst
         ? opts.lead
         : [{ text: ' '.repeat(indent), style: undefined }];
+      // 边界归属：光标恰好落在 chunk 末尾（折行点）时归后一个 chunk——画在下
+      // 一视觉行首，而不是前一满 chunk 的尾巴上；末 chunk 兜底保留空行/空尾
+      // chunk 的 home 语义（见上「cursor needs a home」）。
       const hasCursor =
         isCursorLine &&
-        (opts.cursorCol <= consumed + chunkGs || ci === chunks.length - 1);
+        !cursorHomed &&
+        (opts.cursorCol < consumed + chunkGs || ci === chunks.length - 1);
+      if (hasCursor) cursorHomed = true;
       let cursorCell: number | undefined;
       if (hasCursor) {
         const inChunk = Math.max(0, Math.min(opts.cursorCol - consumed, chunkGs));
@@ -353,9 +359,11 @@ export function overlayRow(label: string, detail: string, selected: boolean, col
     };
   }
   const labelW = 16;
+  // 按显示格截断并补齐（CJK = 2 格）——padEnd 按码元补会把 CJK 行补短。
+  const labelText = takeWidth(label, labelW);
   const spans: Span[] = [
     marker,
-    { text: takeWidth(label, labelW).padEnd(labelW), style: selected ? { fg: 'text', bold: true } : { fg: 'text' } },
+    { text: labelText + ' '.repeat(Math.max(0, labelW - stringWidth(labelText))), style: selected ? { fg: 'text', bold: true } : { fg: 'text' } },
     { text: takeWidth(detail, Math.max(0, inner - labelW - 2)), style: { fg: 'muted' } },
   ];
   return { spans, selectable: true };

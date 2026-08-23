@@ -344,9 +344,15 @@ export class TerminalWriter {
    * stringWidth over the spans left of / above the caret.
    */
   setInput(lines: Span[][], cursorRow = 0, cursorCol = 0): void {
-    this.inputLines = lines.slice(0, this.inputHeight);
+    // 超出 inputHeight 时保尾丢头——光标在尾部（编辑器窗口围绕光标展开），
+    // 保头会把光标行裁出可视区。光标行同步减去被裁掉的头部行数再夹取。
+    const dropped = Math.max(0, lines.length - this.inputHeight);
+    this.inputLines = lines.slice(-this.inputHeight);
     while (this.inputLines.length < 1) this.inputLines.push([]);
-    this.inputCursorRow = Math.max(0, Math.min(cursorRow, this.inputLines.length - 1));
+    this.inputCursorRow = Math.max(
+      0,
+      Math.min(cursorRow - dropped, this.inputLines.length - 1),
+    );
     this.inputCursorCol = Math.max(0, cursorCol);
     this.scheduler.request();
   }
@@ -355,6 +361,15 @@ export class TerminalWriter {
   resize(cols: number, rows: number): void {
     this.cols = Math.max(2, cols);
     this.rows = Math.max(3, rows);
+    // 高度变化后重新夹取 chrome（与构造/setChrome 同规则）——否则 inputTop /
+    // statusTop 可能跌到 ≤0，往负行号写 ANSI。
+    this.statusHeight = Math.min(Math.max(1, this.statusHeight), this.rows - 2);
+    this.inputHeight = Math.min(
+      Math.max(1, this.inputHeight),
+      this.rows - this.statusHeight - 1,
+    );
+    if (this.inputCursorRow >= this.inputHeight)
+      this.inputCursorRow = this.inputHeight - 1;
     this.wrapCache.clear();
     this.viewport.resize({
       width: this.cols,
@@ -362,6 +377,9 @@ export class TerminalWriter {
     });
     // Screen is cleared below: invalidate every diff baseline.
     this.invalidateFrame();
+    // 挂起期（/attach 让出 TTY）只记尺寸不写屏——与 renderFrame 的 entered
+    // 守卫一致；resume 后 enter() 会清屏并全量重画。
+    if (!this.entered) return;
     this.out.write(clearScreen());
     this.renderFrame();
   }

@@ -9,8 +9,9 @@
  *   text-delta         chat:message-chunk           string(delta 原文)
  *   thinking-start     chat:thinking-start          { index }（M4b,SDK 同形）
  *   thinking-delta     chat:thinking-chunk          { index, delta }（M4b,SDK 同形）
+ *   thinking-end       chat:thinking-complete       { index }（1.2.8 H1,与 thinking-start 同 index）
  *   tool-call          chat:tool-use-start          { id, name, input, streamIndex }
- *   tool-result        chat:tool-result-complete    { toolUseId, content }
+ *   tool-result        chat:tool-result-complete    { toolUseId, content, isError }（1.2.8 H2 补 isError）
  *   done               chat:message-complete        { model, input_tokens, output_tokens,
  *                                                     cache_read_tokens, cache_creation_tokens,
  *                                                     tool_count, duration_ms }
@@ -104,6 +105,9 @@ export function mapLoopEventToSse(event: LoopEvent, ctx: SseAdapterContext = {})
       return [{ event: 'chat:thinking-start', data: { index: ctx.streamIndex ?? 0 } }];
     case 'thinking-delta':
       return [{ event: 'chat:thinking-chunk', data: { index: ctx.streamIndex ?? 0, delta: event.delta } }];
+    case 'thinking-end':
+      // 与 thinking-start 同 index 语义(loop 单 thinking 流,恒 0)。
+      return [{ event: 'chat:thinking-complete', data: { index: ctx.streamIndex ?? 0 } }];
     case 'tool-call':
       return [{
         event: 'chat:tool-use-start',
@@ -117,7 +121,8 @@ export function mapLoopEventToSse(event: LoopEvent, ctx: SseAdapterContext = {})
     case 'tool-result':
       return [{
         event: 'chat:tool-result-complete',
-        data: { toolUseId: event.toolCallId, content: toolResultText(event.result) },
+        // 1.2.8(H2):isError 透传——TUI reducer 按它定工具块 done/fail 终态。
+        data: { toolUseId: event.toolCallId, content: toolResultText(event.result), isError: event.isError },
       }];
     case 'done':
       return [{ event: 'chat:message-complete', data: buildMessageCompletePayload(event.messages, ctx) }];

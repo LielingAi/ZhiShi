@@ -35,6 +35,7 @@ export type LoopEvent =
   | { type: 'text-delta'; delta: string }
   | { type: 'thinking-start' }
   | { type: 'thinking-delta'; delta: string }
+  | { type: 'thinking-end' }
   | { type: 'tool-call'; toolCallId: string; toolName: string; args: unknown }
   | { type: 'tool-result'; toolCallId: string; toolName: string; result: unknown; isError: boolean }
   | { type: 'done'; messages: AgentMessage[] }
@@ -56,6 +57,11 @@ export function mapAgentEvent(event: AgentEvent): LoopEvent[] {
       }
       if (inner.type === 'thinking_delta') {
         return [{ type: 'thinking-delta', delta: inner.delta }];
+      }
+      // 1.2.8(H1):thinking 块收尾也要归一化——否则 TUI 的 thinking 块
+      // 永远停在 streaming 态(pi 的 thinking_end 在 message_update 内)。
+      if (inner.type === 'thinking_end') {
+        return [{ type: 'thinking-end' }];
       }
       return [];
     }

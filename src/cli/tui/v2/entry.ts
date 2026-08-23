@@ -64,6 +64,66 @@ export function createResizeDebouncer(opts: ResizeDebouncerOptions): {
   };
 }
 
+export interface TerminalHandoffDeps {
+  input: NodeJS.ReadStream;
+  writer: Pick<TerminalWriter, 'enter' | 'exit' | 'resize'>;
+  /** 读最新终端尺寸(resume 后 reflow 用)。 */
+  measure: () => { cols: number; rows: number };
+}
+
+/**
+ * H5(1.2.8):/attach 终端交接。挂起:退 alt screen + 回 cooked 模式 +
+ * 暂停 stdin 流——子进程 stdio:'inherit' 与 TUI 共享同一 fd(attach.ts),
+ * 不 pause 的话 TUI 的 data 监听会和子进程抢键盘字节。恢复:全量回滚 +
+ * 按最新尺寸 reflow。isSuspended 给 SIGINT 处理器用:挂起期间 Ctrl+C
+ * 归子进程(同进程组信号广播),TUI 不得退出。
+ */
+export function createTerminalHandoff(deps: TerminalHandoffDeps): {
+  suspend: () => void;
+  resume: () => void;
+  isSuspended: () => boolean;
+} {
+  let suspended = false;
+  return {
+    suspend: () => {
+      suspended = true;
+      deps.writer.exit();
+      deps.input.setRawMode?.(false);
+      deps.input.pause();
+    },
+    resume: () => {
+      deps.input.resume();
+      deps.input.setRawMode?.(true);
+      deps.writer.enter();
+      const { cols, rows } = deps.measure();
+      deps.writer.resize(cols, rows);
+      suspended = false;
+    },
+    isSuspended: () => suspended,
+  };
+}
+
+/**
+ * H8(1.2.8):致命异常兜底。任何 uncaughtException/unhandledRejection 先恢复
+ * 终端(退 alt screen + 回 raw mode,复用 cleanup 序列)再非零退出——否则
+ * 崩溃会把用户的 shell 留在 alt screen + raw mode(终端「花屏卡死」)。
+ */
+export function createFatalHandler(deps: {
+  restore: () => void;
+  log: (msg: string) => void;
+  exit: (code: number) => void;
+}): (err: unknown) => void {
+  return (err) => {
+    try {
+      deps.restore();
+    } catch {
+      // 恢复本身失败也要继续退出流程。
+    }
+    deps.log(`✗ TUI 致命异常:${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+    deps.exit(1);
+  };
+}
+
 export interface AgentLoopOptions {
   /** Sidecar ROOT base URL (no /api/admin), e.g. `http://127.0.0.1:19100`. */
   base: string;
@@ -126,6 +186,10 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     return;
   }
 
+  // L6(1.2.8):setEncoding 内部走 string_decoder——跨 chunk 的多字节字符
+  // (CJK/emoji)不再被 Buffer#toString 逐 chunk 截断成 �。
+  input.setEncoding('utf8');
+
   const client = new SidecarClient({ base: opts.base, fetchImpl: opts.fetchImpl });
 
   // --env / --new-env short-circuit the gate; failures abort before entering
@@ -154,16 +218,16 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
   // /attach terminal hand-off: leave the alternate screen and restore cooked
   // mode so the spawned shell owns the TTY; re-enter + reflow on child exit.
+  // H5(1.2.8):挂起同时暂停 stdin 流(子进程 stdio:'inherit' 共享同一 fd),
+  // SIGINT 屏蔽走 isSuspended(见下方等待循环)。
   const wasRaw = (input as NodeJS.ReadStream & { isRaw?: boolean }).isRaw ?? false;
-  const suspend = (): void => {
-    writer.exit();
-    input.setRawMode?.(false);
-  };
-  const resume = (): void => {
-    input.setRawMode?.(true);
-    writer.enter();
-    writer.resize(output.columns || 80, output.rows || 24);
-  };
+  const handoff = createTerminalHandoff({
+    input,
+    writer,
+    measure: () => ({ cols: output.columns || 80, rows: output.rows || 24 }),
+  });
+  const suspend = handoff.suspend;
+  const resume = handoff.resume;
 
   const app = new App({
     client,
@@ -196,6 +260,25 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     input.setRawMode?.(wasRaw);
   };
 
+  // H8(1.2.8):致命异常兜底——先恢复终端(cleanup 序列)再非零退出;
+  // exit 钩子覆盖未走 cleanup 的非常规退出(幂等)。
+  const fatal = createFatalHandler({
+    restore: cleanup,
+    log: (msg) => console.error(msg),
+    exit: (code) => process.exit(code),
+  });
+  process.on('uncaughtException', fatal);
+  process.on('unhandledRejection', fatal);
+  process.on('exit', () => {
+    if (exiting) return;
+    try {
+      writer.exit();
+      input.setRawMode?.(wasRaw);
+    } catch {
+      /* 退出阶段不再抛错 */
+    }
+  });
+
   writer.enter();
   await app.start();
 
@@ -206,7 +289,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       cleanup();
       resolve();
     };
-    process.once('SIGINT', finish);
+    // H5(1.2.8):/attach 挂起期间 SIGINT 归子进程(同进程组广播),TUI 不退出——
+    // once 触发即摘的管理太脆,改 on + isSuspended 屏蔽。
+    const onSigint = (): void => {
+      if (!handoff.isSuspended()) finish();
+    };
+    process.on('SIGINT', onSigint);
     process.once('SIGTERM', finish);
     const poll = setInterval(() => {
       if (app.quitRequested) {

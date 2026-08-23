@@ -5,6 +5,7 @@
  */
 
 import { stringWidth } from '../../ansi';
+import { takeWidth } from '../chrome';
 import type { Span } from '../row-buffer';
 import type { SemanticColor } from '../style';
 import type { BackgroundBlock, DividerBlock, ErrorBlock } from '../types';
@@ -41,7 +42,12 @@ export function renderDivider(block: DividerBlock, width: number): Span[][] {
 }
 
 export function renderError(block: ErrorBlock, width: number): Span[][] {
-  const text = block.text.length > width - 4 ? block.text.slice(0, width - 5) + '…' : block.text;
+  // 按显示格截断（与 renderDivider 的 stringWidth 口径一致）——码元 slice 会
+  // 把 CJK 行留超宽、还可能切开代理对。
+  const text =
+    stringWidth(block.text) > width - 4
+      ? takeWidth(block.text, width - 5) + '…'
+      : block.text;
   return [
     [
       { text: '✗ ', style: { fg: 'red', bold: true } },

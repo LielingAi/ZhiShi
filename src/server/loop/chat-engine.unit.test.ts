@@ -146,6 +146,7 @@ import {
   getPiAgentState,
   getPiCurrentSessionRef,
   getPiMessages,
+  getPiQueueSnapshotEvents,
   getPiQueueStatus,
   getPiSystemInitInfo,
   initPiChatEngine,
@@ -382,6 +383,23 @@ describe('队列语义(M4b FIFO,经 /chat/queue 入口 queuePiChatMessage)', () 
     const secondCall = runLoopMock.mock.calls[1][0] as { prompt?: string };
     expect(secondCall.prompt).toBe('two');
     expect(getPiQueueStatus()).toEqual([]);
+  });
+
+  it('1.2.8(M4)重连对账:队列快照逐条 queue:added 同形(isInFlight:false + kind)', async () => {
+    const release = gateFirstTurn();
+    await queuePiChatMessage({ text: 'one' });
+    const fifo = await queuePiChatMessage({ text: 'two' });
+    // busy 时 /chat/send 进 steering 队列——快照必须带 kind 区分。
+    const steer = await sendPiChatMessage({ text: '改方向' });
+    expect(steer.queued).toBe(true);
+    expect(getPiQueueSnapshotEvents()).toEqual([
+      { event: 'queue:added', data: { queueId: fifo.queueId, messageText: 'two', isInFlight: false, kind: 'fifo' } },
+      { event: 'queue:added', data: { queueId: steer.queueId, messageText: '改方向', isInFlight: false, kind: 'steering' } },
+    ]);
+    release();
+    await waitTurnSettled();
+    // turn 收尾后队列清空(steering 孤儿转 FIFO 续跑),快照随之为空。
+    expect(getPiQueueSnapshotEvents()).toEqual([]);
   });
 
   it('stop:清空队列(逐条 queue:cancelled)+ abort,不再自动接', async () => {

@@ -48,6 +48,21 @@ describe('mapAgentEvent', () => {
     expect(mapAgentEvent(ev)).toEqual([{ type: 'text-delta', delta: 'hel' }]);
   });
 
+  it('thinking_start/delta/end → thinking-start/delta/end（1.2.8 H1）', () => {
+    const mk = (inner: unknown) => ({
+      type: 'message_update',
+      message: assistantMessage(''),
+      assistantMessageEvent: inner,
+    } as unknown as AgentEvent);
+    expect(mapAgentEvent(mk({ type: 'thinking_start', contentIndex: 0 })))
+      .toEqual([{ type: 'thinking-start' }]);
+    expect(mapAgentEvent(mk({ type: 'thinking_delta', contentIndex: 0, delta: '嗯', partial: assistantMessage('') })))
+      .toEqual([{ type: 'thinking-delta', delta: '嗯' }]);
+    // thinking_end 丢失会让 TUI 的 thinking 块永远停在 streaming 态
+    expect(mapAgentEvent(mk({ type: 'thinking_end', contentIndex: 0, content: '嗯', partial: assistantMessage('') })))
+      .toEqual([{ type: 'thinking-end' }]);
+  });
+
   it('tool_execution_start/end → tool-call / tool-result', () => {
     const start = { type: 'tool_execution_start', toolCallId: 't1', toolName: 'env_exec', args: { command: 'id' } } as AgentEvent;
     expect(mapAgentEvent(start)).toEqual([{ type: 'tool-call', toolCallId: 't1', toolName: 'env_exec', args: { command: 'id' } }]);

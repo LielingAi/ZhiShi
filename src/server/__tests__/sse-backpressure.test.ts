@@ -92,6 +92,58 @@ describe('SSE backpressure — coalescible events', () => {
   });
 });
 
+describe('SSE backpressure — coalesce collapse semantics (1.2.8 M3)', () => {
+  /** 按帧切分原始 SSE 文本,取指定事件的 data 负载并顺序拼接。 */
+  function collectEventText(raw: string, name: string): string {
+    return raw
+      .split('\n\n')
+      .filter((frame) => frame.startsWith(`event: ${name}\n`))
+      .map((frame) => frame.split('\n')
+        .filter((l) => l.startsWith('data: '))
+        .map((l) => l.slice('data: '.length))
+        .join('\n'))
+      .join('');
+  }
+
+  it('chat:message-chunk(文本增量)在背压下合并(字符串追加),不丢中间文本', async () => {
+    const { client, response } = createSseClient(() => { /* noop */ });
+    const reader = response.body!.getReader();
+    await new Promise<void>((r) => setImmediate(r));
+
+    // 不读流,让队列积压超过 COALESCE_HIGH_WATER(256)——之后每个
+    // message-chunk 都撞上同型合并路径。
+    for (let i = 0; i < 2000; i++) {
+      client.send('chat:message-chunk', `c${i};`);
+    }
+    client.close();
+    const raw = await drain(reader);
+
+    // 旧「替换」语义下积压段只活最后一个 chunk(中间文本整段丢失);
+    // 合并语义下头部、中间、尾部文本都必须按序完整送达。
+    const text = collectEventText(raw, 'chat:message-chunk');
+    expect(text).toContain('c0;c1;c2;');
+    expect(text).toContain('c1000;c1001;c1002;');
+    expect(text).toContain('c1997;c1998;c1999;');
+  });
+
+  it('chat:context-usage(latest-wins 快照)在背压下保持替换语义', async () => {
+    const { client, response } = createSseClient(() => { /* noop */ });
+    const reader = response.body!.getReader();
+    await new Promise<void>((r) => setImmediate(r));
+
+    for (let i = 0; i < 2000; i++) {
+      client.send('chat:context-usage', { pct: i });
+    }
+    client.close();
+    const raw = await drain(reader);
+
+    // 替换语义:积压槽位只保留最新值——中间快照(1000)被 1001 顶掉,
+    // 不应送达;最新值(1999)必须送达。
+    expect(raw).toContain('"pct":1999');
+    expect(raw).not.toContain('"pct":1000');
+  });
+});
+
 describe('SSE backpressure — droppable events bump metrics', () => {
   it('records dropped droppable events under pressure', async () => {
     const before = getSseMetrics();

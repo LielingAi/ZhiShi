@@ -511,6 +511,71 @@ describe('resize reflow', () => {
   });
 });
 
+describe('setInput 窗口（1.2.8 M7）', () => {
+  it('超出 inputHeight 时保尾丢头，光标行同步换算', () => {
+    const { writer, vt, delta } = makeWriter(20, 10);
+    writer.enter();
+    writer.setChrome({ inputHeight: 2 });
+    // 3 行内容、光标在最后一行——保头会把光标行裁出可视区。
+    writer.setInput([span('p1'), span('p2'), span('❯ tail')], 2, 3);
+    writer.flush();
+    delta();
+    const top0 = writer.layout().inputTop - 1; // 0-based
+    expect(vt.line(top0)).toBe('p2'); // p1 被裁掉
+    expect(vt.line(top0 + 1)).toBe('❯ tail');
+    expect(vt.cursor).toEqual({ row: top0 + 1, col: 3 });
+  });
+});
+
+describe('resize 高度夹取与挂起守卫（1.2.8 M8/M9）', () => {
+  it('resize 后重新夹取 input 高度，不写出 ≤0 行号的 CUP', () => {
+    const { writer, emitted } = makeWriter(40, 24);
+    writer.enter();
+    writer.setChrome({ inputHeight: 10 });
+    writer.flush();
+    writer.resize(40, 6); // 旧行为：inputHeight 不夹 → inputTop = -3
+    const l = writer.layout();
+    expect(l.inputHeight).toBe(4); // 6 - status(1) - output(1)
+    expect(l.statusTop).toBeGreaterThanOrEqual(1);
+    expect(l.inputTop).toBeGreaterThanOrEqual(1);
+    // eslint-disable-next-line no-control-regex -- intentional ANSI CSI matching
+    expect(emitted()).not.toMatch(/\x1b\[(0|-)\d*;/);
+  });
+
+  it('行高继续缩时 statusHeight 也被夹回', () => {
+    const { writer } = makeWriter(40, 24);
+    writer.setChrome({ statusHeight: 4, inputHeight: 10 });
+    writer.resize(40, 6);
+    let l = writer.layout();
+    expect(l.statusHeight).toBe(4);
+    expect(l.inputHeight).toBe(1); // 6 - 4 - 1
+    expect(l.statusTop).toBe(2);
+    writer.resize(40, 3);
+    l = writer.layout();
+    expect(l.statusHeight).toBe(1); // rows - 2
+    expect(l.inputHeight).toBe(1);
+    expect(l.inputTop).toBeGreaterThanOrEqual(1);
+  });
+
+  it('挂起期 resize 只记尺寸不写屏，resume 后按新尺寸重画', () => {
+    const { writer, vt, delta, writes } = makeWriter(40, 10);
+    writer.enter();
+    writer.append(span('before'));
+    writer.flush();
+    delta();
+    writer.exit(); // /attach 让出 TTY
+    const base = writes();
+    writer.resize(20, 8);
+    expect(writes()).toBe(base); // 挂起期间没有清屏/重画
+    expect(writer.layout().cols).toBe(20); // 但尺寸已记下
+    writer.enter(); // resume：清屏 + 全量重画
+    delta();
+    expect(vt.line(0)).toBe('before');
+    writer.exit();
+    writer.dispose();
+  });
+});
+
 describe('suspend/resume (/attach)', () => {
   it('exit() keeps the frame pump alive — enter() 后照样出帧', () => {
     const { writer, vt, delta } = makeWriter(60, 10);

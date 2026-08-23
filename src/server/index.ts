@@ -315,6 +315,8 @@ import {
 
   getPiQueueStatus,
 
+  getPiQueueSnapshotEvents,
+
   getPiAgentState,
 
   getPiMessages,
@@ -1966,6 +1968,20 @@ async function main() {
           if (piInitInfo) {
 
             client.send('chat:system-init', { info: piInitInfo });
+
+          }
+
+          // 1.2.8(M4)重连对账:队列状态快照——重连的 TUI 错过了排队时刻的
+
+          // queue:added 广播,这里逐条补发 isInFlight:false 的排队项(FIFO +
+
+          // steering,kind 带上,与 chat-engine 广播形态一致),让重连后的
+
+          // TUI 队列与服务端一致。
+
+          for (const snap of getPiQueueSnapshotEvents()) {
+
+            client.send(snap.event, snap.data);
 
           }
 

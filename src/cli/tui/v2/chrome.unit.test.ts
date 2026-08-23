@@ -90,6 +90,34 @@ describe('composeInputBox', () => {
     expect(box.cursorCol).toBe(2 + 5 + (40 - 33)); // 11*3=33 chars in first 3 rows
   });
 
+  it('光标恰在折行点时归下一视觉行首，而不是前一满 chunk 末尾', () => {
+    // cols 20 → inner 16，lead 5 → 每 visual row 11 格；22 字 = 两个满 chunk。
+    const box = composeInputBox({
+      lead,
+      cols: 20,
+      lines: ['x'.repeat(22)],
+      cursorLine: 0,
+      cursorCol: 11, // 折行点
+    });
+    expect(box.cursorRow).toBe(2); // 第二个内容行（rows[0] 是边框）
+    expect(box.cursorCol).toBe(2 + 5); // 视觉行首：边框 2 + 悬挂缩进 5
+  });
+
+  it('光标在行首 / 行尾 / 恰满行尾的位置都正确', () => {
+    // 行首
+    let box = composeInputBox({ lead, cols: 20, lines: ['x'.repeat(22)], cursorLine: 0, cursorCol: 0 });
+    expect(box.cursorRow).toBe(1);
+    expect(box.cursorCol).toBe(2 + 5);
+    // 行尾（短行，单 chunk）
+    box = composeInputBox({ lead, cols: 20, lines: ['xxxxx'], cursorLine: 0, cursorCol: 5 });
+    expect(box.cursorRow).toBe(1);
+    expect(box.cursorCol).toBe(2 + 5 + 5);
+    // 恰满行：单 chunk 正好 11 格，光标停在满行尾（末 chunk 兜底 home 语义）
+    box = composeInputBox({ lead, cols: 20, lines: ['x'.repeat(11)], cursorLine: 0, cursorCol: 11 });
+    expect(box.cursorRow).toBe(1);
+    expect(box.cursorCol).toBe(2 + 5 + 11);
+  });
+
   it('windows the content around the cursor beyond maxContentRows', () => {
     const box = composeInputBox({
       lead,
@@ -146,5 +174,21 @@ describe('box math', () => {
       expect(stringWidth(flatText(r))).toBeLessThanOrEqual(60);
     }
     expect(rows[0].every((s) => s.style?.fg === 'red')).toBe(true);
+  });
+});
+
+describe('overlayRow', () => {
+  it('label 列按显示格补齐——CJK 行与 ASCII 行左对齐（/queue 不错位）', () => {
+    const item = overlayRow('队列甲乙', 'detail', false, 60);
+    // '队列甲乙' = 8 格，补 8 个空格到 16 格（padEnd 按码元补会只补到 12 格宽）。
+    expect(stringWidth(item.spans[1].text)).toBe(16);
+    expect(item.spans[1].text.startsWith('队列甲乙')).toBe(true);
+    const ascii = overlayRow('task-one', 'detail', false, 60);
+    expect(stringWidth(ascii.spans[1].text)).toBe(16);
+  });
+
+  it('label 超宽按显示格截断，截后不再补超', () => {
+    const item = overlayRow('一二三四五六七八九十', 'detail', false, 60); // 20 格
+    expect(stringWidth(item.spans[1].text)).toBe(16);
   });
 });

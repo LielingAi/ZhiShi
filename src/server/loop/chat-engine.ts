@@ -1782,6 +1782,26 @@ export function getPiQueueStatus(): Array<{ id: string; messagePreview: string; 
   return defaultEngine.getPiQueueStatus();
 }
 
+/**
+ * 1.2.8(M4)重连对账:/chat/stream replay 末尾的队列快照事件——重连的 TUI
+ * 错过了排队时刻的 queue:added 广播,这里按当前队列逐条生成同形事件
+ * (isInFlight:false,带 kind),由 index.ts 逐条 client.send 补发。
+ */
+export function getPiQueueSnapshotEvents(): Array<{
+  event: 'queue:added';
+  data: { queueId: string; messageText: string; isInFlight: false; kind: 'fifo' | 'steering' };
+}> {
+  return defaultEngine.getPiQueueStatus().map((item) => ({
+    event: 'queue:added' as const,
+    data: {
+      queueId: item.id,
+      messageText: item.messagePreview,
+      isInFlight: false as const,
+      kind: item.kind,
+    },
+  }));
+}
+
 export function resetPiChat(): void {
   defaultEngine.resetPiChat();
 }

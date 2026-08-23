@@ -137,7 +137,9 @@ export class App {
   private escTimer: NodeJS.Timeout | null = null;
   private running = false;
   private abort = new AbortController();
-  private readonly onData = (chunk: Buffer): void => this.onBytes(chunk);
+  /** M11(1.2.8):bracketed paste 跨 chunk 累积缓冲(null=非粘贴模式)。 */
+  private pasteBuffer: string | null = null;
+  private readonly onData = (chunk: Buffer | string): void => this.onBytes(chunk);
 
   /** Set when the user requests exit; the entry polls this. */
   quitRequested = false;
@@ -224,6 +226,10 @@ export class App {
     this.repaintAll();
     this.renderChrome();
     void this.refreshAtItems();
+    // H4(1.2.8):先断旧泵再新泵(同 restartPump 范式)——直接 void this.pump()
+    // 会让旧泵继续消费,gate→chat 每进出一次叠加一条泵。
+    this.abort.abort();
+    this.abort = new AbortController();
     void this.pump();
   }
 
@@ -289,7 +295,15 @@ export class App {
       this.turnStartedAt = 0;
     }
     this.state.status.backgroundSeg = composeBackgroundSeg(this.state);
-    if (patch.appended.length || patch.touched.length) this.repaintBlocks(patch);
+    // M5(1.2.8):gate 模式下只归约 state、不写屏——正门是 appendRaw 直排,
+    // repaintBlocks/renderChrome 会把会话块与 chrome 画进正门。回 chat 时
+    // enterChat 全量重绘,不丢内容。
+    if (this.mode === 'gate') return;
+    // H3(1.2.8):重连 replay 前导清了非 streaming 的 live 块(reducer 置
+    // reset)——全量重绘,被清行立刻从屏上消失,不等下一次局部重绘。
+    if (patch.reset) {
+      this.repaintAll();
+    } else if (patch.appended.length || patch.touched.length) this.repaintBlocks(patch);
     this.renderChrome();
   }
 
@@ -297,23 +311,43 @@ export class App {
   // Key routing
   // -------------------------------------------------------------------------
 
-  private onBytes(chunk: Buffer): void {
-    const raw = chunk.toString('utf8');
-    // Bracketed paste → insert whole body, no per-key handling.
-    if (raw.startsWith('\x1b[200~')) {
-      const end = raw.indexOf('\x1b[201~');
-      const body = end >= 0 ? raw.slice(6, end) : raw.slice(6);
-      // 隐藏输入中粘贴:逐可打印字符进缓冲(换行剥离),不渲染不回显。
-      if (this.hiddenLine) {
-        this.appendHiddenPaste(body);
+  private onBytes(chunk: Buffer | string): void {
+    // L6(1.2.8):entry 对 stdin setEncoding('utf8') 后 data 事件给 string
+    // (string_decoder 处理跨 chunk 多字节);测试仍可能喂 Buffer,两者都接。
+    let rest = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    // M11(1.2.8):bracketed paste 跨 chunk 缓冲——\x1b[200~ 后进缓冲模式,
+    // 累积到 \x1b[201~ 才整段插入;起始/结束标记落在 chunk 中部时,标记前
+    // 的普通按键照常解析。
+    while (rest.length > 0) {
+      if (this.pasteBuffer !== null) {
+        const end = rest.indexOf('\x1b[201~');
+        if (end < 0) {
+          this.pasteBuffer += rest;
+          return;
+        }
+        const body = this.pasteBuffer + rest.slice(0, end);
+        this.pasteBuffer = null;
+        this.applyPaste(body);
+        rest = rest.slice(end + 6);
+        continue;
+      }
+      const start = rest.indexOf('\x1b[200~');
+      if (start < 0) break;
+      if (start > 0) this.onPlainBytes(rest.slice(0, start));
+      rest = rest.slice(start + 6);
+      const end = rest.indexOf('\x1b[201~');
+      if (end < 0) {
+        this.pasteBuffer = rest;
         return;
       }
-      this.editor.apply({ type: 'paste', text: body });
-      this.escDraft = null; // 新输入使恢复槽失效(一次性语义)
-      this.updateLiveCompletion(); // U7a(1.1.9):粘贴与普通击键同待遇——补全联动
-      this.renderChrome();
-      return;
+      this.applyPaste(rest.slice(0, end));
+      rest = rest.slice(end + 6);
     }
+    if (rest.length > 0) this.onPlainBytes(rest);
+  }
+
+  /** 普通按键字节:Esc 消歧 + parseKeys 逐键路由(原 onBytes 的非粘贴路径)。 */
+  private onPlainBytes(raw: string): void {
     // Esc disambiguation: a lone \x1b waits 30ms for a possible CSI tail.
     if (raw === '\x1b') {
       if (this.escTimer) clearTimeout(this.escTimer);
@@ -324,6 +358,19 @@ export class App {
       return;
     }
     for (const key of parseKeys(raw)) this.onKey(key);
+  }
+
+  /** 粘贴体整段插入(brackets 已剥离);隐藏输入中逐字符进缓冲、不回显。 */
+  private applyPaste(body: string): void {
+    // 隐藏输入中粘贴:逐可打印字符进缓冲(换行剥离),不渲染不回显。
+    if (this.hiddenLine) {
+      this.appendHiddenPaste(body);
+      return;
+    }
+    this.editor.apply({ type: 'paste', text: body });
+    this.escDraft = null; // 新输入使恢复槽失效(一次性语义)
+    this.updateLiveCompletion(); // U7a(1.1.9):粘贴与普通击键同待遇——补全联动
+    this.renderChrome();
   }
 
   private onKey(key: Key): void {
@@ -338,11 +385,9 @@ export class App {
       this.onHiddenLineKey(key);
       return;
     }
-    if (this.mode === 'gate') {
-      void this.gate.onKey(key);
-      return;
-    }
-    // Modal swallows everything but y/n (design §6.6 — 越界无惯性).
+    // Modal swallows everything but y/n (design §6.6 — 越界无惯性)。
+    // M5(1.2.8):modal 检查必须先于 gate 路由——gate 模式下开着 boundary modal
+    // 时 y/n 会被 gate 吞掉,模态永远等不到应答(死锁)。
     if (this.overlay?.kind === 'modal') {
       const ans = key.char === 'y' || key.char === 'Y' ? 'y' : key.char === 'n' || key.char === 'N' ? 'n' : null;
       if (ans) {
@@ -351,6 +396,10 @@ export class App {
         st.resolve?.(ans === 'y');
         this.renderChrome();
       }
+      return;
+    }
+    if (this.mode === 'gate') {
+      void this.gate.onKey(key);
       return;
     }
     if (hasMod(key, 'ctrl') && key.char === 'c') return this.onCtrlC();
@@ -650,10 +699,10 @@ export class App {
     if (idx >= 0) {
       const target = this.state.blocks[idx] as import('./types').UserBlock;
       this.editor.setText(target.text);
-      const removed = this.state.blocks.splice(idx);
-      for (const b of removed) {
-        if (b.kind === 'user' && b.srvId) this.state.seenSrvIds.delete(b.srvId);
-      }
+      this.state.blocks.splice(idx);
+      // H6(1.2.8):服务端 rewind 后 messageSeq=0、id 从 0 全量复用——只删被移除
+      // user 块的 srvId 不够(assistant/tool 旧 id 也会撞新消息),整个集合作废。
+      this.state.seenSrvIds.clear();
       this.repaintAll();
     }
     this.renderChrome();
@@ -916,7 +965,9 @@ export class App {
     const text = this.editor.text;
     if (!text.trim()) return;
     this.closeOverlay();
-    if (text.startsWith('/')) {
+    // L10(1.2.8):多行文本即使以 / 开头也按消息发送,不当命令解析
+    // (与 updateLiveCompletion 的 `!txt.includes('\n')` 口径一致)。
+    if (text.startsWith('/') && !text.includes('\n')) {
       const [verb, ...rest] = text.slice(1).split(/\s+/);
       this.editor.setText('');
       await this.runSlash(verb, rest.join(' '));
@@ -937,9 +988,9 @@ export class App {
       }));
     if (res.success === false) {
       this.pushBlock({ kind: 'error', text: res.error ?? '发送失败' });
-    } else if (res.steering) {
-      this.pushBlock({ kind: 'background', taskId: '', summary: `↳ 已插入纠偏：${text.slice(0, 120)}` });
     }
+    // L1(1.2.8):steering 提示行以 SSE chat:steering-added 为准(broadcast 发所有
+    // 连接含发送者,reducer 已插)——本地再插一行就是双提示,不再本地插。
     this.renderChrome();
   }
 
@@ -1048,7 +1099,19 @@ export class App {
       tone: 'interrupt',
     });
     this.writer.flush();
-    await this.client.postJson('/chat/stop', {}).catch(() => {});
+    const res = await this.client
+      .postJson<{ success?: boolean; alreadyStopped?: boolean }>('/chat/stop', {})
+      .catch(() => null);
+    // L2(1.2.8):服务端空闲(acted=false → alreadyStopped,不再广播
+    // chat:message-stopped)时乐观分隔条永远等不到确认——主动撤下。
+    if (res?.alreadyStopped && this.state.pendingDividerId) {
+      const id = this.state.pendingDividerId;
+      this.state.pendingDividerId = null;
+      const idx = this.state.blocks.findIndex((b) => b.id === id);
+      if (idx >= 0) this.state.blocks.splice(idx, 1);
+      this.repaintAll();
+      this.renderChrome();
+    }
   }
 
   // -------------------------------------------------------------------------

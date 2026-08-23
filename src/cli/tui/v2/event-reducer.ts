@@ -50,6 +50,11 @@ export interface ReduceResult {
   modal?: ModalSignal;
   /** 越界 ask 超时 — 若当前模态是该 askId,关闭它。 */
   modalExpired?: string;
+  /**
+   * 1.2.8(H3):重连 replay 前导清掉了活体块 — 有行被撤下,app 需全量重绘
+   * (repaintBlocks 只能更新仍在 state.blocks 里的行)。
+   */
+  reset?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +71,10 @@ function str(v: unknown): string | undefined {
 
 function num(v: unknown): number | undefined {
   return typeof v === 'number' ? v : undefined;
+}
+
+function bool(v: unknown): boolean | undefined {
+  return typeof v === 'boolean' ? v : undefined;
 }
 
 /** Text delta: pi 引擎发裸字符串,历史路径发 {delta}。 */
@@ -87,6 +96,29 @@ function currentAssistant(state: SessionState): Block | undefined {
   return findBlock(state, state.streamingId);
 }
 
+/** 最后一个仍在 streaming 的思考块(1.2.8 H1:chunk/complete 一律作用于它)。 */
+function lastStreamingThinking(state: SessionState): ThinkingBlock | undefined {
+  for (let i = state.blocks.length - 1; i >= 0; i--) {
+    const b = state.blocks[i];
+    if (b.kind === 'thinking' && (b as ThinkingBlock).streaming) {
+      return b as ThinkingBlock;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 在流中的块(1.2.8 H3 重连清理的保留集):流式 assistant/thinking + 还在跑
+ * 的工具卡。服务端 replay 会跳过正在流式的内容,这些块清了就没人能重建。
+ */
+function isInFlightBlock(b: Block): boolean {
+  if (b.kind === 'assistant' || b.kind === 'thinking') {
+    return (b as AssistantBlock | ThinkingBlock).streaming;
+  }
+  if (b.kind === 'tool') return (b as ToolBlock).state === 'running';
+  return false;
+}
+
 /**
  * Main entry. `event` is the decoded `{event, payload}`. Returns a patch; the
  * app applies it to the renderer. State is mutated in place for the next call.
@@ -103,6 +135,34 @@ export function reduceSseEvent(
     case 'chat:init': {
       // pi 引擎的 /chat/stream 首事件:{agentDir, sessionState, hasInitialPrompt,
       // loopEngine}。状态行必须从这里开始就是 running——否则 TUI 永远 idle。
+      //
+      // 1.2.8(H3/M4):chat:init 是每次(重)连的 replay 前导。活体块
+      // (message-chunk 的 a-N、tool-use-start 的工具卡)没有 srvId,replay 的
+      // srvId 去重对它们失效 → 重连后整块重复上屏。这里清掉所有「无 srvId 且
+      // 不在流」的块,让 replay 全量重建权威历史;在流的块保留(服务端 replay
+      // 会跳过正在流式的 assistant)。
+      const removed = state.blocks.filter(
+        (b) => !isInFlightBlock(b) && !(b as { srvId?: string }).srvId,
+      );
+      if (removed.length > 0) {
+        state.blocks = state.blocks.filter(
+          (b) => isInFlightBlock(b) || !!(b as { srvId?: string }).srvId,
+        );
+        // seenSrvIds 重新登记:摘掉被清块携带的 id(现今活体块无 srvId,正常是
+        // 空操作;replay 产出的块全部幸存,其 id 留在集合里继续去重——不能整个
+        // 清空,否则空助手转分隔行这类「登记了 id 但块上无 srvId」的会重复上屏)。
+        for (const b of removed) {
+          const id = (b as { srvId?: string }).srvId;
+          if (id) state.seenSrvIds.delete(id);
+        }
+        patch.reset = true;
+      }
+      // 1.2.8(M4):旧队列残影先清——重连 replay 末尾服务端会补发队列快照
+      // (queue:added 形态,isInFlight 标记开跑项)重建权威队列。
+      if (state.queue.length > 0) {
+        state.queue = [];
+        patch.status = { ...(patch.status ?? {}), queueDepth: 0 };
+      }
       applySessionPhase(state, p.sessionState, patch);
       const model = str(p.model);
       if (model) {
@@ -216,6 +276,14 @@ export function reduceSseEvent(
     }
 
     case 'chat:thinking-start': {
+      // 1.2.8(H1):新开块前先把仍在 streaming 的旧思考块落定——否则旧块永远
+      // 停在「thought…」,且后续 chunk/complete 会串台写进第一块。
+      const prev = lastStreamingThinking(state);
+      if (prev) {
+        prev.streaming = false;
+        prev.complete = true;
+        patch.touched.push(prev.id);
+      }
       const blk: Block = {
         id: `t-${nextSeq(state)}`,
         kind: 'thinking',
@@ -230,13 +298,12 @@ export function reduceSseEvent(
     }
 
     case 'chat:thinking-chunk': {
-      const blk = state.blocks.find(
-        (b) => b.kind === 'thinking' && (b as ThinkingBlock).streaming,
-      );
+      // 作用于最后一个 streaming 思考块(H1 串台修复:原来找的是第一个)。
+      const blk = lastStreamingThinking(state);
       if (blk) {
         const delta = deltaOf(payload);
         if (delta) {
-          (blk as ThinkingBlock).text += delta;
+          blk.text += delta;
           patch.touched.push(blk.id);
         }
       }
@@ -244,14 +311,13 @@ export function reduceSseEvent(
     }
 
     case 'chat:thinking-complete': {
-      const blk = state.blocks.find(
-        (b) => b.kind === 'thinking' && (b as ThinkingBlock).streaming,
-      );
+      // pi 路径新增事件,payload {index};落定最后一个 streaming 思考块。
+      const blk = lastStreamingThinking(state);
       if (blk) {
-        (blk as ThinkingBlock).streaming = false;
-        (blk as ThinkingBlock).complete = true;
+        blk.streaming = false;
+        blk.complete = true;
         const secs = num(p.seconds);
-        if (secs !== undefined) (blk as ThinkingBlock).seconds = secs;
+        if (secs !== undefined) blk.seconds = secs;
         patch.touched.push(blk.id);
       }
       break;
@@ -319,13 +385,19 @@ export function reduceSseEvent(
       // pi 引擎:FIFO 队列事件是 {queueId, messageText, isInFlight}。
       const qid = str(p.queueId) ?? str(p.id);
       if (qid) {
-        if (name === 'queue:added') {
-          state.queue.push({
-            id: qid,
-            text: str(p.messageText) ?? str(p.text) ?? '',
-            kind: str(p.kind) === 'steering' ? 'steering' : 'queued',
-            addedAt: Date.now(),
-          });
+        // 1.2.8(M1):isInFlight=true 表示该项已开跑(promote 语义)→ 从队列
+        // 移除而不是入队;false=入队,同 queueId 已存在则原地更新不重复 push
+        // (重连 replay 末尾的队列快照会重放已在列的项)。
+        if (name === 'queue:added' && bool(p.isInFlight) !== true) {
+          const text = str(p.messageText) ?? str(p.text) ?? '';
+          const kind = str(p.kind) === 'steering' ? 'steering' : 'queued';
+          const existing = state.queue.find((q) => q.id === qid);
+          if (existing) {
+            existing.text = text;
+            existing.kind = kind;
+          } else {
+            state.queue.push({ id: qid, text, kind, addedAt: Date.now() });
+          }
         } else {
           state.queue = state.queue.filter((q) => q.id !== qid);
         }

@@ -5,13 +5,15 @@
 
 ---
 
-## 1.2.8 —— TUI 的 BUG 检查（进行中）
+## 1.2.8 —— TUI 的 BUG 检查（已完成）
 
 方向延续「做深不做广」。主题：TUI（v2，~7.6K 行）的 bug 普查——不优化、不重构，只找 bug 修 bug。
 
-- [ ] **摸底审查**：事件链路（SSE → event-reducer → 渲染）逐环节过；状态机（busy/队列/steering/中断）边角；渲染层（frame-scheduler/terminal-writer/blocks）错绘漏绘；gate/会话续接/环境切换路径；已知疑点复核。产出：TUI bug 台账（带证据与复现路径）。
-- [ ] **按证据修复**：确认是 bug 的逐个修（带回归测试）；疑似的先复现再定性。
-- [ ] **验收**：全量测试 + TUI 活体（真 sidecar 跑交互会话）。
+- [x] **摸底审查**：事件链路（SSE → event-reducer → 渲染）逐环节过；状态机（busy/队列/steering/中断）边角；渲染层（frame-scheduler/terminal-writer/blocks）错绘漏绘；gate/会话续接/环境切换路径；已知疑点复核。产出：TUI bug 台账（带证据与复现路径）。
+- [x] **按证据修复**：确认是 bug 的逐个修（带回归测试）；疑似的先复现再定性。
+- [x] **验收**：全量测试 + TUI 活体（真 sidecar 跑交互会话）。
+
+> 实际落地（2026-08-23）：三路普查（事件链路/渲染层/交互状态机）出 34 条台账 → 对照设计文档与各版 roadmap 逐条定性：**24 真 bug、2 业务特性**（L8 回看视口漂移=注释明示取舍、L9 gate Ctrl+C=文档口径一致）、其余低危记录。按族修复 24 项：①事件契约（补 thinking-end→chat:thinking-complete 治思考串台、tool-result 透传 isError 治失败永显成功、queue:added 消费 isInFlight 治队列幻影）；②重连/重进（/env 重进泵叠加、live 块重连去重+reset 全量重绘、服务端重连补发队列快照、rewind 清全量 seenSrvIds）；③attach/崩溃（挂起 stdin 暂停+SIGINT 屏蔽、挂起 resize 清屏守卫、uncaughtException/exit 终端恢复兜底）；④gate（modal 键路由优先、盘点代际锁、gate 模式 ingest 不写屏）；⑤渲染（折行光标 off-by-one+多 chunk 覆写、小终端保尾截断、resize 重夹高度+chrome 重组、CJK 显示格对齐/截断口径统一）；⑥输入（sse-parser 单空格规范、背压 message-chunk 合并不替换、paste 跨 chunk 缓冲、stdin utf8、多行历史 split、多行斜杠守卫）；⑦杂项（steering 双提示、stop 幻影分隔条、状态栏滤 done）。新增 60+ 回归测试；全量 153 文件 2006 测试绿 + typecheck + eslint 零错；m4a/m4b 活体全过（thinking-complete 线上可见、env_exec 上 VM 返回 fuzz 主机名、isError 字段在线）。业务特性 2 条与低危遗留（L6 分帧 CSI、L8/L9 等）记录在案。
 
 > 明确不做：TUI 新功能、交互优化、视觉调整。
 

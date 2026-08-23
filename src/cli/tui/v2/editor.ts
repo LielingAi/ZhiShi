@@ -283,7 +283,7 @@ export class LineEditor {
     const ni = Math.max(0, Math.min(this.history.length, this.historyIdx + dir));
     if (ni === this.historyIdx) return false;
     this.historyIdx = ni;
-    this.lines = ni === this.history.length ? [...this.savedForHistory] : [this.history[ni]];
+    this.lines = ni === this.history.length ? [...this.savedForHistory] : this.history[ni].split('\n');
     this.row = this.lines.length - 1;
     this.col = this.lineLen(this.row);
     return true;

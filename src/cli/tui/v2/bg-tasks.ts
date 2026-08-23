@@ -44,6 +44,8 @@ export function finishTask(
 export function composeBackgroundSeg(state: SessionState): string {
   const parts: string[] = [];
   for (const t of state.tasks.values()) {
+    // L7(1.2.8):已完成任务不上状态栏(登记表 state.tasks 不动——/tasks 面板仍列)。
+    if (t.done) continue;
     parts.push(`⛁ ${t.description} · ${t.outputCount}`);
   }
   for (const b of state.bgProcs.values()) {

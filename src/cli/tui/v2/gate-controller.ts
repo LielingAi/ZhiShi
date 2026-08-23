@@ -56,6 +56,10 @@ export class GateController {
   private options: GateOption[] = [];
   private cursor = 0;
   private busy = false;
+  /** M6(1.2.8):盘点进行中标记——期间 options 陈旧,上下/Enter 必须挡住。 */
+  private gathering = false;
+  /** M6(1.2.8):盘点代际——Esc 中途退出后自增,迟到的 gather 结果不再写屏。 */
+  private gatherGen = 0;
   /** 正门来源：false=启动首次选择（Esc 退出到 shell），true=/env 重进（Esc 返回 chat）。 */
   private reentry = false;
   private form: ManualFormState | null = null;
@@ -79,11 +83,18 @@ export class GateController {
     // 重进重置（1.1.6 #2）：gateBusy 成功路径不复位，/env 二次进门会吞掉所有键。
     this.reentry = this.host.isChatMode();
     this.busy = false;
+    // M6(1.2.8):盘点期间 gathering=true 挡键(options 还是陈旧数据);
+    // gen 快照用于识别「Esc 已退出」的迟到结果。
+    this.gathering = true;
+    const gen = ++this.gatherGen;
     this.host.enterGateMode();
     this.host.clearScrollback();
     this.host.appendRaw([[{ text: '  正在盘点本机环境…', style: { fg: 'faint' } }]]);
     this.host.renderChrome();
     const data = await gatherGateData(this.host.client);
+    // M6:Esc 中途退出(gen 已自增)——gather 完成也不再 render() 写屏。
+    if (gen !== this.gatherGen) return;
+    this.gathering = false;
     this.options = buildGateOptions(data);
     this.cursor = Math.max(0, firstEnabledIndex(this.options));
     this.render();
@@ -139,6 +150,23 @@ export class GateController {
       return;
     }
     if (this.busy) return;
+    if (key.name === 'esc') {
+      // M6(1.2.8):作废在途盘点(gen 自增)——Esc 退出后迟到的 gather 结果
+      // 不再 render() 写屏。
+      this.gatherGen++;
+      this.gathering = false;
+      // D27: 启动首次选择无 host 选项——Esc 保守退出到 shell；
+      // /env 重进时 Esc 是取消，返回 chat（1.1.6 #2）。
+      if (this.reentry) {
+        this.host.enterChat();
+      } else {
+        this.host.requestQuit();
+      }
+      return;
+    }
+    // M6(1.2.8):盘点进行中(非 Esc)键全挡——options 尚未就位,上下/Enter
+    // 踩到的是陈旧数据。
+    if (this.gathering) return;
     if (key.name === 'up') {
       this.cursor = moveGateCursor(this.options, this.cursor, -1);
       this.render();
@@ -147,16 +175,6 @@ export class GateController {
     if (key.name === 'down') {
       this.cursor = moveGateCursor(this.options, this.cursor, 1);
       this.render();
-      return;
-    }
-    if (key.name === 'esc') {
-      // D27: 启动首次选择无 host 选项——Esc 保守退出到 shell；
-      // /env 重进时 Esc 是取消，返回 chat（1.1.6 #2）。
-      if (this.reentry) {
-        this.host.enterChat();
-      } else {
-        this.host.requestQuit();
-      }
       return;
     }
     if (key.name !== 'enter') return;

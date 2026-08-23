@@ -20,6 +20,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.2.8] - 2026-08-23
+
+
+
+> TUI 的 BUG 检查：三路普查（事件链路/渲染层/交互状态机）+ 文档定性（24 真 bug / 2 业务特性），按族修复。
+
+
+
+### Fixed
+
+
+
+- **事件契约族**：pi 路径补 `thinking-end` → `chat:thinking-complete`（思考块跨轮串台——所有轮次思考汇入第一个块）；`tool-result-complete` 透传 `isError`（失败工具此前永显成功）；`queue:added` 消费 `isInFlight`（promote 的项在 TUI 队列永生、深度幻影只增不减）。
+- **重连/重进族**：`/env` 重进不再叠加 SSE 泵（enterChat 先 abort 旧泵——此前每重进一次事件重复一份）；live 块重连去重（chat:init 清非 streaming 的 live 块 + 队列残影，replay 重建权威历史 + 服务端补发队列快照）；rewind 后清空 seenSrvIds（服务端 id 复用，只清 user 会让重连吞新消息）。
+- **attach/崩溃族**：`/attach` 挂起期间 stdin 暂停 + SIGINT 屏蔽（此前与子进程抢键、Ctrl+C 杀整个 TUI）；挂起期 resize 不再向主屏写清屏码；新增 uncaughtException/unhandledRejection/exit 终端恢复兜底（此前崩溃留 alt screen/raw mode 残尸）。
+- **gate 族**：boundary modal 键路由优先于 gate（此前死锁到超时按拒绝）；gate 盘点期键锁 + 代际标记（Esc 作废在途 gather）；gate 模式 ingest 只归约不写屏。
+- **渲染族**：软折行光标 off-by-one + 多 chunk 覆写（光标与编辑点分离）；小终端 setInput 保尾不丢光标行；resize 重夹 chrome 高度（负行号 ANSI）；resize 后 chrome 重组接线；/queue 面板与错误条 CJK 按显示格对齐/截断（不再码元口径切烂代理对）。
+- **输入族**：sse-parser 对 data 行只去一个前导空格（此前 trimStart 吃掉流式文本行首缩进）；背压下 message-chunk 合并而非替换（文本静默丢失）；bracketed paste 跨 chunk 缓冲（大粘贴不再提前提交）；stdin utf8 解码（多字节跨 chunk 切烂）；多行历史召回 split('\n')；多行文本不以斜杠解析命令。
+- **杂项**：steering 提示去双行（以 SSE 广播为准）；stop 幻影分隔条在服务端空闲时撤下；状态栏背景段滤 done（登记表保留——/tasks 面板特性）。
+
+
+
 ## [1.2.7] - 2026-08-20
 
 
