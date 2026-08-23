@@ -61,6 +61,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { AgentMessage, AgentTool } from '@earendil-works/pi-agent-core';
+import { isContextOverflow } from '@earendil-works/pi-ai';
 import type { ImageContent, TextContent } from '@earendil-works/pi-ai';
 
 import { computeContextUsage } from '../../shared/contextUsage';
@@ -85,7 +86,8 @@ import {
 } from '../environment/env-sessions';
 import { loadDistilledMemoryForPrompt } from '../memory/distill';
 import { buildSystemPromptAppend, type InteractionScenario } from '../system-prompt';
-import { collectResearchMemory, collectSecurityCapabilities, resolveSessionResearchDomain } from '../system-prompt-security';
+import { collectResearchMemory, collectSecurityCapabilities, resolveSessionDomain, type SecurityCapabilitiesData } from '../system-prompt-security';
+import type { ResearchTaskKind } from '../../shared/research-kinds';
 import { loadConfig } from '../utils/admin-config';
 import {
   createSession,
@@ -114,7 +116,7 @@ import {
   truncateLoopSession,
   forkLoopSession,
 } from './session';
-import { mapLoopEventToSse, toolResultText } from './sse-adapter';
+import { mapLoopEventToSse, toolResultText, type SseOut } from './sse-adapter';
 import { createDelegateTaskTool, DELEGATE_TASK_TOOL_NAME } from './subagent';
 import { collectEnabledSkills } from './skills';
 import { createEnvBgTool, createEnvExecTool, createResearchLogTool, ENV_EXEC_TOOL_NAME, RESEARCH_LOG_TOOL_NAME } from './tools';
@@ -123,7 +125,7 @@ import { createExpertDraftTool, createExpertSearchTool, EXPERT_DRAFT_TOOL_NAME, 
 import { ENV_BG_TOOL_NAME, envBgReap } from './bg-exec';
 import { getBgRegistry, initBgRegistry } from './bg-registry';
 import { reapAllBgProcesses } from './bg-reap';
-import { loadBundledAgents } from '../agents/bundled-agents';
+import { filterAgentsByDomain, loadBundledAgents } from '../agents/bundled-agents';
 
 // ---------------------------------------------------------------------------
 // Types(原 module state 段的接口 + Send 段接口,class 语法要求上移至此)
@@ -236,6 +238,14 @@ const PI_SYSTEM_PROMPT =
   '你是安全研究助手,工作在选定的研究环境(隔离 VM/SSH 主机)里。' +
   '查/改环境内的事实必须用 env_exec——命令在环境内部执行,不是宿主机;不要猜测环境事实。' +
   '无法执行的请求(边界规则拦截)如实告知用户。';
+
+/**
+ * 溢出重试的强制压缩预算(1.2.7 活体实测修正):0.25 × 窗口。初版用 0
+ * (无视阈值往死里压),活体证据是把 226K 估压到 6K 残渣——模型只剩 stub
+ * 可读,回答质量劣化;0.25 既保证重试视图远小于窗口(装得下),又保留
+ * 足够的当前阶段/key 段原文。
+ */
+const FORCE_COMPACTION_RATIO = 0.25;
 
 /** 基座段:静态身份 + 当前锚定环境的明确信息(env id/kind/address)。 */
 function buildBaseSystemPrompt(env: EnvironmentEntry | null): string {
@@ -622,22 +632,37 @@ class ChatEngine {
     // B2(1.2.6):调用方可显式指定场景(cron invoke 通道直接传 cron 场景,
     // 不吃全局 currentScenario 的 set/reset 时序);缺省读全局(交互 turn)。
     scenario: InteractionScenario = resolvePiScenario(),
+    // 1.2.7(§三):域判定的内容信号源——最近消息扫描(配方默认 + 内容信号
+    // 动态修正,见 resolveSessionDomain);缺省空数组 = 纯配方默认(1.2.4 语义)。
+    historyMessages: readonly AgentMessage[] = [],
+    // 1.2.7(域补丁):调用方已算好 caps/domain 时透传(同一 turn 内域判定
+    // 只有一个事实源——buildTurnStack 的子代理分域与系统提示分域必须同值);
+    // 缺省本函数自算(向后兼容)。
+    precomputed?: { caps?: SecurityCapabilitiesData; domain?: ResearchTaskKind },
   ): Promise<string> {
     const base = buildBaseSystemPrompt(env);
     try {
-      const caps = scenario.type === 'security'
-        ? await collectSecurityCapabilities(this.agentDir)
-        : undefined;
+      const caps = precomputed
+        ? precomputed.caps
+        : scenario.type === 'security'
+          ? await collectSecurityCapabilities(this.agentDir)
+          : undefined;
+      // 1.2.7 域边界：配方默认 + 内容信号动态修正；无可靠信号 → undefined
+      // 降级全量（域过滤是预算优化，不是正确性闸门，宁多勿缺）。domain 同时
+      // 驱动 skills 分域注入、能力清单分域收窄、子代理分域（buildTurnStack）
+      // 与研究记忆过滤（1.2.4）。
+      const domain = precomputed
+        ? precomputed.domain
+        : caps ? resolveSessionDomain(historyMessages, caps) : undefined;
       const append = buildSystemPromptAppend(scenario, {
         runtime: 'builtin',
         distilledMemory: loadDistilledMemoryForPrompt(),
-        skills: collectEnabledSkills(),
+        skills: collectEnabledSkills({ domain }),
         securityCapabilities: caps,
         securityResearchMemory: scenario.type === 'security'
           ? collectResearchMemory()
           : undefined,
-        // 1.2.4 域过滤：从现场选择/配方绑定推导会话域；无可靠信号 → undefined 降级全量。
-        securityResearchDomain: caps ? resolveSessionResearchDomain(caps) : undefined,
+        securityResearchDomain: domain,
         // 1.2.6 批次 C：pi 无宿主 shell——CLI 附录只保留不依赖 shell 的段
         // （cron + aiCanExit 时的 [CRON_TASK_COMPLETE] 自退标记），task CRUD /
         // memory search / panel 等依赖 zhishi CLI 的段不注入（cliHostShell:false）。
@@ -859,6 +884,9 @@ class ChatEngine {
     resolution: LoopModelResolution,
     toolNames: string[],
     broadcastEvents: boolean,
+    // 1.2.7(域补丁):会话域——子代理继承主 agent 的域(派生时刻任务域已定),
+    // 可派发清单按 domain.json subagents 收窄;undefined → 全量(宁多勿缺)。
+    domain?: ResearchTaskKind,
   ): {
     tools: AgentTool[];
     beforeToolCall: ReturnType<typeof makeBoundaryHook>;
@@ -901,8 +929,9 @@ class ChatEngine {
         // 1.1.10(A′)— 子 loop 持久化:与主会话同一 loop-sessions 默认目录,
         // loadLoopSession 可按 sessionId 读回(transcript 只读查看)。
         storeDir: defaultLoopSessionDir(),
-        // 子代理定义(bundled-agents)engine 装载——模型按名派发,v1 不挂 skill 注入。
-        agents: loadBundledAgents().map((a) => ({ name: a.name, body: a.body })),
+        // 子代理定义(bundled-agents)engine 装载——按会话域收窄(1.2.7 域补丁:
+        // 子代理继承主 agent 的域,不跨域自选;无域全量),v1 不挂 skill 注入。
+        agents: filterAgentsByDomain(loadBundledAgents(), domain).map((a) => ({ name: a.name, body: a.body })),
         ...(broadcastEvents
           ? {
               notify: {
@@ -987,13 +1016,22 @@ class ChatEngine {
     const promptText = grounding ? `${grounding}\n\n${text}` : text;
     const history = loadLoopSession(turnSessionId).messages;
 
+    // 1.2.7(域补丁):域判定一次算出,系统提示(skills/caps/研究记忆)与
+    // 执行栈(子代理清单按域收窄)共用同一 domain——同一 turn 内域只有
+    // 一个事实源,不会提示说一套、可派发子代理是另一套。
+    const scenario = resolvePiScenario();
+    const caps = scenario.type === 'security'
+      ? await collectSecurityCapabilities(this.agentDir)
+      : undefined;
+    const domain = caps ? resolveSessionDomain(history, caps) : undefined;
     const { tools, beforeToolCall, afterToolCall, blockedToolNames } =
-      this.buildTurnStack(env, resolution, toolNames, true);
+      this.buildTurnStack(env, resolution, toolNames, true, domain);
     // 1.2.6（C-11）：压缩阈值估算纳入系统提示——提示先于 transform 组装,
     // 字符数经同一 chars/4 启发式折算进阈值（compaction 侧向后兼容）。
-    const systemPrompt = await this.assemblePiSystemPrompt(env);
+    const systemPrompt = await this.assemblePiSystemPrompt(env, scenario, history, { caps, domain });
+    const contextWindow = resolution.model.contextWindow || 200_000;
     const transformContext = makeCompactionTransform(
-      { contextWindow: resolution.model.contextWindow || 200_000, systemPromptChars: systemPrompt.length },
+      { contextWindow, systemPromptChars: systemPrompt.length },
       () => { void markLoopSessionCompacted(turnSessionId).catch(() => {}); },
     );
 
@@ -1010,42 +1048,91 @@ class ChatEngine {
     let doneMessages: AgentMessage[] = [];
     let failed: string | null = null;
 
-    for await (const event of runLoop({
-      ...(promptContent
-        ? { messages: [{ role: 'user', content: promptContent, timestamp: Date.now() } as AgentMessage] }
-        : { prompt: promptText }),
-      history,
-      systemPrompt,
-      model: resolution.model,
-      models: resolution.models,
-      getApiKey: resolution.getApiKey,
-      tools,
-      signal: abort.signal,
-      beforeToolCall,
-      afterToolCall,
-      transformContext,
-      // W1 steering(纠偏档):闭包由 startPiTurn 构造注入(B6 补 wire +
-      // B5 归属登记都在构造点);pi 在 turn 间轮询,返回 [] = 无注入。
-      getSteeringMessages,
-      // k3 等 reasoning 模型开 thinking(v1 固定 low 档;thinkingLevelMap 在 pi 目录)。
-      reasoning: resolution.model.reasoning ? 'low' : undefined,
-    })) {
-      if (event.type === 'text-delta') fullText += event.delta;
-      if (event.type === 'error') failed = event.error;
-      if (event.type === 'done') {
-        doneMessages = event.messages;
-        const lastAssistant = [...event.messages].reverse().find((m) => m.role === 'assistant');
-        if (lastAssistant?.usage) {
-          const u = lastAssistant.usage;
-          lastUsage = { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite };
+    // 1.2.7(§四) 溢出兜底:pi agentLoop 无内建压缩重试——done 时按
+    // isContextOverflow 判定(provider 错误正则/静默溢出/length 截断),命中
+    // 则用强制压缩(FORCE_COMPACTION_RATIO 激进预算)重跑本 turn,
+    // 每 turn 限 1 次(pi 文档的 one bounded compact-and-retry);再溢出由
+    // 压缩侧 stillOver 日志引导 /reset。只对 stopReason=error 的失败 turn
+    // 重试(failed 非空):静默溢出是正常完成,下一次调用的 transform 阈值
+    // 判定自会压缩,重试纯属浪费。
+    let overflowRetried = false;
+    for (;;) {
+      fullText = '';
+      lastUsage = null;
+      doneMessages = [];
+      failed = null;
+      let willRetry = false;
+      // 溢出错误条延迟裁决:pi 契约里 error 恒由 agent_end 紧随 done 收尾,
+      // 到 done 才能判定是否压缩重试——重试则这条错误条与本次
+      // message-complete 都是噪音(重试续同一气泡),丢弃;不重试在 done
+      // 前补播,保序。
+      let deferredError: SseOut[] | null = null;
+      const attemptTransform = overflowRetried
+        ? makeCompactionTransform(
+            // 强制压缩重试:ratio 0.25(活体实测修正——0 会把上下文压到
+            // 几千 tok 的残渣,模型只剩 stub 可读;0.25 是「激进取舍但
+            // 留出真实工作上下文」的预算)。
+            { contextWindow, systemPromptChars: systemPrompt.length, thresholdRatio: FORCE_COMPACTION_RATIO },
+            () => { void markLoopSessionCompacted(turnSessionId).catch(() => {}); },
+          )
+        : transformContext;
+      for await (const event of runLoop({
+        ...(promptContent
+          ? { messages: [{ role: 'user', content: promptContent, timestamp: Date.now() } as AgentMessage] }
+          : { prompt: promptText }),
+        history,
+        systemPrompt,
+        model: resolution.model,
+        models: resolution.models,
+        getApiKey: resolution.getApiKey,
+        tools,
+        signal: abort.signal,
+        beforeToolCall,
+        afterToolCall,
+        transformContext: attemptTransform,
+        // W1 steering(纠偏档):闭包由 startPiTurn 构造注入(B6 补 wire +
+        // B5 归属登记都在构造点);pi 在 turn 间轮询,返回 [] = 无注入。
+        getSteeringMessages,
+        // k3 等 reasoning 模型开 thinking(v1 固定 low 档;thinkingLevelMap 在 pi 目录)。
+        reasoning: resolution.model.reasoning ? 'low' : undefined,
+      })) {
+        if (event.type === 'text-delta') fullText += event.delta;
+        if (event.type === 'error') failed = event.error;
+        if (event.type === 'done') {
+          doneMessages = event.messages;
+          const lastAssistant = [...event.messages].reverse().find((m) => m.role === 'assistant');
+          if (lastAssistant?.usage) {
+            const u = lastAssistant.usage;
+            lastUsage = { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite };
+          }
+          willRetry = !overflowRetried && !!failed && !abort.signal.aborted
+            && !!lastAssistant && isContextOverflow(lastAssistant, contextWindow);
+        }
+        if (event.type === 'error') {
+          // 用户主动中断(Esc/stop)的 turn 收尾错误不上屏——中断分隔线已告知,
+          // 红色 "This operation was aborted" 错误条是纯噪音(活体实测);
+          // 非中断错误延迟到 done 裁决(溢出重试则丢弃)。
+          if (!abort.signal.aborted) deferredError = mapLoopEventToSse(event, { model: resolution.modelId, startedAt });
+          continue;
+        }
+        if (event.type === 'done') {
+          if (willRetry) continue;
+          if (deferredError) {
+            for (const sse of deferredError) broadcast(sse.event, sse.data);
+            deferredError = null;
+          }
+        }
+        for (const sse of mapLoopEventToSse(event, { model: resolution.modelId, startedAt })) {
+          broadcast(sse.event, sse.data);
         }
       }
-      for (const sse of mapLoopEventToSse(event, { model: resolution.modelId, startedAt })) {
-        // 用户主动中断(Esc/stop)的 turn 收尾错误不上屏——中断分隔线已告知,
-        // 红色 "This operation was aborted" 错误条是纯噪音(活体实测)。
-        if (event.type === 'error' && abort.signal.aborted) continue;
-        broadcast(sse.event, sse.data);
+      if (!willRetry) {
+        // 防御:流异常结束(无 done)时补播延迟的错误条,不吞错。
+        if (deferredError) for (const sse of deferredError) broadcast(sse.event, sse.data);
+        break;
       }
+      overflowRetried = true;
+      console.warn(`[pi-engine] 上下文溢出(${failed ?? 'unknown'}),强制压缩后重试本 turn(限 1 次)`);
     }
 
     // 落终态:assistant 气泡内容 + 会话续存(done.messages 只含新增,无重复)。
@@ -1204,35 +1291,62 @@ class ChatEngine {
       EXPERT_SEARCH_TOOL_NAME,
       EXPERT_DRAFT_TOOL_NAME,
     ];
+    const history = loadLoopSession(loopSessionId).messages;
+    // 1.2.7(域补丁):与交互 turn 同——域判定一次算出,执行栈与系统提示共用。
+    const scenario = options.scenario ?? resolvePiScenario();
+    const caps = scenario.type === 'security'
+      ? await collectSecurityCapabilities(this.agentDir)
+      : undefined;
+    const domain = caps ? resolveSessionDomain(history, caps) : undefined;
     const { tools, beforeToolCall, afterToolCall, blockedToolNames } =
-      this.buildTurnStack(env, resolution, toolNames, false);
-    const systemPrompt = await this.assemblePiSystemPrompt(env, options.scenario);
+      this.buildTurnStack(env, resolution, toolNames, false, domain);
+    const systemPrompt = await this.assemblePiSystemPrompt(env, scenario, history, { caps, domain });
+    const contextWindow = resolution.model.contextWindow || 200_000;
     const transformContext = makeCompactionTransform(
-      { contextWindow: resolution.model.contextWindow || 200_000, systemPromptChars: systemPrompt.length },
+      { contextWindow, systemPromptChars: systemPrompt.length },
       () => { void markLoopSessionCompacted(loopSessionId).catch(() => {}); },
     );
-    const history = loadLoopSession(loopSessionId).messages;
 
     const run = async (): Promise<{ text: string; error?: string }> => {
       let fullText = '';
       let doneMessages: AgentMessage[] = [];
       let failed: string | null = null;
-      for await (const event of runLoop({
-        prompt: input.text.trim(),
-        history,
-        systemPrompt,
-        model: resolution.model,
-        models: resolution.models,
-        getApiKey: resolution.getApiKey,
-        tools,
-        beforeToolCall,
-        afterToolCall,
-        transformContext,
-        reasoning: resolution.model.reasoning ? 'low' : undefined,
-      })) {
-        if (event.type === 'text-delta') fullText += event.delta;
-        if (event.type === 'error') failed = event.error;
-        if (event.type === 'done') doneMessages = event.messages;
+      // 1.2.7(§四) 溢出兜底:与单例 turn 同语义——isContextOverflow 命中则
+      // 强制压缩(FORCE_COMPACTION_RATIO)重跑一次,限 1 次;headless 无广播要裁决。
+      let overflowRetried = false;
+      for (;;) {
+        fullText = '';
+        doneMessages = [];
+        failed = null;
+        const attemptTransform = overflowRetried
+          ? makeCompactionTransform(
+              { contextWindow, systemPromptChars: systemPrompt.length, thresholdRatio: FORCE_COMPACTION_RATIO },
+              () => { void markLoopSessionCompacted(loopSessionId).catch(() => {}); },
+            )
+          : transformContext;
+        for await (const event of runLoop({
+          prompt: input.text.trim(),
+          history,
+          systemPrompt,
+          model: resolution.model,
+          models: resolution.models,
+          getApiKey: resolution.getApiKey,
+          tools,
+          beforeToolCall,
+          afterToolCall,
+          transformContext: attemptTransform,
+          reasoning: resolution.model.reasoning ? 'low' : undefined,
+        })) {
+          if (event.type === 'text-delta') fullText += event.delta;
+          if (event.type === 'error') failed = event.error;
+          if (event.type === 'done') doneMessages = event.messages;
+        }
+        const lastAssistantMsg = [...doneMessages].reverse().find((m) => m.role === 'assistant');
+        const willRetry = !overflowRetried && !!failed && !!lastAssistantMsg
+          && isContextOverflow(lastAssistantMsg, contextWindow);
+        if (!willRetry) break;
+        overflowRetried = true;
+        console.warn(`[pi-engine] invoke 上下文溢出(${failed ?? 'unknown'}),强制压缩后重试本 turn(限 1 次)`);
       }
       if (doneMessages.length > 0) {
         await appendLoopMessages(

@@ -48,6 +48,7 @@ import {
   loadConfig,
   type AdminAppConfig,
 } from '../utils/admin-config';
+import { lookupModelContextLength } from '../utils/model-capabilities';
 import { isProviderEnabled } from '../../shared/config-types';
 
 /** kimi for coding 固定端点（与 pi-ai 内置 kimi-coding provider 一致）。 */
@@ -211,6 +212,9 @@ export function resolveLoopModel(config?: AdminAppConfig): LoopModelResolution |
     upstreamFormat: provider?.upstreamFormat as LoopProviderEnv['upstreamFormat'],
     maxOutputTokensParamName: provider?.maxOutputTokensParamName as LoopProviderEnv['maxOutputTokensParamName'],
     modelId,
+    // 1.2.7：窗口口径接 preset/注册表真实值（如 deepseek 1M），
+    // 查不到才走 buildLoopModel 内部的 200K 兜底。
+    contextWindow: lookupModelContextLength(modelId),
   });
 }
 
@@ -224,5 +228,6 @@ export function resolveLoopModelFromEnv(
   providerId?: string,
 ): LoopModelResolution | null {
   if (!env?.apiKey || !env.apiKey.trim()) return null;
-  return buildLoopModel({ ...env, modelId, providerId });
+  // 1.2.7：env 不携带窗口——同样接注册表，保持与 resolveLoopModel 同口径。
+  return buildLoopModel({ ...env, modelId, providerId, contextWindow: lookupModelContextLength(modelId) });
 }

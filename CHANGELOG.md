@@ -20,6 +20,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.2.7] - 2026-08-20
+
+
+
+> 上下文管理与压缩：窗口口径接通注册表真实值（deepseek 1M），实时上下文管理层新建（研究阶段切分 → 采样锚定 → 注意力布局），域边界规则落地（配方默认 + 内容信号动态修正），pi 溢出兜底自研。设计稿 `docs/1.2.7-design.md`。
+
+
+
+### Added
+
+
+
+- **实时上下文管理**（新模块 `loop/context-manager.ts`）：会话历史按研究阶段切分（任务锚/侦察/分析/构造/执行/评估，信号打分 + 无信号继承上段相位）；超阈值时采样锚定压缩——必保任务锚 ∪ 当前阶段 ∪ key 段，历史段从最老起逐个 stub 化到达标即停；注意力布局：头任务锚原文、中矮 stub 索引（命中行原文摘录 + 工具名录 + 存档指针）、尾当前阶段原文。
+- **域边界规则**：`resolveSessionDomain`——配方默认基线 + 最近 20 条消息的 domain.json signals 动态修正（强信号 ≥2 且严格领先才改判，基线冲突需 ≥3 且 2 倍）；skills 按域注入（无域归属的通用 skills 保留、清单缺目录容错、无域全量）；能力清单段按域收窄（无域逐字节一致）；子代理继承会话域——`delegate_task` 可派发清单按 domain.json subagents 收窄（子代理是主 agent 任务中段的派生，不跨域自选）。
+- **溢出兜底**：pi agentLoop 无内建溢出重试——现按 `isContextOverflow`（provider 错误正则/静默溢出/length 截断）判定，命中（stopReason=error）即以 thresholdRatio=0 强制压缩重试，每 turn 限 1 次；交互 turn 与 cron invoke 通道同语义，溢出 attempt 的错误条/message-complete 不上屏、不进 jsonl。
+
+
+
+### Fixed
+
+
+
+- **窗口口径**：pi loop 此前恒按 200K 兜底——preset 声明的 1M（deepseek-v4-pro/flash）传不进压缩阈值；现 `resolveLoopModel`/`resolveLoopModelFromEnv` 经 `lookupModelContextLength` 接注册表真实值（custom > discovered > preset > litellm），未知模型才落 200K；GLM-5 系 preset 按 1M 对齐。
+- **压缩三缺陷**：keep 集命中率过高（实测 ~52%）致第一档空转——改段级压缩（整段 stub 化，保留集不再逼近全集）；usage 锚定使裁后重估失真（旧 assistant 的 API 实测 usage 把裁掉的量加回来）——裁后重估改纯估算口径，usage 锚只用于未裁首判；存活契约两头漏——补中文突破/约束族、exit=0 约束事实族、fuzz 崩溃信号族、CWE 编号（活体实测补：白盒事实锚，不进摘录会让模型误引 filler 段）。
+- **场景实测修复**（六场景 + 极端场景 + kimi-for-coding 活体，设计稿 §九）：单任务长会话巨型段无可 stub（段内子段切分，工具轮边界、配对不拆）+ 整会话同相位时「当前阶段全保」空转（收窄到最近 8 段）+ anchor 相位不被继承；中文文本 chars/4 估算低估 2.3 倍撞 API 400（CJK 校准估算器，含 usage 锚尾部口径）；溢出强制重试预算 0 压成残渣致模型漏引事实（改 0.25）。
+
+
+
 ## [1.2.6] - 2026-08-22
 
 

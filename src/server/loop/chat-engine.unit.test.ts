@@ -97,6 +97,19 @@ vi.mock('./boundary', () => ({ makeBoundaryHook: () => async () => undefined }))
 vi.mock('./output-guard', () => ({ makeOutputGuardHook: () => async () => undefined }));
 vi.mock('./compaction', () => ({ makeCompactionTransform: () => async (m: unknown) => m }));
 
+// 1.2.7(§三)域接线断言:skills 采集走真实实现,spy 记录入参(domain)。
+const collectEnabledSkillsSpy = vi.fn();
+vi.mock('./skills', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./skills')>();
+  return {
+    ...orig,
+    collectEnabledSkills: (opts?: Parameters<typeof orig.collectEnabledSkills>[0]) => {
+      collectEnabledSkillsSpy(opts);
+      return orig.collectEnabledSkills(opts);
+    },
+  };
+});
+
 // 系统提示组装:数据采集点 mock(纯函数 buildSystemPromptAppend 走真实实现),
 // 不碰真实引擎探测/蒸馏文件/memories db。
 const collectCapsMock = vi.fn(async (..._args: unknown[]) => ({}));
@@ -1276,5 +1289,153 @@ describe('1.2.6 批次B 回归(B2 cron invoke 通道 / B4 force 单起点 / B5 s
       expect(truncateLoopSessionMock).toHaveBeenCalledWith(expect.any(String), 1);
       expect(getPiMessages().filter((m) => m.role === 'user').map((m) => m.content)).toEqual(['one']);
     });
+  });
+});
+
+describe('1.2.7 溢出兜底(§四:isContextOverflow → 强制压缩重试,限 1 次)', () => {
+  /** stopReason=error + provider 溢出文案(命中 pi OVERFLOW_PATTERNS)。 */
+  function overflowAssistant(errorMessage: string): AgentMessage {
+    return {
+      role: 'assistant', content: [], model: 'k3',
+      usage: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 10, cost: {} },
+      stopReason: 'error', errorMessage, timestamp: 2,
+    } as unknown as AgentMessage;
+  }
+  /** 首次溢出、其后正常完成的 runLoop mock。 */
+  function overflowThen(text: string) {
+    let call = 0;
+    runLoopMock.mockImplementation(async function* () {
+      call++;
+      if (call === 1) {
+        yield { type: 'error', error: 'prompt is too long' };
+        yield { type: 'done', messages: [userMsg('q'), overflowAssistant('prompt is too long')] };
+      } else {
+        for (const e of doneEvents(text)) yield e;
+      }
+    });
+  }
+
+  it('溢出 → 压缩重试成功:runLoop 2 次;首 attempt 的错误条与 complete 不上屏;只续存成功 attempt', async () => {
+    overflowThen('recovered');
+    await sendPiChatMessage({ text: 'q' });
+    await waitTurnSettled();
+    expect(runLoopMock).toHaveBeenCalledTimes(2);
+    expect(broadcastMock.mock.calls.some((c) => c[0] === 'chat:message-error')).toBe(false);
+    expect(broadcastMock.mock.calls.filter((c) => c[0] === 'chat:message-complete')).toHaveLength(1);
+    const appended = appendLoopMessagesMock.mock.calls.map((c) => c[1] as AgentMessage[]);
+    expect(appended).toHaveLength(1);
+    expect(appended[0].some((m) => (m as { stopReason?: string }).stopReason === 'error')).toBe(false);
+    // 终态文本来自重试 attempt
+    expect(getPiMessages().find((m) => m.role === 'assistant')?.content).toBe('recovered');
+  });
+
+  it('重试仍溢出 → 不再重试(runLoop 恰 2 次),错误条补播且保序在 complete 前', async () => {
+    runLoopMock.mockImplementation(async function* () {
+      yield { type: 'error', error: 'prompt is too long' };
+      yield { type: 'done', messages: [userMsg('q'), overflowAssistant('prompt is too long')] };
+    });
+    await sendPiChatMessage({ text: 'q' });
+    await waitTurnSettled();
+    expect(runLoopMock).toHaveBeenCalledTimes(2);
+    const events = broadcastMock.mock.calls.map((c) => c[0] as string);
+    const errIdx = events.indexOf('chat:message-error');
+    const doneIdx = events.indexOf('chat:message-complete');
+    expect(errIdx).toBeGreaterThanOrEqual(0);
+    expect(doneIdx).toBeGreaterThan(errIdx);
+  });
+
+  it('非溢出错误(rate limit,命中 NON_OVERFLOW)不重试:runLoop 1 次,错误条照播', async () => {
+    runLoopMock.mockImplementation(async function* () {
+      yield { type: 'error', error: '429 rate limit exceeded' };
+      yield {
+        type: 'done',
+        messages: [userMsg('q'), overflowAssistant('429 rate limit exceeded')],
+      };
+    });
+    await sendPiChatMessage({ text: 'q' });
+    await waitTurnSettled();
+    expect(runLoopMock).toHaveBeenCalledTimes(1);
+    expect(broadcastMock.mock.calls.some((c) => c[0] === 'chat:message-error')).toBe(true);
+  });
+
+  it('invokePiSession(headless/cron 通道)溢出同样重试一次并返回重试结果', async () => {
+    overflowThen('cron-answer');
+    const r = await invokePiSession({ text: 'cron-q' });
+    expect(runLoopMock).toHaveBeenCalledTimes(2);
+    expect(r.text).toBe('cron-answer');
+    expect(r.error).toBeUndefined();
+  });
+});
+
+describe('1.2.7 域边界接线(§三:配方默认 + 内容信号动态修正 → skills 分域)', () => {
+  it('锚定 pwn-vm(配方默认)→ binary 域,collectEnabledSkills 按域采集', async () => {
+    await sendPiChatMessage({ text: 'q' });
+    await waitTurnSettled();
+    expect(collectEnabledSkillsSpy).toHaveBeenCalled();
+    const arg = collectEnabledSkillsSpy.mock.calls.at(-1)![0] as { domain?: string };
+    expect(arg.domain).toBe('binary');
+  });
+
+  it('内容信号强改判:binary 基线 + pentest 信号 ≥3 → pentest 域', async () => {
+    // pentest signals:"session N opened";binary 基线无命中 → 3 ≥ 3 且 ≥2×0 → 改判。
+    loadLoopSessionMock.mockReturnValue({
+      messages: [
+        userMsg('q1'),
+        assistantMsg('session 1 opened\nsession 2 opened\nsession 3 opened'),
+      ],
+      meta: null,
+    });
+    await sendPiChatMessage({ text: 'q' });
+    await waitTurnSettled();
+    const arg = collectEnabledSkillsSpy.mock.calls.at(-1)![0] as { domain?: string };
+    expect(arg.domain).toBe('pentest');
+  });
+
+  it('host 现场无基线且无信号 → undefined(全量注入,宁多勿缺)', async () => {
+    selectionMock.mockReturnValue({ kind: 'host' });
+    collectCapsMock.mockResolvedValue({
+      engines: { engines: [] }, recipes: [], environments: [], selection: { kind: 'host' },
+    });
+    await sendPiChatMessage({ text: 'q' });
+    await waitTurnSettled();
+    const arg = collectEnabledSkillsSpy.mock.calls.at(-1)![0] as { domain?: string };
+    expect(arg.domain).toBeUndefined();
+  });
+});
+
+describe('1.2.7 域补丁:子代理继承会话域(delegate_task 按域收窄)', () => {
+  function anchorEnv() {
+    selectionMock.mockReturnValue({ kind: 'env', id: 'pwn-vm' });
+    configEnvironments.mockReturnValue([VM_ENTRY]);
+  }
+  type DelegateTool = {
+    name: string;
+    execute: (id: string, params: { task: string; agent?: string }) => Promise<unknown>;
+  };
+  async function delegateTool(): Promise<DelegateTool> {
+    await sendPiChatMessage({ text: 'hi' });
+    await waitTurnSettled();
+    const opts = runLoopMock.mock.calls[0][0] as { tools: DelegateTool[] };
+    return opts.tools.find((t) => t.name === 'delegate_task')!;
+  }
+
+  it('binary 域(配方默认 pwn-vm):清单内子代理可派发', async () => {
+    anchorEnv();
+    const delegate = await delegateTool();
+    // critic 在 binary 域清单内——通过校验进 spawn(runLoop mock 直接 done)。
+    await expect(delegate.execute('tc', { task: 't', agent: 'critic' })).resolves.toBeDefined();
+  });
+
+  it('whitebox 域(配方 code-audit):binary 独有子代理被拒,错误列出可用清单', async () => {
+    anchorEnv();
+    collectCapsMock.mockResolvedValue({
+      engines: { engines: [] }, recipes: [], environments: [],
+      selection: { kind: 'recipe', name: 'code-audit', instanceId: 'ca-1' },
+    });
+    const delegate = await delegateTool();
+    await expect(delegate.execute('tc', { task: 't', agent: 'fuzz-runner' }))
+      .rejects.toThrow(/未知子代理 "fuzz-runner"\(可用:critic\/hypothesis-tester\/vuln-hunter\)/);
+    // whitebox 清单内(vuln-hunter/hypothesis-tester/critic)仍可派发
+    await expect(delegate.execute('tc2', { task: 't', agent: 'critic' })).resolves.toBeDefined();
   });
 });

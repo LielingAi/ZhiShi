@@ -23,6 +23,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { parseSkillFrontmatter, extractFrontmatter } from '../../shared/slashCommands';
+import { loadDomainManifests, type DomainManifest } from '../../shared/domain-manifest';
 import { getZhiShiDataDir } from '../utils/app-dirs';
 import { isSkillBlockedOnPlatform } from '../utils/platform';
 import { getScriptDir } from '../utils/runtime';
@@ -56,6 +57,15 @@ export interface CollectSkillsOptions {
   bundledDir?: string | null;
   /** 测试注入:数据目录(禁用表所在,缺省 ~/.zhishi)。 */
   dataDir?: string;
+  /**
+   * 会话研究域(1.2.7 域边界):命中 domain.json 的 skills 清单时只保留该域
+   * skills + 无域归属的通用 skills(不在任何域清单里的 skill 视为通用保留);
+   * 清单名在目录不存在 → 自然跳过(容错)。undefined/域未被清单覆盖 → 全量
+   * (域过滤是预算优化,不是正确性闸门,宁多勿缺)。
+   */
+  domain?: string;
+  /** 测试注入:域清单(缺省进程内缓存的 loadDomainManifests())。 */
+  domainManifests?: DomainManifest[];
 }
 
 /**
@@ -117,7 +127,31 @@ function scanSkillsDir(dir: string | null, source: SkillPack['source']): Map<str
   return out;
 }
 
-/** 合并收集启用的 skills(bundled 先,用户库覆盖同名;禁用表过滤)。 */
+/** 域清单的进程内缓存(bundled-domains 只在升级时变,会话期不变)。 */
+let domainManifestsCache: DomainManifest[] | null = null;
+
+/**
+ * 按会话域过滤 skills(1.2.7 域边界,纯函数):域命中 domain.json skills
+ * 清单 → 保留该域清单内的 skills ∪ 无域归属的通用 skills(不在任何域清单
+ * 里的 id 视为通用,跨域工具型如 task-alignment / zhishi-cli);清单引用了
+ * 目录里不存在的名字 → 自然跳过(入参 skills 来自目录扫描,对不上即缺)。
+ * 无 domain / 域未被清单覆盖 → 原样返回(全量,宁多勿缺)。
+ */
+export function filterSkillsByDomain(
+  skills: SkillPack[],
+  domain?: string,
+  manifests?: DomainManifest[],
+): SkillPack[] {
+  if (!domain) return skills;
+  const list = manifests ?? (domainManifestsCache ??= loadDomainManifests());
+  const current = list.find((m) => m.kind === domain);
+  if (!current) return skills;
+  const claimed = new Set(list.flatMap((m) => m.skills));
+  const keep = new Set(current.skills);
+  return skills.filter((p) => keep.has(p.id) || !claimed.has(p.id));
+}
+
+/** 合并收集启用的 skills(bundled 先,用户库覆盖同名;禁用表过滤;可选按域收窄)。 */
 export function collectEnabledSkills(options: CollectSkillsOptions = {}): SkillPack[] {
   const dataDir = options.dataDir ?? getZhiShiDataDir();
   const disabled = readDisabledSkills(dataDir);
@@ -128,7 +162,8 @@ export function collectEnabledSkills(options: CollectSkillsOptions = {}): SkillP
   for (const [id, pack] of scanSkillsDir(userDir, 'user')) {
     merged.set(id, pack); // 用户库覆盖同名 bundled
   }
-  return [...merged.values()].filter((p) => !disabled.has(p.id));
+  const enabled = [...merged.values()].filter((p) => !disabled.has(p.id));
+  return filterSkillsByDomain(enabled, options.domain, options.domainManifests);
 }
 
 /**

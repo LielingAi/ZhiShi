@@ -10,10 +10,13 @@ import { join } from 'node:path';
 
 import {
   collectEnabledSkills,
+  filterSkillsByDomain,
   buildSkillsSection,
   SKILL_BODY_CAP,
   SKILLS_TOTAL_CAP,
+  type SkillPack,
 } from './skills';
+import type { DomainManifest } from '../../shared/domain-manifest';
 
 let root: string;
 let bundled: string;
@@ -145,5 +148,84 @@ describe('buildSkillsSection — 丢弃顺序用户库最后丢（1.2.6）', () 
     expect(s).toContain('## b0');
     expect(s).not.toContain('## b1');
     expect(s).toContain('未注入');
+  });
+});
+
+// ===== 1.2.7 域边界：skills 分域注入 =====
+
+describe('collectEnabledSkills — 域过滤（1.2.7）', () => {
+  const DOMAIN_MANIFESTS: DomainManifest[] = [
+    // ghost-skill 在清单里但目录不存在 → 容错跳过（whitebox-audit 缺目录同型）。
+    { kind: 'binary', name: '二进制', recipes: [], skills: ['binary-exploit', 'vuln-triage', 'ghost-skill'], subagents: [], signals: [], acceptance: [] },
+    { kind: 'pentest', name: '渗透', recipes: [], skills: ['pentest'], subagents: [], signals: [], acceptance: [] },
+  ];
+
+  function seedSkills(): void {
+    writeSkill(bundled, 'binary-exploit', 'binary-exploit', '二进制利用方法');
+    writeSkill(bundled, 'vuln-triage', 'vuln-triage', '漏洞分拣');
+    writeSkill(bundled, 'pentest', 'pentest', '渗透方法');
+    // task-alignment 不在任何域清单里 → 跨域通用,任何域下都保留。
+    writeSkill(bundled, 'task-alignment', 'task-alignment', '任务对齐');
+  }
+
+  it('域命中清单 → 只保留该域 skills + 无域归属的通用 skills', () => {
+    seedSkills();
+    const packs = collectEnabledSkills({ bundledDir: bundled, userSkillsDir: user, dataDir: data, domain: 'binary', domainManifests: DOMAIN_MANIFESTS });
+    expect(packs.map((p) => p.id).sort()).toEqual(['binary-exploit', 'task-alignment', 'vuln-triage']);
+  });
+
+  it('清单引用了目录里不存在的名字 → 跳过,不炸（缺目录容错）', () => {
+    seedSkills();
+    const packs = collectEnabledSkills({ bundledDir: bundled, userSkillsDir: user, dataDir: data, domain: 'binary', domainManifests: DOMAIN_MANIFESTS });
+    expect(packs.find((p) => p.id === 'ghost-skill')).toBeUndefined();
+  });
+
+  it('用户库同名覆盖后仍按 id 过滤（域外 skill 换 source 也进不来）', () => {
+    seedSkills();
+    writeSkill(user, 'pentest', 'pentest', '用户版渗透');
+    writeSkill(user, 'my-tool', 'my-tool', '用户私有通用工具'); // 无域归属 → 通用保留
+    const packs = collectEnabledSkills({ bundledDir: bundled, userSkillsDir: user, dataDir: data, domain: 'binary', domainManifests: DOMAIN_MANIFESTS });
+    expect(packs.find((p) => p.id === 'pentest')).toBeUndefined();
+    expect(packs.find((p) => p.id === 'my-tool')?.source).toBe('user');
+  });
+
+  it('无 domain → 全量（现状语义不变）', () => {
+    seedSkills();
+    const packs = collectEnabledSkills({ bundledDir: bundled, userSkillsDir: user, dataDir: data });
+    expect(packs.map((p) => p.id).sort()).toEqual(['binary-exploit', 'pentest', 'task-alignment', 'vuln-triage']);
+  });
+
+  it('域未被任何清单覆盖 → 全量（宁多勿缺）', () => {
+    seedSkills();
+    const packs = collectEnabledSkills({ bundledDir: bundled, userSkillsDir: user, dataDir: data, domain: 'malware', domainManifests: DOMAIN_MANIFESTS });
+    expect(packs.map((p) => p.id).sort()).toEqual(['binary-exploit', 'pentest', 'task-alignment', 'vuln-triage']);
+  });
+
+  it('域过滤与禁用表叠加生效', () => {
+    seedSkills();
+    writeFileSync(join(data, 'skills-config.json'), JSON.stringify({ disabled: ['vuln-triage'] }));
+    const packs = collectEnabledSkills({ bundledDir: bundled, userSkillsDir: user, dataDir: data, domain: 'binary', domainManifests: DOMAIN_MANIFESTS });
+    expect(packs.map((p) => p.id).sort()).toEqual(['binary-exploit', 'task-alignment']);
+  });
+});
+
+describe('filterSkillsByDomain — 纯函数（1.2.7）', () => {
+  const MANIFESTS: DomainManifest[] = [
+    { kind: 'binary', name: '二进制', recipes: [], skills: ['a', 'b'], subagents: [], signals: [], acceptance: [] },
+    { kind: 'pentest', name: '渗透', recipes: [], skills: ['c'], subagents: [], signals: [], acceptance: [] },
+  ];
+  const pack = (id: string): SkillPack => ({ id, name: id, description: '', body: 'x', source: 'bundled' });
+
+  it('域命中 → 域内 + 通用保留,域外丢弃;原数组不被改写', () => {
+    const input = [pack('a'), pack('b'), pack('c'), pack('generic')];
+    const out = filterSkillsByDomain(input, 'binary', MANIFESTS);
+    expect(out.map((p) => p.id)).toEqual(['a', 'b', 'generic']);
+    expect(input).toHaveLength(4);
+  });
+
+  it('无 domain / 域无清单 → 原样返回（同一引用）', () => {
+    const input = [pack('a'), pack('c')];
+    expect(filterSkillsByDomain(input, undefined, MANIFESTS)).toBe(input);
+    expect(filterSkillsByDomain(input, 'malware', MANIFESTS)).toBe(input);
   });
 });

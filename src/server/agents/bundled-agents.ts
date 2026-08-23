@@ -14,6 +14,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { extractFrontmatter } from '../../shared/slashCommands';
+import { loadDomainManifests, type DomainManifest } from '../../shared/domain-manifest';
 import { resolveBundledDir } from '../domains/manifest';
 
 export interface BundledAgent {
@@ -82,4 +83,30 @@ export function loadBundledAgent(name: string, root?: string | null): LoadedAgen
   const dir = root === undefined ? resolveBundledDir('bundled-agents') : root;
   if (!dir) return null;
   return loadOne(dir, name);
+}
+
+/** 域清单的进程内缓存(bundled-domains 只在升级时变,会话期不变)。 */
+let domainManifestsCache: DomainManifest[] | null = null;
+
+/**
+ * 按会话域过滤可派发子代理(1.2.7 域边界,纯函数):子代理由主 agent 在
+ * 任务中段派生,任务域在派生时刻已定——子代理继承主 agent 的会话域,不
+ * 从全域清单按名自选。域命中 domain.json 的 subagents 清单 → 只保留该域
+ * 子代理 ∪ 无域归属的通用子代理(不在任何域清单里的名字视为通用保留);
+ * 清单名在 bundled-agents 目录不存在 → 自然跳过(容错)。无 domain / 域未
+ * 被清单覆盖 → 原样返回(全量,宁多勿缺——域过滤是预算与聚焦优化,不是
+ * 正确性闸门)。与 skills 的 filterSkillsByDomain 同一语义。
+ */
+export function filterAgentsByDomain<T extends { name: string }>(
+  agents: T[],
+  domain?: string,
+  manifests?: DomainManifest[],
+): T[] {
+  if (!domain) return agents;
+  const list = manifests ?? (domainManifestsCache ??= loadDomainManifests());
+  const current = list.find((m) => m.kind === domain);
+  if (!current) return agents;
+  const claimed = new Set(list.flatMap((m) => m.subagents));
+  const keep = new Set(current.subagents);
+  return agents.filter((a) => keep.has(a.name) || !claimed.has(a.name));
 }

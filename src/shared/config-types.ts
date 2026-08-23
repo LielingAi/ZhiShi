@@ -1555,11 +1555,15 @@ export const PRESET_PROVIDERS: Provider[] = [
 
     models: [
 
-      { model: 'glm-5', modelName: 'GLM-5', modelSeries: 'glm', contextLength: 200_000, maxOutputTokens: 96_000, inputModalities: ['text', 'image'] },
+      // 1.2.7：GLM-5 系窗口口径按 1M 对齐（GLM-5.2/5.3 官方文档 1M；
+      // 聚合站对 5.0/5.1 有 200K 分歧——偏高方向的误差由溢出兜底
+      // （isContextOverflow → 强制压缩重试）接住，偏低方向是窗口浪费）。
 
-      { model: 'glm-5-air', modelName: 'GLM-5 Air', modelSeries: 'glm', contextLength: 200_000, maxOutputTokens: 96_000, inputModalities: ['text', 'image'] },
+      { model: 'glm-5', modelName: 'GLM-5', modelSeries: 'glm', contextLength: 1_000_000, maxOutputTokens: 96_000, inputModalities: ['text', 'image'] },
 
-      { model: 'glm-5-flash', modelName: 'GLM-5 Flash', modelSeries: 'glm', contextLength: 200_000, maxOutputTokens: 96_000, inputModalities: ['text', 'image'] },
+      { model: 'glm-5-air', modelName: 'GLM-5 Air', modelSeries: 'glm', contextLength: 1_000_000, maxOutputTokens: 96_000, inputModalities: ['text', 'image'] },
+
+      { model: 'glm-5-flash', modelName: 'GLM-5 Flash', modelSeries: 'glm', contextLength: 1_000_000, maxOutputTokens: 96_000, inputModalities: ['text', 'image'] },
 
     ],
 

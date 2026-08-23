@@ -183,22 +183,51 @@ function describeSelection(data: SecurityCapabilitiesData): string {
 }
 
 /**
+ * 能力清单的域收窄入参（1.2.7 域边界，全部可选——不传 = 现状逐字节一致）。
+ */
+export interface SecurityCapabilitiesDomainOptions {
+  /**
+   * 当前会话研究域（调用方经 resolveSessionDomain 推导）。命中 domain.json
+   * 清单时只列该域 recipes ∪ 绑定了这些配方的具名环境；undefined 或域未被
+   * 任何清单覆盖 → 全量（域过滤是预算优化，不是正确性闸门，宁多勿缺）。
+   */
+  domain?: string;
+  /** 测试注入：域清单（缺省进程内缓存的 loadDomainManifests()）。 */
+  manifests?: DomainManifest[];
+}
+
+/**
  * 组装 `<zhishi-capabilities>` 段。零注入：数据缺失，或「无可用引擎 +
  * 无 valid 配方 + 无具名环境 + 未选现场（host）」——即没有任何可协作的
  * 现场可言时返回 ''。硬顶 SECURITY_CAPABILITIES_MAX_CHARS。
  */
 export function buildSecurityCapabilitiesSection(
   data: SecurityCapabilitiesData | undefined,
+  options: SecurityCapabilitiesDomainOptions = {},
 ): string {
   if (!data) return '';
 
   const availableEngines = data.engines.engines.filter((e) => e.available);
-  const validRecipes = data.recipes.filter((r) => r.valid);
+  let validRecipes = data.recipes.filter((r) => r.valid);
+  let environments = data.environments;
+
+  // 域收窄（1.2.7）：命中清单 → 配方只留该域清单引用的，具名环境只留绑定了
+  // 这些配方的（绑定规则同 envBlock：recipeId 优先，回落 id/vmName 同名配方）。
+  // 域未命中清单 → 不动（全量，宁多勿缺）。
+  if (options.domain) {
+    const manifest = (options.manifests ?? (domainManifestsCache ??= loadDomainManifests()))
+      .find((m) => m.kind === options.domain);
+    if (manifest) {
+      validRecipes = validRecipes.filter((r) => manifest.recipes.includes(r.id));
+      environments = environments.filter((e) =>
+        validRecipes.some((r) => r.id === e.recipeId || r.id === e.id || r.id === e.vmName));
+    }
+  }
 
   if (
     availableEngines.length === 0 &&
     validRecipes.length === 0 &&
-    data.environments.length === 0 &&
+    environments.length === 0 &&
     data.selection.kind === 'host'
   ) {
     return '';
@@ -241,9 +270,9 @@ export function buildSecurityCapabilitiesSection(
 
   const envBlock: string[] = [];
 
-  if (data.environments.length > 0) {
+  if (environments.length > 0) {
     envBlock.push('具名环境（人侧 zhishi env open <id> 接入；类型绑定 = 该环境带哪些工具）：');
-    for (const entry of data.environments) {
+    for (const entry of environments) {
       // 老条目的 name 可能是 "pwn-vm（pwn-vm）" 形态——以 id 开头就不再包一层。
       const label = entry.name && entry.name !== entry.id && !entry.name.startsWith(entry.id)
         ? `${entry.id}（${entry.name}）`
@@ -408,7 +437,6 @@ ${parts.join('\n\n')}
 
 /** 域清单的进程内缓存（bundled-domains 只在升级时变，会话期不变）。 */
 let domainManifestsCache: DomainManifest[] | null = null;
-
 /**
  * 从能力清单数据推导当前会话的研究域（research task_kind）。信号链：
  * 现场选择（T4）→ 具名环境的配方绑定（recipeId，回落 id/vmName 同名配方，
@@ -445,6 +473,109 @@ export function resolveSessionResearchDomain(
     }
   }
   return undefined;
+}
+
+// ===== 域动态修正（1.2.7 域边界：配方默认 + 内容信号动态修正） =====
+
+/** 内容信号扫描的消息条数（从会话末尾取）。 */
+export const DOMAIN_SIGNAL_RECENT_MESSAGES = 20;
+
+/**
+ * 域信号扫描消费的最小消息结构——只看 content，与 pi AgentMessage
+ * 结构兼容（调用方直接传会话历史，无需转换）。role 仅为通过 TS 弱类型
+ * 检查（AgentMessage 联合中 BashExecutionMessage 无 content 字段）。
+ */
+export interface DomainSignalMessage {
+  role?: unknown;
+  content?: unknown;
+}
+
+/**
+ * 提取消息文本（与 loop/compaction.ts 的 messageText 同口径，本地一份
+ * 避免 server → loop 的反向依赖）：字符串 content / text、thinking 块 /
+ * toolCall 名+参数。
+ */
+function domainSignalMessageText(message: DomainSignalMessage): string {
+  const content = message.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((block) => {
+      if (!block || typeof block !== 'object') return '';
+      const b = block as Record<string, unknown>;
+      if (typeof b.text === 'string') return b.text;
+      if (typeof b.thinking === 'string') return b.thinking;
+      if (b.type === 'toolCall') return `${String(b.name ?? '')} ${JSON.stringify(b.arguments ?? {})}`;
+      return '';
+    })
+    .join('\n');
+}
+
+export interface ResolveSessionDomainOptions {
+  /** 扫描的消息条数（从末尾取，默认 DOMAIN_SIGNAL_RECENT_MESSAGES）。 */
+  recentMessages?: number;
+}
+
+/**
+ * 会话域推导（1.2.7 域边界）：基线 = resolveSessionResearchDomain（配方
+ * 默认），内容信号动态修正——扫描最近 N 条消息文本，对每域统计其
+ * domain.json signals 正则命中数；某域命中 ≥2 且严格多于其他所有域 →
+ * 强信号域。裁决：
+ *
+ *   - 无强信号 / 信号打平 / 无命中 → 维持基线（undefined = 全量，宁多勿缺）；
+ *   - 无基线（host 现场）且信号强 → 采用信号域；
+ *   - 基线与信号域不同 → 信号足够强（≥3 且 ≥2 倍于基线域命中数）才改判，
+ *     否则维持基线（配方默认是锚，零星命中不翻盘）。
+ *
+ * 纯函数；manifests 缺省走进程内缓存。
+ */
+export function resolveSessionDomain(
+  messages: readonly DomainSignalMessage[],
+  data: SecurityCapabilitiesData | undefined,
+  manifests?: DomainManifest[],
+  options: ResolveSessionDomainOptions = {},
+): ResearchTaskKind | undefined {
+  const list = manifests ?? (domainManifestsCache ??= loadDomainManifests());
+  const baseline = resolveSessionResearchDomain(data, list);
+
+  // 每域信号命中数（非法正则跳过——读侧容错，与 validateDomainManifest 同纪律）。
+  const recent = messages.slice(-(options.recentMessages ?? DOMAIN_SIGNAL_RECENT_MESSAGES));
+  const text = recent.map(domainSignalMessageText).join('\n');
+  const counts = new Map<string, number>();
+  for (const m of list) {
+    if (!isResearchTaskKind(m.kind)) continue;
+    let n = 0;
+    for (const rule of m.signals) {
+      try {
+        n += text.match(new RegExp(rule.re, 'gi'))?.length ?? 0;
+      } catch {
+        /* 非法正则不计 */
+      }
+    }
+    counts.set(m.kind, n);
+  }
+
+  // 强信号域：命中 ≥2 且严格多于其他所有域（打平不算强信号）。
+  let signalDomain: ResearchTaskKind | undefined;
+  let signalHits = 0;
+  let runnerUpHits = 0;
+  for (const [kind, n] of counts) {
+    if (n > signalHits) {
+      runnerUpHits = signalHits;
+      signalHits = n;
+      signalDomain = kind as ResearchTaskKind;
+    } else if (n > runnerUpHits) {
+      runnerUpHits = n;
+    }
+  }
+  if (!signalDomain || signalHits < 2 || signalHits === runnerUpHits) {
+    return baseline;
+  }
+
+  if (!baseline || signalDomain === baseline) return signalDomain ?? baseline;
+  const baselineHits = counts.get(baseline) ?? 0;
+  if (signalHits >= 3 && signalHits >= 2 * baselineHits) return signalDomain;
+  return baseline;
 }
 
 // ===== 薄 IO — 会话启动时的数据采集（依赖可注入，测试不碰真实环境） =====
