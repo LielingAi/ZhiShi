@@ -20,6 +20,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.2.10] - 2026-08-23
+
+
+
+> 安装后 zhishi 命令入 PATH + 专家知识导入 JSON/YAML。
+
+
+
+### Added
+
+
+
+- **安装后 `zhishi` 命令直接可用**：NSIS 安装即落 `~/.zhishi/bin` 三件套（zhishi / zhishi.cmd / package.json——cmd 烘焙 bundled node 绝对路径，不依赖用户自装 node），并注册进用户 PATH（HKCU，去重 + WM_SETTINGCHANGE 广播）；卸载时移除 PATH 项（用户数据保留）。launcher 镜像侧同口径（zhishi.cmd 改生成式，两处产物逐字节一致不 churn）。新开终端即可 `zhishi --version` / `zhishi expert list`。
+- **`zhishi expert import <文件>`**：专家知识从现成文件导入——JSON/YAML 自动识别（扩展名优先 + 内容嗅探），单对象或数组批量；逐条 validateEntry 校验、复用 expert/add 路由（服务端零改动），单条失败不阻塞；provenance 强制 user，reviewer 取条目字段或 `--reviewer` 兜底；全部失败退出码非零。help 与 user-guide 已写格式示例。
+
+
+
 ## [1.2.9] - 2026-08-23
 
 

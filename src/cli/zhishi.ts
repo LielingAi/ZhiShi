@@ -34,6 +34,8 @@
 
 import { homedir } from 'os';
 
+import { readFileSync } from 'node:fs';
+
 import { createInterface } from 'node:readline';
 
 import { Agent, fetch as undiciFetch } from 'undici';
@@ -58,6 +60,8 @@ import { runAgentLoop } from './tui/v2/entry';
 import { INTEL_POLL_INTERVAL_MS, startIntelProgressPolling } from './intel-progress';
 
 import { buildExpertDoc, expertEditRoundTrip, parseExpertDoc } from './expert-edit';
+
+import { importExpertEntries, parseExpertImport } from './expert-import';
 
 import { EXPERT_ENTRY_KINDS, EXPERT_PROVENANCES, validateEntry, type ValidateResult } from '../shared/expert-validate';
 
@@ -440,7 +444,7 @@ Commands:
 
   intel     Intel index (update/status) — NVD + exploit-db 本地情报索引（1.1.2）
 
-  expert    专家知识库（list/show/new/edit/rm/search/review/promote）——专家审定，决策级依据（1.2.1）
+  expert    专家知识库（list/show/new/edit/rm/search/review/promote/import）——专家审定，决策级依据（1.2.1）
 
 
 
@@ -640,6 +644,12 @@ Examples:
     # 非 TTY：zhishi expert review --approve <draftId> --reviewer <审定人> / --discard <draftId>
 
   zhishi expert promote <eventId> [--reviewer <审定人>]  # 研究事件晋升为专家知识（人审即跨界）
+
+  zhishi expert import <file.json|.yaml> [--reviewer <审定人>]  # 批量导入（单对象或数组；逐条校验，单条失败不阻塞）
+
+    # 字段：title/kind/domain/applicability/content/criteria 必填，tags/reviewer 可选；
+
+    # provenance 强制 user，reviewer 取条目字段或 --reviewer 兜底（皆无 → 该条报错跳过）。
 
 
   zhishi term open --cwd /path/to/proj --rows 40 --cols 120 [--cmd "<命令>"] [--env <tag>]
@@ -3003,7 +3013,44 @@ async function runExpertCommand(
     return { success: true };
   }
 
-  return expertFail(`未知 expert 子命令 "${action}"（允许：list / show / new / edit / rm / search / review / promote；详见 zhishi expert --help）`);
+  // --- 批量导入通道（1.2.10）：JSON/YAML 文件逐条校验逐条入库，复用 expert/add ---
+
+  if (action === 'import') {
+    const file = rest[0]?.trim();
+    if (!file) return expertFail('usage: zhishi expert import <file.json|.yaml> [--reviewer <审定人>]');
+    const reviewer = flagStr(flags.reviewer);
+    let raw: string;
+    try {
+      raw = readFileSync(file, 'utf-8');
+    } catch (err) {
+      return expertFail(`读取导入文件失败（${file}）：${err instanceof Error ? err.message : String(err)}`);
+    }
+    const parsed = parseExpertImport(raw, file);
+    if (!parsed.ok) return expertFail(parsed.error);
+    const result = await importExpertEntries(parsed.entries, {
+      ...(reviewer ? { reviewer } : {}),
+      post: callApi,
+    });
+    // 全部失败 → success=false（main 置退出码 1）；部分成功算成功（失败明细已列出）。
+    const res: ExpertApiResult = result.ok.length > 0
+      ? { success: true, data: result }
+      : { success: false, error: '全部条目导入失败', data: result };
+    if (jsonMode) {
+      console.log(JSON.stringify(res, null, 2));
+      return res;
+    }
+    for (const o of result.ok) {
+      console.log(`✓ #${o.index} ${o.title}${o.id !== undefined ? ` → 入库 #${o.id}` : ''}`);
+    }
+    for (const f of result.failed) {
+      console.error(`✗ #${f.index} ${f.title}：${f.error}`);
+    }
+    console.log(`导入完成：成功 ${result.ok.length} 条 / 失败 ${result.failed.length} 条`);
+    if (!res.success) console.error(`Error: ${String(res.error)}`);
+    return res;
+  }
+
+  return expertFail(`未知 expert 子命令 "${action}"（允许：list / show / new / edit / rm / search / review / promote / import；详见 zhishi expert --help）`);
 }
 
 async function main(): Promise<void> {

@@ -5,13 +5,20 @@
 
 ---
 
-## 1.2.10 —— zhishi 命令入 PATH + 专家知识导入（进行中）
+## 1.2.10 —— zhishi 命令入 PATH + 专家知识导入（已完成）
 
 缘起：用户想在 TUI 中方便地用 zhishi 命令，并指出根子是**安装后 zhishi 不在环境变量里**——PATH 通了，TUI/终端里用 zhishi 都顺势解决；另专家知识「新建」目前只有编辑器往返（edit），需要支持导入 JSON/YAML 现成文件。
 
 - [ ] **安装后 zhishi 入 PATH**：NSIS POSTINSTALL 落 `<数据目录>\bin` 的 CLI 三件套（zhishi/zhishi.cmd/package.json，cmd 烘焙 bundled node 绝对路径——不依赖用户自己装 node）+ 用户 PATH 注册（HKCU Environment + WM_SETTINGCHANGE 广播，去重）；POSTUNINSTALL 移除 PATH 项；launcher 镜像侧同口径（zhishi.cmd 改为生成式烘焙 node 路径，两处产物一致不 churn）。便携/USB 模式不动（不写 PATH）。
 - [ ] **`zhishi expert import <file>`**：JSON/YAML 自动识别（js-yaml 已是依赖），单对象/数组批量，逐条 validateEntry + 复用 expert/add 路由（服务端零改动），逐条报错不阻塞（seed 先例），provenance=user、reviewer 取文件字段或 --reviewer 兜底；help + user-guide 写格式。
-- [ ] **TUI `/cli <args>` 透传**：spawn zhishi（PATH 已通），输出捕获贴会话块；交互类子命令（expert new/edit/review、model set-key 等）deny-list 引导回终端。长输出折叠、CJK 宽度按既有口径。
+- [x] **安装后 zhishi 入 PATH**：NSIS POSTINSTALL 落 `<数据目录>\bin` 的 CLI 三件套（zhishi/zhishi.cmd/package.json，cmd 烘焙 bundled node 绝对路径——不依赖用户自己装 node）+ 用户 PATH 注册（HKCU Environment + WM_SETTINGCHANGE 广播，去重）；POSTUNINSTALL 移除 PATH 项；launcher 镜像侧同口径（zhishi.cmd 改为生成式烘焙 node 路径，两处产物一致不 churn）。便携/USB 模式不动（不写 PATH）。
+- [x] **`zhishi expert import <file>`**：JSON/YAML 自动识别（js-yaml 已是依赖），单对象/数组批量，逐条 validateEntry + 复用 expert/add 路由（服务端零改动），逐条报错不阻塞（seed 先例），provenance=user、reviewer 取文件字段或 --reviewer 兜底；help + user-guide 写格式。
+- [x] **验收**：全量测试 + 实机安装验证（装完开新终端 `zhishi --version` 可用）+ import 活体（yaml/json 各一）。
+
+> 实际落地（2026-08-23）：两项全落。安装侧三个坑实机抓出并修掉：①Tauri NSIS 资源在 Windows 落安装根目录而非 resources\ 子目录（首版 ps1 路径错误静默不执行）；②PowerShell 数组字面量里未加括号的拼接表达式会被拆成多元素（生成的 cmd 路径断行）；③**PS1 含中文注释必须带 UTF-8 BOM**（无 BOM 被 PS5.1 按 GBK 误读，注释行吞掉下一行的 Copy-Item——zhishi.js 不落盘）。终装全链路验证：清场 → 静默安装 → bin 三件套齐 + cmd 烘焙正确 + HKCU PATH 注册 + `zhishi --version` 可跑；卸载脚本 standalone 验证（只删目标条目、旁支保留）。expert import 活体：yaml 批量一好一坏（坏的按缺 reviewer 拒绝）、json 单条入库、search 可查、清理完毕。全量 156 文件 2039 测试绿 + typecheck + eslint 零错。
+
+> 明确不做：TUI 的 expert 面板、其余 CLI 命令的逐个斜杠化、TUI /cli 透传（用户拍板：PATH 通了就不需要）。
+> 决策记录（2026-08-23 用户）：TUI /cli 透传不做——zhishi 入 PATH 后，用命令直接开终端敲即可，TUI 内不再加透传通道。
 - [ ] **验收**：全量测试 + 实机安装验证（装完开新终端 `zhishi --version` 可用）+ import 活体（yaml/json 各一）。
 
 > 明确不做：TUI 的 expert 面板、其余 CLI 命令的逐个斜杠化。

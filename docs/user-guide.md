@@ -25,6 +25,7 @@
 ### 发行包（Windows）
 
 - 到 [GitHub Releases](https://github.com/LielingAi/ZhiShi/releases/latest) 下载 `ZhiShi_<版本>_x64-setup.exe`（NSIS）安装，或便携 ZIP 解压即用。
+- **安装后 `zhishi` 命令直接可用**（1.2.10 起）：安装器把 CLI 落到 `~/.zhishi/bin` 并注册进用户 PATH——新开一个终端就能敲 `zhishi --version`、`zhishi expert list` 等（已开着的终端要重开才刷新 PATH）。
 - **安装后点击桌面图标即直接打开 TUI**（弹一个终端跑 `zhishi agent`）；开机自启不会弹窗。托盘的「打开会话」菜单/左键同样拉起 TUI。
 - 也可以自己开终端：`zhishi agent`。`zhishi` 命令在应用启动时自动同步到 `~/.zhishi/bin/`。Tauri 壳在后台负责引擎（sidecar）生命周期，无需手动起服务。
 
@@ -245,9 +246,23 @@ TUI 里 `/export` 把当前工作区的研究记录组装成报告目录（`outp
 ```bash
 zhishi expert list / show <id> / search <关键词>   # 浏览检索
 zhishi expert new <标题>            # 新建（打开编辑器写，frontmatter + 正文）
+zhishi expert import <文件>         # 导入现成的 JSON/YAML（单条或数组批量，逐条校验）
 zhishi expert edit <id>             # 修改（编辑器往返）
 zhishi expert review                # 审定 agent 起草的草稿（批准/编辑/丢弃）
 zhishi expert promote <事件id>      # 把一条研究经验晋升为专家知识（人审定）
+```
+
+import 文件格式（JSON 或 YAML 自动识别；必填 title/kind/domain/applicability/content/criteria，可选 tags/reviewer；provenance 一律按 user 入库）：
+
+```yaml
+- title: 堆喷占位 size 经验
+  kind: technique          # idea / technique / sop
+  domain: binary           # binary / pentest / whitebox / ai-security / redteam / malware / intel / ctf
+  applicability: glibc 2.3x 堆题，有页面对齐约束时
+  content: 做法正文……
+  criteria: 什么时候这套做法成立/失效的判定
+  tags: heap, spray
+  reviewer: 你的名字        # 也可用 --reviewer 统一兜底
 ```
 
 会话里直接说「把刚才这个解法存成专家知识」也行——agent 起草，你审定。
