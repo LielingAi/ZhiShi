@@ -119,7 +119,7 @@ ZhiShi 安全研究台
 | 上下文 | 安全定制压缩：死路（非零 exit）与突破口（flag/CVE）永不裁 |
 | 记忆闭环 | research_events → 按研究域蒸馏（经验不跨域，置信度 0.xx 分级）→ 逐 turn 反喂系统提示 |
 | 认知内核 | 第一性原理五层认知（深度理解 → 对抗共情 → 溯因推理 → 认识论谦卑 → 远距类比）+ 置信度校准锚点（< 0.60 不报告）+ 硬排除清单 |
-| 专家知识 | `expert.db`——权威知识层（思路/技术/SOP，人审定才进库）：卡住了 LLM 无把握时的最后落脚点，`expert_search` 检索；留痕可挂 `expert_refs` 追溯「决策依据 E#N」 |
+| 专家知识 | `expert.db`——权威知识层（思路/技术/SOP，人审定才进库）：卡住了 LLM 无把握时的最后落脚点，`expert_search` 检索；留痕可挂 `expert_refs` 追溯「决策依据 E#N」；现成 JSON/YAML 直接 `zhishi expert import` 批量入库（见导入指南） |
 | 研究报告 | `/export` 一键出报告目录（report.md + evidence/ PoC 本体）：骨架事实钉死 + LLM 填肉、按域模板、敏感项清单知情、显式脱敏可选 |
 | 能力包 | skills 提示词注入（binary-exploit / vuln-triage / native-code-loop / range-ops / pentest / whitebox-audit / ai-security + 用户库 `~/.zhishi/skills/`） |
 | 子代理 | bundled-agents：fuzz-runner / crash-triager / vuln-hunter / hypothesis-tester / critic；`/tasks` 面板看工作现场与完整 transcript |
@@ -242,6 +242,7 @@ flowchart LR
 |---|---|
 | `docs/roadmap.md` | 版本任务池（当前线：1.2.x 校准协作——研究交付 + 专家知识层） |
 | `docs/expert-knowledge-plan.md` | 专家知识层迭代与技术方案（1.2.1-1.2.3） |
+| `docs/expert-import-guide.md` | 专家知识导入指南（命令/字段规范/JSON+YAML 格式，附可导入的 `expert-import.demo.yaml`） |
 | `docs/security_researcher_agent_design.md` | 产品设计（决策记录 D1–D31） |
 | `docs/security_researcher_agent_tech_plan.md` | 技术方案 |
 | `docs/tui_tech_spec.md` / `docs/tui-rebuild-plan.md` | TUI 契约与重建蓝图 |
