@@ -1714,23 +1714,52 @@ export function handleModelList(): AdminResponse {
 
   // 才能覆盖它;目录从 pi-ai 内置目录取,不硬编码避免漂移。
 
-  data.push(kimiBuiltinProviderEntry(apiKeys, verifyStatus));
+  // 1.2.9(Q1):key 判定对齐运行链路口径——resolveLoopModel 对 kimi 系是
+  // 模糊匹配(id 含 kimi/moonshot 且非 openai 协议定义即走 kimi-coding),
+  // 显示链路此前只认精确键 'kimi',用户配的 'moonshot-coding' 显示「未配
+  // key」但实际可用。hasKimiUsableKey 与运行判定同规则。
+  const hasKimiUsableKey = Object.entries(apiKeys).some(([kid, k]) => {
+    if (!k || !String(k).trim()) return false;
+    const lid = kid.toLowerCase();
+    if (!lid.includes('kimi') && !lid.includes('moonshot')) return false;
+    const def = allProviders.find((p) => String(p.id) === kid);
+    const proto = def?.apiProtocol ? String(def.apiProtocol) : 'anthropic';
+    return proto === 'anthropic'; // moonshot preset 是 openai 协议,不进 kimi-coding 路径
+  });
 
+  data.push(kimiBuiltinProviderEntry(apiKeys, verifyStatus, hasKimiUsableKey));
 
+  // 1.2.9(Q1):当前生效的 provider/model(与 resolveLoopModel 同回落规则)
+  // ——状态卡此前只显示目录,用户无法判断「现在在用哪家」。
+  const currentProviderId = (config.defaultProviderId as string | undefined)
+    ?? Object.keys(apiKeys).find((kid) => typeof apiKeys[kid] === 'string' && apiKeys[kid].trim() !== '');
+  const currentModelId = currentProviderId
+    ? ((config.defaultModelId as string | undefined)
+      ?? (config.providerPrimaryModels as Record<string, string> | undefined)?.[currentProviderId]
+      ?? (() => {
+        const def = allProviders.find((p) => String(p.id) === currentProviderId);
+        return def?.primaryModel ? String(def.primaryModel) : undefined;
+      })())
+    : undefined;
 
-  return { success: true, data };
+  return { success: true, data, current: { providerId: currentProviderId, modelId: currentModelId } };
 
 }
 
 
 
-/** kimi 内置合成条目:模型目录取自 pi-ai 的 kimi-coding 内置目录。 */
+/** kimi 内置合成条目:模型目录取自 pi-ai 的 kimi-coding 内置目录。
+ *  hasKimiUsableKey(1.2.9):由调用方按运行链路口径算出(id 含
+ *  kimi/moonshot 且非 openai 协议定义),不再精确查 apiKeys['kimi']——
+ *  用户实际配的键是 moonshot-coding,精确匹配会误显「未配 key」。 */
 
 function kimiBuiltinProviderEntry(
 
   apiKeys: Record<string, string>,
 
   verifyStatus: Record<string, unknown>,
+
+  hasKimiUsableKey?: boolean,
 
 ): Record<string, unknown> {
 
@@ -1770,7 +1799,7 @@ function kimiBuiltinProviderEntry(
 
     enabled: true,
 
-    hasApiKey: !!apiKeys['kimi'],
+    hasApiKey: hasKimiUsableKey ?? !!apiKeys['kimi'],
 
     status: (verifyStatus['kimi'] as Record<string, unknown>)?.status ?? 'not-set',
 

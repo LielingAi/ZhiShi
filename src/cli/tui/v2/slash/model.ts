@@ -39,11 +39,15 @@ export async function runModel(ctx: SlashContext, arg: string): Promise<void> {
   }
 }
 
-/** /model(无参)——供应商状态卡。数据来自 admin model/list(全量目录)。 */
+/** /model(无参)——供应商状态卡。数据来自 admin model/list(全量目录 + 当前使用)。 */
 async function showModelStatus(ctx: SlashContext): Promise<void> {
+  type ModelListResponse = {
+    success?: boolean; error?: string; data?: ModelProviderInfo[];
+    current?: { providerId?: string; modelId?: string };
+  };
   const res = await ctx.client
-    .adminPost<{ success?: boolean; error?: string; data?: ModelProviderInfo[] }>('model/list', {})
-    .catch((): { success?: boolean; error?: string; data?: ModelProviderInfo[] } => ({
+    .adminPost<ModelListResponse>('model/list', {})
+    .catch((): ModelListResponse => ({
       success: false,
       error: '无法连接 sidecar',
     }));
@@ -52,7 +56,7 @@ async function showModelStatus(ctx: SlashContext): Promise<void> {
     return;
   }
   const providers = res.data ?? [];
-  for (const row of composeModelCardRows(providers, ctx.state.status.model)) {
+  for (const row of composeModelCardRows(providers, ctx.state.status.model, res.current)) {
     ctx.pushBlock({ kind: 'divider', label: row.label, follow: row.follow, tone: row.tone });
   }
 }

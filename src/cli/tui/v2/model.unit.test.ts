@@ -179,6 +179,21 @@ describe('composeModelCardRows', () => {
     expect(rows[1].follow).toContain('gpt-5.4 · 2 模型');
     expect(rows[2].follow).toContain('m1 · 2 模型');
   });
+
+  it('1.2.9(Q1):表头显示当前使用 provider · model(current 优先于 currentModel)', () => {
+    const rows = composeModelCardRows([provider()], 'kimi-k2', { providerId: 'moonshot-coding', modelId: 'k3' });
+    expect(rows[0].follow).toBe('1 家 · 当前使用 moonshot-coding · k3');
+    // 无 current 时回落 currentModel(向后兼容)
+    expect(composeModelCardRows([provider()], 'kimi-k2')[0].follow).toBe('1 家 · 当前默认 kimi-k2');
+  });
+
+  it('1.2.9(Q2):末尾有「下一步」引导行(set-key/use 用法)', () => {
+    const rows = composeModelCardRows([provider()], undefined);
+    const last = rows[rows.length - 1];
+    expect(last.label).toBe('下一步');
+    expect(last.follow).toContain('/model set-key');
+    expect(last.follow).toContain('/model use');
+  });
 });
 
 // ---------------------------------------------------------------------------

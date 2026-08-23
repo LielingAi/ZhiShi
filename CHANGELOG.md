@@ -20,6 +20,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 
+## [1.2.9] - 2026-08-23
+
+
+
+> TUI bug 续修（实机反馈驱动）：模型供应商面板 key 状态脱节、/model 无引导、Tab 唤起补全、历史召回回归保障。
+
+
+
+### Fixed
+
+
+
+- **供应商面板「未配 key」误显**：显示链路精确查 `providerApiKeys['kimi']`，运行链路对 kimi 系模糊匹配——用户配的 `moonshot-coding` 能跑但显示未配。kimi 内置条目 key 判定对齐运行链路口径（id 含 kimi/moonshot 且非 openai 协议定义；moonshot preset 是 OpenAI 端点不误标）。
+- **/model 看不到「当前在用哪家」+ 无下一步引导**：model/list 新增 `current` 字段（当前使用 provider · model，与 resolveLoopModel 同回落规则），状态卡表头显示；卡尾补「下一步」引导行（set-key/use 用法）。
+- **Tab 无法唤起补全**：补全面板未弹出时 Tab 原是纯无操作（completion 分支为不可达死代码）——现输入以 `/` 或 `@` 开头时 Tab 主动唤起面板（shell 式唤起，对齐帮助文案）。
+- **↑/↓ 历史召回**：接线实测正常（实机失败主因旧包）——补 app 级字节链路回归测试钉死（↑ 召回/再 ↑ 更老/↓ 返回）。
+
+
+
 ## [1.2.8] - 2026-08-23
 
 

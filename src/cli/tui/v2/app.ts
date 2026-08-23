@@ -507,7 +507,14 @@ export class App {
     if (hasMod(key, 'ctrl') && key.char === 'z') return this.openRewind();
     if (hasMod(key, 'ctrl') && key.char === 'r') return this.openHistorySearch();
     if (key.name === 'tab') {
-      if (this.overlay?.kind === 'completion') this.acceptCompletion();
+      // 1.2.9(Q3):Tab 唤起补全。overlay 存在时键在 :406 已被 onOverlayKey
+      // 路由(那里的 tab=接受选中项),本函数只在无 overlay 时可达——此前
+      // 这里的 completion 分支是不可达死代码,无 overlay 时 Tab 是纯无操作。
+      // 改为:输入以 / 或 @ 开头(单行)时 Tab 主动唤起补全面板(shell 式
+      // 唤起,与帮助文案「Tab 补全」口径一致);其余输入 updateLiveCompletion
+      // 自然无操作。
+      this.updateLiveCompletion();
+      this.renderChrome();
       return;
     }
     if (key.name === 'enter') {

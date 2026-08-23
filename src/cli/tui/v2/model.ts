@@ -70,15 +70,22 @@ export interface CardRow {
 /**
  * /model 状态卡行构造:表头(家数 + 当前默认模型)+ 每家一行
  * （已配 key → green / 未配 → faint / 已禁用 → red）。
+ * 1.2.9(Q1/Q2):表头补「当前使用 provider · model」(此前只显示目录,
+ * 用户无法判断在用哪家);末尾补「下一步」引导行(状态卡是纯展示,
+ * 没有引导用户不知道能干什么)。
  */
 export function composeModelCardRows(
   providers: ModelProviderInfo[],
   currentModel: string | undefined,
+  current?: { providerId?: string; modelId?: string },
 ): CardRow[] {
+  const inUse = current?.providerId
+    ? `当前使用 ${current.providerId}${current.modelId ? ` · ${current.modelId}` : ''}`
+    : currentModel ? `当前默认 ${currentModel}` : '';
   const rows: CardRow[] = [
     {
       label: '模型供应商',
-      follow: `${providers.length} 家${currentModel ? ` · 当前默认 ${currentModel}` : ''}`,
+      follow: `${providers.length} 家${inUse ? ` · ${inUse}` : ''}`,
       tone: 'info',
     },
   ];
@@ -90,6 +97,11 @@ export function composeModelCardRows(
       tone: p.enabled === false ? 'fail' : p.hasApiKey ? 'ok' : 'info',
     });
   }
+  rows.push({
+    label: '下一步',
+    follow: '/model set-key <供应商id> 配 key · /model use <供应商id> <模型名> 切换（id 见上行行首）',
+    tone: 'info',
+  });
   return rows;
 }
 
