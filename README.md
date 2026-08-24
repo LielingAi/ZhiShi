@@ -18,6 +18,8 @@
 > 📖 **新用户从这里开始：[使用指南](docs/user-guide.md)** —— 安装、选环境、配模型、TUI 命令大全、常见问题。
 > 📦 **Windows 安装包：[GitHub Releases 下载最新版](https://github.com/LielingAi/ZhiShi/releases/latest)**（NSIS 安装包 / 便携 ZIP）。
 
+> 🚧 **GUI 版即将上线**：图形界面正在开发中（1.3.x 路线：原型 → 会话视图 → 决策面板 → 打磨，完成前不发版）。届时会话流将以块化形态呈现——你的输入为块首、结论聚合、执行细节折叠，决策与历史面板原生支持。TUI 保持可用，待 GUI 覆盖核心场景后退役。进度见 [Roadmap](docs/roadmap.md)。
+
 ![TUI 会话界面](assets/tui-session.png)
 
 > 以实战出发的**漏洞研究专用 harness**。
