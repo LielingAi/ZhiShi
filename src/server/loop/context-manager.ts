@@ -1,7 +1,7 @@
 /**
  * 1.2.7(A)— 实时上下文管理核心:切分 → 标注 → 采样锚定 → 注意力布局。
  *
- * 设计稿 docs/1.2.7-design.md §二的实现,纯函数为主、无 LLM 调用:
+ * 设计稿 docs/design/1.2.7-design.md §二的实现,纯函数为主、无 LLM 调用:
  *
  *   切分(segmentContext):以 user 消息为 turn 边界切段,每段推断研究
  *     阶段(phase:anchor/recon/analysis/construction/execution/

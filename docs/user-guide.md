@@ -303,15 +303,15 @@ MCP 工具在会话里以 `mcp__<server>__<tool>` 命名，与内置工具同受
 - 长任务无响应：确认任务是否该走 `env_bg`（见第 6 节长任务纪律）。
 
 **后台进程去哪了**
-- turn 结束/会话重置时，后台长驻进程会被**回收杀掉**（当前策略）；要长跑跨会话的任务，用 `env_bg` 之外的托管方式（如环境内 nohup + 下次认领——见 `docs/env-bg-design.md` 的后续方向）。
+- turn 结束/会话重置时，后台长驻进程会被**回收杀掉**（当前策略）；要长跑跨会话的任务，用 `env_bg` 之外的托管方式（如环境内 nohup + 下次认领——见 `docs/spec/env-bg-design.md` 的后续方向）。
 
 ---
 
 ## 附：文档索引
 
-- 产品定位与决策历史：`docs/security_researcher_agent_design.md`、`docs/security_researcher_product_plan.md`
-- 技术方案：`docs/security_researcher_agent_tech_plan.md`
-- TUI 技术规范：`docs/tui_tech_spec.md`
-- 环境内长驻进程通道：`docs/env-bg-design.md`
+- 产品定位与决策历史：`docs/spec/security_researcher_agent_design.md`、`docs/spec/security_researcher_product_plan.md`
+- 技术方案：`docs/spec/security_researcher_agent_tech_plan.md`
+- TUI 技术规范：`docs/spec/tui_tech_spec.md`
+- 环境内长驻进程通道：`docs/spec/env-bg-design.md`
 - 版本任务池：`docs/roadmap.md`
 - 开发红线：`CLAUDE.md`（开发者/贡献者读）

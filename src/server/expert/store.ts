@@ -6,7 +6,7 @@
  * 不是结论）/ memory.db（LLM 自身经验，参考级）/ expert.db（专家审定，
  * 决策级）三库三权威级，永不混写。
  *
- * 表结构（docs/expert-knowledge-plan.md §3.1 定稿）：
+ * 表结构（docs/spec/expert-knowledge-plan.md §3.1 定稿）：
  * - expert_entries：审定生效的专家知识（idea/technique/sop × 8 研究域）；
  * - expert_drafts：agent 起草待人审的草稿（同构 + created_via）——起草不
  *   是生效，人审通过才进 entries；

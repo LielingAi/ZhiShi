@@ -55,7 +55,7 @@
 
 ## 1.2.7 —— 上下文管理与压缩（已完成）
 
-方向延续「做深不做广」。主题：上下文管理——系统提示与会话历史的全生命周期（增长、预算、压缩、存活）。**先摸清现状，再深度探讨**（用户定调）。设计稿：`docs/1.2.7-design.md`。拍板：切分按研究阶段；域判定 = 配方默认 + 内容信号动态修正；窗口口径按 preset 声明值（deepseek 1M）；一版全量做完。
+方向延续「做深不做广」。主题：上下文管理——系统提示与会话历史的全生命周期（增长、预算、压缩、存活）。**先摸清现状，再深度探讨**（用户定调）。设计稿：`docs/design/1.2.7-design.md`。拍板：切分按研究阶段；域判定 = 配方默认 + 内容信号动态修正；窗口口径按 preset 声明值（deepseek 1M）；一版全量做完。
 
 - [x] **现状摸底**：系统提示逐段实测（组装开销、token 占比、各段增长曲线）；会话历史增长模型（消息/工具结果怎么膨胀）；压缩机制实测（触发点、存活契约、裁完后的上下文质量）；长会话的真实瓶颈在哪。产出：上下文管理现状报告（带实测数据）。
 - [x] **深度探讨对齐**：按现状报告定优化方向。
@@ -90,7 +90,7 @@
 - [x] **部署落地链路深化**：配方 → 安装 → 自检 → 调用 → 留痕的完整链路体检与加固。
 - [x] **问题处置机制**：工具有解决不了的问题（装不上/跑不动/输出不可判读/版本漂移）时的标准处置路径。
 
-> 实际落地（2026-08-22）：选——两轮六域网络调研（认证课程+发行版预装+从业者榜单+GitHub 实时活跃度交叉验证，「先调研不猜」救了一个错误处置：garak 原拟删，调研翻案为留+教）+ 用户四条修正（浏览器/JS+API 分析/协议+文件格式分析/rev 并入 binary），选型终稿 v2 落档 `docs/1.2.5-analysis.md`。组——六域配方按终稿改 + pentest-vm 新配方 + rev 并入 binary 域 + ENVIRONMENT_RECIPES_VERSION→6。配——toolCheck 词汇映射（声明词→真实探测命令）+ VM 挂点（快照前自检，缺工具不冻结模板）+ 配方播种改内容哈希同步（旧版备份可回滚）+ domain check 覆盖 VM。用——配方工作流摘要进能力清单（段顶抬 4000，两层预算核心清单永不丢）+ skills 友好用法固化 + garak 信号规则按真实 JSONL 实证。全量 1847 测试绿 + smoke 5/5。Dockerfile 网络型安装段未经 docker build 实机验证（本机无 docker），已标注。
+> 实际落地（2026-08-22）：选——两轮六域网络调研（认证课程+发行版预装+从业者榜单+GitHub 实时活跃度交叉验证，「先调研不猜」救了一个错误处置：garak 原拟删，调研翻案为留+教）+ 用户四条修正（浏览器/JS+API 分析/协议+文件格式分析/rev 并入 binary），选型终稿 v2 落档 `docs/design/1.2.5-analysis.md`。组——六域配方按终稿改 + pentest-vm 新配方 + rev 并入 binary 域 + ENVIRONMENT_RECIPES_VERSION→6。配——toolCheck 词汇映射（声明词→真实探测命令）+ VM 挂点（快照前自检，缺工具不冻结模板）+ 配方播种改内容哈希同步（旧版备份可回滚）+ domain check 覆盖 VM。用——配方工作流摘要进能力清单（段顶抬 4000，两层预算核心清单永不丢）+ skills 友好用法固化 + garak 信号规则按真实 JSONL 实证。全量 1847 测试绿 + smoke 5/5。Dockerfile 网络型安装段未经 docker build 实机验证（本机无 docker），已标注。
 
 > 明确不做：新工具的大规模扩充（选型先行，扩充有据后再说）、新功能。
 
@@ -112,7 +112,7 @@
 
 ## 1.2.3 —— 构建产物修复与验证（已完成）
 
-主题：修复 issue #5 + 建立「构建产物」验证链路——此前所有验证（npm test / smoke）都跑在 tsx 源码上，打包产物（用户真正运行的形态）从未被验过。分析记录见 `docs/1.2.3-design.md`。
+主题：修复 issue #5 + 建立「构建产物」验证链路——此前所有验证（npm test / smoke）都跑在 tsx 源码上，打包产物（用户真正运行的形态）从未被验过。分析记录见 `docs/design/1.2.3-design.md`。
 
 - [x] **修复 #5：CLI bundle cjs 导致 import.meta fallback 日志污染 TUI**——双管齐下：CLI bundle 改 esm（import.meta 恢复，路径与日志一起消失）+ 切断 CLI→server 依赖（RESEARCH_TASK_KINDS/validate/app-dirs/sse-parser/manifest 挪 shared，CLI bundle 里 server 文件 7→0）。
 - [x] **构建链路审查**：五项腐化清理——macOS novo 必挂检查（不修则 macOS 构建一直挂）、NSIS novo 死宏、tauri.conf 死引用、windows analytics 死逻辑（117 行）、文档作废项。附带发现两条断链（`~/.zhishi/bin/zhishi` 安装者缺失、macOS SDK_DEST 未定义）记入设计文档，归发行链路版本。
@@ -126,7 +126,7 @@
 
 ## 1.2.2 —— 专家知识层·飞轮期（已完成）
 
-校准协作主线第二期：让专家知识层开始自我积累、使用留下痕迹。方案：`docs/expert-knowledge-plan.md` 二期节。
+校准协作主线第二期：让专家知识层开始自我积累、使用留下痕迹。方案：`docs/spec/expert-knowledge-plan.md` 二期节。
 
 - [x] **缺口识别教学打磨**（1.2.1 遗留的最核心短板）：「最后落脚点」语义已定（先尽力，识别缺口才查），本版把识别信号写具体——各域 skill 给出该域的缺口实例清单（如二进制域：cyclic 反查不出偏移、防护清单对不上已知利用路径），把抽象的「没把握」变成可对照的信号。
 - [x] **引用追踪 + 冲突记录**（飞轮的仪表盘）：research_log 可关联 expert entry id（「本次决策依据 E#N」）；报告（1.2.0 出口）标注引用的专家条目；LLM 判断与专家知识冲突时记录冲突点。没有这层，度量期（等真实使用数据，原记「1.2.3」系笔误，顺延至后续版本）无数据可量。
@@ -139,7 +139,7 @@
 
 ## 1.2.1 —— 专家知识层·骨架期（已完成）
 
-校准协作主线第一期：专家知识库。定位与边界经多轮对齐（用户拍板）：专家知识 ≠ skills（方法）≠ 蒸馏弧（LLM 自身经验）≠ intel 库（结果原料）；它是权威梯度的最高级、LLM 与用户都无能为力时的**最后落脚点**。完整方案（三期迭代 + 技术细节）：`docs/expert-knowledge-plan.md`。
+校准协作主线第一期：专家知识库。定位与边界经多轮对齐（用户拍板）：专家知识 ≠ skills（方法）≠ 蒸馏弧（LLM 自身经验）≠ intel 库（结果原料）；它是权威梯度的最高级、LLM 与用户都无能为力时的**最后落脚点**。完整方案（三期迭代 + 技术细节）：`docs/spec/expert-knowledge-plan.md`。
 
 - [x] **库与检索**：`~/.zhishi/expert.db`（独立库，FTS5）+ loop 工具 `expert_search`（无条件注册，权威呈现与 intel「线索不是结论」对照）。
 - [x] **输入三通道**：agent 起草→drafts 表→`zhishi expert review` 人审（主通道）；编辑器往返（`expert new/edit`，crontab -e 模式，临时文件仅草稿介质）；`expert promote <eventId>`（蒸馏晋升，人改完保存=审定——LLM 知识变专家知识的唯一分界线）。
@@ -154,7 +154,7 @@
 
 ## 1.2.0 —— 研究交付：/export 一键出报告（已完成）
 
-功能里程碑：把留痕设施（loop-sessions / research_events / 子代理 transcript）变现为可交付成果。TUI 单入口 `/export`（环境绑定与热连接只在会话在场时保证；CLI 不做）。组装逻辑全在 sidecar。细节与技术边见 `docs/1.2.0-design.md`。
+功能里程碑：把留痕设施（loop-sessions / research_events / 子代理 transcript）变现为可交付成果。TUI 单入口 `/export`（环境绑定与热连接只在会话在场时保证；CLI 不做）。组装逻辑全在 sidecar。细节与技术边见 `docs/design/1.2.0-design.md`。
 
 - [x] **报告组装器**（server）：确定性骨架（事实钉死：事件流/证据/文件行号不许 LLM 碰）+ LLM 填肉（只写过程叙述）+ 按域模板（pentest/whitebox/二进制等骨架不同）。报告 = 目录（`output/reports/<slug>/`：report.md + evidence/）。
 - [x] **证据回收链**：留痕纪律升级——research_log 挂 `trajectory_ref`（tool description + skills 双侧补「产出工件必挂路径」）→ 导出时按事件登记经 extract 通道批量回收到 evidence/；环境已下线 → 报告保留环境内路径 + 明确降级标注（transcript 内嵌证据兜底引用）。
@@ -173,7 +173,7 @@
 - [x] **B app.ts 拆分**（1.1.9 留下的第一件事；照 1.1.7 手法，纯搬移不改行为）：slash 命令抽 `slash/`、overlay 收 reducer 模式（`model.ts` 的 reduceHiddenLine 是现成范式）、gate+manualForm 抽 controller；app.ts 只留路由+组装。验收：app.ts 行数大幅下降 + 全量测试绿（断言零改动）。
 - [x] **C 搭车小项**：U5 工具卡多展开（drawer 可选目标，不只最新一个）；U8 状态栏 token 用量展示（usage 已收未展）。
 
-> 方案论证（2026-08-21 与用户敲定）：「进入子代理会话」（完整切换/续跑）不做——导航语义膨胀、低频场景不值一套导航系统；只读 transcript 吃下审计证据链的核心价值。细节见 `docs/1.1.10-design.md`。
+> 方案论证（2026-08-21 与用户敲定）：「进入子代理会话」（完整切换/续跑）不做——导航语义膨胀、低频场景不值一套导航系统；只读 transcript 吃下审计证据链的核心价值。细节见 `docs/design/1.1.10-design.md`。
 >
 > 实际落地（2026-08-21）：A′ 服务端（storeDir 接通 + 事件带 loopSessionId + `GET /api/loop-session/messages` 端点，200 条/100KB 护栏）+ TUI（/tasks 详情 transcript 异步加载/滚动/缓存三态）；活体验收全 PASS（子代理跑 gcc 查证 → 事件带 loopSessionId → 端点读回完整工作史）。B 三刀 app.ts 1848→1258 行（slash/ 五文件 + overlay-reducer + gate-controller，四个 app 级测试零改动）。C 两项落地。全量 1779 测试绿 + typecheck/eslint/depcruise 干净 + smoke 5/5。
 
@@ -181,7 +181,7 @@
 
 ## 1.1.9 —— TUI 优化：性能基本盘 + 子代理可见性（已完成）
 
-TUI（自研 v2）优化版。候选池全量摸底见 `docs/1.1.9-design.md`（每项带文件:行号证据）。本版**不做** `app.ts` 大拆分（H1）——与渲染管线改动并行会搅 diff，归下版。
+TUI（自研 v2）优化版。候选池全量摸底见 `docs/design/1.1.9-design.md`（每项带文件:行号证据）。本版**不做** `app.ts` 大拆分（H1）——与渲染管线改动并行会搅 diff，归下版。
 
 - [x] **性能四件**：
   - P1 流式渲染 O(n²) → 尾部增量（每个 chunk 对累计全文重解析 markdown + 重折行；稳定前缀缓存，只重算末段）
@@ -199,7 +199,7 @@ TUI（自研 v2）优化版。候选池全量摸底见 `docs/1.1.9-design.md`（
 
 ## 1.1.8 —— 三域 skills 实战验证（已完成）
 
-产品深度版：pentest / whitebox / ai-security 三域 skills「声明齐、实战未验证」的欠账清零（原「未排版本」项收编）。binary 域已验证（ret2win），本版补三域。细节见 `docs/1.1.8-design.md`。
+产品深度版：pentest / whitebox / ai-security 三域 skills「声明齐、实战未验证」的欠账清零（原「未排版本」项收编）。binary 域已验证（ret2win），本版补三域。细节见 `docs/design/1.1.8-design.md`。
 
 - [x] **whitebox 域实战**：造「埋雷代码库」夹具（小项目埋 3-4 个已知漏洞，内容只有出题人知道）→ agent 用 whitebox-audit skill 审计 → 验收：按决策链走完（选入口→基线扫描→确认→求证）且找出埋的雷。
 - [x] **pentest 域实战**：造靶标服务（带已知漏洞的小 web 服务，跑在宿主机、VM 可达）→ agent 用 pentest skill 从 recon 开打 → 验收：走完「侦察→枚举→利用」决策链拿到 flag。
@@ -214,7 +214,7 @@ TUI（自研 v2）优化版。候选池全量摸底见 `docs/1.1.9-design.md`（
 
 ## 1.1.7 —— 技术债版：IO 统一 + 引擎收拢 + god file 绞杀（已完成）
 
-纯还债版，无用户可见功能。铁律：**纯搬移不改行为**——每个 commit 全量测试绿，测试断言一行不改。细节见 `docs/1.1.7-design.md`。
+纯还债版，无用户可见功能。铁律：**纯搬移不改行为**——每个 commit 全量测试绿，测试断言一行不改。细节见 `docs/design/1.1.7-design.md`。
 
 - [x] **① 文件 IO 纪律统一**——所有写 `~/.zhishi` 可变状态文件的点统一走 `withFileLock` + tmp+rename（范本：`environment/env-sessions.ts`）；首犯 `environment/selection.ts`（裸读写，1.1.6 核实时确认的活体坑）。读静态资源/bundled 的不动。验收：并发写不丢更新单测 + 全量回归绿。
 - [x] **② 引擎状态收拢成类**——`chat-engine.ts` 的模块级 `let` 状态（sessionId/messages/queue/steering/busy/currentAbort/boundSessionMetaId/currentEnvKey/systemInitInfo 等）搬进 `ChatEngine` 类，24 个导出函数变方法；文件底部导出默认实例 + 原函数名 facade 委托，`admin-api.ts`/`index.ts` 调用点零改动。意义：可变状态边界显式化，2.0 多环境并行的地基（本步**不解** cron/TUI 语义耦合，只让耦合点可见）。验收：行为零变化，全量测试绿。
@@ -230,7 +230,7 @@ TUI（自研 v2）优化版。候选池全量摸底见 `docs/1.1.9-design.md`（
 - [x] **修复 #3：滚轮翻历史（已重新立项）**——原缺陷单已过时：鼠标捕获 2026-08-17 整体移除（`terminal-writer.ts:226-229`），滚轮当前无任何行为。实为「受控重新引入 wheel-only 捕获」：keymap 只放行 wheel 码 64/65（不开点击/拖拽，保住终端原生文本选择）。交互语义定案（方案 A）：任意态滚轮上滚 = 进入回看并翻历史，Esc 或滚到底回最新。验收：滚轮可翻历史，鼠标选择复制不受影响，Esc 回底正常。
 - [x] **#4：会话按环境分线**——切换环境不重置、不串扰。映射结构 A1：独立映射文件 `env-sessions.json`（走 `withFileLock`），workspace × 环境键 → loopSessionId；`environment/select` 落盘后联动引擎切会话线（turn 运行中拒绝，提示先 Esc 中断）。已确认决策：①启动恢复改按「工作区 + 当前选定环境」接线（`restorePiSession` + `ensureAgentSession` 双处改造）；②`resetPiChat` 同步清对应映射，防旧历史复活；③映射键：env 按 envId、recipe 按 instanceId、host 单独一条线；④workspace 键统一规范化（防斜杠漂移裂线）；⑤cron 跟随当前选定环境的线，不特殊处理。验收：A/B 两环境各聊一段，来回切换各接各的历史，上下文不串场。
 
-> 三项技术方案已核实定稿（2026-08-20），落地顺序：#2 → #3 → #4（#4 的联动入口依赖 #2 先修好）。根因分析与决策依据见 `docs/1.1.6-design.md`。
+> 三项技术方案已核实定稿（2026-08-20），落地顺序：#2 → #3 → #4（#4 的联动入口依赖 #2 先修好）。根因分析与决策依据见 `docs/design/1.1.6-design.md`。
 >
 > 实际落地（2026-08-21）：三项全部实现；单测 1677 全绿 + typecheck + eslint/depcruise 干净。活体验收（`tmp/m6-env-lines.mjs`，host × pwn-vm 两线）：A/B 各聊一段来回切换各接各的历史（回放隔离正确）、映射双落盘、turn 运行中 select 拒绝、重启后续接当前环境线——全 PASS。VM 恢复后全量 `npm run smoke` 补跑 **5/5 全绿**（2026-08-21）；顺手修了 smoke 脚本三处陈旧/脆弱断言：m4b A1 队列断言适配 W1 steering 语义（1.0.0 起 busy 进 steering 队列，同 turn 注入响应只产一个 message-complete）、m4a 复跑前 reset（system-init 每条线只广播一次）、编排器套件间 10s pacing（防供应商限流）。
 
@@ -270,7 +270,7 @@ TUI（自研 v2）优化版。候选池全量摸底见 `docs/1.1.9-design.md`（
 ## 1.1.3 —— 引擎深化（已完成）
 
 - [x] **后台长驻进程稳定性闭环**：登记表落盘（重启恢复）+ poll 存活探测（.pid 一致性校验）+ turn 结束/reset 回收杀掉（暂定决策，替代方向「保留续跑+认领」见 `bg-reap.ts` 底稿）。活体验证中修复回收组杀（setsid 建组），二次验证进程无残留。
-- [x] **经验反喂效果验收**：度量口径先行（`docs/distill-eval.md`——重复踩坑率/回合数，每域 ≥10 组可比任务）；当前 3 条样本，量化暂缓等数据。
+- [x] **经验反喂效果验收**：度量口径先行（`docs/design/distill-eval.md`——重复踩坑率/回合数，每域 ≥10 组可比任务）；当前 3 条样本，量化暂缓等数据。
 - [x] **引擎底座升级回归**：`npm run smoke` 一键回归（m1→m3 活体全绿，任一失败 exit 1 阻断升级；SDK 对照脚本除名）。
 
 ---

@@ -1,5 +1,5 @@
 /**
- * env_bg 宿主侧登记表（Phase 3 · docs/env-bg-design.md §8）。
+ * env_bg 宿主侧登记表（Phase 3 · docs/spec/env-bg-design.md §8）。
  *
  * 为什么需要这张表：env_bg 的真相在环境内（D1），但宿主仍需要一张
  * 「本工作区发起过哪些后台进程」的账——Phase 3 的回收杀掉（turn 结束 /

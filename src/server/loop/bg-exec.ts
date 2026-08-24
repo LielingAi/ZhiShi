@@ -1,5 +1,5 @@
 /**
- * env_bg — 环境内长驻进程通道（docs/env-bg-design.md）。
+ * env_bg — 环境内长驻进程通道（docs/spec/env-bg-design.md）。
  *
  * 稳定性红线：
  *   - 真相在环境内：/tmp/zhishi-bg/<tag>.{log,pid,exit,cmd}；宿主侧只有
@@ -9,7 +9,7 @@
  *   - 注入安全：command base64 编码进远端（不做自定义转义）；tag 严格白名单
  *     [A-Za-z0-9_-]{1,64}（会拼进路径与 kill/cat 参数）。
  *
- * Phase 3（稳定性闭环，docs/env-bg-design.md §8）新增：
+ * Phase 3（稳定性闭环，docs/spec/env-bg-design.md §8）新增：
  *   - buildBgProbeRemote / envBgPoll knownPid：存活探测（kill -0 级 +
  *     .pid 一致性校验），探测通道失败保守报 running+probeFailed 不误杀；
  *   - buildBgReapRemote / envBgReap：回收 kill（按登记 pid + 一致性校验）。
@@ -302,7 +302,7 @@ function bgEntryOk(entry: EnvironmentEntry): { channel: 'ssh' | 'docker' } | { e
   const resolved = resolveExecTarget(entry);
   if (!resolved.ok) return { error: resolved.error };
   if (resolved.execTarget.channel === 'guest') {
-    return { error: 'env_bg 后台通道暂不支持 guest-exec（断网 VM），见 docs/env-bg-design.md §5 三通道矩阵' };
+    return { error: 'env_bg 后台通道暂不支持 guest-exec（断网 VM），见 docs/spec/env-bg-design.md §5 三通道矩阵' };
   }
   return { channel: resolved.execTarget.channel };
 }

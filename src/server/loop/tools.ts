@@ -49,7 +49,7 @@ export interface EnvExecToolDetails {
 }
 
 // ---------------------------------------------------------------------------
-// env_bg — 环境内长驻进程通道（docs/env-bg-design.md）
+// env_bg — 环境内长驻进程通道（docs/spec/env-bg-design.md）
 // ---------------------------------------------------------------------------
 
 const envBgParameters = Type.Object({

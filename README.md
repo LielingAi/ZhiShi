@@ -200,7 +200,7 @@ node src-tauri/resources/cli/zhishi.js agent
 npm run tauri:build   # 或 scripts/build/build_windows.ps1（完整发布流程）
 ```
 
-产物在 `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/`。安装后：Tauri 壳（无窗口）负责 sidecar 生命周期与自更新，`zhishi` 命令同步到 `~/.zhishi/bin/`。构建细节与验证清单见 `docs/windows-release-build.md`。
+产物在 `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/`。安装后：Tauri 壳（无窗口）负责 sidecar 生命周期与自更新，`zhishi` 命令同步到 `~/.zhishi/bin/`。构建细节与验证清单见 `docs/spec/windows-release-build.md`。
 
 ## 架构
 
@@ -232,7 +232,7 @@ flowchart LR
 |---|---|
 | 单元测试 | 1900+ 全绿；`tsc --noEmit` / `eslint` 零错 / depcruise 架构边界强制 |
 | 活体回归 | `npm run smoke` 一键（真端点 + 真 VM，m1-m4 全链路）；产物级 smoke（打包产物跑关键路径） |
-| 活体 dogfood | ret2win 全程打通；1.1.8 三域实战验证（whitebox 埋雷审计全中 / pentest 全链拿 flag / ai-security 注入探针全拒），详见 `docs/` |
+| 活体 dogfood | ret2win 全程打通；1.1.8 三域实战验证（whitebox 埋雷审计全中 / pentest 全链拿 flag / ai-security 注入探针全拒），详见 `docs/design/` |
 | TUI 全链路真机 | 选环境 / 流式 / 中断 / 回退 / 快照回滚 / 接管 / 后台任务 / 越界模态 / fork 全部通过 |
 | 域内容件 | 四域齐备（binary / pentest / whitebox / ai-security）并经实战验证 |
 
@@ -241,12 +241,17 @@ flowchart LR
 | 文档 | 内容 |
 |---|---|
 | `docs/roadmap.md` | 版本任务池（当前线：1.2.x 校准协作——研究交付 + 专家知识层） |
-| `docs/expert-knowledge-plan.md` | 专家知识层迭代与技术方案（1.2.1-1.2.3） |
+| `docs/user-guide.md` | 使用指南（安装、选环境、配模型、TUI 命令大全、常见问题） |
 | `docs/expert-import-guide.md` | 专家知识导入指南（命令/字段规范/JSON+YAML 格式，附可导入的 `expert-import.demo.yaml`） |
-| `docs/security_researcher_agent_design.md` | 产品设计（决策记录 D1–D31） |
-| `docs/security_researcher_agent_tech_plan.md` | 技术方案 |
-| `docs/tui_tech_spec.md` / `docs/tui-rebuild-plan.md` | TUI 契约与重建蓝图 |
-| `docs/env-bg-design.md` | 环境内长驻进程通道设计底账 |
+| `docs/design/` | 各版本设计与分析稿（1.1.6–1.2.7、distill-eval） |
+| `docs/spec/` | 长期契约与专项设计（见下） |
+| `docs/spec/expert-knowledge-plan.md` | 专家知识层迭代与技术方案（1.2.1-1.2.3） |
+| `docs/spec/security_researcher_agent_design.md` | 产品设计（决策记录 D1–D31） |
+| `docs/spec/security_researcher_agent_tech_plan.md` | 技术方案 |
+| `docs/spec/tui_tech_spec.md` / `docs/spec/tui-rebuild-plan.md` | TUI 契约与重建蓝图 |
+| `docs/spec/env-bg-design.md` | 环境内长驻进程通道设计底账 |
+| `docs/spec/design-spec.md` | 交互契约（界面行为、状态、流） |
+| `docs/spec/windows-release-build.md` | Windows 发行构建与验证清单 |
 | `CLAUDE.md` | 开发红线与命令（开发前先读） |
 
 ## 开发

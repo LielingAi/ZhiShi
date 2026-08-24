@@ -28,7 +28,7 @@
 
 
 
-- `src/server/` — Node.js 后端 Sidecar（esbuild 打包成 `server-dist.js`）。入口 `index.ts` 只做启动/路由分发（1.1.7 绞杀拆分后 7.7k 行）；崩溃日志 `crash-log.ts`、skills 配置 `skills-config.ts`、cron 路由 `cron/`、sessions/mcp 路由 `routes/`、admin-api.ts admin handler 包、`report/` 报告导出（1.2.0：骨架组装 + 证据回收 + LLM 填肉 + 落盘，设计见 `docs/1.2.0-design.md`）
+- `src/server/` — Node.js 后端 Sidecar（esbuild 打包成 `server-dist.js`）。入口 `index.ts` 只做启动/路由分发（1.1.7 绞杀拆分后 7.7k 行）；崩溃日志 `crash-log.ts`、skills 配置 `skills-config.ts`、cron 路由 `cron/`、sessions/mcp 路由 `routes/`、admin-api.ts admin handler 包、`report/` 报告导出（1.2.0：骨架组装 + 证据回收 + LLM 填肉 + 落盘，设计见 `docs/design/1.2.0-design.md`）
 
 - `src/server/intel/` — 情报检索（1.1.2）：`intel.db`（NVD CVE + exploit-db 索引，FTS5）+ `zhishi intel update/status` + loop 工具 `intel_search`（宿主侧认知供给，与 research_log 同层）
 
@@ -46,7 +46,7 @@
 
 - `bundled-domains/` — 研究域内容件（binary / pentest / whitebox / ai-security，各域 `domain.json` 声明）
 
-- `docs/` — 设计文档（design-spec / tui_tech_spec / tui-rebuild-plan / env-bg-design / security_researcher_* / windows-release-build；导航见「文档体系」节。旧 `specs/` 已随 ac574f9 删除）
+- `docs/` — 文档根：`roadmap.md`（版本任务池）+ `user-guide.md` + `expert-import-guide.md`（用户向指南留根）；`docs/design/` 各版本设计/分析稿（1.1.6–1.2.7、distill-eval）；`docs/spec/` 长期契约与专项设计（design-spec / tui_tech_spec / tui-rebuild-plan / env-bg-design / security_researcher_* / expert-knowledge-plan / windows-release-build；导航见「文档体系」节。旧 `specs/` 已随 ac574f9 删除）
 
 
 
@@ -68,9 +68,9 @@
 
 | L1 | 本 CLAUDE.md | 每次自动加载，红线 + 元认知 + 文档导航 |
 
-| L2 | `docs/design-spec.md` | **不自动加载**。任务匹配下方触发条件时 MUST 主动 Read |
+| L2 | `docs/spec/design-spec.md` | **不自动加载**。任务匹配下方触发条件时 MUST 主动 Read |
 
-| L3 | `docs/*.md`（按模块，见下） | 改特定模块时 MUST 主动 Read 对应文档 |
+| L3 | `docs/spec/*.md` 与 `docs/design/*.md`（按模块，见下） | 改特定模块时 MUST 主动 Read 对应文档 |
 
 
 
@@ -78,7 +78,7 @@
 
 
 
-### MUST 主动 Read `docs/design-spec.md` 的触发条件
+### MUST 主动 Read `docs/spec/design-spec.md` 的触发条件
 
 
 
@@ -104,15 +104,15 @@
 
 |---------|------|
 
-| TUI 渲染 / 事件归约 / 正门 / 命令 | `docs/tui_tech_spec.md`（技术规范）+ `docs/tui-rebuild-plan.md`（重建蓝图） |
+| TUI 渲染 / 事件归约 / 正门 / 命令 | `docs/spec/tui_tech_spec.md`（技术规范）+ `docs/spec/tui-rebuild-plan.md`（重建蓝图） |
 
-| 环境内长驻进程通道 / env_bg | `docs/env-bg-design.md` |
+| 环境内长驻进程通道 / env_bg | `docs/spec/env-bg-design.md` |
 
-| 产品定位 / 决策历史（D1–D31） | `docs/security_researcher_agent_design.md` + `docs/security_researcher_product_plan.md` |
+| 产品定位 / 决策历史（D1–D31） | `docs/spec/security_researcher_agent_design.md` + `docs/spec/security_researcher_product_plan.md` |
 
-| 引擎 / loop / 环境 / 记忆的技术映射 | `docs/security_researcher_agent_tech_plan.md` |
+| 引擎 / loop / 环境 / 记忆的技术映射 | `docs/spec/security_researcher_agent_tech_plan.md` |
 
-| Windows 发行构建 / NSIS / 资源打包 | `docs/windows-release-build.md` |
+| Windows 发行构建 / NSIS / 资源打包 | `docs/spec/windows-release-build.md` |
 
 
 
@@ -183,7 +183,7 @@
 - **pi 版本钉死 + 升级前回归**：pi 是 0.x 高频迭代项目（0.74→0.84 有 breaking 前科），升级前 MUST 跑 `npm run smoke`（一键入口，`scripts/smoke.mjs` 顺序跑 m1→m2→m3→m4a-client→m4b，先打印当前 pi 版本，真端点 + 真 VM；单个失败不中断，任一失败 → 编排器 exit 1，即升级阻断语义，exit 1 不得升级；m4a-sdk-observe 已除名——SDK 引擎随 D25 删除）。手动兜底（单脚本重跑 / 无编排器时）：`node --import tsx/esm tmp/m1-smoke.mjs`（同款 m2/m3），m4 系列见各自文件头注释（需先起 sidecar :3199）。禁止凭假设写 pi 交互代码——查 `@earendil-works/pi-agent-core` 的 .d.ts（注释密度高，是权威契约）。
 
 - **工具执行体挂环境层**：`env_exec`（一次性执行）与 `env_bg`（后台长驻 start/poll/log/kill/list）经 SSH 在研究环境（Docker / VM / SSH 靶机）内执行，不在宿主跑（D25 的核心动机）；`delegate_task`（子任务，深度限 1）与 `research_log`（研究留痕，写 research_events）为 harness 原生工具。宿主执行类工具**结构性不存在**——这就是边界（D14），界内全自动、零审批。
-- **env_bg Phase 3 稳定性闭环**（`docs/env-bg-design.md §8`）：登记表落盘 `<数据目录>/bg-procs/<工作区哈希>.json`（`loop/bg-registry.ts`，原子写失败不致命，启动恢复不重播 started）；poll 带存活探测（`kill -0` + .pid 一致性校验，探测通道失败保守报 running+probeFailed 不误杀）；**turn 结束（含 Esc 中断）与会话 reset 回收杀掉所有仍在跑的 bg 进程——暂定决策**，理由与「保留续跑+认领」替代方向见 `loop/bg-reap.ts` 模块头注释。
+- **env_bg Phase 3 稳定性闭环**（`docs/spec/env-bg-design.md §8`）：登记表落盘 `<数据目录>/bg-procs/<工作区哈希>.json`（`loop/bg-registry.ts`，原子写失败不致命，启动恢复不重播 started）；poll 带存活探测（`kill -0` + .pid 一致性校验，探测通道失败保守报 running+probeFailed 不误杀）；**turn 结束（含 Esc 中断）与会话 reset 回收杀掉所有仍在跑的 bg 进程——暂定决策**，理由与「保留续跑+认领」替代方向见 `loop/bg-reap.ts` 模块头注释。
 
 - **边界规则**（`loop/boundary.ts` 入向 deny / `loop/output-guard.ts` 出向净化）：规则是数据，allow / deny+reason 回注模型，零问人交互。新规则加进规则数组，不发明交互。
 
@@ -269,7 +269,7 @@ MCP / Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**
 
 ### Agent Runtime
 
-**唯一 loop 引擎 = pi（自研 loop，`src/server/loop/`）**。Claude Agent SDK 已随 D25/M4c 删除（agent-session.ts 裁留元数据层）；外部 Runtime（Claude Code CLI / Codex CLI / Gemini CLI）早已随 D20 删除。存量 config 的 `agents[].runtime` / `runtimeConfig`、task 的 runtime/model 之外 override 字段静默忽略、数据留盘（见 `docs/security_researcher_agent_tech_plan.md` §10.3）。cron 的 `completed` gate 仍 MUST 打在真·turn 成功上（`!getAndClearLastAgentError()`），别只凭 `waitForSessionIdle`。
+**唯一 loop 引擎 = pi（自研 loop，`src/server/loop/`）**。Claude Agent SDK 已随 D25/M4c 删除（agent-session.ts 裁留元数据层）；外部 Runtime（Claude Code CLI / Codex CLI / Gemini CLI）早已随 D20 删除。存量 config 的 `agents[].runtime` / `runtimeConfig`、task 的 runtime/model 之外 override 字段静默忽略、数据留盘（见 `docs/spec/security_researcher_agent_tech_plan.md` §10.3）。cron 的 `completed` gate 仍 MUST 打在真·turn 成功上（`!getAndClearLastAgentError()`），别只凭 `waitForSessionIdle`。
 
 
 
@@ -639,7 +639,7 @@ Team Hub 服务端（`zhishi-hub/`）从未随本仓库分发，且已被确认�
 
 
 
-产品方向细节见 `docs/security_researcher_agent_design.md` 与 `docs/security_researcher_agent_tech_plan.md`。
+产品方向细节见 `docs/spec/security_researcher_agent_design.md` 与 `docs/spec/security_researcher_agent_tech_plan.md`。
 
 
 

@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // 守卫测试：首批 4 个安全 system skills（安全研究员版 P1 S2，
-// 技术方案 docs/security_researcher_agent_tech_plan.md §2.2）。
+// 技术方案 docs/spec/security_researcher_agent_tech_plan.md §2.2）。
 // 防三类静默事故：
 //  1. bundled-skills/<name>/SKILL.md 缺失或 frontmatter 缺 name/description；
 //  2. Rust SYSTEM_SKILLS（src-tauri/src/commands.rs）与 Node 镜像清单

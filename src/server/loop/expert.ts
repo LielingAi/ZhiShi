@@ -5,7 +5,7 @@
  * 外部 MCP，chat-engine 的 runPiTurn 无条件注册。执行体读写 expert.db
  * （sidecar 进程持有的本地库）。
  *
- * 权威层级边界（docs/expert-knowledge-plan.md §3.7，写进工具描述防混层）：
+ * 权威层级边界（docs/spec/expert-knowledge-plan.md §3.7，写进工具描述防混层）：
  * - expert_search：专家审定知识，**决策级依据**——与你的判断冲突时以它为准；
  * - intel_search：公共原料，线索不是结论；
  * - 蒸馏经验（memory.db）：自己的历史，参考级。

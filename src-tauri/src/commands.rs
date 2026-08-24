@@ -72,7 +72,7 @@ const SYSTEM_SKILLS: &[&str] = &[
     // ~/.zhishi/skills/ 由用户自处（无孤儿清理逻辑，同 v10 惯例）。
     // 注：plugin-assistant 随加密插件体系整体移除而删除。
     // v30: 安全研究员版 P1 S2 —— 首批 4 个安全方法 skills
-    // （技术方案 docs/security_researcher_agent_tech_plan.md §2.2）：
+    // （技术方案 docs/spec/security_researcher_agent_tech_plan.md §2.2）：
     // native-code-loop（编译-运行-调试闭环）、binary-exploit（二进制利用实战）、
     // vuln-triage（崩溃研判 → bug_class）、range-ops（靶场连接规范）。
     // 全平台可用，无需 platform block。
