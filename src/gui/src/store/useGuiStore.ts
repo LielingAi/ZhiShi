@@ -39,7 +39,7 @@ import {
 import { escAction } from '../model/esc-chain';
 import { bootStages } from '../model/envs';
 import { parseSessionRows, type SessionMetaRow } from '../model/history';
-import { buildMentionItems, fileDirOf, parseMentionQuery } from '../model/mention';
+import { buildMentionItems, fileCacheKey, fileDirOf, MENTION_DEBOUNCE_MS, parseMentionQuery } from '../model/mention';
 import { planSwitch, sessionKey } from '../model/multi-session';
 import { reduceSseEvent } from '../model/reducer';
 import { buildSendBody, classifySendResponse, type Ref } from '../model/send';
@@ -248,9 +248,11 @@ export interface GuiState {
   // 1.3.3 @ 补全：工具名数据源（chat:system-init 的 info.tools，随会话绑定刷新）
   tools: string[];
 
-  // 1.3.3 历史面板：会话清单（null = 未载入）+ 载入状态
+  // 1.3.3 历史面板：会话清单（null = 未载入/载入失败；加载中由
+  // historySessions===null 且 historyError===null 推导）
   historySessions: SessionMetaRow[] | null;
-  historyLoading: boolean;
+  /** 1.3.4：清单拉取失败原因（非 null 时清单展示 error 态而非「暂无会话」）。 */
+  historyError: string | null;
 
   /** 1.3.3 @ 补全：选中后替换输入框尾部 @token 的一次性信号。 */
   mentionApply: { replace: string; nonce: number } | null;
@@ -329,7 +331,7 @@ export interface GuiState {
   removeRef(index: number): void;
   addHistory(text: string): void;
   // 1.3.3 历史面板：清单 / 会话管理 / 载回续跑
-  openHistoryPanel(): Promise<void>;
+  openHistoryPanel(force?: boolean): Promise<void>;
   closeHistoryPanel(): void;
   renameSession(id: string, title: string): Promise<void>;
   toggleSessionPinned(id: string): Promise<void>;
@@ -356,6 +358,8 @@ let agentsCache: AgentEntity[] | null = null;
 const filesCache = new Map<string, WorkspaceFileEntry[]>();
 /** @ 补全异步富化代次（关闭/换查询后过期结果丢弃）。 */
 let mentionGen = 0;
+/** 1.3.4：@ 补全富化防抖计时器（新查询替换旧的待发请求）。 */
+let mentionTimer: ReturnType<typeof setTimeout> | null = null;
 
 function browserStorage(): Pick<Storage, 'getItem' | 'setItem'> | undefined {
   try {
@@ -397,7 +401,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   tools: [],
 
   historySessions: null,
-  historyLoading: false,
+  historyError: null,
   mentionApply: null,
 
   tasksOpen: false,
@@ -719,13 +723,14 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     }
     if (kind === 'at') {
       // 1.3.3 @ 补全：触发解析 + 四源合一（envs 同步出；agents/tools 已缓存
-      // 即同步出；files 按目录前缀缓存/异步补）。异步富化见 enrichMention。
+      // 即同步出；files 按目录前缀缓存/异步补）。1.3.4：files 缓存键带环境
+      // 作用域（防跨环境串线），异步富化改防抖调度（大目录输入节流）。
       const mq = parseMentionQuery(query);
       const items: OverlayItem[] = buildMentionItems(mq, {
         envs: s.envs,
         agents: agentsCache ?? [],
         tools: s.tools,
-        files: mq.isFileDir ? filesCache.get(fileDirOf(mq)) ?? [] : [],
+        files: mq.isFileDir ? filesCache.get(fileCacheKey(s.currentEnvKey, fileDirOf(mq))) ?? [] : [],
       }).map(toOverlayItem);
       if (items.length === 0 && !mq.isFileDir) {
         items.push({ name: '（无匹配引用）', detail: '@ 引用数据源：环境 / 子代理 / 工具', tag: '引用' });
@@ -734,7 +739,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         items.push({ name: '（读取文件树…）', detail: `/api/workspace/files dir=${fileDirOf(mq) || '.'}`, tag: '文件', section: '文件' });
       }
       set({ overlay: { kind, title: '引用', items, sel: 0 } });
-      void enrichMention(get, set, mq);
+      scheduleMentionEnrich(get, set, mq);
       return;
     }
     if (kind === 'history') {
@@ -770,6 +775,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   },
 
   closeOverlay() {
+    cancelMentionPending();
     set({ overlay: null });
   },
 
@@ -786,6 +792,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     const ov = s.overlay;
     if (!ov) return;
     const item = ov.items[index];
+    cancelMentionPending(); // 选中即关 overlay——待发的 @ 富化请求一并作废
     set({ overlay: null });
     if (!item) return;
 
@@ -1225,21 +1232,28 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
 
   // ── 1.3.3 历史面板：清单 / 会话管理 / 载回续跑 ─────────────────────
 
-  async openHistoryPanel() {
+  /**
+   * 打开历史面板并载会话清单（已载过不重复拉；force=true 强制重拉，
+   * 供面板「⟳ 刷新」按钮）。1.3.4：拉取失败保留 historySessions=null +
+   * 落 historyError——面板据此展示 error 态（旧实现落 []，会把「载入
+   * 失败」伪装成「暂无会话」）。
+   */
+  async openHistoryPanel(force?: boolean) {
     set({ page: 'history' });
-    if (get().historySessions !== null) return;
-    set({ historyLoading: true });
+    if (!force && get().historySessions !== null) return;
+    set({ historyError: null });
     const c = client;
     if (!c) {
-      set({ historyLoading: false, historySessions: [] });
+      set({ historySessions: null, historyError: '未连接 sidecar' });
       return;
     }
     try {
       const rows = parseSessionRows(await api.fetchSessions(c));
-      set({ historySessions: rows, historyLoading: false });
+      set({ historySessions: rows, historyError: null });
     } catch (err) {
-      set({ historySessions: [], historyLoading: false });
-      get().showToast(`会话清单加载失败：${err instanceof Error ? err.message : String(err)}`);
+      const message = err instanceof Error ? err.message : String(err);
+      set({ historySessions: null, historyError: message });
+      get().showToast(`会话清单加载失败：${message}`);
     }
   },
 
@@ -1369,12 +1383,20 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
    * switch 不刷新 env-sessions 分线映射（服务端 B2 决策），chat:init 的
    * environment 锚仍报工作区选定——若与目标会话 envKey 不同，重连后
    * applyInitEnvAnchor 会再切到选定线（内容照常回放，只是分组标签差异）。
+   *
+   * 1.3.4：busy 前置闸——turn 运行中切换会话会与活跃流打架（replay 重建
+   * 期间旧线还在写），先明确提示中断（Esc）再载回；busy 口径与 esc 链
+   * 一致（phase === 'running'）。
    */
   async resumeSession(id: string) {
     const c = client;
     const state = get();
     if (!c) {
       state.showToast('未连接 sidecar');
+      return;
+    }
+    if (currentSession(state).phase === 'running') {
+      state.showToast('当前 turn 运行中——Esc 中断后再载回（避免与活跃会话流冲突）');
       return;
     }
     try {
@@ -1444,6 +1466,25 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     }
   },
 }));
+
+// ── 1.3.4 ①：模块加载即应用持久化主题（DOM class 先于首渲染就位） ─────
+// AttachView 在挂载/主题切换 effect 里读 CSS 变量；子组件 effect 先于 App
+// 的 body.light 同步 effect 执行——若只靠 App effect，首挂载（持久化浅色）
+// 会读到旧变量。这里在 store 创建后立即同步 class（action 里 toggleTheme/
+// setTheme 也同步调 applyThemeClass），保证任意 effect 读到的都是当前主题。
+applyThemeClass(useGuiStore.getState().theme);
+
+// ── 1.3.4 ②：环境切换 → @ 补全文件树缓存失效 ────────────────────────────
+// workspace/files 服务端按 currentAgentDir 出列表（随环境变），旧环境条目
+// 会串线——环境键一变即清缓存 + 作废在飞/待发富化（代次递增 + 防抖取消）。
+// 复合缓存键（fileCacheKey 带环境作用域）兜底防串线，这里负责明确失效。
+useGuiStore.subscribe((state, prev) => {
+  if (state.currentEnvKey !== prev.currentEnvKey) {
+    filesCache.clear();
+    mentionGen++;
+    cancelMentionPending();
+  }
+});
 
 // ---------------------------------------------------------------------------
 // 辅助（模块级，不暴露为 action）
@@ -1633,9 +1674,10 @@ function toOverlayItem(item: {
 }
 
 /**
- * @ 补全异步富化：agents 拉一次缓存；files 按目录前缀拉取缓存。结果回填
- * 前校验代次与 overlay 仍是同一次 'at' 会话（防竞态：换查询/关面板后
- * 过期结果丢弃）。
+ * @ 补全异步富化：agents 拉一次缓存；files 按「环境作用域 + 目录前缀」
+ * 复合键拉取缓存（1.3.4：环境切换后旧环境条目绝不串线）。结果回填前
+ * 校验代次与 overlay 仍是同一次 'at' 会话（防竞态：换查询/关面板/切
+ * 环境后过期结果丢弃）。
  */
 async function enrichMention(
   get: () => GuiState,
@@ -1646,6 +1688,9 @@ async function enrichMention(
   if (!c) return;
   const gen = ++mentionGen;
   const dir = mq.isFileDir ? fileDirOf(mq) : null;
+  // 环境键在发请求时快照——切环境后清缓存 + 代次递增（见订阅），
+  // 这里的缓存键/代次校验共同保证旧环境结果不落盘到新环境。
+  const cacheKey = dir !== null ? fileCacheKey(get().currentEnvKey, dir) : null;
 
   const tasks: Promise<void>[] = [];
   if (agentsCache === null) {
@@ -1657,28 +1702,53 @@ async function enrichMention(
       }),
     );
   }
-  if (dir !== null && !filesCache.has(dir)) {
+  if (dir !== null && cacheKey !== null && !filesCache.has(cacheKey)) {
     tasks.push(
       api.fetchWorkspaceFiles(c, { dir, depth: 2 }).then((res) => {
-        filesCache.set(dir, res.files ?? []);
+        filesCache.set(cacheKey, res.files ?? []);
       }).catch(() => {
-        filesCache.set(dir, []);
+        filesCache.set(cacheKey, []);
       }),
     );
   }
   await Promise.all(tasks);
 
   const s = get();
-  if (gen !== mentionGen) return; // 查询已换/面板已关
+  if (gen !== mentionGen) return; // 查询已换/面板已关/环境已切
   const ov = s.overlay;
   if (!ov || ov.kind !== 'at') return;
   const items = buildMentionItems(mq, {
     envs: s.envs,
     agents: agentsCache ?? [],
     tools: s.tools,
-    files: dir !== null ? filesCache.get(dir) ?? [] : [],
+    files: cacheKey !== null ? filesCache.get(cacheKey) ?? [] : [],
   }).map(toOverlayItem);
   if (items.length > 0) set({ overlay: { ...ov, items } });
+}
+
+/**
+ * 1.3.4：@ 补全富化防抖调度。输入连续变化时只对「最后一次」查询发请求
+ * （~200ms 静默窗口，MENTION_DEBOUNCE_MS）；新查询取消旧的待发请求。
+ * 代次防竞态仍在 enrichMention 内（gen 快照），防抖不改变该语义。
+ */
+function scheduleMentionEnrich(
+  get: () => GuiState,
+  set: (partial: Partial<GuiState>) => void,
+  mq: ReturnType<typeof parseMentionQuery>,
+): void {
+  cancelMentionPending();
+  mentionTimer = setTimeout(() => {
+    mentionTimer = null;
+    void enrichMention(get, set, mq);
+  }, MENTION_DEBOUNCE_MS);
+}
+
+/** 取消待发的 @ 富化请求（关面板/选中/切环境时调用）。 */
+function cancelMentionPending(): void {
+  if (mentionTimer) {
+    clearTimeout(mentionTimer);
+    mentionTimer = null;
+  }
 }
 
 /** 1.3.1 ④：slash 命令分发（GUI 本地命令先处理；其余按路由表）。 */

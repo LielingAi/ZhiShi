@@ -13,12 +13,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 
-import { getSettingsClient, useGuiStore } from '../store/useGuiStore';
+import { getSettingsClient, selectCurrentSession, useGuiStore } from '../store/useGuiStore';
 import * as api from '../client/api';
 import type { SessionState, StreamItem } from '../model/blocks';
 import { buildHistorySession, filterSessionRows, groupSessionRows } from '../model/history';
 import type { SessionMetaRow } from '../model/history';
 import { TurnView } from './TurnView';
+import { StateHint } from './StateHint';
 
 // ---------------------------------------------------------------------------
 // 小工具
@@ -78,7 +79,7 @@ interface ViewerState {
 
 export function HistoryPanel(): React.JSX.Element {
   const historySessions = useGuiStore((s) => s.historySessions);
-  const historyLoading = useGuiStore((s) => s.historyLoading);
+  const historyError = useGuiStore((s) => s.historyError);
   const openHistoryPanel = useGuiStore((s) => s.openHistoryPanel);
   const renameSession = useGuiStore((s) => s.renameSession);
   const toggleSessionPinned = useGuiStore((s) => s.toggleSessionPinned);
@@ -86,6 +87,9 @@ export function HistoryPanel(): React.JSX.Element {
   const deleteSessionRow = useGuiStore((s) => s.deleteSessionRow);
   const resumeSession = useGuiStore((s) => s.resumeSession);
   const setPage = useGuiStore((s) => s.setPage);
+  // 1.3.4：载回续跑 busy 前置闸（与 esc 链同口径 phase === 'running'）——
+  // 按钮禁用 + store 内 toast 双保险。
+  const busy = useGuiStore((s) => selectCurrentSession(s).phase === 'running');
 
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -189,7 +193,7 @@ export function HistoryPanel(): React.JSX.Element {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <button className="btn small" onClick={() => void openHistoryPanel()} title="重新拉取会话清单">
+        <button className="btn small" onClick={() => void openHistoryPanel(true)} title="重新拉取会话清单">
           ⟳ 刷新
         </button>
         <button className="history-close" onClick={() => setPage('chat')} title="Esc 返回会话流">
@@ -198,54 +202,62 @@ export function HistoryPanel(): React.JSX.Element {
       </div>
       <div className="history-main">
         <div className="history-list">
-          {historyLoading && <div className="ov-empty">会话清单加载中…</div>}
-          {!historyLoading && groups.length === 0 && (
-            <div className="ov-empty">
-              {historySessions === null ? '载入失败——点「⟳ 刷新」重试' : search ? '无匹配会话' : '暂无会话'}
-            </div>
-          )}
-          {groups.map((g) => (
-            <div className="history-group" key={g.key}>
-              <div
-                className={`history-group-label ${g.archived ? 'toggle' : ''}`}
-                onClick={() => g.archived && setArchivedOpen(!archivedOpen)}
-              >
-                <span>{g.archived ? (archivedOpen ? '⏷' : '⏵') : ''} {g.label}</span>
-                <span className="count">{g.rows.length}</span>
+          {historySessions === null ? (
+            historyError ? (
+              <StateHint kind="error" text="会话清单载入失败" hint={`${historyError} · 点「⟳ 刷新」重试`} />
+            ) : (
+              <StateHint kind="loading" text="会话清单加载中…" />
+            )
+          ) : groups.length === 0 ? (
+            <StateHint
+              kind="empty"
+              text={search ? '无匹配会话' : '暂无会话'}
+              hint={search ? undefined : '新对话落盘后这里会出现记录'}
+            />
+          ) : (
+            groups.map((g) => (
+              <div className="history-group" key={g.key}>
+                <div
+                  className={`history-group-label ${g.archived ? 'toggle' : ''}`}
+                  onClick={() => g.archived && setArchivedOpen(!archivedOpen)}
+                >
+                  <span>{g.archived ? (archivedOpen ? '⏷' : '⏵') : ''} {g.label}</span>
+                  <span className="count">{g.rows.length}</span>
+                </div>
+                {(!g.archived || archivedOpen) &&
+                  g.rows.map((r) => (
+                    <SessionRow
+                      key={r.id}
+                      row={r}
+                      selected={r.id === selectedId}
+                      renaming={renamingId === r.id}
+                      renameDraft={renameDraft}
+                      confirming={confirmDeleteId === r.id}
+                      onSelect={() => {
+                        setSelectedId(r.id);
+                        setConfirmDeleteId(null);
+                      }}
+                      onStartRename={() => {
+                        setRenamingId(r.id);
+                        setRenameDraft(r.title);
+                        setConfirmDeleteId(null);
+                      }}
+                      onRenameDraft={setRenameDraft}
+                      onCommitRename={() => commitRename(r)}
+                      onCancelRename={() => setRenamingId(null)}
+                      onTogglePinned={() => void toggleSessionPinned(r.id)}
+                      onToggleArchived={() => void toggleSessionArchived(r.id)}
+                      onDelete={() => onDelete(r)}
+                      onResume={() => resume(r)}
+                    />
+                  ))}
               </div>
-              {(!g.archived || archivedOpen) &&
-                g.rows.map((r) => (
-                  <SessionRow
-                    key={r.id}
-                    row={r}
-                    selected={r.id === selectedId}
-                    renaming={renamingId === r.id}
-                    renameDraft={renameDraft}
-                    confirming={confirmDeleteId === r.id}
-                    onSelect={() => {
-                      setSelectedId(r.id);
-                      setConfirmDeleteId(null);
-                    }}
-                    onStartRename={() => {
-                      setRenamingId(r.id);
-                      setRenameDraft(r.title);
-                      setConfirmDeleteId(null);
-                    }}
-                    onRenameDraft={setRenameDraft}
-                    onCommitRename={() => commitRename(r)}
-                    onCancelRename={() => setRenamingId(null)}
-                    onTogglePinned={() => void toggleSessionPinned(r.id)}
-                    onToggleArchived={() => void toggleSessionArchived(r.id)}
-                    onDelete={() => onDelete(r)}
-                    onResume={() => resume(r)}
-                  />
-                ))}
-            </div>
-          ))}
+            ))
+          )}
         </div>
         <div className="history-viewer">
           {!selectedRow && (
-            <div className="hv-empty">← 选一条会话查看只读回放（决策块/工具卡照常渲染）</div>
+            <StateHint kind="empty" center text="← 选一条会话查看只读回放" hint="决策块 / 工具卡照常渲染" />
           )}
           {selectedRow && (
             <>
@@ -259,16 +271,23 @@ export function HistoryPanel(): React.JSX.Element {
                 </div>
                 <button
                   className="btn primary small"
-                  title="POST /sessions/switch 载回续跑（关闭面板回到活跃会话视图）"
+                  disabled={busy}
+                  title={
+                    busy
+                      ? '当前 turn 运行中——Esc 中断后再载回（避免与活跃会话流冲突）'
+                      : 'POST /sessions/switch 载回续跑（关闭面板回到活跃会话视图）'
+                  }
                   onClick={() => resume(selectedRow)}
                 >
                   ↺ 载回续跑
                 </button>
               </div>
-              {viewer.status === 'loading' && (
-                <div className="ov-empty"><span className="spinner" /> 读取 wire transcript…</div>
+              {(viewer.status === 'loading' || viewer.status === 'idle') && (
+                <StateHint kind="loading" center text="读取 wire transcript…" />
               )}
-              {viewer.status === 'error' && <div className="error-line">{viewer.error}</div>}
+              {viewer.status === 'error' && (
+                <StateHint kind="error" center text={viewer.error ?? 'wire transcript 读取失败'} />
+              )}
               {viewer.status === 'ok' && viewer.session && (
                 <>
                   {viewer.truncated && (
@@ -278,7 +297,7 @@ export function HistoryPanel(): React.JSX.Element {
                   )}
                   <div className="hv-body">
                     {viewer.session.items.length === 0 && (
-                      <div className="ov-empty">该会话 wire 为空</div>
+                      <StateHint kind="empty" text="该会话 wire 为空" />
                     )}
                     {viewer.session.items.map((item) => (
                       <ViewerItem item={item} key={item.id} />

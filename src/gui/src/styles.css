@@ -45,6 +45,9 @@ button { font-family: inherit; }
 .btn.primary { color: var(--cyan); border-color: var(--cyan-dim); background: rgba(53,195,226,.07); }
 .btn.primary:hover { background: rgba(53,195,226,.14); }
 .btn.small { padding: 1px 7px; font-size: 11.5px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn:disabled:hover { color: var(--text-dim); border-color: var(--border); background: var(--panel-2); }
+.btn.primary:disabled:hover { color: var(--cyan); border-color: var(--cyan-dim); background: rgba(53,195,226,.07); }
 kbd {
   font-family: var(--mono); font-size: 10.5px; color: var(--muted);
   border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px;
@@ -712,3 +715,15 @@ mark.h-search { background: rgba(232,163,61,.3); color: var(--text); border-radi
 .attach-xterm .xterm-viewport { background-color: transparent !important; }
 .mode-toggle { display: inline-flex; gap: 4px; }
 .mode-toggle .mode-on { color: var(--cyan); border-color: var(--cyan-dim); background: rgba(53,195,226,.08); }
+
+/* ===== 1.3.4 新增：StateHint 统一状态提示（loading / empty / error） ===== */
+.state-hint { padding: 10px 14px; font-size: 12px; color: var(--faint); }
+.state-hint .sh-line { display: flex; align-items: center; gap: 6px; }
+.state-hint.error .sh-line { color: var(--red); }
+.state-hint.error .err-mark { font-weight: 700; }
+.state-hint .sh-hint { font-size: 11px; color: var(--muted); margin: 2px 0 0 17px; word-break: break-all; }
+.state-hint.center {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 24px; text-align: center;
+}
+.state-hint.center .sh-hint { margin-left: 0; }

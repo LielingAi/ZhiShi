@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildMentionItems,
+  fileCacheKey,
   fileDirOf,
+  MENTION_DEBOUNCE_MS,
   parseMentionQuery,
   pathBasename,
   type MentionSources,
@@ -111,5 +113,18 @@ describe('buildMentionItems（四源合一 + 分节）', () => {
   it('文件目录参数（workspace/files 的 dir）', () => {
     expect(fileDirOf(parseMentionQuery('src/'))).toBe('src');
     expect(fileDirOf(parseMentionQuery('x'))).toBe('');
+  });
+});
+
+describe('1.3.4：@ 补全防抖与目录缓存作用域', () => {
+  it('防抖窗口 200ms（输入连续变化只对最后一次查询发请求）', () => {
+    expect(MENTION_DEBOUNCE_MS).toBe(200);
+  });
+
+  it('fileCacheKey：环境键作为作用域前缀，宿主线归一为 host', () => {
+    expect(fileCacheKey('env:pwn-vm', 'src')).not.toBe(fileCacheKey('env:rev', 'src'));
+    expect(fileCacheKey('env:pwn-vm', 'src')).toBe(fileCacheKey('env:pwn-vm', 'src'));
+    expect(fileCacheKey(null, 'src').startsWith('host\u0000')).toBe(true);
+    expect(fileCacheKey('env:pwn-vm', 'src').endsWith('\u0000src')).toBe(true);
   });
 });

@@ -149,3 +149,20 @@ export function buildMentionItems(q: MentionQuery, src: MentionSources): Mention
 export function fileDirOf(q: MentionQuery): string {
   return q.isFileDir ? (q.dir ?? '') : '';
 }
+
+// ---------------------------------------------------------------------------
+// 1.3.4：@ 补全富化防抖 + 目录缓存作用域（大目录性能 + 环境串线防护）
+// ---------------------------------------------------------------------------
+
+/** @ 补全异步富化防抖窗口（ms）——输入连续变化时只对最后一次查询发请求。 */
+export const MENTION_DEBOUNCE_MS = 200;
+
+/**
+ * 文件树缓存的复合键：`<scope>\u0000<dir>`。scope = 环境键（null → 'host'）。
+ * workspace/files 服务端按 currentAgentDir 出列表，环境切换后旧环境拉取的
+ * 条目即过期——复合键保证缓存互不串线；store 在环境切换时仍整体清空缓存
+ * （内存卫生 + 明确失效语义，见 useGuiStore 的 currentEnvKey 订阅）。
+ */
+export function fileCacheKey(envKey: string | null, dir: string): string {
+  return `${envKey ?? 'host'}\u0000${dir}`;
+}

@@ -34,3 +34,27 @@ export function loadTheme(storage?: { getItem(k: string): string | null } | null
     return 'dark';
   }
 }
+
+// ---------------------------------------------------------------------------
+// 1.3.4：xterm 终端主题色（attach 终端模式随主题热更新）
+// ---------------------------------------------------------------------------
+
+/** xterm TerminalOptions.theme 形状（attach 终端只用三色）。 */
+export interface XtermTheme {
+  background: string;
+  foreground: string;
+  cursor: string;
+}
+
+/**
+ * CSS 变量值 → xterm 主题色。DOM 读数（getComputedStyle）在 AttachView
+ * 侧，本函数只做纯映射：空值回落深色默认（与 styles.css 的 :root 变量
+ * 同口径）。cursor 复用 foreground（现有深浅色都是同色）。
+ */
+export function xtermThemeFromVars(background: string, foreground: string): XtermTheme {
+  return {
+    background: background || '#080a0e',
+    foreground: foreground || '#d7dde7',
+    cursor: foreground || '#d7dde7',
+  };
+}

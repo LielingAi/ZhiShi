@@ -19,6 +19,7 @@ import type React from 'react';
 import { getSettingsClient, useGuiStore } from '../store/useGuiStore';
 import * as api from '../client/api';
 import type { ExpertDraft, ExpertSummary, ModelProvider, ResearchEventRow, SkillEntity } from '../client/api';
+import { StateHint } from './StateHint';
 
 const NAV = [
   { id: 'model', icon: '◇', label: '模型' },
@@ -73,7 +74,7 @@ function ModelTab(): React.JSX.Element {
       </div>
       <div className="set-group">
         <div className="sg-title">供应商</div>
-        {providers.length === 0 && <div className="sr-desc">未连接 sidecar 或目录为空</div>}
+        {providers.length === 0 && <StateHint kind="empty" text="暂无供应商" hint="未连接 sidecar 或目录为空" />}
         {providers.map((p) => (
           <div className="set-row" key={p.id}>
             <div>
@@ -240,7 +241,7 @@ function SkillsTab(): React.JSX.Element {
           导入技能
         </button>
       </div>
-      {skills.length === 0 && <div className="sr-desc">无用户级技能（或未连接 sidecar）</div>}
+      {skills.length === 0 && <StateHint kind="empty" text="无用户级技能" hint="未连接 sidecar 或 ~/.zhishi/skills/ 为空" />}
       {skills.map((sk) => (
         <div className="set-row" key={sk.folderName ?? sk.name}>
           <div>
@@ -412,7 +413,7 @@ function IntelTab(): React.JSX.Element {
       <div className="set-group">
         <div className="sg-title">情报索引 · intel.db</div>
         {st.dbExists === false && (
-          <div className="sr-desc">尚未初始化——点「更新」建立索引</div>
+          <StateHint kind="empty" text="尚未初始化" hint="点「更新」建立索引" />
         )}
         <div className="set-row">
           <div><div className="sr-label">最后更新</div></div>
@@ -595,7 +596,7 @@ function ExpertTab(): React.JSX.Element {
           <button className="btn" onClick={() => void search()}>搜索</button>
           <button className="btn" onClick={() => setImportOpen(true)}>导入 JSON/YAML</button>
         </div>
-        {entries.length === 0 && <div className="sr-desc">无匹配条目——可导入或等 agent 起草</div>}
+        {entries.length === 0 && <StateHint kind="empty" text="无匹配条目" hint="可导入或等 agent 起草" />}
         {entries.map((e) => (
           <div className="set-row" key={e.id}>
             <div>
@@ -763,7 +764,7 @@ function ResearchTab(): React.JSX.Element {
   return (
     <div className="set-group">
       <div className="sg-title">研究留痕 · research_events</div>
-      {rows.length === 0 && <div className="sr-desc">暂无研究事件</div>}
+      {rows.length === 0 && <StateHint kind="empty" text="暂无研究事件" />}
       {rows.map((r) => (
         <div className="set-row" key={r.id ?? r.createdAt}>
           <div>

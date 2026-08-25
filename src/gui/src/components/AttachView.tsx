@@ -21,6 +21,8 @@ import '@xterm/xterm/css/xterm.css';
 import * as api from '../client/api';
 import { TermClient, termUrl } from '../client/term-client';
 import { getSettingsClient, useGuiStore } from '../store/useGuiStore';
+import { xtermThemeFromVars } from '../model/theme';
+import { StateHint } from './StateHint';
 
 type AttachMode = 'term' | 'exec';
 
@@ -32,17 +34,21 @@ interface AttachLine {
 /** 终端连接状态（本地组件态，不进 store）。 */
 type TermStatus = 'idle' | 'connecting' | 'live' | 'closed';
 
-/** 主题色从 CSS 变量取（深浅色一致口径；挂接后切换主题不热更新，见已知取舍）。 */
+/** 主题色从 CSS 变量取（深浅色一致口径）；1.3.4 起随 store.theme 热更新。 */
 function terminalTheme(): { background: string; foreground: string; cursor: string } {
   const css =
     typeof getComputedStyle !== 'undefined' && typeof document !== 'undefined'
       ? getComputedStyle(document.documentElement)
       : null;
-  return {
-    background: (css?.getPropertyValue('--bg-deep') || '#080a0e').trim(),
-    foreground: (css?.getPropertyValue('--text') || '#d7dde7').trim(),
-    cursor: (css?.getPropertyValue('--text') || '#d7dde7').trim(),
-  };
+  return xtermThemeFromVars(
+    (css?.getPropertyValue('--bg-deep') || '').trim(),
+    (css?.getPropertyValue('--text') || '').trim(),
+  );
+}
+
+/** 把当前 CSS 变量主题应用到 xterm 实例（挂载与主题切换共用）。 */
+function applyTerminalTheme(term: Terminal): void {
+  term.options.theme = terminalTheme();
 }
 
 // ---------------------------------------------------------------------------
@@ -51,9 +57,12 @@ function terminalTheme(): { background: string; foreground: string; cursor: stri
 
 function TermPane({ envKey }: { envKey: string | null }): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<Terminal | null>(null);
   const [status, setStatus] = useState<TermStatus>('idle');
   const [notice, setNotice] = useState<string | null>(null);
   const [exitInfo, setExitInfo] = useState<{ code: number; signal?: string } | null>(null);
+  // 1.3.4：订阅主题——切换后重染 xterm（挂载时只取一次的旧取舍已修）。
+  const theme = useGuiStore((s) => s.theme);
 
   useEffect(() => {
     if (!envKey) {
@@ -70,13 +79,14 @@ function TermPane({ envKey }: { envKey: string | null }): React.JSX.Element {
     const el = containerRef.current;
     if (!el) return;
 
-    const theme = terminalTheme();
+    const termTheme = terminalTheme();
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 12.5,
       fontFamily: '"Cascadia Code", "JetBrains Mono", Consolas, monospace',
-      theme,
+      theme: termTheme,
     });
+    termRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(el);
@@ -160,9 +170,18 @@ function TermPane({ envKey }: { envKey: string | null }): React.JSX.Element {
       } catch {
         // best effort
       }
+      termRef.current = null;
       term.dispose();
     };
   }, [envKey]);
+
+  // 1.3.4：主题切换 → 重染 xterm（options.theme 赋值触发 xterm 重绘）。
+  // 声明在主 effect 之后：挂载时终端已建好，本 effect 再刷一次幂等无害；
+  // 切换主题时 body.light 已由 store action 同步切好，此处读到即新值。
+  useEffect(() => {
+    const t = termRef.current;
+    if (t) applyTerminalTheme(t);
+  }, [theme]);
 
   return (
     <>
@@ -171,16 +190,14 @@ function TermPane({ envKey }: { envKey: string | null }): React.JSX.Element {
         className="attach-xterm"
         style={{ display: status === 'connecting' || status === 'live' || !envKey ? 'block' : 'none' }}
       />
-      {status === 'connecting' && (
-        <div className="at-out"><span className="spinner" /> 连接终端…</div>
-      )}
+      {status === 'connecting' && <StateHint kind="loading" text="连接终端…" />}
       {exitInfo && (
         <div className="at-exit">
           已退出：exit={exitInfo.code}
           {exitInfo.signal ? `（${exitInfo.signal}）` : ''}——按 <kbd>Esc</kbd> 返回会话流
         </div>
       )}
-      {notice && <div className="at-exit">{notice}</div>}
+      {notice && <StateHint kind="error" text={notice} />}
     </>
   );
 }
@@ -239,13 +256,15 @@ function ExecPane({ envKey }: { envKey: string | null }): React.JSX.Element {
     <>
       <div className="attach-term">
         {lines.length === 0 && (
-          <div className="at-welcome">
-            已连接到 {envKey || '…'}
-            <br />
-            {envKey
-              ? '输入命令回车执行（输出与 exit code 落屏）——会话流在后台继续接收'
-              : '宿主会话没有环境 shell——回侧栏切换到运行中环境再 /attach'}
-          </div>
+          <StateHint
+            kind="empty"
+            text={envKey ? `已连接到 ${envKey}` : '宿主会话没有环境 shell'}
+            hint={
+              envKey
+                ? '输入命令回车执行（输出与 exit code 落屏）——会话流在后台继续接收'
+                : '回侧栏切换到运行中环境再 /attach'
+            }
+          />
         )}
         {lines.map((l, i) =>
           l.kind === 'cmd' ? (
@@ -259,7 +278,7 @@ function ExecPane({ envKey }: { envKey: string | null }): React.JSX.Element {
             <div className="at-out" key={i}>{l.text}</div>
           ),
         )}
-        {busy && <div className="at-out"><span className="spinner" /> 执行中…</div>}
+        {busy && <StateHint kind="loading" text="执行中…" />}
       </div>
       <div className="attach-input-line">
         <span className="at-prompt">root@{envKey ? envKey.split('@')[0] : 'host'}:#</span>
