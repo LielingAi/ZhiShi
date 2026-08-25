@@ -5,18 +5,20 @@
 
 ---
 
-## 1.3.1 —— GUI 会话视图迭代（进行中）
+## 1.3.1 —— GUI 会话视图迭代（已完成）
 
 1.3.0 已提前完成骨架 + 会话 MVP（路线压缩：原 1.3.1 骨架内容并入 1.3.0）。本版 = 会话视图的**迭代完善**：补齐 MVP 明确留下的占位、修实机缺陷、把「能用」推到「好用」。**用户拍板：按主 roadmap 全池推进，不再逐项评估**。
 
 实施范围（全池）：
-- [ ] **环境准入闸**（实机缺陷，用户原则性要求）：已停止环境不可进入——侧栏点已停止环境拦截 + 提示先启动（启动按钮接 docker/VM up）；host 会话（未锚定）与锚定会话区分显性化。
-- [ ] **boundary-ask 模态**：越界问询（MVP 未消费 chat:boundary-ask）——GUI 原生模态，y/n + 自然语言应答。
-- [ ] **子代理/后台事件消费**：bg-started/finished、subagent-* 事件 → 状态栏段 + 回报卡；/tasks 面板（列表/详情/transcript）。
-- [ ] **/ 命令组补齐**：snapshot/rollback/extract/rewind/fork/queue/tasks/export 从占位 toast 接真接口。
-- [ ] **新建环境向导接真**：boot 进度从 mock 改 environment/build 真接口；attach 页接真。
-- [ ] **设置页**（v19 已画）：模型/skills/intel/专家知识/研究记录——1.3.0 未做，本版或后续。
-- [ ] **状态栏信息**：队列深度、上下文百分比、后台任务段（MVP 只留了 env/phase/模型）。
+- [x] **环境准入闸**（实机缺陷，用户原则性要求）：已停止环境不可进入——侧栏点已停止环境拦截 + 提示先启动（启动按钮接 docker/VM up）；host 会话（未锚定）与锚定会话区分显性化。
+- [x] **boundary-ask 模态**：越界问询（MVP 未消费 chat:boundary-ask）——GUI 原生模态，y/n + 自然语言应答。
+- [x] **子代理/后台事件消费**：bg-started/finished、subagent-* 事件 → 状态栏段 + 回报卡；/tasks 面板（列表/详情/transcript）。
+- [x] **/ 命令组补齐**：snapshot/rollback/extract/rewind/fork/queue/tasks/export 从占位 toast 接真接口。
+- [x] **新建环境向导接真**：boot 进度从 mock 改 environment/build 真接口；attach 页接真。
+- [x] **设置页**（v19 已画）：模型/skills/intel/专家知识/研究记录——1.3.0 未做，本版或后续。
+- [x] **状态栏信息**：队列深度、上下文百分比、后台任务段（MVP 只留了 env/phase/模型）。
+
+> 实际落地（2026-08-25）：七项全池交付——①环境准入闸（已停止拦截+启动按钮 environment/up+host 显性化）；②boundary-ask 模态（kind 文案本地映射+objects 清单+y/n+自然语言应答+Esc 入链）；③子代理/后台事件消费+/tasks 面板（三源合一+transcript）；④/ 命令组接真（snapshot/rollback/extract/rewind/fork/queue/tasks/export 逐条核实 zhishi.ts）；⑤新建向导接真（environment/up+ps 轮询阶段）；⑥设置页五签接真（模型/skills/情报/专家知识含导入审定/研究记录）；⑦状态栏信息。实机走查通过（用户确认）。走查修复：selectTaskRows 稳定引用（getSnapshot 契约，无限渲染黑屏）+ ErrorBoundary 上屏兜底转正式。新增 57 单测；全量 169 文件 2165 测试绿 + tsc + eslint + build:gui 绿。服务端缺口清单（5 条，记录在案未改 server）：boundary-ask payload 无工具名/说明字段、环境锚恢复需绕行 environment/current、intel 配置无部分更新端点、skill import 路由标注 Tauri-only 未验、task/list 无结论字段。
 
 > 不做（维持）：决策面板（后续版本，用户拍板延后）、主题、侧栏多线管理进阶、编译发版（GUI 完成前）。
 > 验收：全量测试 + 实机走查。
