@@ -1082,9 +1082,25 @@ export function selectCurrentSession(s: GuiState): SessionState {
   return s.sessions[s.currentEnvKey ?? 'host'] ?? FALLBACK_SESSION;
 }
 
-/** /tasks 面板行装配（bg + subagent + 服务端任务中心三源合一）。 */
+/**
+ * /tasks 面板行装配（bg + subagent + 服务端任务中心三源合一）。
+ * 1.3.1 实机修正：必须返回**稳定引用**——React useSyncExternalStore 的
+ * getSnapshot 契约要求缓存，每次新数组会触发无限渲染（实机黑屏
+ * 「Maximum update depth exceeded」）。按输入引用相等缓存。
+ */
+let taskRowsCache: { bg: unknown; sub: unknown; server: unknown; rows: TaskRow[] } | null = null;
 export function selectTaskRows(s: GuiState): TaskRow[] {
-  return buildTaskRows(s.bgTasks, s.subagents, serverTaskCache);
+  if (
+    taskRowsCache &&
+    taskRowsCache.bg === s.bgTasks &&
+    taskRowsCache.sub === s.subagents &&
+    taskRowsCache.server === serverTaskCache
+  ) {
+    return taskRowsCache.rows;
+  }
+  const rows = buildTaskRows(s.bgTasks, s.subagents, serverTaskCache);
+  taskRowsCache = { bg: s.bgTasks, sub: s.subagents, server: serverTaskCache, rows };
+  return rows;
 }
 
 /** 稳定的空会话单例：sessions 缺条目时兜底，避免 selector 每次返回新引用。 */
