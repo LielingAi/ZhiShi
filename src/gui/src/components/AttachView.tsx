@@ -1,26 +1,195 @@
 /**
- * attach 视图（1.3.2 任务三「attach 页接真」）：挂接已运行环境，命令经
- * POST /api/admin/environment/exec 一次性执行（stdout + exitCode）。
+ * attach 视图——1.3.2「attach 页接真」升级为 1.3.3 双模式：
  *
- * 边界说明：sidecar HTTP 面没有交互式 shell/pty 端点（Rust panel_api 的
- * term 路由只服务 CLI zhishi term），attach 页以「一次性命令执行」接真——
- * 每条命令单独 environment/exec，输出落屏。宿主会话（未锚定环境）无 shell
- * 可挂，提示先切换环境。exit/logout 或 Esc 返回会话流。
+ *   - 终端模式（默认）：xterm.js 挂 WS `/api/admin/environment/term?env=<envKey>`
+ *     （协议见 client/term-client.ts），input/resize 透传、output 写入 terminal，
+ *     exit/error 提示后关闭；连不上（无 env/宿主会话/原生模块缺失）提示原因。
+ *   - 一次性执行模式：保留 1.3.2 的 POST /api/admin/environment/exec
+ *     （stdout + exitCode 落屏）。
+ *
+ * Esc 返回会话流沿用现有全局 Esc 链（page='attach' → close-page）。宿主会话
+ * （未锚定环境）无 shell 可挂——两种模式都提示先切换环境。
  */
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
 
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import '@xterm/xterm/css/xterm.css';
+
 import * as api from '../client/api';
+import { TermClient, termUrl } from '../client/term-client';
 import { getSettingsClient, useGuiStore } from '../store/useGuiStore';
+
+type AttachMode = 'term' | 'exec';
 
 interface AttachLine {
   kind: 'cmd' | 'out' | 'err';
   text: string;
 }
 
-export function AttachView(): React.JSX.Element {
-  const envKey = useGuiStore((s) => s.currentEnvKey);
+/** 终端连接状态（本地组件态，不进 store）。 */
+type TermStatus = 'idle' | 'connecting' | 'live' | 'closed';
+
+/** 主题色从 CSS 变量取（深浅色一致口径；挂接后切换主题不热更新，见已知取舍）。 */
+function terminalTheme(): { background: string; foreground: string; cursor: string } {
+  const css =
+    typeof getComputedStyle !== 'undefined' && typeof document !== 'undefined'
+      ? getComputedStyle(document.documentElement)
+      : null;
+  return {
+    background: (css?.getPropertyValue('--bg-deep') || '#080a0e').trim(),
+    foreground: (css?.getPropertyValue('--text') || '#d7dde7').trim(),
+    cursor: (css?.getPropertyValue('--text') || '#d7dde7').trim(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 终端模式
+// ---------------------------------------------------------------------------
+
+function TermPane({ envKey }: { envKey: string | null }): React.JSX.Element {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [status, setStatus] = useState<TermStatus>('idle');
+  const [notice, setNotice] = useState<string | null>(null);
+  const [exitInfo, setExitInfo] = useState<{ code: number; signal?: string } | null>(null);
+
+  useEffect(() => {
+    if (!envKey) {
+      setStatus('closed');
+      setNotice('attach：宿主会话没有环境 shell——先切换到运行中环境再 /attach');
+      return;
+    }
+    const client = getSettingsClient();
+    if (!client) {
+      setStatus('closed');
+      setNotice('未连接 sidecar');
+      return;
+    }
+    const el = containerRef.current;
+    if (!el) return;
+
+    const theme = terminalTheme();
+    const term = new Terminal({
+      cursorBlink: true,
+      fontSize: 12.5,
+      fontFamily: '"Cascadia Code", "JetBrains Mono", Consolas, monospace',
+      theme,
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(el);
+    try {
+      fit.fit();
+    } catch {
+      // 容器不可见时 fit 可能抛——初始 80×24 兜底。
+    }
+
+    setStatus('connecting');
+    setNotice(null);
+    setExitInfo(null);
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(termUrl(client.base, envKey));
+    } catch (err) {
+      setStatus('closed');
+      setNotice(`WebSocket 建立失败：${err instanceof Error ? err.message : String(err)}`);
+      term.dispose();
+      return;
+    }
+
+    let closed = false;
+    ws.addEventListener('open', () => {
+      if (!closed) setStatus('live');
+    });
+    const termClient = new TermClient({
+      ws,
+      sink: { write: (data) => term.write(data) },
+      onExit: (info) => {
+        setExitInfo(info);
+        setStatus('closed');
+      },
+      onError: (message) => {
+        setNotice(message);
+        setStatus('closed');
+        try {
+          ws.close();
+        } catch {
+          // best effort
+        }
+      },
+      onClose: (code) => {
+        if (code !== 1000) {
+          setStatus('closed');
+          if (code === 4001) setNotice('同 env 的新连接已顶替本连接');
+        }
+      },
+    });
+
+    const sub = term.onData((data) => termClient.sendInput(data));
+
+    // resize：ResizeObserver 节流 ~200ms → fit + resize 帧。
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleFit = (): void => {
+      if (timer || closed) return;
+      timer = setTimeout(() => {
+        timer = null;
+        if (closed) return;
+        try {
+          fit.fit();
+          termClient.sendResize(term.cols, term.rows);
+        } catch {
+          // 不可见/已销毁——忽略。
+        }
+      }, 200);
+    };
+    const ro = new ResizeObserver(() => scheduleFit());
+    ro.observe(el);
+    // 首次挂载后补一次（等容器真实尺寸）。
+    scheduleFit();
+
+    return () => {
+      closed = true;
+      if (timer) clearTimeout(timer);
+      ro.disconnect();
+      sub.dispose();
+      termClient.dispose();
+      try {
+        ws.close();
+      } catch {
+        // best effort
+      }
+      term.dispose();
+    };
+  }, [envKey]);
+
+  return (
+    <>
+      <div
+        ref={containerRef}
+        className="attach-xterm"
+        style={{ display: status === 'connecting' || status === 'live' || !envKey ? 'block' : 'none' }}
+      />
+      {status === 'connecting' && (
+        <div className="at-out"><span className="spinner" /> 连接终端…</div>
+      )}
+      {exitInfo && (
+        <div className="at-exit">
+          已退出：exit={exitInfo.code}
+          {exitInfo.signal ? `（${exitInfo.signal}）` : ''}——按 <kbd>Esc</kbd> 返回会话流
+        </div>
+      )}
+      {notice && <div className="at-exit">{notice}</div>}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 一次性执行模式（1.3.2 保留）
+// ---------------------------------------------------------------------------
+
+function ExecPane({ envKey }: { envKey: string | null }): React.JSX.Element {
   const setPage = useGuiStore((s) => s.setPage);
   const showToast = useGuiStore((s) => s.showToast);
   const [cmd, setCmd] = useState('');
@@ -67,14 +236,7 @@ export function AttachView(): React.JSX.Element {
   };
 
   return (
-    <div className="attach-view show">
-      <div className="attach-head">
-        <span className="ah-env">◈ {envKey || '未选择环境'}</span>
-        <span className="ah-hint">
-          已接管 shell（environment/exec 一次性执行）· <kbd>exit</kbd> 或 <kbd>Esc</kbd> 返回会话流
-        </span>
-        <button className="ah-close" onClick={() => setPage('chat')}>✕</button>
-      </div>
+    <>
       <div className="attach-term">
         {lines.length === 0 && (
           <div className="at-welcome">
@@ -116,6 +278,48 @@ export function AttachView(): React.JSX.Element {
           }}
         />
       </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 视图壳
+// ---------------------------------------------------------------------------
+
+export function AttachView(): React.JSX.Element {
+  const envKey = useGuiStore((s) => s.currentEnvKey);
+  const setPage = useGuiStore((s) => s.setPage);
+  const [mode, setMode] = useState<AttachMode>('term');
+
+  return (
+    <div className="attach-view show">
+      <div className="attach-head">
+        <span className="ah-env">◈ {envKey || '未选择环境'}</span>
+        <span className="mode-toggle">
+          <button
+            className={`btn small ${mode === 'term' ? 'mode-on' : ''}`}
+            onClick={() => setMode('term')}
+            title="交互式 pty 终端（WS /api/admin/environment/term）"
+          >
+            终端
+          </button>
+          <button
+            className={`btn small ${mode === 'exec' ? 'mode-on' : ''}`}
+            onClick={() => setMode('exec')}
+            title="一次性命令执行（environment/exec）"
+          >
+            一次性执行
+          </button>
+        </span>
+        <span className="ah-hint">
+          {mode === 'term'
+            ? '交互 pty · input/resize 透传 · 重复连接旧连接被顶替'
+            : 'environment/exec 一次性执行'}{' '}
+          · <kbd>Esc</kbd> 返回会话流
+        </span>
+        <button className="ah-close" onClick={() => setPage('chat')}>✕</button>
+      </div>
+      {mode === 'term' ? <TermPane envKey={envKey} /> : <ExecPane envKey={envKey} />}
     </div>
   );
 }

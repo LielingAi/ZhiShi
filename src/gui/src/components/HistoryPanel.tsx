@@ -1,0 +1,384 @@
+/**
+ * 1.3.3 历史面板（本版主线）：会话清单（按 envKey/时间分组 + 搜索）+
+ * 只读 wire 回看 + 会话管理（重命名/置顶/归档/删除）+ 载回续跑。
+ *
+ * 只读回看的约束：wire transcript 经 model/history.ts::buildHistorySession
+ * 归约为**组件局部状态**的 SessionState（走 reducer replay 路径，决策块/
+ * 工具卡/折叠与活跃流同渲染），绝不写回 store.sessions——不影响正在跑的
+ * 活跃会话流。
+ *
+ * 布局惯例照 SettingsPage（全页接管主区）+ Drawer（头部工具条）。
+ */
+
+import { useEffect, useMemo, useState } from 'react';
+import type React from 'react';
+
+import { getSettingsClient, useGuiStore } from '../store/useGuiStore';
+import * as api from '../client/api';
+import type { SessionState, StreamItem } from '../model/blocks';
+import { buildHistorySession, filterSessionRows, groupSessionRows } from '../model/history';
+import type { SessionMetaRow } from '../model/history';
+import { TurnView } from './TurnView';
+
+// ---------------------------------------------------------------------------
+// 小工具
+// ---------------------------------------------------------------------------
+
+function fmtDate(iso: string): string {
+  const t = Date.parse(iso);
+  if (!t) return '—';
+  const d = new Date(t);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  const sameYear = d.getFullYear() === now.getFullYear();
+  return d.toLocaleDateString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    ...(sameYear ? {} : { year: 'numeric' }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 只读查看器（块渲染复用 TurnView）
+// ---------------------------------------------------------------------------
+
+function ViewerItem({ item }: { item: StreamItem }): React.JSX.Element {
+  switch (item.kind) {
+    case 'turn':
+      return <TurnView turn={item} />;
+    case 'divider':
+      return (
+        <div className="divider-line">
+          <span>{item.text}</span>
+        </div>
+      );
+    case 'error':
+      return (
+        <div className="error-line">
+          <span className="err-mark">✗</span> {item.text}
+        </div>
+      );
+    case 'sys':
+      return <div className="sys-line">{item.text}</div>;
+  }
+}
+
+interface ViewerState {
+  status: 'idle' | 'loading' | 'ok' | 'error';
+  truncated?: boolean;
+  totalMessages?: number;
+  session?: SessionState;
+  error?: string;
+}
+
+// ---------------------------------------------------------------------------
+// 面板
+// ---------------------------------------------------------------------------
+
+export function HistoryPanel(): React.JSX.Element {
+  const historySessions = useGuiStore((s) => s.historySessions);
+  const historyLoading = useGuiStore((s) => s.historyLoading);
+  const openHistoryPanel = useGuiStore((s) => s.openHistoryPanel);
+  const renameSession = useGuiStore((s) => s.renameSession);
+  const toggleSessionPinned = useGuiStore((s) => s.toggleSessionPinned);
+  const toggleSessionArchived = useGuiStore((s) => s.toggleSessionArchived);
+  const deleteSessionRow = useGuiStore((s) => s.deleteSessionRow);
+  const resumeSession = useGuiStore((s) => s.resumeSession);
+  const setPage = useGuiStore((s) => s.setPage);
+
+  const [search, setSearch] = useState('');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<ViewerState>({ status: 'idle' });
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [archivedOpen, setArchivedOpen] = useState(true);
+
+  // 打开即载清单（store 幂等：已载过不重复拉）。
+  useEffect(() => {
+    void openHistoryPanel();
+  }, [openHistoryPanel]);
+
+  // 点行 → 只读回看：拉 wire transcript 归约为局部 SessionState。
+  useEffect(() => {
+    if (!selectedId) return;
+    const row = historySessions?.find((r) => r.id === selectedId);
+    if (!row) {
+      setViewer({ status: 'error', error: '会话不存在（可能刚被删除）' });
+      return;
+    }
+    if (!row.loopSessionId) {
+      setViewer({
+        status: 'error',
+        error: '该会话没有 loop-session 绑定（旧会话 / 从未落盘），无法 wire 回看',
+      });
+      return;
+    }
+    const c = getSettingsClient();
+    if (!c) {
+      setViewer({ status: 'error', error: '未连接 sidecar' });
+      return;
+    }
+    const loopId = row.loopSessionId; // 闭包内稳定引用（TS 收窄不进闭包）
+    let cancelled = false;
+    setViewer({ status: 'loading' });
+    void (async () => {
+      try {
+        const res = await api.fetchSessionWire(c, loopId);
+        if (cancelled) return;
+        if (!res.success) {
+          setViewer({ status: 'error', error: res.error ?? 'wire transcript 读取失败' });
+          return;
+        }
+        setViewer({
+          status: 'ok',
+          session: buildHistorySession(res.messages ?? []),
+          truncated: res.truncated === true,
+          totalMessages: res.totalMessages,
+        });
+      } catch (err) {
+        if (cancelled) return;
+        setViewer({
+          status: 'error',
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, historySessions]);
+
+  const groups = useMemo(
+    () => groupSessionRows(filterSessionRows(historySessions ?? [], search)),
+    [historySessions, search],
+  );
+  const selectedRow = selectedId ? historySessions?.find((r) => r.id === selectedId) ?? null : null;
+
+  const commitRename = (row: SessionMetaRow) => {
+    const t = renameDraft.trim();
+    setRenamingId(null);
+    if (t && t !== row.title) void renameSession(row.id, t);
+  };
+
+  const onDelete = (row: SessionMetaRow) => {
+    if (confirmDeleteId !== row.id) {
+      setConfirmDeleteId(row.id); // 第一次点击进确认态
+      return;
+    }
+    setConfirmDeleteId(null);
+    if (selectedId === row.id) {
+      setSelectedId(null);
+      setViewer({ status: 'idle' });
+    }
+    void deleteSessionRow(row.id);
+  };
+
+  const resume = (row: SessionMetaRow) => {
+    void resumeSession(row.id);
+  };
+
+  return (
+    <div className="history-page show">
+      <div className="history-head">
+        <span className="hh-title">历史会话</span>
+        <input
+          className="hh-search"
+          placeholder="搜索标题 / 内容预览…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <button className="btn small" onClick={() => void openHistoryPanel()} title="重新拉取会话清单">
+          ⟳ 刷新
+        </button>
+        <button className="history-close" onClick={() => setPage('chat')} title="Esc 返回会话流">
+          ✕
+        </button>
+      </div>
+      <div className="history-main">
+        <div className="history-list">
+          {historyLoading && <div className="ov-empty">会话清单加载中…</div>}
+          {!historyLoading && groups.length === 0 && (
+            <div className="ov-empty">
+              {historySessions === null ? '载入失败——点「⟳ 刷新」重试' : search ? '无匹配会话' : '暂无会话'}
+            </div>
+          )}
+          {groups.map((g) => (
+            <div className="history-group" key={g.key}>
+              <div
+                className={`history-group-label ${g.archived ? 'toggle' : ''}`}
+                onClick={() => g.archived && setArchivedOpen(!archivedOpen)}
+              >
+                <span>{g.archived ? (archivedOpen ? '⏷' : '⏵') : ''} {g.label}</span>
+                <span className="count">{g.rows.length}</span>
+              </div>
+              {(!g.archived || archivedOpen) &&
+                g.rows.map((r) => (
+                  <SessionRow
+                    key={r.id}
+                    row={r}
+                    selected={r.id === selectedId}
+                    renaming={renamingId === r.id}
+                    renameDraft={renameDraft}
+                    confirming={confirmDeleteId === r.id}
+                    onSelect={() => {
+                      setSelectedId(r.id);
+                      setConfirmDeleteId(null);
+                    }}
+                    onStartRename={() => {
+                      setRenamingId(r.id);
+                      setRenameDraft(r.title);
+                      setConfirmDeleteId(null);
+                    }}
+                    onRenameDraft={setRenameDraft}
+                    onCommitRename={() => commitRename(r)}
+                    onCancelRename={() => setRenamingId(null)}
+                    onTogglePinned={() => void toggleSessionPinned(r.id)}
+                    onToggleArchived={() => void toggleSessionArchived(r.id)}
+                    onDelete={() => onDelete(r)}
+                    onResume={() => resume(r)}
+                  />
+                ))}
+            </div>
+          ))}
+        </div>
+        <div className="history-viewer">
+          {!selectedRow && (
+            <div className="hv-empty">← 选一条会话查看只读回放（决策块/工具卡照常渲染）</div>
+          )}
+          {selectedRow && (
+            <>
+              <div className="hv-head">
+                <div className="hv-mid">
+                  <div className="hv-title">{selectedRow.title}</div>
+                  <div className="hv-sub">
+                    {fmtDate(selectedRow.lastActiveAt)} · {selectedRow.messageCount} 条消息
+                    {selectedRow.envKey ? ` · ${selectedRow.envKey}` : ' · 宿主'}
+                  </div>
+                </div>
+                <button
+                  className="btn primary small"
+                  title="POST /sessions/switch 载回续跑（关闭面板回到活跃会话视图）"
+                  onClick={() => resume(selectedRow)}
+                >
+                  ↺ 载回续跑
+                </button>
+              </div>
+              {viewer.status === 'loading' && (
+                <div className="ov-empty"><span className="spinner" /> 读取 wire transcript…</div>
+              )}
+              {viewer.status === 'error' && <div className="error-line">{viewer.error}</div>}
+              {viewer.status === 'ok' && viewer.session && (
+                <>
+                  {viewer.truncated && (
+                    <div className="hv-truncated">
+                      ⚠ 消息超护栏（共 {viewer.totalMessages ?? '?'} 条），仅回放前 2000 条（时间序保留）
+                    </div>
+                  )}
+                  <div className="hv-body">
+                    {viewer.session.items.length === 0 && (
+                      <div className="ov-empty">该会话 wire 为空</div>
+                    )}
+                    {viewer.session.items.map((item) => (
+                      <ViewerItem item={item} key={item.id} />
+                    ))}
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 会话行（重命名内联 / 置顶 / 归档 / 删除二次确认 / 载回）
+// ---------------------------------------------------------------------------
+
+interface SessionRowProps {
+  row: SessionMetaRow;
+  selected: boolean;
+  renaming: boolean;
+  renameDraft: string;
+  confirming: boolean;
+  onSelect(): void;
+  onStartRename(): void;
+  onRenameDraft(v: string): void;
+  onCommitRename(): void;
+  onCancelRename(): void;
+  onTogglePinned(): void;
+  onToggleArchived(): void;
+  onDelete(): void;
+  onResume(): void;
+}
+
+function SessionRow(p: SessionRowProps): React.JSX.Element {
+  const r = p.row;
+  return (
+    <div
+      className={`history-row ${p.selected ? 'sel' : ''}`}
+      onClick={p.onSelect}
+      title={`${r.lastMessagePreview ?? ''}${r.loopSessionId ? '' : '\n（无 loop 绑定，不可 wire 回看）'}`}
+    >
+      {r.pinned === true && <span className="hr-pin" title="已置顶">📌</span>}
+      <div className="hr-mid">
+        {p.renaming ? (
+          <input
+            className="hr-rename"
+            autoFocus
+            value={p.renameDraft}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => p.onRenameDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                p.onCommitRename();
+              } else if (e.key === 'Escape') {
+                // 阻止冒泡：全局 Esc 链会把 page='history' 关掉，这里只取消重命名。
+                e.stopPropagation();
+                p.onCancelRename();
+              }
+            }}
+            onBlur={p.onCommitRename}
+          />
+        ) : (
+          <>
+            <div className="hr-title">{r.title || 'New Chat'}</div>
+            <div className="hr-preview">
+              {r.lastMessagePreview ?? '（无预览）'}
+            </div>
+          </>
+        )}
+      </div>
+      <span className="hr-meta">
+        {fmtDate(r.lastActiveAt)} · {r.messageCount}
+      </span>
+      <span className="hr-actions" onClick={(e) => e.stopPropagation()}>
+        <button className="hr-act" title="重命名（PATCH title）" onClick={p.onStartRename}>✎</button>
+        <button
+          className={`hr-act ${r.pinned ? 'on' : ''}`}
+          title={r.pinned ? '取消置顶' : '置顶（PATCH pinned）'}
+          onClick={p.onTogglePinned}
+        >
+          ▲
+        </button>
+        <button
+          className={`hr-act ${r.archived ? 'on' : ''}`}
+          title={r.archived ? '取消归档' : '归档（PATCH archived，默认藏到已归档组）'}
+          onClick={p.onToggleArchived}
+        >
+          ⬚
+        </button>
+        <button
+          className={`hr-act danger ${p.confirming ? 'confirm' : ''}`}
+          title={p.confirming ? '再点一次确认删除（含 transcript，不可恢复）' : '删除会话（DELETE，含 transcript）'}
+          onClick={p.onDelete}
+        >
+          {p.confirming ? '确认?' : '✕'}
+        </button>
+      </span>
+    </div>
+  );
+}

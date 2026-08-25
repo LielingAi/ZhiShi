@@ -123,6 +123,7 @@ import { createEnvBgTool, createEnvExecTool, createResearchLogTool, ENV_EXEC_TOO
 import { createIntelSearchTool, INTEL_SEARCH_TOOL_NAME } from './intel';
 import { createExpertDraftTool, createExpertSearchTool, EXPERT_DRAFT_TOOL_NAME, EXPERT_SEARCH_TOOL_NAME } from './expert';
 import { createDecisionTool, formatDecisionInjectionContent, REQUEST_DECISION_TOOL_NAME, type DecisionMeta } from './decision';
+import { buildLoopWireMessages } from './wire-replay';
 import { ENV_BG_TOOL_NAME, envBgReap } from './bg-exec';
 import { getBgRegistry, initBgRegistry } from './bg-registry';
 import { reapAllBgProcesses } from './bg-reap';
@@ -489,62 +490,12 @@ class ChatEngine {
   // ---------------------------------------------------------------------------
 
   /** loop 消息 → 回放用 MessageWire(user/assistant/tool;thinking 段不重现)。
-   *  工具结果重放为 tool 卡;空结论的 assistant 照发空 content——由 TUI 转
-   *  分隔行兜底(工具在前的说「看上方工具卡」),历史不再悬空。 */
+   *  1.3.3:还原逻辑收敛到 loop/wire-replay.ts::buildLoopWireMessages
+   *  (历史面板 wire 端点 / 引擎恢复 / cold-history 三路径共用同一口径),
+   *  本方法只负责实例续号。 */
   private loopMessagesToWire(loopMessages: AgentMessage[]): MessageWire[] {
-    const wire: MessageWire[] = [];
-    for (const m of loopMessages) {
-      if (m.role === 'user') {
-        const text = typeof m.content === 'string'
-          ? m.content
-          : m.content.filter((c): c is TextContent => c.type === 'text').map((c) => c.text).join('\n');
-        const images = typeof m.content === 'string'
-          ? []
-          : m.content.filter((c): c is ImageContent => c.type === 'image');
-        // 1.3.2 决策块:loop 持久化的 decision marker → wire kind:'decision'
-        // (additive;重放重建琥珀决策块的还原点)。
-        const decision = (m as { decision?: DecisionMeta }).decision;
-        wire.push({
-          id: String(this.messageSeq++),
-          role: 'user',
-          content: text,
-          timestamp: new Date(m.timestamp || Date.now()).toISOString(),
-          ...(images.length > 0
-            ? { attachments: images.map((img, i) => ({ id: String(i), name: 'image', mimeType: img.mimeType, isImage: true })) }
-            : {}),
-          ...(decision
-            ? {
-                kind: 'decision' as const,
-                decisionId: decision.decisionId,
-                choice: decision.choice,
-                ...(decision.note ? { note: decision.note } : {}),
-                ...(decision.expertRefs && decision.expertRefs.length > 0 ? { expertRefs: decision.expertRefs } : {}),
-              }
-            : {}),
-        });
-      } else if (m.role === 'assistant') {
-        const text = m.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
-        // 工具调用前的 thinking 段不重放(紧随的 tool 卡代表这轮动作);
-        // 纯空结论照发空 content,TUI 端转分隔行,冷历史不再漂悬空问题。
-        if (!text && m.content.some((c) => c.type === 'toolCall')) continue;
-        wire.push({
-          id: String(this.messageSeq++),
-          role: 'assistant',
-          content: text,
-          timestamp: new Date(m.timestamp || Date.now()).toISOString(),
-        });
-      } else if (m.role === 'toolResult') {
-        const text = m.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
-        wire.push({
-          id: String(this.messageSeq++),
-          role: 'tool',
-          name: typeof m.toolName === 'string' && m.toolName ? m.toolName : 'tool',
-          ok: m.isError !== true,
-          content: text,
-          timestamp: new Date(m.timestamp || Date.now()).toISOString(),
-        });
-      }
-    }
+    const wire = buildLoopWireMessages(loopMessages, this.messageSeq);
+    this.messageSeq += wire.length;
     return wire;
   }
 

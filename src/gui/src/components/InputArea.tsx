@@ -28,6 +28,7 @@ export function InputArea(): React.JSX.Element {
   const openOverlay = useGuiStore((s) => s.openOverlay);
   const closeOverlay = useGuiStore((s) => s.closeOverlay);
   const inputFill = useGuiStore((s) => s.inputFill);
+  const mentionApply = useGuiStore((s) => s.mentionApply);
   const envLabel = useGuiStore((s) => (s.currentEnvKey ?? '宿主'));
 
   // 历史 overlay 选中 → 回填输入框。
@@ -37,6 +38,15 @@ export function InputArea(): React.JSX.Element {
       taRef.current?.focus();
     }
   }, [inputFill]);
+
+  // 1.3.3 @ 补全选中 → 替换输入框尾部 @token（ref 选择替换为空 = 只摘
+  // token，chips 已加；agent/tool/目录选择替换为纯文本/续触发前缀）。
+  useEffect(() => {
+    if (mentionApply) {
+      setValue((v) => v.replace(/@[^\s]*$/, mentionApply.replace));
+      taRef.current?.focus();
+    }
+  }, [mentionApply]);
 
   const doSend = () => {
     const text = value.trim();
@@ -52,7 +62,7 @@ export function InputArea(): React.JSX.Element {
       ta.style.height = '22px';
       ta.style.height = `${Math.min(ta.scrollHeight, 130)}px`;
     }
-    const m = /@([\w.-]*)$/.exec(raw);
+    const m = /@([\w./-]*)$/.exec(raw);
     if (m) {
       openOverlay('at', m[1]);
       return;

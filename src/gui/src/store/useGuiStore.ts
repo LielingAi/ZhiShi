@@ -38,6 +38,8 @@ import {
 } from '../model/decision';
 import { escAction } from '../model/esc-chain';
 import { bootStages } from '../model/envs';
+import { parseSessionRows, type SessionMetaRow } from '../model/history';
+import { buildMentionItems, fileDirOf, parseMentionQuery } from '../model/mention';
 import { planSwitch, sessionKey } from '../model/multi-session';
 import { reduceSseEvent } from '../model/reducer';
 import { buildSendBody, classifySendResponse, type Ref } from '../model/send';
@@ -64,6 +66,7 @@ import {
 import { parseExpertImport } from '../model/expert-import';
 import * as api from '../client/api';
 import type {
+  AgentEntity,
   DiscoveredDocker,
   DiscoveredVm,
   EnvEntry,
@@ -72,6 +75,7 @@ import type {
   PsInstance,
   QueueStatusItem,
   Recipe,
+  WorkspaceFileEntry,
 } from '../client/api';
 import { resolvePort } from '../client/port';
 import { GuiSidecarClient } from '../client/sse-client';
@@ -114,6 +118,18 @@ export interface OverlayItem {
   cur?: boolean;
   providerId?: string;
   model?: string;
+  /**
+   * 1.3.3 @ 补全：选中后落 chips 的 ref（kind=env/file；见 model/send.ts
+   * Ref——服务端解析 grounding 段）。
+   */
+  ref?: Ref;
+  /**
+   * 1.3.3 @ 补全：选中后替换输入框尾部 @token 的纯文本（子代理/工具名；
+   * 目录行是 `@path/` 续触发）。
+   */
+  insert?: string;
+  /** 1.3.3 @ 补全：分节标题（环境/文件/子代理/工具），Overlay 分组渲染。 */
+  section?: string;
 }
 
 export interface OverlayState {
@@ -183,7 +199,7 @@ export interface BootState {
   error?: string;
 }
 
-export type Page = 'chat' | 'settings' | 'attach';
+export type Page = 'chat' | 'settings' | 'attach' | 'history';
 
 export type ConnectionState = 'discovering' | 'connecting' | 'live' | 'reconnecting' | 'failed';
 
@@ -228,6 +244,16 @@ export interface GuiState {
 
   // 1.3.2 ③：主题（深色默认；localStorage 持久化）
   theme: ThemeMode;
+
+  // 1.3.3 @ 补全：工具名数据源（chat:system-init 的 info.tools，随会话绑定刷新）
+  tools: string[];
+
+  // 1.3.3 历史面板：会话清单（null = 未载入）+ 载入状态
+  historySessions: SessionMetaRow[] | null;
+  historyLoading: boolean;
+
+  /** 1.3.3 @ 补全：选中后替换输入框尾部 @token 的一次性信号。 */
+  mentionApply: { replace: string; nonce: number } | null;
 
   // 1.3.1 ③④：/tasks 与 /queue 面板
   tasksOpen: boolean;
@@ -302,6 +328,14 @@ export interface GuiState {
   addRef(ref: Ref): void;
   removeRef(index: number): void;
   addHistory(text: string): void;
+  // 1.3.3 历史面板：清单 / 会话管理 / 载回续跑
+  openHistoryPanel(): Promise<void>;
+  closeHistoryPanel(): void;
+  renameSession(id: string, title: string): Promise<void>;
+  toggleSessionPinned(id: string): Promise<void>;
+  toggleSessionArchived(id: string): Promise<void>;
+  deleteSessionRow(id: string): Promise<void>;
+  resumeSession(id: string): Promise<void>;
   esc(): void;
 }
 
@@ -314,6 +348,14 @@ let lifecycleGen = 0;
 let envRestoreDone = false;
 /** boot 轮询句柄（dispose / 重复 boot 时清理）。 */
 let bootPollTimer: ReturnType<typeof setInterval> | null = null;
+
+// 1.3.3 @ 补全数据源缓存（模块级；不在 state 里避免渲染抖动）。
+/** 子代理清单（GET /api/agents，首个 @ 补全拉取后缓存）。 */
+let agentsCache: AgentEntity[] | null = null;
+/** 文件树缓存：dir 前缀 → 条目（workspace/files 按目录前缀缓存）。 */
+const filesCache = new Map<string, WorkspaceFileEntry[]>();
+/** @ 补全异步富化代次（关闭/换查询后过期结果丢弃）。 */
+let mentionGen = 0;
 
 function browserStorage(): Pick<Storage, 'getItem' | 'setItem'> | undefined {
   try {
@@ -351,6 +393,12 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   decisions: [],
   activeDecisionId: null,
   theme: loadTheme(browserStorage()),
+
+  tools: [],
+
+  historySessions: null,
+  historyLoading: false,
+  mentionApply: null,
 
   tasksOpen: false,
   tasksSelected: null,
@@ -457,6 +505,8 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
             }
             if (res.bgEvent) patch.bgTasks = applyBgEvent(s.bgTasks, res.bgEvent);
             if (res.subagentEvent) patch.subagents = applySubagentEvent(s.subagents, res.subagentEvent);
+            // 1.3.3 @ 补全：chat:system-init 广播的工具名清单。
+            if (res.tools) patch.tools = res.tools;
             // 1.3.2 ①：决策登记表（init reset → replay upsert → resolved remove）
             if (res.decisionRequest || res.decisionResolved) {
               let decisions = s.decisions;
@@ -668,15 +718,23 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       return;
     }
     if (kind === 'at') {
-      const items: OverlayItem[] = s.envs.map((e) => ({
-        name: e.id,
-        detail: `${e.kind} · 环境引用`,
-        tag: '环境',
-      }));
-      if (items.length === 0) {
-        items.push({ name: '（无已登记环境）', detail: '@ 引用在 MVP 支持已登记环境', tag: '环境' });
+      // 1.3.3 @ 补全：触发解析 + 四源合一（envs 同步出；agents/tools 已缓存
+      // 即同步出；files 按目录前缀缓存/异步补）。异步富化见 enrichMention。
+      const mq = parseMentionQuery(query);
+      const items: OverlayItem[] = buildMentionItems(mq, {
+        envs: s.envs,
+        agents: agentsCache ?? [],
+        tools: s.tools,
+        files: mq.isFileDir ? filesCache.get(fileDirOf(mq)) ?? [] : [],
+      }).map(toOverlayItem);
+      if (items.length === 0 && !mq.isFileDir) {
+        items.push({ name: '（无匹配引用）', detail: '@ 引用数据源：环境 / 子代理 / 工具', tag: '引用' });
       }
-      set({ overlay: { kind, title: '引用环境对象', items, sel: 0 } });
+      if (items.length === 0 && mq.isFileDir) {
+        items.push({ name: '（读取文件树…）', detail: `/api/workspace/files dir=${fileDirOf(mq) || '.'}`, tag: '文件', section: '文件' });
+      }
+      set({ overlay: { kind, title: '引用', items, sel: 0 } });
+      void enrichMention(get, set, mq);
       return;
     }
     if (kind === 'history') {
@@ -738,8 +796,16 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         break;
       }
       case 'at': {
-        if (s.envs.some((e) => e.id === item.name)) {
+        // 1.3.3：ref → chips；insert → 替换输入框尾部 @token；旧环境行兜底。
+        const nonce = (s.mentionApply?.nonce ?? 0) + 1;
+        if (item.ref) {
+          s.addRef(item.ref);
+          set({ mentionApply: { replace: '', nonce } });
+        } else if (item.insert !== undefined) {
+          set({ mentionApply: { replace: item.insert, nonce } });
+        } else if (s.envs.some((e) => e.id === item.name)) {
           s.addRef({ type: 'env', id: item.name });
+          set({ mentionApply: { replace: '', nonce } });
         }
         break;
       }
@@ -1157,6 +1223,175 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     });
   },
 
+  // ── 1.3.3 历史面板：清单 / 会话管理 / 载回续跑 ─────────────────────
+
+  async openHistoryPanel() {
+    set({ page: 'history' });
+    if (get().historySessions !== null) return;
+    set({ historyLoading: true });
+    const c = client;
+    if (!c) {
+      set({ historyLoading: false, historySessions: [] });
+      return;
+    }
+    try {
+      const rows = parseSessionRows(await api.fetchSessions(c));
+      set({ historySessions: rows, historyLoading: false });
+    } catch (err) {
+      set({ historySessions: [], historyLoading: false });
+      get().showToast(`会话清单加载失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  closeHistoryPanel() {
+    set({ page: 'chat' });
+  },
+
+  async renameSession(id: string, title: string) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    const t = title.trim().slice(0, 100);
+    if (!t) {
+      state.showToast('标题不能为空');
+      return;
+    }
+    try {
+      const res = await api.patchSessionMeta(c, id, { title: t });
+      if (!res.success) {
+        state.showToast(`重命名失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set((s) =>
+        s.historySessions
+          ? {
+              historySessions: s.historySessions.map((r) =>
+                r.id === id ? { ...r, title: t, titleSource: 'user' as const } : r,
+              ),
+            }
+          : {},
+      );
+    } catch (err) {
+      state.showToast(`重命名失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  async toggleSessionPinned(id: string) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    const row = state.historySessions?.find((r) => r.id === id);
+    if (!row) return;
+    const next = row.pinned !== true;
+    try {
+      const res = await api.patchSessionMeta(c, id, { pinned: next });
+      if (!res.success) {
+        state.showToast(`置顶失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set((s) =>
+        s.historySessions
+          ? {
+              historySessions: s.historySessions.map((r) =>
+                r.id === id ? { ...r, pinned: next || undefined } : r,
+              ),
+            }
+          : {},
+      );
+    } catch (err) {
+      state.showToast(`置顶失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  async toggleSessionArchived(id: string) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    const row = state.historySessions?.find((r) => r.id === id);
+    if (!row) return;
+    const next = row.archived !== true;
+    try {
+      const res = await api.patchSessionMeta(c, id, { archived: next });
+      if (!res.success) {
+        state.showToast(`归档失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set((s) =>
+        s.historySessions
+          ? {
+              historySessions: s.historySessions.map((r) =>
+                r.id === id ? { ...r, archived: next || undefined } : r,
+              ),
+            }
+          : {},
+      );
+    } catch (err) {
+      state.showToast(`归档失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  async deleteSessionRow(id: string) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.deleteSessionMeta(c, id);
+      if (!res.success) {
+        state.showToast(`删除失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set((s) =>
+        s.historySessions
+          ? { historySessions: s.historySessions.filter((r) => r.id !== id) }
+          : {},
+      );
+      state.showToast('✓ 会话已删除（含 transcript）');
+    } catch (err) {
+      state.showToast(`删除失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  /**
+   * 1.3.3 载回续跑：POST /sessions/switch → 引擎切到目标会话（replay 全量
+   * 重建），随后走 reconnect 同族流（关面板回 chat + 重连）。已知取舍：
+   * switch 不刷新 env-sessions 分线映射（服务端 B2 决策），chat:init 的
+   * environment 锚仍报工作区选定——若与目标会话 envKey 不同，重连后
+   * applyInitEnvAnchor 会再切到选定线（内容照常回放，只是分组标签差异）。
+   */
+  async resumeSession(id: string) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.switchSession(c, id);
+      if (!res.success) {
+        state.showToast(`载回失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set({ page: 'chat', drawer: null, overlay: null });
+      get().reconnect();
+      void get().refreshSidebar();
+      get().showToast('✓ 已载回会话——续跑从最新消息开始');
+    } catch (err) {
+      state.showToast(`载回失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
   // ── Esc 链（单处理器入口） ──────────────────────────────────────────
 
   esc() {
@@ -1371,6 +1606,79 @@ async function loadModels(
   } catch {
     // 模型列表拉取失败不阻塞会话（对齐 server「失败降级不阻塞」）。
   }
+}
+
+// ---------------------------------------------------------------------------
+// 1.3.3 @ 补全：数据源富化（模块级辅助）
+// ---------------------------------------------------------------------------
+
+/** MentionItem → OverlayItem（ref/insert/section 透传；分节标题替代行内 tag）。 */
+function toOverlayItem(item: {
+  kind: string;
+  label: string;
+  detail?: string;
+  id?: string;
+  path?: string;
+  insert?: string;
+  section: string;
+}): OverlayItem {
+  return {
+    name: item.label,
+    detail: item.detail,
+    section: item.section,
+    ...(item.id ? { ref: { type: 'env', id: item.id } as Ref } : {}),
+    ...(item.path ? { ref: { type: 'file', path: item.path } as Ref } : {}),
+    ...(item.insert !== undefined ? { insert: item.insert } : {}),
+  };
+}
+
+/**
+ * @ 补全异步富化：agents 拉一次缓存；files 按目录前缀拉取缓存。结果回填
+ * 前校验代次与 overlay 仍是同一次 'at' 会话（防竞态：换查询/关面板后
+ * 过期结果丢弃）。
+ */
+async function enrichMention(
+  get: () => GuiState,
+  set: (partial: Partial<GuiState>) => void,
+  mq: ReturnType<typeof parseMentionQuery>,
+): Promise<void> {
+  const c = client;
+  if (!c) return;
+  const gen = ++mentionGen;
+  const dir = mq.isFileDir ? fileDirOf(mq) : null;
+
+  const tasks: Promise<void>[] = [];
+  if (agentsCache === null) {
+    tasks.push(
+      api.fetchAgents(c).then((agents) => {
+        agentsCache = agents;
+      }).catch(() => {
+        agentsCache = [];
+      }),
+    );
+  }
+  if (dir !== null && !filesCache.has(dir)) {
+    tasks.push(
+      api.fetchWorkspaceFiles(c, { dir, depth: 2 }).then((res) => {
+        filesCache.set(dir, res.files ?? []);
+      }).catch(() => {
+        filesCache.set(dir, []);
+      }),
+    );
+  }
+  await Promise.all(tasks);
+
+  const s = get();
+  if (gen !== mentionGen) return; // 查询已换/面板已关
+  const ov = s.overlay;
+  if (!ov || ov.kind !== 'at') return;
+  const items = buildMentionItems(mq, {
+    envs: s.envs,
+    agents: agentsCache ?? [],
+    tools: s.tools,
+    files: dir !== null ? filesCache.get(dir) ?? [] : [],
+  }).map(toOverlayItem);
+  if (items.length > 0) set({ overlay: { ...ov, items } });
 }
 
 /** 1.3.1 ④：slash 命令分发（GUI 本地命令先处理；其余按路由表）。 */

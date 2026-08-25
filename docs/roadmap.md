@@ -5,15 +5,17 @@
 
 ---
 
-## 1.3.3 —— 立项：历史面板 + 会话管理进阶（进行中）
+## 1.3.3 —— 立项：历史面板 + 会话管理进阶（已完成）
 
-GUI 主线收尾段：1.3.2 决策面板落定后，GUI 愿景核心块只剩「历史」一块未做——**会话 + 决策 + 历史**齐了，GUI 才算覆盖核心场景（届时可议 TUI 退役 + 编译发版）。**先评估定范围**（本版立项，待拍板），候选与排序如下：
+GUI 主线收尾段：1.3.2 决策面板落定后，GUI 愿景核心块只剩「历史」一块未做——**会话 + 决策 + 历史**齐了，GUI 才算覆盖核心场景（届时可议 TUI 退役 + 编译发版）。**用户拍板：根据 roadmap 全量推进**——历史面板（主线）+ 侧栏多线进阶 + @ 补全扩展 + attach 交互式 pty；/bg 转后台单独立版。
 
-- [ ] **历史面板**（核心，本版主线候选）：会话清单（按环境/时间分组）→ 点开只读回看完整 transcript（复用 chat:stream 的 cold-history replay 基建，不抢活跃流的线）→ 从历史载回旧会话续跑（rewind/fork 端点已有，接真）。目标：研究员的「翻旧账」入口——poc/结论/决策块都在里面可检索、可续、可回溯。
-- [ ] **侧栏多线进阶（会话管理）**：1.3.2 A 形态只有切换没有管理——重命名/置顶/归档/删除会话。轻，UI 为主。
-- [ ] **attach 交互式 pty**：1.3.2 遗留——attach 页现为 environment/exec 一次性执行；升级真终端需服务端补 pty 端点（TUI 的 term 通道在 Rust panel_api 且只服务 zhishi term，成本中）。
-- [ ] **@ 补全扩展**：@ 提及补全（文件/子代理/工具/环境）。轻。
-- [ ] **/bg 转后台**：1.3.2 留后续——turn 生命周期脱离（busy/queue/steering 三线重组），服务端大缺口，重，**建议单独立版**，不塞本版。
+- [x] **历史面板**（核心，本版主线候选）：会话清单（按环境/时间分组）→ 点开只读回看完整 transcript（复用 chat:stream 的 cold-history replay 基建，不抢活跃流的线）→ 从历史载回旧会话续跑（rewind/fork 端点已有，接真）。目标：研究员的「翻旧账」入口——poc/结论/决策块都在里面可检索、可续、可回溯。
+- [x] **侧栏多线进阶（会话管理）**：1.3.2 A 形态只有切换没有管理——重命名/置顶/归档/删除会话。轻，UI 为主。
+- [x] **attach 交互式 pty**：1.3.2 遗留——attach 页现为 environment/exec 一次性执行；升级真终端需服务端补 pty 端点（TUI 的 term 通道在 Rust panel_api 且只服务 zhishi term，成本中）。
+- [x] **@ 补全扩展**：@ 提及补全（文件/子代理/工具/环境）。轻。
+- [ ] **/bg 转后台**：1.3.2 留后续——turn 生命周期脱离（busy/queue/steering 三线重组），服务端大缺口，重，**单独立版，不塞本版**。
+
+> 实际落地（2026-08-25）：历史面板全链路——GET /sessions 补 envKey（env-sessions 分线映射反查，additive）+ PATCH 补 pinned/archived（只持久化 true、不 bump lastActiveAt）+ 新增 wire 格式回看端点（`/api/loop-session/messages?format=wire`，2000 条护栏，决策块 kind:'decision' 全字段还原，纯函数 buildLoopWireMessages 与 chat-engine 委托同口径）；GUI HistoryPanel（分组/搜索/置顶优先/归档折叠组 + 只读查看器走现有 reducer replay 不扰活跃流 + 「载回续跑」POST /sessions/switch 接真）+ 会话管理动作（重命名/置顶/归档/删除二次确认，server 先行成功才更新本地——沿现有 store 惯例）。@ 补全四源分节（环境/文件/子代理/工具；`@dir/` 触发 workspace/files 目录补全，depth 上限 6、条目 1000、symlink 不跟随、agentDir 校验）。attach 真终端——服务端 WS `/api/admin/environment/term?env=`（ws + @lydell/node-pty napi prebuilds，惰性加载 + pty-runtime 回落、esbuild external node-pty/bufferutil/utf-8-validate、ws 本体 bundle）+ `docker exec -it`/`ssh -tt` 分派（bash 回退链/windows cmd；guest 断网 VM 明确拒绝无 TTY）+ 生命周期（同 env 抢占 4001+旧 pty 即杀、WS close 回收、resize 护栏）；GUI xterm.js 终端模式 + 一次性执行双模式保留。**实机走查抓出真 bug**：buildPtySshArgv/buildPtyDockerExecArgv 沿单次执行路径「argv 首元素=程序名」惯例，与 node-pty spawn(file,args) 契约冲突 → 实际跑成 `ssh ssh -tt` → ssh 解析主机名失败 exit 255；已修（args 不含程序名）+ 单测契约锁定。新增 72 单测（服务端 38 + GUI 34）；全量 183 文件 2303 测试绿 + typecheck + eslint 零错 + build:gui/build:server 绿；实机走查通过（用户确认，attach 终端在 pwn-vm ssh 通道活体）。已知取舍：Tauri 生产路径的 WS upgrade 转发未验证（GUI 完成前不编译，发版前验；不通则终端模式降级一次性执行）；wire 无 thinking 段（与 live replay 同源取舍）；node-pty 打包侧 pty-runtime 未接（发版前接）。
 
 > 后置里程碑（不在本版）：GUI 覆盖会话+决策+历史后，议 TUI 退役 + 编译发版。
 > 不做（维持）：编译发版（GUI 完成前）、TUI 新功能（冻结）、B 形态引擎并行（用户已砍）。

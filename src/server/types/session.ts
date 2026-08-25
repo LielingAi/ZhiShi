@@ -41,6 +41,17 @@ export interface SessionMetadata {
      *  identical semantics, so the on-disk size cost is zero for the common
      *  case. */
     favorite?: boolean;
+    /**
+     * 1.3.3 历史面板 — 置顶。区别于 favorite(收藏筛选):pinned 是排序信号,
+     * 置顶的会话排在列表顶部。只持久化 `true`(false 存为 undefined,
+     * 与 favorite 同口径的零成本语义)。
+     */
+    pinned?: boolean;
+    /**
+     * 1.3.3 历史面板 — 归档。归档会话默认不出现主列表(仍可通过过滤查看),
+     * 不删除任何数据。只持久化 `true`。
+     */
+    archived?: boolean;
     /** Preview of the last user message (truncated, for Task Center display) */
     lastMessagePreview?: string;
     /** How the title was set: default (first message truncation), auto (AI-generated), user (manually renamed) */

@@ -24,6 +24,7 @@ import { TasksPanel } from './components/TasksPanel';
 import { QueuePanel } from './components/QueuePanel';
 import { SettingsPage } from './components/SettingsPage';
 import { AttachView } from './components/AttachView';
+import { HistoryPanel } from './components/HistoryPanel';
 import { Toast } from './components/Toast';
 
 function Toolbar(): React.JSX.Element {
@@ -34,6 +35,7 @@ function Toolbar(): React.JSX.Element {
   const decisions = useGuiStore((s) => s.decisions);
   const activeDecisionId = useGuiStore((s) => s.activeDecisionId);
   const openDecision = useGuiStore((s) => s.openDecision);
+  const openHistoryPanel = useGuiStore((s) => s.openHistoryPanel);
 
   // 1.3.2 ①：会话头部 pending 指示（决策模态收起后仍可点开重答）。
   const firstDecision = decisions[0] ?? null;
@@ -45,6 +47,13 @@ function Toolbar(): React.JSX.Element {
         <span className="ok">◈</span> {hostAnchorLabel(envKey)} ·{' '}
         {connectionState === 'live' ? '就绪' : '等待 sidecar'}
       </span>
+      <button
+        className="btn small"
+        title="历史会话（清单 / 只读回看 / 载回续跑）"
+        onClick={() => void openHistoryPanel()}
+      >
+        ▤ 历史
+      </button>
       {pendingDecision && firstDecision && (
         <button
           className="toolbar-decision pending"
@@ -87,6 +96,8 @@ export function App(): React.JSX.Element {
           <SettingsPage />
         ) : page === 'attach' ? (
           <AttachView />
+        ) : page === 'history' ? (
+          <HistoryPanel />
         ) : (
           <>
             <div className="stream-wrap">

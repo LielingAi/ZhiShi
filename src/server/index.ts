@@ -346,7 +346,16 @@ import { pendingBoundaryAsks, respondBoundaryAsk } from './loop/boundary-ask';
 import { pendingDecisions, respondDecision } from './loop/decision';
 
 // 越界/决策应答落盘 transcript 的持久化通道。
-import { appendLoopMessages } from './loop/session';
+import { appendLoopMessages, defaultLoopSessionDir, loadLoopSession, loopSessionFile } from './loop/session';
+
+// 1.3.3:历史面板 wire 回放(loop jsonl → 完整 wire 消息,含决策块)。
+import { buildLoopWireMessages } from './loop/wire-replay';
+
+// 1.3.3:attach 交互式 pty 端点(WS upgrade)。
+import { installTermUpgradeHandler } from './loop/term-pty';
+
+// 1.3.3:@ 补全文件数据源——工作区目录树只读列表。
+import { listWorkspaceFiles } from './workspace-files';
 
 
 
@@ -1267,7 +1276,7 @@ async function main() {
 
 
 
-  honoServe({
+  const httpServer = honoServe({
 
     // Explicit 127.0.0.1 for Rust proxy compatibility (IPv4).
 
@@ -1302,6 +1311,11 @@ async function main() {
     },
 
   } as Parameters<typeof honoServe>[0]);
+
+  // 1.3.3:attach 交互式 pty——在 node http.Server 上挂 WS upgrade
+  // (HTTP fetch handler 管不到 upgrade 请求,honoServe 返回的 server 是
+  // 同一实例)。
+  installTermUpgradeHandler(httpServer as unknown as import('node:http').Server);
 
 
 
@@ -1903,20 +1917,49 @@ async function main() {
 
       // 1.1.10(A′)— 子代理 transcript 只读查看:按 loopSessionId 返回
       // loop-sessions 的结构化消息序列(纯读;大小护栏见 loop/transcript.ts)。
+      // 1.3.3:`?format=wire` 返回**完整 wire 消息**(含 1.3.2 决策块
+      // kind:'decision')——GUI 历史面板只读回看用(transcript 形状会丢决策
+      // 结构,wire 形状与 /chat/stream 重放逐字段对齐)。
       if (pathname === '/api/loop-session/messages' && request.method === 'GET') {
         const loopSessionId = url.searchParams.get('loopSessionId');
         if (!loopSessionId) {
           return jsonResponse({ success: false, error: 'loopSessionId is required' }, 400);
         }
+        const format = url.searchParams.get('format') ?? 'transcript';
+        if (format !== 'wire') {
+          try {
+            const transcript = buildLoopTranscript(loopSessionId);
+            if (!transcript) {
+              return jsonResponse({ success: false, error: `loop session '${loopSessionId}' not found` }, 404);
+            }
+            return jsonResponse({ success: true, transcript });
+          } catch (error) {
+            return jsonResponse(
+              { success: false, error: error instanceof Error ? error.message : 'Failed to read loop session messages' },
+              500
+            );
+          }
+        }
+
         try {
-          const transcript = buildLoopTranscript(loopSessionId);
-          if (!transcript) {
+          // 与 transcript 路径同源读盘(会话文件不存在 → 404)。
+          if (!existsSync(loopSessionFile(loopSessionId, defaultLoopSessionDir()))) {
             return jsonResponse({ success: false, error: `loop session '${loopSessionId}' not found` }, 404);
           }
-          return jsonResponse({ success: true, transcript });
+          const stored = loadLoopSession(loopSessionId);
+          const all = buildLoopWireMessages(stored.messages);
+          // 护栏:wire 消息可大可小,超出上限从头截断(时间序保留)并标记。
+          const MAX_WIRE_MESSAGES = 2000;
+          const truncated = all.length > MAX_WIRE_MESSAGES;
+          return jsonResponse({
+            success: true,
+            messages: truncated ? all.slice(0, MAX_WIRE_MESSAGES) : all,
+            totalMessages: all.length,
+            truncated,
+          });
         } catch (error) {
           return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to read loop session messages' },
+            { success: false, error: error instanceof Error ? error.message : 'Failed to read loop session wire messages' },
             500
           );
         }
@@ -4378,6 +4421,40 @@ async function main() {
       };
 
 
+
+      // ============= WORKSPACE FILES API (1.3.3) =============
+      // 只读目录树——@ 补全的文件数据源(最小面:列目录,无内容/写能力)。
+
+      // GET /api/workspace/files?dir=<rel>&depth=<n>[&agentDir=<dir>]
+      if (pathname === '/api/workspace/files' && request.method === 'GET') {
+        try {
+          const queryAgentDir = url.searchParams.get('agentDir');
+          if (queryAgentDir && !isValidAgentDir(queryAgentDir).valid) {
+            return jsonResponse({ success: false, error: 'Invalid agentDir' }, 400);
+          }
+          const targetDir = queryAgentDir || currentAgentDir;
+          const subdir = url.searchParams.get('dir') ?? '';
+          const rawDepth = parseInt(url.searchParams.get('depth') ?? '', 10);
+          const result = listWorkspaceFiles(targetDir, {
+            subdir,
+            ...(Number.isFinite(rawDepth) ? { maxDepth: Math.max(0, rawDepth) } : {}),
+          });
+          if (!result.ok) {
+            return jsonResponse({ success: false, error: result.error }, 404);
+          }
+          return jsonResponse({
+            success: true,
+            files: result.files,
+            truncated: result.truncated,
+          });
+        } catch (error) {
+          console.error('[api/workspace/files] Error listing:', error);
+          return jsonResponse(
+            { success: false, error: error instanceof Error ? error.message : 'Failed to list workspace files' },
+            500
+          );
+        }
+      }
 
       // ============= RULES FILES API =============
 

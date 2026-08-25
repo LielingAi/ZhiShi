@@ -12,8 +12,12 @@ import { describe, expect, it } from 'vitest';
 import type { EnvironmentEntry } from '../../shared/config-types';
 import {
   buildDockerExecArgv,
+  buildPtyDockerExecArgv,
+  buildPtySpawnSpec,
+  buildPtySshArgv,
   buildSshArgv,
   execInEnvironment,
+  interactiveShellScript,
   resolveExecTarget,
   resolvePasswordRef,
   resolveSshTarget,
@@ -279,6 +283,81 @@ describe('execInEnvironment', () => {
       expect(r.truncated).toBe(true);
       expect(r.stdout).toContain('[truncated');
       expect(r.stdout.length).toBeLessThan(big.length);
+    }
+  });
+});
+
+describe('交互终端 argv（1.3.3 attach pty）', () => {
+  it('interactiveShellScript：linux → bash 回退链；windows → cmd.exe', () => {
+    expect(interactiveShellScript('linux')).toBe('[ -x /bin/bash ] && exec /bin/bash; exec sh');
+    expect(interactiveShellScript('windows')).toBe('cmd.exe');
+  });
+
+  it('buildPtyDockerExecArgv：linux 拆 argv(sh -c 回退链)；windows 直连 cmd.exe(不含程序名)', () => {
+    expect(buildPtyDockerExecArgv('zhishi-pwn-abc', 'linux')).toEqual([
+      'exec', '-it', 'zhishi-pwn-abc', 'sh', '-c', '[ -x /bin/bash ] && exec /bin/bash; exec sh',
+    ]);
+    expect(buildPtyDockerExecArgv('zhishi-pwn-abc', 'windows')).toEqual([
+      'exec', '-it', 'zhishi-pwn-abc', 'cmd.exe',
+    ]);
+  });
+
+  it('buildPtySshArgv：-tt 强制 TTY + BatchMode/accept-new/ConnectTimeout + 单元素远端 shell', () => {
+    const target = resolveSshTarget(SSH_ENTRY);
+    if (!target.ok) throw new Error('unreachable');
+    const argv = buildPtySshArgv(target.target, 'linux', { controlMaster: true });
+    const s = argv.join(' ');
+    expect(argv[0]).toBe('-tt');
+    expect(s).toContain('BatchMode=yes');
+    expect(s).toContain('StrictHostKeyChecking=accept-new');
+    expect(s).toContain('ControlMaster=auto');
+    expect(argv).toContain('-i');
+    expect(argv[argv.indexOf('-i') + 1]).toBe('/home/me/.ssh/id_ed25519');
+    expect(argv).toContain('-p');
+    expect(argv[argv.indexOf('-p') + 1]).toBe('2222');
+    // 远端 shell 作为单元素收尾(与 buildSshArgv 的「命令单参数」同口径)
+    expect(argv[argv.length - 2]).toBe('researcher@10.0.0.8');
+    expect(argv[argv.length - 1]).toBe('[ -x /bin/bash ] && exec /bin/bash; exec sh');
+  });
+
+  it('buildPtySshArgv：windows family → cmd.exe；controlMaster:false(win32 形态)不带 Control*', () => {
+    const argv = buildPtySshArgv({ destination: 'u@h', host: 'h' }, 'windows', { controlMaster: false });
+    const s = argv.join(' ');
+    expect(s).not.toContain('ControlMaster');
+    expect(s).toContain('-tt');
+    expect(argv[argv.length - 1]).toBe('cmd.exe');
+  });
+
+  it('buildPtySpawnSpec：docker → docker exec 通道；vm/ssh → ssh 通道', () => {
+    const docker = buildPtySpawnSpec({ id: 'd', kind: 'docker', container: 'c1', createdAt: '' });
+    expect(docker.ok).toBe(true);
+    if (docker.ok) {
+      expect(docker.spec.file).toBe('docker');
+      expect(docker.spec.args.slice(0, 3)).toEqual(['exec', '-it', 'c1']);
+      expect(docker.spec.family).toBe('linux');
+    }
+    const ssh = buildPtySpawnSpec(SSH_ENTRY);
+    expect(ssh.ok).toBe(true);
+    if (ssh.ok) {
+      expect(ssh.spec.file).toBe('ssh');
+      expect(ssh.spec.args[0]).toBe('-tt');
+    }
+  });
+
+  it('buildPtySpawnSpec：guest(断网隔离 VM)→ 明确拒绝(无 TTY)', () => {
+    const r = buildPtySpawnSpec({ id: 'v', kind: 'vm', vmName: 'iso-vm', vmx: 'D:\\v\\iso.vmx', createdAt: '' });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('guest-exec');
+  });
+
+  it('buildPtySpawnSpec：osFamily=windows 条目 → cmd.exe + family 透传', () => {
+    const r = buildPtySpawnSpec({
+      id: 'w', kind: 'docker', container: 'win-box', osFamily: 'windows', createdAt: '',
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.spec.family).toBe('windows');
+      expect(r.spec.args[r.spec.args.length - 1]).toBe('cmd.exe');
     }
   });
 });

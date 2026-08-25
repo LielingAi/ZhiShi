@@ -256,6 +256,11 @@ export interface ReduceResult {
   /** 1.3.2 ①：chat:decision-resolved → store 摘除对应 pending。 */
   decisionResolved?: { decisionId: string };
   /**
+   * 1.3.3 @ 补全：chat:system-init 广播的工具名清单（会话绑定/切换时刷新）。
+   * store 顶层 tools 状态消费。
+   */
+  tools?: string[];
+  /**
    * 1.3.2 任务二 #2：chat:init 环境锚（payload 带 environment 字段时才
    * 设置；null = 宿主线）。store 据此锚定当前环境，免 environment/current
    * 绕行（旧路径保留兜底）。
@@ -657,7 +662,16 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
 
     case 'chat:system-init': {
       const model = str(rec(p.info).model);
-      return model ? { session: { ...session, model } } : { session };
+      // 1.3.3 @ 补全：工具名数据源（chat:system-init 的 info.tools，随会话
+      // 绑定/切换广播一次）。store 顶层 tools 状态消费，@ 补全分节展示。
+      const rawTools = rec(p.info).tools;
+      const tools = Array.isArray(rawTools)
+        ? rawTools.filter((t): t is string => typeof t === 'string')
+        : undefined;
+      return {
+        session: model ? { ...session, model } : session,
+        ...(tools ? { tools } : {}),
+      };
     }
 
     // ── 1.3.1 ②：越界 ask（登记表增量交给 store；这里不落会话流） ─────

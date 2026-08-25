@@ -398,6 +398,124 @@ export function fetchLoopTranscript(
 }
 
 // ---------------------------------------------------------------------------
+// 1.3.3 新增：会话清单 / 管理 / wire 历史回看 / @ 补全数据源
+// ---------------------------------------------------------------------------
+
+/** GET /sessions → SessionMetadata 行数组（形状归一在 model/history.ts）。 */
+export function fetchSessions(client: GuiSidecarClient): Promise<unknown[]> {
+  return client
+    .getJson<{ success: boolean; sessions?: unknown[] }>('/sessions')
+    .then((r) => (Array.isArray(r.sessions) ? r.sessions : []));
+}
+
+export type SessionMetaPatch = {
+  title?: string;
+  favorite?: boolean;
+  pinned?: boolean;
+  archived?: boolean;
+};
+
+/**
+ * PATCH /sessions/:id（部分更新：title/favorite/pinned/archived）。
+ * 服务端布尔字段只持久化 true（false 存 undefined）；返回更新后的 meta。
+ */
+export function patchSessionMeta(
+  client: GuiSidecarClient,
+  id: string,
+  patch: SessionMetaPatch,
+): Promise<{ success: boolean; error?: string; session?: unknown }> {
+  return client.patchJson<{ success: boolean; error?: string; session?: unknown }>(
+    `/sessions/${encodeURIComponent(id)}`,
+    patch,
+  );
+}
+
+/** DELETE /sessions/:id（含 transcript——UI 必须二次确认）。 */
+export function deleteSessionMeta(
+  client: GuiSidecarClient,
+  id: string,
+): Promise<{ success: boolean; error?: string }> {
+  return client.deleteJson<{ success: boolean; error?: string }>(
+    `/sessions/${encodeURIComponent(id)}`,
+  );
+}
+
+/** POST /sessions/switch {sessionId} → 引擎切到该会话（续跑入口）。 */
+export function switchSession(
+  client: GuiSidecarClient,
+  sessionId: string,
+): Promise<{ success: boolean; error?: string; sessionId?: string }> {
+  return client.postJson<{ success: boolean; error?: string; sessionId?: string }>(
+    '/sessions/switch',
+    { sessionId },
+  );
+}
+
+export interface WireTranscriptResult {
+  success: boolean;
+  error?: string;
+  /** 完整 wire 消息数组（含 1.3.2 决策块 kind:'decision'）。 */
+  messages?: unknown[];
+  totalMessages?: number;
+  /** 超出 2000 条护栏，从头截断。 */
+  truncated?: boolean;
+}
+
+/**
+ * GET /api/loop-session/messages?loopSessionId=..&format=wire —— 历史面板
+ * 只读回看（wire 形状与 /chat/stream 重放逐字段对齐，GUI reducer 可直接
+ * 归约）。loopSessionId 缺失的行不要调（服务端 404）。
+ */
+export function fetchSessionWire(
+  client: GuiSidecarClient,
+  loopSessionId: string,
+): Promise<WireTranscriptResult> {
+  return client.getJson<WireTranscriptResult>(
+    `/api/loop-session/messages?loopSessionId=${encodeURIComponent(loopSessionId)}&format=wire`,
+  );
+}
+
+export interface WorkspaceFileEntry {
+  /** 相对工作区根的 POSIX 路径。 */
+  path: string;
+  type: 'file' | 'dir' | 'symlink';
+}
+
+export interface WorkspaceFilesResult {
+  success: boolean;
+  error?: string;
+  files?: WorkspaceFileEntry[];
+  truncated?: boolean;
+}
+
+/** GET /api/workspace/files?dir=&depth=（@ 补全文件数据源）。 */
+export function fetchWorkspaceFiles(
+  client: GuiSidecarClient,
+  input: { dir?: string; depth?: number },
+): Promise<WorkspaceFilesResult> {
+  const params = new URLSearchParams();
+  if (input.dir) params.set('dir', input.dir);
+  if (input.depth !== undefined) params.set('depth', String(input.depth));
+  const qs = params.toString();
+  return client.getJson<WorkspaceFilesResult>(`/api/workspace/files${qs ? `?${qs}` : ''}`);
+}
+
+export interface AgentEntity {
+  name: string;
+  description?: string;
+  scope: 'user' | 'project';
+  path: string;
+  folderName: string;
+}
+
+/** GET /api/agents（@ 补全子代理数据源）。 */
+export function fetchAgents(client: GuiSidecarClient): Promise<AgentEntity[]> {
+  return client
+    .getJson<{ success: boolean; agents?: AgentEntity[] }>('/api/agents')
+    .then((r) => (Array.isArray(r.agents) ? r.agents : []));
+}
+
+// ---------------------------------------------------------------------------
 // 1.3.1 新增：设置页（skills / intel / expert / research / model key）
 // ---------------------------------------------------------------------------
 

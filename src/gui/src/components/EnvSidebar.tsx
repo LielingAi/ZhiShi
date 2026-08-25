@@ -23,6 +23,7 @@ export function EnvSidebar(): React.JSX.Element {
   const openNewEnv = useGuiStore((s) => s.openNewEnv);
   const setPage = useGuiStore((s) => s.setPage);
   const showToast = useGuiStore((s) => s.showToast);
+  const openHistoryPanel = useGuiStore((s) => s.openHistoryPanel);
 
   const groups = useMemo(
     () =>
@@ -83,6 +84,7 @@ export function EnvSidebar(): React.JSX.Element {
         <div className="eb-empty">连接 sidecar 后加载环境列表…</div>
       )}
       <div className="eb-foot">
+        <button className="btn" onClick={() => void openHistoryPanel()}>▤ 历史会话</button>
         <button className="btn" onClick={openNewEnv}>＋ 新建环境</button>
         <button className="btn" onClick={() => setPage('settings')}>⚙ 设置</button>
       </div>

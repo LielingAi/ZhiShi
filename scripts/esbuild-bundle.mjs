@@ -112,6 +112,19 @@ const TARGETS = {
 
     banner: { js: ESM_INTEROP_BANNER },
 
+    /**
+     * 1.3.3 attach pty:
+     * - `@lydell/node-pty`:napi prebuilds 原生模块——.node 文件与 node-gyp-build
+     *   的动态加载路径无法打包,必须运行时 require(term-pty.ts::loadNodePty
+     *   惰性解析;发行侧装进 resources/pty-runtime/,对齐 sharp/sqlite-runtime)。
+     * - `bufferutil` / `utf-8-validate`:ws 的可选原生加速器(try/catch 动态
+     *   require)——external 后 esbuild 不再尝试打包,ws 本体是纯 JS 照常
+     *   bundle(若把 ws 整个 external,生产侧 server-dist.js 旁没有
+     *   node_modules 会直接加载失败)。
+     */
+
+    external: ['@lydell/node-pty', 'bufferutil', 'utf-8-validate'],
+
     /** Post-build: catch hardcoded `__dirname = "<dev-machine path>"` leaks.
 
      *  esbuild treats a top-level `__dirname` as a compile-time constant; the

@@ -123,6 +123,32 @@ export class GuiSidecarClient {
     return this.parseJson<T>(res);
   }
 
+  /** 1.3.3 会话管理：PATCH（title/favorite/pinned/archived 部分更新）。 */
+  async patchJson<T = Record<string, unknown>>(path: string, body: unknown): Promise<T> {
+    let res: GuiFetchResponse;
+    try {
+      res = await this.fetchImpl(this.url(path), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body ?? {}),
+      });
+    } catch (err) {
+      throw this.normalizeTransport(err);
+    }
+    return this.parseJson<T>(res);
+  }
+
+  /** 1.3.3 会话管理：DELETE（删除会话 + transcript）。 */
+  async deleteJson<T = Record<string, unknown>>(path: string): Promise<T> {
+    let res: GuiFetchResponse;
+    try {
+      res = await this.fetchImpl(this.url(path), { method: 'DELETE' });
+    } catch (err) {
+      throw this.normalizeTransport(err);
+    }
+    return this.parseJson<T>(res);
+  }
+
   /** Admin API 便捷方法：POST /api/admin/<route>，`{success:false}` 返回而非抛错。 */
   async adminPost<T = Record<string, unknown>>(route: string, body: unknown = {}): Promise<T> {
     return this.postJson<T>(`/api/admin/${route.replace(/^\/+/, '')}`, body);

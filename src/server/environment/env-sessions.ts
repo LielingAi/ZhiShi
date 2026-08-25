@@ -165,6 +165,25 @@ export function removeEnvSessionsForEnvIdFromMap(map: EnvSessionsMap, envId: str
   return { version: 1, lines };
 }
 
+/**
+ * 1.3.3 历史面板 — 反查某 loopSessionId 属于哪个环境线:扫描指定 workspace
+ * 前缀下的行,命中返回行键后缀(环境键:env:<id> / recipe:<instanceId> / host);
+ * 无映射/跨 workspace → null。GET /sessions 用它给列表行补 envKey 分组字段。
+ */
+export function findEnvKeyForLoopSession(
+  map: EnvSessionsMap,
+  workspace: string,
+  loopSessionId: string,
+): string | null {
+  const prefix = `${normalizeWorkspaceKey(workspace)}::`;
+  for (const [key, line] of Object.entries(map.lines)) {
+    if (key.startsWith(prefix) && line.loopSessionId === loopSessionId) {
+      return key.slice(prefix.length);
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Thin IO — path injectable for tests；写走 withFileLock + tmp+rename
 // ---------------------------------------------------------------------------
