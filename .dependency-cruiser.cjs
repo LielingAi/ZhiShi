@@ -37,6 +37,7 @@ module.exports = {
           '(^|/)(babel|nodemon|jest|vitest|webpack|esbuild|vite|tailwind|postcss|stylelint)\\.config\\.(js|cjs|mjs|ts)$',
           '^src/server/index\\.ts$', // sidecar entry
           '^src/cli/zhishi\\.ts$', // CLI entry
+          '^src/gui/src/main\\.tsx$', // GUI entry（由 index.html 引用，非 TS 图）
           '^src-tauri/', // Rust files: depcruise sees them only via fs walk; not part of TS graph
           // Type-only files. Since we set tsPreCompilationDeps:false, dep-cruiser
           // doesn't track `import type {...}` edges, so these files look orphan
@@ -109,6 +110,10 @@ module.exports = {
   options: {
     doNotFollow: {
       path: ['node_modules']
+    },
+    exclude: {
+      // GUI 构建产物（vite dist）不进依赖图——孤儿/循环规则对它无意义。
+      path: '^src/gui/dist/'
     },
     // tsPreCompilationDeps: false → skip `import type` and other
     // type-only imports. Those are erased at compile time and don't

@@ -1,0 +1,11 @@
+{
+  "name": "zhishi-gui",
+  "private": true,
+  "type": "module",
+  "description": "ZhiShi GUI 前端（1.3.0 MVP）——依赖统一装在仓库根 node_modules，本文件只承载脚本。",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  }
+}

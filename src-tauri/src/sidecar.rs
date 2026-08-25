@@ -110,7 +110,7 @@ const SIDECAR_MARKER: &str = "--zhishi-sidecar";
 
 // Port file for CLI discovery — written when Global Sidecar starts,
 // read by `cli.rs` to know which port to connect to.
-const PORT_FILE_NAME: &str = "sidecar.port";
+pub const PORT_FILE_NAME: &str = "sidecar.port";
 
 // ===== Crashed Node Tracking =====
 // When a bundled Node.js crashes with STATUS_ACCESS_VIOLATION (0xC0000005) on Windows —
