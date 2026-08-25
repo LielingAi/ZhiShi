@@ -159,6 +159,13 @@ export interface IntelUpdateOptions {
   mode: IntelMode;
   windowYears: number;
   maxSizeMb: number;
+  /** 1.3.6 丢数据修复：window 模式的「存量裁剪」开关。true 才在更新末尾
+   *  删除窗口外（published 早于窗口线/无日期）的历史 CVE；false/缺省只做
+   *  写时过滤（新数据不进窗口外），已入库的历史保留。只有「持久化配置已
+   *  提交 window」的调用方（handleIntelUpdate 按 cfg.mode 判定）传 true——
+   *  一次性 mode 覆盖（GUI 更新按钮 / CLI --mode）不得裁剪：裁掉的记录
+   *  因增量水位无法找回，是永久丢数据。 */
+  pruneWindow?: boolean;
   /** fetch 实现（缺省 Node 全局 fetch）。 */
   fetchImpl?: IntelFetchFn;
   now?: () => Date;
@@ -593,8 +600,11 @@ async function runIntelUpdateInner(opts: IntelUpdateOptions): Promise<IntelUpdat
   result.nvdTotal = ctx.stats.total;
   result.nvdFetchedPages = ctx.stats.pages;
 
-  // ===== window 裁剪（写时已过滤，这里兜掉存量与增量带进来的老记录） =====
-  if (ctx.minPublished) {
+  // ===== window 裁剪（1.3.6 丢数据修复：仅 pruneWindow=true 执行） =====
+  // 写时过滤（minPublished）已保证新数据不落窗口外；存量裁剪是破坏性操作
+  // （删掉的记录因增量水位无法找回），必须由「已提交 window 配置」的调用
+  // 方显式开启——一次性 mode 覆盖只过滤不裁剪。
+  if (ctx.minPublished && opts.pruneWindow === true) {
     try {
       result.prunedByWindow = runInTransaction(db, () => pruneByWindow(db, ctx.minPublished as string));
     } catch (err) {

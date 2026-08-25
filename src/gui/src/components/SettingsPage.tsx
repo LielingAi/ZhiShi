@@ -14,24 +14,38 @@
  * （与主会话区互斥：page === 'settings' 时主区不渲染）。
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type React from 'react';
+
+import { open } from '@tauri-apps/plugin-dialog';
 
 import { getSettingsClient, useGuiStore } from '../store/useGuiStore';
 import * as api from '../client/api';
 import type { ExpertDraft, ExpertSummary, ModelProvider, ResearchEventRow, SkillEntity } from '../client/api';
-import { composeMcpRows, type McpDisplayRow } from '../model/mcp';
+import {
+  buildIntelConfigPatch,
+  INTEL_MODES,
+  INTEL_MODE_DEFAULT,
+  INTEL_MODE_META,
+  type IntelConfigForm,
+  type IntelMode,
+  type IntelResolvedConfig,
+} from '../model/intel-config';
+import { isTauriRuntime } from '../model/tauri-env';
 import { StateHint } from './StateHint';
 
 const NAV = [
-  { id: 'model', icon: '◇', label: '模型' },
-  { id: 'skills', icon: '▤', label: 'Skills' },
-  { id: 'mcp', icon: '⇄', label: 'MCP' },
-  { id: 'intel', icon: '◈', label: '情报' },
-  { id: 'expert', icon: '◇', label: '专家知识' },
-  { id: 'research', icon: '✎', label: '研究记录' },
-  { id: 'appearance', icon: '◐', label: '外观' },
-  { id: 'about', icon: 'ⓘ', label: '关于' },
+  { id: 'model', icon: '◇', label: '模型', disabled: false },
+  { id: 'skills', icon: '▤', label: 'Skills', disabled: false },
+  // 1.3.6：MCP 设计未定——置灰占位（页签不可点，McpTab 显示占位文案）。
+  // 1.3.5 的实现与单测保留（model/mcp.ts + mcp.test.ts），后续启用只改
+  // 此处 disabled 与 McpTab 占位。
+  { id: 'mcp', icon: '⇄', label: 'MCP', disabled: true },
+  { id: 'intel', icon: '◈', label: '情报', disabled: false },
+  { id: 'expert', icon: '◇', label: '专家知识', disabled: false },
+  { id: 'research', icon: '✎', label: '研究记录', disabled: false },
+  { id: 'appearance', icon: '◐', label: '外观', disabled: false },
+  { id: 'about', icon: 'ⓘ', label: '关于', disabled: false },
 ] as const;
 
 // ── 模型页签 ──────────────────────────────────────────────────────────
@@ -278,6 +292,24 @@ function SkillImportModal({ onClose, onDone }: { onClose: () => void; onDone: ()
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const showToast = useGuiStore((s) => s.showToast);
+  const dirInputRef = useRef<HTMLInputElement>(null);
+
+  /** 1.3.6：Tauri 走系统目录选择器（dialog），浏览器回落 webkitdirectory。 */
+  const pickDir = async () => {
+    if (isTauriRuntime()) {
+      const picked = await open({
+        directory: true,
+        multiple: false,
+        title: '选择技能目录（需含 SKILL.md）',
+      });
+      if (typeof picked === 'string') {
+        setPath(picked);
+        setErr('');
+      }
+      return;
+    }
+    dirInputRef.current?.click();
+  };
 
   return (
     <div className="modal-backdrop open">
@@ -289,13 +321,28 @@ function SkillImportModal({ onClose, onDone }: { onClose: () => void; onDone: ()
         </div>
         <div className="m-body">
           <div className="f-label">技能目录路径（/api/skill/import-folder）</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              className="f-input"
+              placeholder="D:\skills\my-recon"
+              value={path}
+              onChange={(e) => setPath(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !busy) void doImport();
+              }}
+            />
+            <button className="btn" style={{ flexShrink: 0 }} onClick={() => void pickDir()}>
+              选择目录…
+            </button>
+          </div>
           <input
-            className="f-input"
-            placeholder="D:\skills\my-recon"
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !busy) void doImport();
+            ref={dirInputRef}
+            type="file"
+            style={{ display: 'none' }}
+            {...({ webkitdirectory: '' } as unknown as React.InputHTMLAttributes<HTMLInputElement>)}
+            onChange={() => {
+              // 浏览器拿不到绝对路径（webkitRelativePath 是相对值）——引导 CLI。
+              showToast('浏览器无法取得目录绝对路径——请手输路径，或走 CLI：zhishi skill import <目录>');
             }}
           />
           {err && <div className="m-error">✗ {err}</div>}
@@ -333,136 +380,20 @@ function SkillImportModal({ onClose, onDone }: { onClose: () => void; onDone: ()
   }
 }
 
-// ── MCP 页签（1.3.5：list/状态/启停/热重载） ────────────────────────────
-
-/** 状态列文案（composeMcpRows 的 status → 中文）。 */
-function mcpStatusText(row: McpDisplayRow): string {
-  switch (row.status) {
-    case 'connected':
-      return `connected${typeof row.toolCount === 'number' ? ` · ${row.toolCount} 工具` : ''}`;
-    case 'failed':
-      return `failed · ${row.error ?? '未知错误'}`;
-    case 'off':
-      return '已停用';
-    case 'unknown':
-      return '已启用 · 未连接';
-  }
-}
+// ── MCP 页签（1.3.6：置灰占位——设计未定） ──────────────────────────────
+// 1.3.5 的接线实现（mcp/list + list-status + enable|disable + reload）与
+// 合成逻辑保留在 model/mcp.ts（+ mcp.test.ts 单测）——后续启用只需恢复
+// 本页签接线 + NAV 的 disabled 位，不动 model 层。
 
 function McpTab(): React.JSX.Element {
-  const [rows, setRows] = useState<McpDisplayRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const showToast = useGuiStore((s) => s.showToast);
-
-  const reload = useCallback(async () => {
-    const c = getSettingsClient();
-    if (!c) {
-      setRows(null);
-      setError('未连接 sidecar');
-      return;
-    }
-    setError(null);
-    try {
-      // 清单拉不到（含未连接）→ error 态；桥状态失败降级为全 unknown。
-      const [servers, statuses] = await Promise.all([
-        api.fetchMcpList(c).catch(() => null),
-        api.fetchMcpStatus(c).catch(() => null),
-      ]);
-      if (servers === null) {
-        setRows(null);
-        setError('mcp/list 拉取失败');
-        return;
-      }
-      setRows(composeMcpRows(servers, statuses ?? []).rows);
-    } catch {
-      setRows(null);
-      setError('MCP 状态获取失败');
-    }
-  }, []);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  /** 启停开关：写盘（mcp/enable|disable）→ 桥热重载 → 刷状态（TUI /mcp 同序）。 */
-  const toggle = async (row: McpDisplayRow) => {
-    const c = getSettingsClient();
-    if (!c) return;
-    setBusy(true);
-    try {
-      const res = await api.mcpToggle(c, row.id, !row.enabled);
-      if (!res.success) {
-        showToast(`✗ ${row.enabled ? '停用' : '启用'}失败：${res.error ?? '未知错误'}`);
-        return;
-      }
-      const reloadRes = await api.mcpReload(c);
-      if (!reloadRes.success) {
-        showToast(`配置已写入但桥重载失败：${reloadRes.error ?? '未知错误'}`);
-      }
-      await reload();
-      showToast(`✓ 已${row.enabled ? '停用' : '启用'} ${row.id}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const reloadBridge = async () => {
-    const c = getSettingsClient();
-    if (!c) return;
-    setBusy(true);
-    try {
-      const res = await api.mcpReload(c);
-      if (!res.success) {
-        showToast(`✗ 热重载失败：${res.error ?? '未知错误'}`);
-        return;
-      }
-      await reload();
-      showToast('✓ MCP 桥已热重载（重读磁盘配置 → 重连）');
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <div className="set-group">
-      <div className="sg-title">MCP 工具服务器 · config.json</div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-        <span className="sr-desc" style={{ alignSelf: 'center' }}>
-          {rows === null ? '' : `${rows.length} 台 · 启停写盘即时生效（桥热重载）`}
-        </span>
-        <button className="btn small" style={{ marginLeft: 'auto' }} disabled={busy} onClick={() => void reloadBridge()}>
-          {busy ? '重载中…' : '⟳ 热重载'}
-        </button>
-      </div>
-      {rows === null && error === null && <StateHint kind="loading" text="加载 MCP 状态…" />}
-      {rows === null && error !== null && (
-        <StateHint kind="error" text={error} hint="确认 sidecar 已连接后点「热重载」重试" />
-      )}
-      {rows !== null && rows.length === 0 && (
-        <StateHint kind="empty" text="无 MCP 服务器" hint="在 ~/.zhishi/config.json 配置 mcpServers 或通过 zhishi mcp add 添加" />
-      )}
-      {rows !== null &&
-        rows.map((r) => (
-          <div className="set-row" key={r.id}>
-            <div>
-              <div className="sr-label">{r.id}</div>
-              <div className="sr-desc">
-                {r.source === 'builtin' ? '内置' : '自定义'}
-                {r.type ? ` · ${r.type}` : ''}
-                {r.name !== r.id ? ` · ${r.name}` : ''}
-              </div>
-            </div>
-            <div className="sr-control">
-              <span className={`sr-status ${r.status === 'connected' ? 'ok' : r.status === 'failed' ? 'bad' : ''}`}>
-                {mcpStatusText(r)}
-              </span>
-              <button className="btn small" disabled={busy} onClick={() => void toggle(r)}>
-                {r.enabled ? '停用' : '启用'}
-              </button>
-            </div>
-          </div>
-        ))}
+      <div className="sg-title">MCP 工具服务器</div>
+      <StateHint
+        kind="empty"
+        text="设计待定"
+        hint="MCP 接入方案尚未定稿（桥接/权限/启停交互待设计）。列表与启停实现已保留在 model/mcp.ts，后续版本恢复接线即启用。"
+      />
     </div>
   );
 }
@@ -471,12 +402,14 @@ function McpTab(): React.JSX.Element {
 
 function IntelTab(): React.JSX.Element {
   const [status, setStatus] = useState<Record<string, unknown> | null>(null);
-  const [config, setConfig] = useState<Record<string, unknown> | null>(null);
-  const [mode, setMode] = useState<string>('window');
+  const [config, setConfig] = useState<IntelResolvedConfig | null>(null);
+  const [mode, setMode] = useState<IntelMode>(INTEL_MODE_DEFAULT);
   const [busy, setBusy] = useState(false);
   // 1.3.2 任务二 #4：配置编辑表单（intel/config-update 部分更新）。
-  const [cfgForm, setCfgForm] = useState<{ mode: string; windowYears: string; maxSizeMb: string; onlineFallback: boolean }>({
-    mode: 'window',
+  // 1.3.6：初始档位对齐服务端缺省 minimal（旧值 'window' 会在 status
+  // 返回前把「时间窗口」误标为当前档——更新一键即发 window）。
+  const [cfgForm, setCfgForm] = useState<IntelConfigForm>({
+    mode: INTEL_MODE_DEFAULT,
     windowYears: '',
     maxSizeMb: '',
     onlineFallback: true,
@@ -490,14 +423,30 @@ function IntelTab(): React.JSX.Element {
     try {
       const data = await api.fetchIntelStatus(c);
       setStatus(data.status ?? null);
-      setConfig(data.config ?? null);
-      const cfgMode = typeof data.config?.mode === 'string' ? data.config.mode : 'window';
+      const raw = data.config ?? null;
+      const cfgMode: IntelMode =
+        raw?.mode === 'window' || raw?.mode === 'full' ? raw.mode : INTEL_MODE_DEFAULT;
+      const resolved: IntelResolvedConfig | null = raw
+        ? {
+            mode: cfgMode,
+            windowYears:
+              typeof raw.windowYears === 'number' && Number.isFinite(raw.windowYears) && raw.windowYears > 0
+                ? raw.windowYears
+                : 3,
+            maxSizeMb:
+              typeof raw.maxSizeMb === 'number' && Number.isFinite(raw.maxSizeMb) && raw.maxSizeMb > 0
+                ? raw.maxSizeMb
+                : 300,
+            onlineFallback: raw.onlineFallback !== false,
+          }
+        : null;
+      setConfig(resolved);
       setMode(cfgMode);
       setCfgForm({
         mode: cfgMode,
-        windowYears: data.config?.windowYears !== undefined ? String(data.config.windowYears) : '',
-        maxSizeMb: data.config?.maxSizeMb !== undefined ? String(data.config.maxSizeMb) : '',
-        onlineFallback: data.config?.onlineFallback !== false,
+        windowYears: raw?.windowYears !== undefined ? String(raw.windowYears) : '',
+        maxSizeMb: raw?.maxSizeMb !== undefined ? String(raw.maxSizeMb) : '',
+        onlineFallback: raw?.onlineFallback !== false,
       });
     } catch {
       // 静默。
@@ -508,32 +457,22 @@ function IntelTab(): React.JSX.Element {
     void reload();
   }, [reload]);
 
-  /** 配置部分更新：diff 出被改字段 → intel/config-update（只传改动）。 */
+  /** 配置部分更新：纯函数 diff 出被改字段 → intel/config-update（只传改动）。 */
   const saveConfig = async () => {
     const c = getSettingsClient();
     if (!c) return;
-    const patch: Record<string, unknown> = {};
-    if (cfgForm.mode !== String(config?.mode ?? 'window')) patch.mode = cfgForm.mode;
-    const wy = Number(cfgForm.windowYears);
-    if (cfgForm.windowYears !== '' && (!Number.isFinite(wy) || wy <= 0)) {
-      showToast('✗ windowYears 需为正数（年）');
+    const built = buildIntelConfigPatch(cfgForm, config);
+    if (!built.ok) {
+      showToast(`✗ ${built.error}`);
       return;
     }
-    if (cfgForm.windowYears !== '' && wy !== config?.windowYears) patch.windowYears = wy;
-    const mb = Number(cfgForm.maxSizeMb);
-    if (cfgForm.maxSizeMb !== '' && (!Number.isFinite(mb) || mb <= 0)) {
-      showToast('✗ maxSizeMb 需为正数（MB）');
-      return;
-    }
-    if (cfgForm.maxSizeMb !== '' && mb !== config?.maxSizeMb) patch.maxSizeMb = mb;
-    if (cfgForm.onlineFallback !== (config?.onlineFallback !== false)) patch.onlineFallback = cfgForm.onlineFallback;
-    if (Object.keys(patch).length === 0) {
+    if (Object.keys(built.patch).length === 0) {
       showToast('配置无变更');
       return;
     }
     setSavingCfg(true);
     try {
-      const res = await api.intelConfigUpdate(c, patch);
+      const res = await api.intelConfigUpdate(c, built.patch);
       showToast(res.success ? '✓ 情报配置已更新' : `✗ ${res.error ?? '更新失败'}`);
       await reload();
     } finally {
@@ -577,13 +516,14 @@ function IntelTab(): React.JSX.Element {
             <div className="sr-desc">增量拉取 · 断点续传 · 数据源失败自动多源切换</div>
           </div>
           <div className="sr-control">
-            {['minimal', 'window', 'full'].map((m) => (
+            {INTEL_MODES.map((m) => (
               <button
                 className={`btn small ${mode === m ? 'mode-on' : ''}`}
                 key={m}
+                title={`${INTEL_MODE_META[m].desc}（一次性档位，不改已存配置）`}
                 onClick={() => setMode(m)}
               >
-                {m}
+                {INTEL_MODE_META[m].label}
               </button>
             ))}
             <button
@@ -593,7 +533,7 @@ function IntelTab(): React.JSX.Element {
                 const c = getSettingsClient();
                 if (!c) return;
                 setBusy(true);
-                showToast(`⏳ 更新情报索引（${mode}）…`);
+                showToast(`⏳ 更新情报索引（${INTEL_MODE_META[mode].label}）…`);
                 try {
                   const res = await api.intelUpdate(c, mode);
                   showToast(res.success ? '✓ 索引已更新' : `✗ ${res.error ?? '更新失败'}`);
@@ -607,19 +547,27 @@ function IntelTab(): React.JSX.Element {
             </button>
           </div>
         </div>
+        <div className="intel-mode-notes">
+          {INTEL_MODES.map((m) => (
+            <div className="imn-line" key={m}>
+              <b>{INTEL_MODE_META[m].label}</b>：{INTEL_MODE_META[m].desc}
+            </div>
+          ))}
+        </div>
       </div>
       <div className="set-group">
         <div className="sg-title">配置 · intel（部分更新 → intel/config-update）</div>
         <div className="set-row">
           <div><div className="sr-label">存储分级</div></div>
           <div className="sr-control">
-            {['minimal', 'window', 'full'].map((m) => (
+            {INTEL_MODES.map((m) => (
               <button
                 className={`btn small ${cfgForm.mode === m ? 'mode-on' : ''}`}
                 key={m}
+                title={INTEL_MODE_META[m].desc}
                 onClick={() => setCfgForm((f) => ({ ...f, mode: m }))}
               >
-                {m}
+                {INTEL_MODE_META[m].label}
               </button>
             ))}
           </div>
@@ -641,7 +589,7 @@ function IntelTab(): React.JSX.Element {
             <input
               className="f-input cf-input"
               value={cfgForm.maxSizeMb}
-              placeholder={String(config?.maxSizeMb ?? '512')}
+              placeholder={String(config?.maxSizeMb ?? '300')}
               onChange={(e) => setCfgForm((f) => ({ ...f, maxSizeMb: e.target.value }))}
             />
             <span className="sr-status">MB</span>
@@ -660,6 +608,9 @@ function IntelTab(): React.JSX.Element {
               {savingCfg ? '保存中…' : '保存配置'}
             </button>
           </div>
+        </div>
+        <div className="sr-desc" style={{ padding: '4px 2px' }}>
+          注意：「时间窗口」档保存后，下次更新会删除窗口外的历史 CVE（不可恢复）。
         </div>
       </div>
     </>
@@ -838,35 +789,79 @@ function ExpertImportModal({
   onDone: (imported: boolean) => void;
 }): React.JSX.Element {
   const [raw, setRaw] = useState('');
+  const [fileName, setFileName] = useState<string | null>(null);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  const [pasteMode, setPasteMode] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
   const submitExpertImport = useGuiStore((s) => s.submitExpertImport);
+
+  // 1.3.6：文件内容读取统一走 HTML input + FileReader（Tauri webview 的
+  // WebView2 原生支持文件选择；tauri-plugin-fs 不在本次范围，dialog 只能
+  // 拿路径拿不到内容，故 expert 不做 dialog 通道——浏览器与 Tauri 同一条
+  // 通道，行为一致）。
+  const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // 允许重复选择同一文件
+    if (!file) return;
+    setFileName(file.name);
+    setMsg('');
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') setRaw(reader.result);
+      else setMsg('读取文件失败（非文本内容）');
+    };
+    reader.onerror = () => setMsg('读取文件失败');
+    reader.readAsText(file);
+  };
 
   return (
     <div className="modal-backdrop open">
       <div className="modal" style={{ width: 'min(560px, 90vw)' }}>
         <div className="m-head">
           <span className="m-title">导入专家知识</span>
-          <span className="m-sub">JSON / YAML · 单条或数组批量 · 逐条校验</span>
+          <span className="m-sub">JSON / YAML 文件 · 单条或数组批量 · 逐条校验</span>
           <button className="m-close" onClick={onClose}>✕</button>
         </div>
         <div className="m-body">
           <div className="f-label">
             必填：title / kind(idea|technique|sop) / domain / applicability / content / criteria / reviewer
           </div>
-          <textarea
-            className="f-input"
-            rows={10}
-            placeholder={'- title: 堆喷占位 size 经验\n  kind: technique\n  domain: binary\n  applicability: glibc 2.3x 堆题\n  content: 做法正文……\n  criteria: 判定条件\n  reviewer: 你的名字'}
-            value={raw}
-            onChange={(e) => setRaw(e.target.value)}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            <button className="btn" onClick={() => fileRef.current?.click()}>选择文件…</button>
+            <span className="sr-desc" style={{ alignSelf: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {fileName ?? (raw ? '已载入内容' : '未选择文件（.json / .yaml / .yml）')}
+            </span>
+            <button
+              className="btn small"
+              style={{ marginLeft: 'auto' }}
+              onClick={() => setPasteMode((v) => !v)}
+            >
+              {pasteMode ? '收起粘贴' : '或粘贴内容'}
+            </button>
+          </div>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".json,.yaml,.yml,application/json,text/yaml"
+            style={{ display: 'none' }}
+            onChange={onFileChange}
           />
+          {pasteMode && (
+            <textarea
+              className="f-input"
+              rows={8}
+              placeholder={'- title: 堆喷占位 size 经验\n  kind: technique\n  domain: binary\n  applicability: glibc 2.3x 堆题\n  content: 做法正文……\n  criteria: 判定条件\n  reviewer: 你的名字'}
+              value={raw}
+              onChange={(e) => setRaw(e.target.value)}
+            />
+          )}
           {msg && <div className="m-note">{msg}</div>}
           <div className="m-actions">
             <button className="btn" onClick={onClose}>取消</button>
             <button
               className="btn primary"
-              disabled={busy}
+              disabled={busy || !raw.trim()}
               onClick={async () => {
                 setBusy(true);
                 const res = await submitExpertImport(raw);
@@ -874,6 +869,7 @@ function ExpertImportModal({
                 setBusy(false);
                 if (res.ok) {
                   setRaw('');
+                  setFileName(null);
                   onDone(true);
                 }
               }}
@@ -971,9 +967,12 @@ export function SettingsPage(): React.JSX.Element {
         <div className="set-nav">
           {NAV.map((n) => (
             <div
-              className={`set-nav-item ${pg === n.id ? 'on' : ''}`}
+              className={`set-nav-item ${pg === n.id ? 'on' : ''} ${n.disabled ? 'disabled' : ''}`}
               key={n.id}
-              onClick={() => setPg(n.id)}
+              title={n.disabled ? '设计待定——后续版本启用' : undefined}
+              onClick={() => {
+                if (!n.disabled) setPg(n.id);
+              }}
             >
               <span className="sn-ic">{n.icon}</span>
               {n.label}

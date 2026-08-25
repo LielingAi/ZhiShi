@@ -5,16 +5,18 @@
 
 ---
 
-## 1.3.6 —— 实机反馈修复（进行中）
+## 1.3.6 —— 实机反馈修复（已完成）
 
 1.3.5 走查后的用户反馈六条（2026-08-25），本版逐条修：
 
-- [ ] **①输入框点击热区**：输入框只有一半能点击——InputArea 点击区域被相邻元素/透明层覆盖，修复为整行可聚焦。
-- [ ] **②历史会话从侧边栏移除**：侧栏底部「▤ 历史会话」入口移除（工具栏「▤ 历史」保留为唯一入口）。
-- [ ] **③MCP 置灰占位**：MCP 设计未定——设置页 MCP 页签保留位置但**置灰不可点击**，页签内容改「设计待定」占位（代码保留待后续启用）。
-- [ ] **④情报更新修复 + 模式说明**：a) 修「数据会丢失」——追踪 IntelTab 更新链路与 `intel/config-update`（1.3.2）的读改写，定位丢数据根因并修（服务端或 GUI 侧以证据为准）；b) `minimal/window/full` 三个模式名换成中文标签 + 说明文案（语义以服务端实现为准：window=时间窗口裁剪；minimal/full 的注入差异读实现后写准确文案）。
-- [ ] **⑤skills/expert 导入改文件选择**：导入不再手输路径——引入 tauri-plugin-dialog（src-tauri 首次 GUI 期改动：Cargo.toml + lib.rs 注册 + capabilities 权限 + src/gui 的 @tauri-apps/plugin-dialog）；skills 导入选**目录**（透传 import-folder）、expert 导入选**文件**（读内容解析后走既有 expert/add 链路）；浏览器无 Tauri 环境降级为 HTML 文件选择（webview 走查不受影响）。
-- [ ] **⑥模型选择只显示已配置**：状态栏模型切换器过滤未配 key 的 provider 模型（与 1.2.9 运行链路同口径——显示=可运行）。
+- [x] **①输入框点击热区**：输入框只有一半能点击——InputArea 点击区域被相邻元素/透明层覆盖，修复为整行可聚焦。
+- [x] **②历史会话从侧边栏移除**：侧栏底部「▤ 历史会话」入口移除（工具栏「▤ 历史」保留为唯一入口）。
+- [x] **③MCP 置灰占位**：MCP 设计未定——设置页 MCP 页签保留位置但**置灰不可点击**，页签内容改「设计待定」占位（代码保留待后续启用）。
+- [x] **④情报更新修复 + 模式说明**：a) 修「数据会丢失」——追踪 IntelTab 更新链路与 `intel/config-update`（1.3.2）的读改写，定位丢数据根因并修（服务端或 GUI 侧以证据为准）；b) `minimal/window/full` 三个模式名换成中文标签 + 说明文案（语义以服务端实现为准：window=时间窗口裁剪；minimal/full 的注入差异读实现后写准确文案）。
+- [x] **⑤skills/expert 导入改文件选择**：导入不再手输路径——引入 tauri-plugin-dialog（src-tauri 首次 GUI 期改动：Cargo.toml + lib.rs 注册 + capabilities 权限 + src/gui 的 @tauri-apps/plugin-dialog）；skills 导入选**目录**（透传 import-folder）、expert 导入选**文件**（读内容解析后走既有 expert/add 链路）；浏览器无 Tauri 环境降级为 HTML 文件选择（webview 走查不受影响）。
+- [x] **⑥模型选择只显示已配置**：状态栏模型切换器过滤未配 key 的 provider 模型（与 1.2.9 运行链路同口径——显示=可运行）。
+
+> 实际落地（2026-08-25）：①输入框根因是**几何错位非遮挡**——48px 盒子 textarea 只占底部 24px，上半部死区；修：input-box 整行 onClick 聚焦 + cursor:text。②EnvSidebar 底部入口删（工具栏保留）。③NAV mcp 项 disabled 置灰（.disabled 样式 no-op 点击）+ McpTab 换 StateHint「设计待定」占位；model/mcp.ts 与测试原样保留。④**丢数据真根因在同步链不在 PATCH**：window 模式更新末尾 `pruneByWindow` 无条件删窗口外存量 CVE，且水位机制导致切回 minimal/full 只增量同步、裁掉数据永久不可恢复——修：`pruneWindow` 仅当持久化配置已提交 window 才裁剪（一次性档位覆盖只过滤不删）+ sync 单测锁定；GUI mode 初始值 'window'→'minimal'（服务端缺省）+ payload 构造抽纯函数（8 例含 falsy 不丢）；三模式中文标签按实现如实写——精简/全量当前行为一致（sync 层未做最小化存储）、时间窗口=窗口内过滤+提交后裁剪存量（含警示文案）。⑤tauri-plugin-dialog 2（Cargo.toml+lib.rs+capabilities），skills 选目录回填路径、expert 走文件输入+FileReader（fs 插件未在范围，dialog 只回路径），浏览器回落 webkitdirectory/input。⑥model/list 的 hasApiKey 直接消费（1.2.9 服务端已算好），当前生效模型保留显示。**实机走查抓出真 bug**：capabilities/default.json 的 `"windows": []`（无窗口时代遗留）导致 webview 全部 IPC 被拒、dialog 无反应——改 `["main"]`（GUI 首个 IPC 依赖，此前纯 HTTP 从未暴露）。新增 GUI 单测 18（intel-config 8/model-picker 7/tauri-env 3）+ server 2；全量 186 文件 2349 测试绿 + typecheck + eslint + build:gui + cargo check 绿；实机走查通过（用户确认）。
 
 > 不做（维持）：编译发版（GUI 完成前）、TUI 退役执行（1.3.9）、/bg 转后台（单独立版）。
 > 验收：全量测试 + 实机走查。

@@ -36,6 +36,7 @@ semver = "1.0"
 log = "0.4"
 tauri = { version = "=2.10.1", features = ["tray-icon", "image-png"] }
 tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
 which = "8.0.0"
 libc = "0.2.180"
 tauri-plugin-updater = "2"

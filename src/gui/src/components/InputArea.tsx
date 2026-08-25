@@ -104,7 +104,7 @@ export function InputArea(): React.JSX.Element {
           ))}
         </div>
       )}
-      <div className="input-box">
+      <div className="input-box" onClick={() => taRef.current?.focus()}>
         <textarea
           ref={taRef}
           rows={1}

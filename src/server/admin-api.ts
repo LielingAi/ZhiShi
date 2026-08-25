@@ -4303,6 +4303,10 @@ export async function handleIntelUpdate(payload: { mode?: string; nucleiFile?: s
       mode,
       windowYears: cfg.windowYears,
       maxSizeMb: cfg.maxSizeMb,
+      // 1.3.6 丢数据修复：只有「持久化配置已提交 window」才允许存量裁剪。
+      // 一次性 mode 覆盖（GUI 更新按钮选中档 / CLI --mode window）只做写时
+      // 过滤，不删已入库的历史 CVE——裁掉后增量水位无法找回，是永久丢数据。
+      pruneWindow: mode === 'window' && cfg.mode === 'window',
       ...(nucleiFile ? { nucleiFile } : {}),
     });
     if (!result.ok) {

@@ -361,6 +361,46 @@ describe('window 模式', () => {
     expect(status.cveCount).toBeGreaterThan(0);
     expect(countCves(openIntelStore(dir))).toBe(status.cveCount);
   });
+
+  it('一次性 window 覆盖（pruneWindow 缺省）不裁剪存量历史 CVE——1.3.6 丢数据修复', async () => {
+    // 以 full 档灌入历史（happyHandler 每窗 2024 年 CVE）
+    await runIntelUpdate(opts(makeFetch(happyHandler()).fetchImpl, { mode: 'full' }));
+    const before = countCves(openIntelStore(dir));
+    expect(before).toBeGreaterThan(0);
+
+    // 时间前进 1 天 → 增量路径；一次性 window 档（不传 pruneWindow）
+    tNow = new Date(T0.getTime() + 86_400_000);
+    const inc = makeFetch((url) => {
+      if (url.includes('files_exploits.csv')) return textResponse(CSV_TEXT);
+      return jsonResponse(nvdPage([
+        { cve: nvdCve('CVE-2026-0001', '2026-01-01T00:00:00.000Z', tNow.toISOString()) },
+      ], 1));
+    });
+    const r = await runIntelUpdate(opts(inc.fetchImpl, { mode: 'window', windowYears: 1 }));
+    expect(r.ok).toBe(true);
+    expect(r.prunedByWindow).toBe(0);
+    // 存量 2024 历史保留，只有新记录增量入库
+    expect(countCves(openIntelStore(dir))).toBe(before + 1);
+  });
+
+  it('pruneWindow=true（持久化配置已提交 window）仍裁剪窗口外存量', async () => {
+    await runIntelUpdate(opts(makeFetch(happyHandler()).fetchImpl, { mode: 'full' }));
+    const before = countCves(openIntelStore(dir));
+    expect(before).toBeGreaterThan(0);
+
+    tNow = new Date(T0.getTime() + 86_400_000);
+    const inc = makeFetch((url) => {
+      if (url.includes('files_exploits.csv')) return textResponse(CSV_TEXT);
+      return jsonResponse(nvdPage([
+        { cve: nvdCve('CVE-2026-0001', '2026-01-01T00:00:00.000Z', tNow.toISOString()) },
+      ], 1));
+    });
+    const r = await runIntelUpdate(opts(inc.fetchImpl, { mode: 'window', windowYears: 1, pruneWindow: true }));
+    expect(r.ok).toBe(true);
+    expect(r.prunedByWindow).toBeGreaterThan(0);
+    // 2024 老记录全数裁掉，窗口内 2026 新记录保留
+    expect(countCves(openIntelStore(dir))).toBe(1);
+  });
 });
 
 describe('纯辅助', () => {

@@ -78,6 +78,7 @@ import {
   type SlashCommandName,
 } from '../model/slash-routes';
 import { parseExpertImport } from '../model/expert-import';
+import { pickModelPickerProviders } from '../model/model-picker';
 import * as api from '../client/api';
 import type {
   AgentEntity,
@@ -809,8 +810,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     if (kind === 'model') {
       const curModel = currentSession(s).model;
       const items: OverlayItem[] = [];
-      for (const p of s.models) {
-        if (p.enabled === false) continue;
+      // 1.3.6：只显示「已配 key 且未禁用」的 provider 模型（显示=可运行），
+      // 当前生效模型即使异常也保留显示——过滤口径在 model/model-picker.ts。
+      for (const p of pickModelPickerProviders(s.models, curModel)) {
         for (const m of p.models) {
           items.push({
             name: m.model,

@@ -154,6 +154,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
+        // 1.3.6(GUI):skills/expert 导入用系统文件选择器（目录/文件）。
+        .plugin(tauri_plugin_dialog::init())
         // 1.3.0(GUI):最小 IPC 面——webview 前端拿 sidecar 端口(SSE 直连)。
         .invoke_handler(tauri::generate_handler![crate::commands::get_sidecar_port])
         .manage(sidecar_state)
