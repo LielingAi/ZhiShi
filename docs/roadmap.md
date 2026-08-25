@@ -11,9 +11,9 @@
 
 **技术栈定稿（用户拍板）**：React 18 + Vite + Tailwind + zustand + @tanstack/react-virtual，纯 TS；前端代码在 `src/gui/`；Vite build 产物进 resources 随包分发（与 CLI 同径）；Tauri 开窗（现壳无窗口）+ webview 直连 sidecar SSE（fetch+ReadableStream，照 `src/cli/tui/client.ts` 契约，不改服务端）。
 
-- [ ] **GUI 骨架 + 会话 MVP（本版交付）**：①Tauri 开窗 + sidecar 生命周期联动（端口注入沿用 sidecar.port/ZHISHI_PORT）；②前端脚手架 + SSE 客户端 + 会话流渲染；③环境侧栏（三组：运行中/已停止/本机已有，切换即换流）+ 新建向导骨架 + attach 占位；④块化流（输入=块首、结论聚合亮顶、thought/工具卡折叠、抽屉详情）；⑤输入区（/ @ 补全、Ctrl+R 历史、**steering：运行中输入即纠偏**）；⑥状态栏（env/phase/模型切换）；⑦Esc 链（一次弹一层：overlay→模态→attach→设置，busy 且无面板才中断；drawer 入链）。
+- [x] **GUI 骨架 + 会话 MVP（本版交付）**：①Tauri 开窗 + sidecar 生命周期联动（端口注入沿用 sidecar.port/ZHISHI_PORT）；②前端脚手架 + SSE 客户端 + 会话流渲染；③环境侧栏（三组：运行中/已停止/本机已有，切换即换流）+ 新建向导骨架 + attach 占位；④块化流（输入=块首、结论聚合亮顶、thought/工具卡折叠、抽屉详情）；⑤输入区（/ @ 补全、Ctrl+R 历史、**steering：运行中输入即纠偏**）；⑥状态栏（env/phase/模型切换）；⑦Esc 链（一次弹一层：overlay→模态→attach→设置，busy 且无面板才中断；drawer 入链）。
 - [ ] **TUI 冻结**：不投功能/视觉，只修致命 bug。
-- [ ] **验收**：全量测试（前端单测 vitest）+ 实机走查（开窗/会话流/发送/纠偏/切环境/模型切换）。打包安装验证不在本版——GUI 完成前不编译（用户拍板），挪到发版前。
+- [x] **验收**：全量测试（前端单测 vitest）+ 实机走查（开窗/会话流/发送/纠偏/切环境/模型切换）。打包安装验证不在本版——GUI 完成前不编译（用户拍板），挪到发版前。
 
 > 原型缺口修正清单（开发必须带上）：①steering 输入即纠偏（v19 缺——busy 态 Enter 被吞）；②块容器+结论聚合亮顶（v19 只做了工具卡折叠）；③Esc 链优先级（v19 双处理器叠加）+ drawer 入链；④切环境换流（v19 未体现「每环境独立历史」）。
 > 实机发现缺陷（1.3.0 记录，后续修）：环境准入闸——已停止环境不应可进入（当前引擎语义允许选已停环境、env_exec 才失败；GUI 侧栏点已停止环境应拦截并提示先启动，启动按钮接 docker/VM up 接口）；host 会话（未锚定环境）与锚定会话的区分要更显性。
