@@ -22,8 +22,10 @@
  *   - 重连落在「多轮 turn 且前几轮有非空 assistant 文本」的窄窗口时，
  *     结论区可能短暂重复前几轮的文本（replay 重建 + 活体结论并存）；
  *     单轮/工具轮（空文本）不受影响。
- *   - chat:boundary-ask / subagent-* / bg-* 事件 MVP 不消费（TUI 语义保留，
- *     待后续迭代接模态与状态栏中段）。
+ *   - chat:boundary-ask / chat:boundary-expired → ReduceResult.boundaryAsk
+ *     增量（store 顶层 boundaryAsks 登记表，1.3.1 ②）。
+ *   - chat:bg-* / chat:subagent-* → ReduceResult.bgEvent / subagentEvent
+ *     增量（store 顶层登记表，状态栏后台段 + /tasks 面板，1.3.1 ③）。
  *
  * 纯函数：不 import store / React / client；单测逐事件断言。
  */
@@ -40,6 +42,7 @@ import type {
   TurnStatus,
 } from './blocks';
 import { summarizeSignal } from './blocks';
+import type { BgEvent, SubagentEvent } from './tasks';
 
 // ---------------------------------------------------------------------------
 // Payload narrowers（wire 是 unknown：pi 引擎裸字符串 / 对象 / null 都有）
@@ -201,6 +204,15 @@ export interface ReduceResult {
   workspace?: string;
   /** 需要 UI toast 的提示（steering 入队等）。 */
   toast?: string;
+  /**
+   * 1.3.1 ②：越界 ask 登记表增量（chat:boundary-ask → upsert；
+   * chat:boundary-expired → remove）。store 顶层 boundaryAsks 消费。
+   */
+  boundaryAsk?: { type: 'upsert'; askId: string; kind: string; objects: string[] } | { type: 'remove'; askId: string };
+  /** 1.3.1 ③：后台任务登记表增量（chat:bg-*）。store 顶层 bgTasks 消费。 */
+  bgEvent?: BgEvent;
+  /** 1.3.1 ③：子代理登记表增量（chat:subagent-*）。store 顶层 subagents 消费。 */
+  subagentEvent?: SubagentEvent;
 }
 
 export function reduceSseEvent(session: SessionState, input: SseInput): ReduceResult {
@@ -576,8 +588,90 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
       return model ? { session: { ...session, model } } : { session };
     }
 
-    // chat:boundary-ask / chat:subagent-* / chat:bg-* / chat:logs：
-    // MVP 不消费（见文件头）。
+    // ── 1.3.1 ②：越界 ask（登记表增量交给 store；这里不落会话流） ─────
+    case 'chat:boundary-ask': {
+      const askId = str(p.askId);
+      if (!askId) return { session };
+      return {
+        session,
+        boundaryAsk: {
+          type: 'upsert',
+          askId,
+          kind: str(p.kind) ?? '',
+          objects: Array.isArray(p.objects)
+            ? p.objects.filter((o): o is string => typeof o === 'string')
+            : [],
+        },
+      };
+    }
+
+    case 'chat:boundary-expired': {
+      const askId = str(p.askId);
+      if (!askId) return { session };
+      return { session, boundaryAsk: { type: 'remove', askId } };
+    }
+
+    // ── 1.3.1 ③：后台任务 / 子代理登记表增量（不进会话流） ───────────
+    case 'chat:bg-started': {
+      const tag = str(p.tag);
+      if (!tag) return { session };
+      return {
+        session,
+        bgEvent: {
+          kind: 'started',
+          tag,
+          pid: num(p.pid),
+          commandPreview: str(p.commandPreview),
+        },
+      };
+    }
+
+    case 'chat:bg-finished': {
+      const tag = str(p.tag);
+      if (!tag) return { session };
+      return {
+        session,
+        bgEvent: { kind: 'finished', tag, status: str(p.status) ?? '', exitCode: num(p.exitCode) },
+      };
+    }
+
+    case 'chat:subagent-started': {
+      const taskId = str(p.taskId);
+      if (!taskId) return { session };
+      return {
+        session,
+        subagentEvent: { kind: 'started', taskId, description: str(p.description) ?? '' },
+      };
+    }
+
+    case 'chat:subagent-finished': {
+      const taskId = str(p.taskId);
+      if (!taskId) return { session };
+      return {
+        session,
+        subagentEvent: {
+          kind: 'finished',
+          taskId,
+          description: str(p.description) ?? '',
+          summary: str(p.summary),
+          status: str(p.status) ?? '',
+          error: str(p.error),
+          loopSessionId: str(p.loopSessionId),
+        },
+      };
+    }
+
+    case 'chat:subagent-tool-use': {
+      const taskId = str(p.subagentId) ?? str(p.taskId);
+      if (!taskId) return { session };
+      return {
+        session,
+        subagentEvent: { kind: 'tool-use', taskId, name: str(p.name) ?? 'tool' },
+      };
+    }
+
+    // chat:subagent-tool-result-complete / chat:logs：不消费（工具结果只累
+    // 工具数，见 chat:subagent-tool-use；日志行 GUI 不渲染）。
     default:
       return { session };
   }

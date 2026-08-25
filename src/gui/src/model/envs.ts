@@ -16,6 +16,8 @@ export interface EnvEntryLike {
   id: string;
   kind?: string;
   name?: string;
+  /** 配方 id（docker/vm up 回写的条目带它；启动按钮的 up 参数来源）。 */
+  recipeId?: string;
 }
 
 export interface PsInstanceLike {
@@ -41,6 +43,13 @@ export interface SidebarEnvItem {
   kind: string;
   /** 运行中 VM 的警告（不可达等）——MVP 从 state 推导，缺省 false。 */
   warn: boolean;
+  /**
+   * 1.3.1 ①：「启动」按钮可用 = 已登记且 docker/vm 且带 recipeId
+   * （environment/up 按 recipe 幂等重 up，VM/docker 都走它）。
+   */
+  startable: boolean;
+  /** 启动按钮的 up 配方（startable 时非空）。 */
+  recipeId?: string;
 }
 
 export interface SidebarGroup {
@@ -68,6 +77,7 @@ export function groupSidebar(
       detail: `${inst.driver ?? 'env'} · 运行中`,
       kind: inst.driver ?? entry?.kind ?? 'env',
       warn: false,
+      startable: false,
     });
   }
 
@@ -81,6 +91,9 @@ export function groupSidebar(
       detail: `${e.kind ?? 'env'} · 已停止`,
       kind: e.kind ?? 'env',
       warn: false,
+      // docker/vm 条目带 recipeId 才能 environment/up（ssh 条目无配方，不可启）。
+      startable: (e.kind === 'docker' || e.kind === 'vm') && typeof e.recipeId === 'string' && e.recipeId !== '',
+      recipeId: typeof e.recipeId === 'string' ? e.recipeId : undefined,
     });
   }
 
@@ -96,6 +109,7 @@ export function groupSidebar(
       detail: `${d.driver ?? 'unknown'} · 未登记${stopped ? '（停止）' : ''}`,
       kind: d.driver ?? 'unknown',
       warn: false,
+      startable: false,
     });
   }
 
@@ -110,4 +124,21 @@ export function groupSidebar(
 /** 侧栏条目是否可切换（unreg 组不可切换——未登记，点了只提示）。 */
 export function isSwitchable(item: SidebarEnvItem): boolean {
   return item.group !== 'unreg';
+}
+
+// ---------------------------------------------------------------------------
+// 1.3.1 ⑤：boot 进度阶段（纯文案；进度推进由 store 轮询 environment/ps）
+// ---------------------------------------------------------------------------
+
+/**
+ * environment/up 的阶段清单。服务端 up 是同步长请求（无阶段推送），
+ * GUI 靠轮询 environment/ps 观察实例是否出现来推进阶段：
+ *   - 实例未现 → 阶段停在「启动/构建」
+ *   - 实例出现 → 跳到「工具自检」
+ *   - 请求返回成功 → 全部完成
+ */
+export function bootStages(base: string | undefined): string[] {
+  return base === 'vm'
+    ? ['解析配方与模板', '启动 VM（vmrun start）', '等待 SSH 就绪', '工具自检', '回写环境条目']
+    : ['解析配方与镜像', '构建容器（docker build）', '启动容器', '工具自检', '回写环境条目'];
 }

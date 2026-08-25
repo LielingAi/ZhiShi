@@ -1,14 +1,19 @@
 /**
- * 模态（新建环境向导 / SSH 接入 / VM 认领 / 构建进度）。
- * 向导 = 配方列表（/api/admin/environment/recipes，真实数据）+ SSH 接入
- * （/api/admin/environment/add，真实落盘）；VM 认领与构建进度为 UI 完整的
- * mock（MVP 范围：真实接口留待后续迭代，见交付报告）。
+ * 模态（1.3.1 ⑤ 接真 + ④ 参数收集）：
+ *   - 新建环境向导：配方列表（environment/recipes 真实数据）
+ *   - boot：真实 environment/up + 轮询 environment/ps 推阶段（store.bootEnv）
+ *   - SSH 接入：environment/add（真实落盘，保持）
+ *   - adopt：environment/adopt（真实——连通 → 初始化 → 快照 → vmTemplates）
+ *   - slash-args：/snapshot /rollback /extract 的参数收集
+ *   - pick-message：/rewind /fork 的消息选择（wire id 来源：replay srvId）
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 
-import { useGuiStore } from '../store/useGuiStore';
+import { selectCurrentSession, useGuiStore } from '../store/useGuiStore';
+import { bootStages } from '../model/envs';
+import { forkTargets, rewindTargets, SLASH_ROUTES } from '../model/slash-routes';
 import type { Recipe } from '../client/api';
 
 const BOOT_STEPS = '①②③④⑤⑥⑦⑧';
@@ -17,33 +22,26 @@ function fallbackRecipe(id: string | undefined): Recipe {
   return { id: id ?? 'env', name: id ?? 'env', tools: [] };
 }
 
-// ── 构建进度（mock 阶段动画） ─────────────────────────────────────────
+// ── 1.3.1 ⑤：构建进度（真实 environment/up + ps 轮询推阶段） ──────────
 
 function BootModalInner({ recipeId }: { recipeId: string }): React.JSX.Element {
   const showToast = useGuiStore((s) => s.showToast);
   const closeModal = useGuiStore((s) => s.closeModal);
-  const refreshSidebar = useGuiStore((s) => s.refreshSidebar);
+  const bootEnv = useGuiStore((s) => s.bootEnv);
+  const boot = useGuiStore((s) => s.boot);
   const recipe = useGuiStore((s) => s.recipes.find((r) => r.id === recipeId)) ?? fallbackRecipe(recipeId);
 
-  const stages = recipe.base === 'vm'
-    ? ['快照 revert · zhishi-clean', '启动 VM（vmrun start）', '等待 SSH 就绪', '取 guest 地址', '连接握手', '会话锚定']
-    : ['拉取镜像', '初始化脚本', '工具自检', '网络就绪', '连接握手', '会话锚定'];
-  const [step, setStep] = useState(0);
-  const doneRef = useRef(false);
+  const stages = useMemo(() => bootStages(recipe.base), [recipe.base]);
 
+  // 挂载即发起真实 up（幂等：重复打开重跑；store.bootEnv 内部去抖）。
   useEffect(() => {
-    const timer = setInterval(() => setStep((s) => s + 1), 650);
-    return () => clearInterval(timer);
-  }, []);
+    void bootEnv(recipeId);
+  }, [recipeId, bootEnv]);
 
-  useEffect(() => {
-    if (step >= stages.length && !doneRef.current) {
-      doneRef.current = true;
-      showToast(`环境 ${recipe.id} 构建完成（MVP mock——未真实 up）`);
-      closeModal();
-      void refreshSidebar();
-    }
-  }, [step, stages.length, showToast, closeModal, refreshSidebar, recipe.id]);
+  const running = boot?.recipeId === recipeId && boot.status === 'running';
+  const done = boot?.recipeId === recipeId && boot.status === 'done';
+  const failed = boot?.recipeId === recipeId && boot.status === 'failed';
+  const stage = boot?.recipeId === recipeId ? boot.stage : 0;
 
   return (
     <div className="modal-backdrop open">
@@ -52,27 +50,44 @@ function BootModalInner({ recipeId }: { recipeId: string }): React.JSX.Element {
           <span className="m-title">
             构建环境 <b className="m-env-name">{recipe.id}</b>
           </span>
-          <span className="m-sub">{recipe.base} · 新建环境 · 构建全自动（MVP mock）</span>
-          <button className="m-close" onClick={closeModal}>✕</button>
+          <span className="m-sub">{recipe.base} · 新建环境 · environment/up 真实构建</span>
+          <button className="m-close" onClick={closeModal} disabled={running}>✕</button>
         </div>
         <div className="m-body">
           {stages.map((name, i) => (
-            <div className={`bs ${i < step ? 'done' : i === step ? 'cur' : ''}`} key={name}>
+            <div className={`bs ${i < stage ? 'done' : i === stage ? 'cur' : ''}`} key={name}>
               <span className="bs-idx">{BOOT_STEPS[i] ?? i + 1}</span>
               <span className="bs-name">{name}</span>
               <span className="bs-state">
-                {i < step ? '完成' : i === step ? <span className="spinner" /> : '待 …'}
+                {i < stage ? '完成' : i === stage ? <span className="spinner" /> : '待 …'}
               </span>
             </div>
           ))}
+          {failed && boot?.error && <div className="m-error">✗ {boot.error}</div>}
           <div className="m-hint">Esc 取消 · 失败即停，绝不半进</div>
+          {(done || failed) && (
+            <div className="m-actions">
+              <button
+                className="btn"
+                onClick={() => {
+                  if (failed) closeModal();
+                  else {
+                    closeModal();
+                    showToast(`✓ 环境 ${recipe.id} 已就绪——侧栏「运行中」组切换进入`);
+                  }
+                }}
+              >
+                关闭
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-// ── SSH 接入（真实 environment/add） ───────────────────────────────────
+// ── SSH 接入（真实 environment/add，保持） ──────────────────────────────
 
 function SshModal(): React.JSX.Element {
   const closeModal = useGuiStore((s) => s.closeModal);
@@ -143,14 +158,15 @@ function SshModal(): React.JSX.Element {
   );
 }
 
-// ── VM 认领（mock） ────────────────────────────────────────────────────
+// ── VM 认领（真实 environment/adopt） ───────────────────────────────────
 
 function AdoptModal({ recipeId }: { recipeId: string }): React.JSX.Element {
   const closeModal = useGuiStore((s) => s.closeModal);
-  const showToast = useGuiStore((s) => s.showToast);
+  const submitAdopt = useGuiStore((s) => s.submitAdopt);
   const [vmx, setVmx] = useState('');
   const [user, setUser] = useState('');
   const [pass, setPass] = useState('');
+  const [err, setErr] = useState('');
 
   return (
     <div className="modal-backdrop open">
@@ -187,24 +203,113 @@ function AdoptModal({ recipeId }: { recipeId: string }): React.JSX.Element {
             </div>
           </div>
           <div className="m-note">
-            认领流程：连通测试 → 初始化 → 快照 zhishi-clean → 登记 vmTemplates（MVP mock）
+            认领流程：连通测试 → 初始化（setup）→ 快照 zhishi-clean → 登记 vmTemplates（真实 environment/adopt）
           </div>
+          {err && <div className="m-error">✗ {err}</div>}
           <div className="m-actions">
             <button className="btn" onClick={closeModal}>取消</button>
             <button
               className="btn primary"
               onClick={() => {
-                if (!vmx.trim() || !user.trim() || !pass.trim()) {
-                  showToast('vmx / guest 用户 / 密码 必填（MVP mock 演示）');
+                if (!vmx.trim() || !user.trim()) {
+                  setErr('vmx / guest 用户必填（密码可留空走 keyPath）');
                   return;
                 }
                 setPass('');
-                closeModal();
-                showToast(`VM 认领（mock）：${recipeId} 已登记演示条目`);
+                void submitAdopt(vmx.trim(), user.trim(), '', pass);
               }}
             >
               认领
             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 1.3.1 ④：slash 参数收集（snapshot/rollback/extract） ───────────────
+
+function SlashArgsModal(): React.JSX.Element | null {
+  const modal = useGuiStore((s) => s.modal);
+  const closeModal = useGuiStore((s) => s.closeModal);
+  const submitSlashArg = useGuiStore((s) => s.submitSlashArg);
+  const [value, setValue] = useState('');
+
+  const command = modal?.command;
+  if (!command) return null;
+  const route = SLASH_ROUTES[command];
+
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal">
+        <div className="m-head">
+          <span className="m-title">/{route.command} · {route.argTitle}</span>
+          <span className="m-sub">参数收集</span>
+          <button className="m-close" onClick={closeModal}>✕</button>
+        </div>
+        <div className="m-body">
+          <div className="f-label">{route.argPlaceholder}</div>
+          <input
+            className="f-input"
+            autoFocus
+            placeholder={route.argPlaceholder}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void submitSlashArg(value);
+              }
+            }}
+          />
+          <div className="m-actions">
+            <button className="btn" onClick={closeModal}>取消</button>
+            <button className="btn primary" onClick={() => void submitSlashArg(value)}>
+              执行
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 1.3.1 ④：消息选择（rewind/fork） ───────────────────────────────────
+
+function PickMessageModal(): React.JSX.Element | null {
+  const modal = useGuiStore((s) => s.modal);
+  const closeModal = useGuiStore((s) => s.closeModal);
+  const pickMessageTarget = useGuiStore((s) => s.pickMessageTarget);
+  const session = useGuiStore(selectCurrentSession);
+
+  const command = modal?.command;
+  const route = command ? SLASH_ROUTES[command] : null;
+  const targets = useMemo(() => {
+    if (!command) return [];
+    return command === 'rewind' ? rewindTargets(session.items) : forkTargets(session.items);
+  }, [command, session.items]);
+
+  if (!command || !route) return null;
+
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal">
+        <div className="m-head">
+          <span className="m-title">/{route.command} · {route.argTitle}</span>
+          <span className="m-sub">{targets.length} 条候选（wire 消息 id）</span>
+          <button className="m-close" onClick={closeModal}>✕</button>
+        </div>
+        <div className="m-body">
+          {targets.length === 0 && <div className="ov-empty">当前会话没有可{command === 'rewind' ? '回退' : '分叉'}的消息</div>}
+          {targets.map((t) => (
+            <div className="pm-item" key={t.id} onClick={() => void pickMessageTarget(t.id)}>
+              <span className="pm-label">{t.label}</span>
+              <span className="pm-id mono">{t.id}</span>
+            </div>
+          ))}
+          <div className="m-actions">
+            <button className="btn" onClick={closeModal}>取消</button>
           </div>
         </div>
       </div>
@@ -270,5 +375,9 @@ export function Modal(): React.JSX.Element | null {
       return <AdoptModal recipeId={modal.recipeId ?? 'vm'} />;
     case 'boot':
       return <BootModalInner recipeId={modal.recipeId ?? ''} />;
+    case 'slash-args':
+      return <SlashArgsModal />;
+    case 'pick-message':
+      return <PickMessageModal />;
   }
 }

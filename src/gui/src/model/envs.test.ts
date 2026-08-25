@@ -40,7 +40,42 @@ describe('groupSidebar', () => {
 
 describe('isSwitchable', () => {
   it('unreg 组不可切换（未登记）', () => {
-    expect(isSwitchable({ key: 'x', label: 'x', group: 'unreg', detail: '', kind: 'docker', warn: false })).toBe(false);
-    expect(isSwitchable({ key: 'x', label: 'x', group: 'run', detail: '', kind: 'docker', warn: false })).toBe(true);
+    expect(isSwitchable({ key: 'x', label: 'x', group: 'unreg', detail: '', kind: 'docker', warn: false, startable: false })).toBe(false);
+    expect(isSwitchable({ key: 'x', label: 'x', group: 'run', detail: '', kind: 'docker', warn: false, startable: false })).toBe(true);
+  });
+});
+
+describe('startable（1.3.1 ① 启动按钮）', () => {
+  const base = { id: 's', name: 's' };
+
+  it('docker/vm 带 recipeId → 启动按钮可用', () => {
+    const groups = groupSidebar(
+      [
+        { ...base, kind: 'docker', recipeId: 'pwn' },
+        { ...base, id: 'v', kind: 'vm', recipeId: 'rev' },
+        { ...base, id: 'x', kind: 'ssh' },
+      ],
+      [],
+      [],
+    );
+    const stop = groups.find((g) => g.label === '已停止');
+    expect(stop).toBeDefined();
+    const byKey = new Map(stop!.items.map((i) => [i.key, i]));
+    expect(byKey.get('s')?.startable).toBe(true);
+    expect(byKey.get('s')?.recipeId).toBe('pwn');
+    expect(byKey.get('v')?.startable).toBe(true);
+    expect(byKey.get('x')?.startable).toBe(false); // ssh 无配方不可启
+  });
+
+  it('运行中 / 本机已有组永不可启动（已在跑 / 未登记）', () => {
+    const groups = groupSidebar(
+      [{ ...base, kind: 'docker', recipeId: 'pwn' }],
+      [{ id: 's', status: 'running', driver: 'docker' }],
+      [{ id: 'k', name: 'k', state: 'powered off', driver: 'vmware' }],
+    );
+    const run = groups.find((g) => g.label === '运行中');
+    const unreg = groups.find((g) => g.label === '本机已有');
+    expect(run?.items[0].startable).toBe(false);
+    expect(unreg?.items[0].startable).toBe(false);
   });
 });

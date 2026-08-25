@@ -1,28 +1,62 @@
 /**
- * zustand store（1.3.0 GUI MVP 的组装层）。
+ * zustand store（1.3.1 GUI 迭代——组装层）。
  *
- * 分工：纯逻辑（事件归约 / Esc 链 / 发送语义 / 侧栏分组）全部在
- * src/gui/src/model/* 纯函数模块里；本文件只做 I/O 与状态组装——
- * SSE 消费、admin 接口调用、overlay/模态/抽屉/页面的开关。
+ * 分工：纯逻辑（事件归约 / Esc 链 / 准入闸 / 命令路由 / 任务登记表）
+ * 全部在 src/gui/src/model/* 纯函数模块里；本文件只做 I/O 与状态组装——
+ * SSE 消费、admin 接口调用、overlay/模态/抽屉/页面/面板的开关。
  *
- * 会话按环境分线：sessions[key]（key = env id），每环境独立块列表与
- * replay 去重集合；切环境 = 重置目标线 + 重连 SSE，由服务端 replay 全量
- * 重建该线历史（「切环境=重新加载该环境的会话流」）。
+ * 会话按环境分线：sessions[key]（key = env id；null = 宿主线，用 'host' 键）；
+ * 切环境 = 重置目标线 + 重连 SSE，由服务端 replay 全量重建该线历史。
+ *
+ * 1.3.1 新增状态：
+ *   - currentEnvKey: string | null（null = 宿主未锚定；启动时 environment/current 恢复）
+ *   - boundaryAsks / bgTasks / subagents（SSE 事件登记表，纯函数归约在 model/）
+ *   - tasksOpen / tasksSelected / queueOpen / queueServer（/tasks、/queue 面板）
+ *   - boot（environment/up 真进度：请求 + 轮询 environment/ps）
  */
 
 import { create } from 'zustand';
 
 import { emptySession, type SessionState, type ToolDetail } from '../model/blocks';
+import { selectionToGuiKey } from '../model/access-gate';
+import {
+  removeBoundaryAsk,
+  upsertBoundaryAsk,
+  type BoundaryAsk,
+} from '../model/boundary';
 import { escAction } from '../model/esc-chain';
+import { bootStages } from '../model/envs';
 import { reduceSseEvent } from '../model/reducer';
 import { buildSendBody, classifySendResponse, type Ref } from '../model/send';
+import {
+  buildTaskRows,
+  applyBgEvent,
+  applySubagentEvent,
+  type BgTaskEntry,
+  type ServerTaskLike,
+  type SubagentEntry,
+  type TaskRow,
+} from '../model/tasks';
+import {
+  exportResultToast,
+  forkTargets,
+  noEnvToast,
+  rewindTargets,
+  slashPayload,
+  slashRoute,
+  SLASH_ROUTES,
+  type SlashCommandName,
+} from '../model/slash-routes';
+import { parseExpertImport } from '../model/expert-import';
 import * as api from '../client/api';
 import type {
   DiscoveredDocker,
   DiscoveredVm,
   EnvEntry,
+  LoopTranscriptLine,
   ModelProvider,
   PsInstance,
+  QueueStatusItem,
   Recipe,
 } from '../client/api';
 import { resolvePort } from '../client/port';
@@ -75,12 +109,14 @@ export interface OverlayState {
   sel: number;
 }
 
-export type ModalKind = 'new-env' | 'ssh' | 'adopt' | 'boot';
+export type ModalKind = 'new-env' | 'ssh' | 'adopt' | 'boot' | 'slash-args' | 'pick-message';
 
 export interface ModalState {
   kind: ModalKind;
   /** boot/adopt 关联的配方 id。 */
   recipeId?: string;
+  /** slash-args / pick-message 关联的命令名（rewind/fork/snapshot/rollback/extract）。 */
+  command?: SlashCommandName;
 }
 
 export interface DrawerState {
@@ -93,6 +129,23 @@ export interface DrawerState {
   elapsedMs?: number;
   signal?: string;
   search: string;
+}
+
+export interface TasksSelected {
+  title: string;
+  detail: string;
+  /** 子代理 transcript（loop-session 结构化消息）或 server task JSON 摘要。 */
+  transcript: LoopTranscriptLine[] | null;
+}
+
+/** boot 进度（environment/up 真链路）。 */
+export interface BootState {
+  recipeId: string;
+  base: string | undefined;
+  stage: number;
+  /** null=进行中；'done' / 'failed'。 */
+  status: 'running' | 'done' | 'failed';
+  error?: string;
 }
 
 export type Page = 'chat' | 'settings' | 'attach';
@@ -116,9 +169,10 @@ export interface GuiState {
   recipes: Recipe[];
   models: ModelProvider[];
   workspace: string | null;
-  currentEnvKey: string;
+  /** null = 宿主（未锚定环境）；否则为环境 id（侧栏键）。 */
+  currentEnvKey: string | null;
 
-  // 会话（per-env）
+  // 会话（per-env；宿主线键 'host'）
   sessions: Record<string, SessionState>;
 
   // 输入历史（per-env）
@@ -126,6 +180,20 @@ export interface GuiState {
 
   // 输入区 @ 引用 chips
   refs: Ref[];
+
+  // 1.3.1 ②③：SSE 事件登记表
+  boundaryAsks: BoundaryAsk[];
+  bgTasks: BgTaskEntry[];
+  subagents: SubagentEntry[];
+
+  // 1.3.1 ③④：/tasks 与 /queue 面板
+  tasksOpen: boolean;
+  tasksSelected: TasksSelected | null;
+  queueOpen: boolean;
+  queueServer: QueueStatusItem[];
+
+  // 1.3.1 ⑤：boot 进度
+  boot: BootState | null;
 
   // UI 面板
   overlay: OverlayState | null;
@@ -143,6 +211,7 @@ export interface GuiState {
   reconnect(): void;
   refreshSidebar(): Promise<void>;
   switchEnv(key: string): Promise<void>;
+  startEnv(itemKey: string): Promise<void>;
   send(text: string): Promise<void>;
   stopTurn(): Promise<void>;
   runReset(): Promise<void>;
@@ -155,6 +224,23 @@ export interface GuiState {
   closeModal(): void;
   setModal(modal: ModalState | null): void;
   submitSsh(host: string, user: string, keyPath: string): Promise<void>;
+  submitAdopt(vmx: string, user: string, keyPath: string, password: string): Promise<void>;
+  bootEnv(recipeId: string): Promise<void>;
+  submitSlashArg(value: string): Promise<void>;
+  pickMessageTarget(id: string): Promise<void>;
+  // 1.3.1 ②：boundary
+  respondBoundaryAsk(askId: string, approve: boolean, note?: string): Promise<void>;
+  dismissBoundaryAsk(askId: string): void;
+  // 1.3.1 ③④：tasks / queue
+  openTasksPanel(): Promise<void>;
+  closeTasksPanel(): void;
+  backToList(): void;
+  selectTaskRow(key: string): Promise<void>;
+  openQueuePanel(): Promise<void>;
+  closeQueuePanel(): void;
+  cancelQueueItem(queueId: string): Promise<void>;
+  // 1.3.1 ⑥：settings
+  submitExpertImport(raw: string): Promise<{ ok: boolean; message: string }>;
   openDrawer(detail: ToolDetail): void;
   closeDrawer(): void;
   setDrawerSearch(q: string): void;
@@ -172,6 +258,10 @@ let client: GuiSidecarClient | null = null;
 let abortController: AbortController | null = null;
 let connecting = false;
 let lifecycleGen = 0;
+/** 启动环境恢复只做一次（chat:init 的 workspace 到达后）。 */
+let envRestoreDone = false;
+/** boot 轮询句柄（dispose / 重复 boot 时清理）。 */
+let bootPollTimer: ReturnType<typeof setInterval> | null = null;
 
 function browserStorage(): { getItem(k: string): string | null } | undefined {
   try {
@@ -182,9 +272,7 @@ function browserStorage(): { getItem(k: string): string | null } | undefined {
 }
 
 function currentSession(s: GuiState): SessionState {
-  // 1.3.0 修正：键口径与 reducer/setModel 统一（currentEnvKey || 'host'），
-  // 否则 currentEnvKey 为 null 时读写 sessions[null]，永远空会话。
-  return s.sessions[s.currentEnvKey || 'host'] ?? emptySession();
+  return s.sessions[s.currentEnvKey ?? 'host'] ?? emptySession();
 }
 
 export const useGuiStore = create<GuiState>()((set, get) => ({
@@ -198,11 +286,22 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   recipes: [],
   models: [],
   workspace: null,
-  currentEnvKey: '',
+  currentEnvKey: null,
 
   sessions: {},
   history: {},
   refs: [],
+
+  boundaryAsks: [],
+  bgTasks: [],
+  subagents: [],
+
+  tasksOpen: false,
+  tasksSelected: null,
+  queueOpen: false,
+  queueServer: [],
+
+  boot: null,
 
   overlay: null,
   modal: null,
@@ -218,6 +317,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     if (connecting || client) return;
     connecting = true;
     const gen = ++lifecycleGen;
+    envRestoreDone = false;
     void (async () => {
       const { invoke } = tauriInvoke();
       const search = typeof window !== 'undefined' ? window.location.search : '';
@@ -249,6 +349,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     abortController = null;
     client = null;
     connecting = false;
+    stopBootPolling();
   },
 
   reconnect() {
@@ -261,25 +362,40 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       try {
         for await (const input of c.openSse('/chat/stream', {
           signal: ac.signal,
-          onReconnect: (attempt, cause) => {
+          onReconnect: (_attempt, _cause) => {
             set({ connectionState: 'reconnecting' });
           },
         })) {
           const state = get();
-          const key = state.currentEnvKey || 'host';
+          const key = state.currentEnvKey ?? 'host';
           const session = state.sessions[key] ?? emptySession();
-          const { session: next, workspace, toast } = reduceSseEvent(session, input);
+          const res = reduceSseEvent(session, input);
           set((s) => {
             const patch: Partial<GuiState> = {
-              sessions: { ...s.sessions, [key]: next },
+              sessions: { ...s.sessions, [key]: res.session },
               connectionState: 'live',
               connectError: null,
             };
-            if (workspace) patch.workspace = workspace;
-            if (toast) {
-              patch.toast = toast;
+            if (res.workspace) {
+              patch.workspace = res.workspace;
+              void restoreEnvSelection(get, set, res.workspace);
+            }
+            if (res.toast) {
+              patch.toast = res.toast;
               patch.toastNonce = s.toastNonce + 1;
             }
+            if (res.boundaryAsk) {
+              patch.boundaryAsks =
+                res.boundaryAsk.type === 'upsert'
+                  ? upsertBoundaryAsk(s.boundaryAsks, {
+                      askId: res.boundaryAsk.askId,
+                      kind: res.boundaryAsk.kind,
+                      objects: res.boundaryAsk.objects,
+                    })
+                  : removeBoundaryAsk(s.boundaryAsks, res.boundaryAsk.askId);
+            }
+            if (res.bgEvent) patch.bgTasks = applyBgEvent(s.bgTasks, res.bgEvent);
+            if (res.subagentEvent) patch.subagents = applySubagentEvent(s.subagents, res.subagentEvent);
             return patch;
           });
         }
@@ -345,6 +461,38 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     get().showToast(`◈ 已切换到 ${key} 的会话线`);
   },
 
+  // ── 1.3.1 ①：启动已停止环境（docker/vm 都走 environment/up） ──────
+
+  async startEnv(itemKey: string) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    const entry = state.envs.find((e) => e.id === itemKey);
+    if (!entry) {
+      state.showToast('未找到该环境条目');
+      return;
+    }
+    const recipe = entry.recipeId ?? entry.id;
+    state.showToast(`▶ 启动 ${entry.id}（${recipe}）…`);
+    try {
+      const res = await api.environmentUp(c, {
+        recipe,
+        workspace: state.workspace ?? undefined,
+      });
+      if (!res.success) {
+        state.showToast(`启动失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      void state.refreshSidebar();
+      state.showToast(`✓ ${entry.id} 已启动`);
+    } catch (err) {
+      state.showToast(`启动失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
   // ── 发送 / 纠偏 / 中断 / 重置 ───────────────────────────────────────
 
   async send(text: string) {
@@ -390,7 +538,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         get().showToast(`重置失败：${res.error ?? '未知错误'}`);
         return;
       }
-      const key = get().currentEnvKey || 'host';
+      const key = get().currentEnvKey ?? 'host';
       set((s) => ({ sessions: { ...s.sessions, [key]: emptySession() } }));
       get().reconnect();
       get().showToast('对话已重置');
@@ -408,7 +556,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         get().showToast(`切换模型失败：${res.error ?? '未知错误'}`);
         return;
       }
-      const key = get().currentEnvKey || 'host';
+      const key = get().currentEnvKey ?? 'host';
       set((s) => ({ sessions: { ...s.sessions, [key]: { ...currentSession(s), model } } }));
       get().showToast(`已切换模型：${model}`);
     } catch (err) {
@@ -443,7 +591,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       return;
     }
     if (kind === 'history') {
-      const key = s.currentEnvKey || 'host';
+      const key = s.currentEnvKey ?? 'host';
       const list = s.history[key] ?? [];
       const items = list
         .filter((h) => !query || h.includes(query))
@@ -497,7 +645,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     switch (ov.kind) {
       case 'slash': {
         const cmd = item.name.replace(/^\//, '');
-        void runSlashCommand(get, cmd);
+        void runSlashCommand(get, set, cmd);
         break;
       }
       case 'at': {
@@ -514,6 +662,125 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         if (item.providerId && item.model) void s.setModel(item.providerId, item.model);
         break;
       }
+    }
+  },
+
+  // ── 1.3.1 ②：boundary 应答 ─────────────────────────────────────────
+
+  async respondBoundaryAsk(askId: string, approve: boolean, note?: string) {
+    const c = client;
+    const state = get();
+    if (!state.boundaryAsks.some((a) => a.askId === askId)) return; // 幂等守卫
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.boundaryRespond(c, { askId, approve, note });
+      if (!res.success && res.error?.includes('不存在') === false) {
+        state.showToast(`应答失败：${res.error ?? '未知错误'}`);
+      }
+      // 404（已答/已过期）与成功都收模态——服务端注册表已无此 ask。
+      set((s) => ({ boundaryAsks: removeBoundaryAsk(s.boundaryAsks, askId) }));
+    } catch (err) {
+      state.showToast(`应答失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  dismissBoundaryAsk(askId: string) {
+    // Esc 语义：收起该 ask 的模态不作答——ask 保持 pending，服务端重连
+    // replay 会重弹。本地摘除，避免模态一直挡住界面。
+    set((s) => ({ boundaryAsks: removeBoundaryAsk(s.boundaryAsks, askId) }));
+  },
+
+  // ── 1.3.1 ③④：/tasks 面板 ──────────────────────────────────────────
+
+  async openTasksPanel() {
+    const c = client;
+    set({ tasksOpen: true, tasksSelected: null });
+    if (!c) return;
+    try {
+      serverTaskCache = (await api.taskList(c)) as ServerTaskLike[];
+    } catch {
+      serverTaskCache = [];
+    }
+  },
+
+  closeTasksPanel() {
+    set({ tasksOpen: false, tasksSelected: null });
+  },
+
+  backToList() {
+    set({ tasksSelected: null });
+  },
+
+  async selectTaskRow(key: string) {
+    const c = client;
+    const state = get();
+    if (!c) return;
+    const row = selectTaskRows(state).find((r) => r.key === key);
+    if (!row) return;
+    try {
+      if (row.loopSessionId) {
+        const transcript = await api.fetchLoopTranscript(c, row.loopSessionId);
+        set({ tasksSelected: { title: row.name, detail: row.detail, transcript } });
+      } else if (row.serverTaskId) {
+        const detail = await api.taskGet(c, row.serverTaskId);
+        const lines: LoopTranscriptLine[] = [];
+        const rec = detail as Record<string, unknown> | null;
+        if (rec && typeof rec === 'object') {
+          for (const [k, v] of Object.entries(rec)) {
+            if (k === 'status_history') continue;
+            lines.push({ role: k, content: typeof v === 'string' ? v : JSON.stringify(v) });
+          }
+        }
+        set({ tasksSelected: { title: row.name, detail: row.detail, transcript: lines } });
+      } else {
+        set({
+          tasksSelected: {
+            title: row.name,
+            detail: row.detail,
+            transcript: null,
+          },
+        });
+      }
+    } catch (err) {
+      state.showToast(`取任务详情失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  // ── 1.3.1 ④：/queue 面板 ────────────────────────────────────────────
+
+  async openQueuePanel() {
+    const c = client;
+    set({ queueOpen: true, queueServer: [] });
+    if (!c) return;
+    try {
+      const res = await api.fetchQueueStatus(c);
+      set({ queueServer: res.queue ?? [] });
+    } catch {
+      set({ queueServer: [] });
+    }
+  },
+
+  closeQueuePanel() {
+    set({ queueOpen: false, queueServer: [] });
+  },
+
+  async cancelQueueItem(queueId: string) {
+    const c = client;
+    if (!c) return;
+    try {
+      const res = await api.cancelQueueItem(c, queueId);
+      if (!res.success) {
+        get().showToast(`取消失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      get().showToast('已取消排队消息');
+      const fresh = await api.fetchQueueStatus(c).catch(() => null);
+      set({ queueServer: fresh?.queue ?? get().queueServer.filter((q) => q.id !== queueId) });
+    } catch (err) {
+      get().showToast(`取消失败：${err instanceof Error ? err.message : String(err)}`);
     }
   },
 
@@ -550,6 +817,123 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     set({ modal: null });
     void get().refreshSidebar();
     get().showToast(`✓ 已登记 ${id}`);
+  },
+
+  async submitAdopt(vmx: string, user: string, keyPath: string, password: string) {
+    const c = client;
+    const state = get();
+    if (!c) return;
+    const recipeId = state.modal?.recipeId ?? '';
+    state.showToast(`⏳ 认领模板 ${recipeId}（连通 → 初始化 → 快照）…`);
+    try {
+      const res = await api.environmentAdopt(c, {
+        recipe: recipeId,
+        vmx,
+        user: user || undefined,
+        keyPath: keyPath || undefined,
+        password: password || undefined,
+      });
+      if (!res.success) {
+        state.showToast(`认领失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set({ modal: null });
+      state.showToast(`✓ 模板 ${recipeId} 已养成（快照 zhishi-clean）`);
+    } catch (err) {
+      state.showToast(`认领失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  // ── 1.3.1 ⑤：boot 真链路（up + 轮询 ps 推阶段） ────────────────────
+
+  async bootEnv(recipeId: string) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    const recipe = state.recipes.find((r) => r.id === recipeId);
+    const stages = bootStages(recipe?.base);
+    stopBootPolling();
+    set({ boot: { recipeId, base: recipe?.base, stage: 0, status: 'running' } });
+    const advance = (to: number) => {
+      set((s) =>
+        s.boot && s.boot.status === 'running' && s.boot.stage < to
+          ? { boot: { ...s.boot, stage: Math.min(to, stages.length - 1) } }
+          : {},
+      );
+    };
+    // 轮询 environment/ps：实例出现 → 跳到「工具自检」阶段（倒二）。
+    const seenIds = new Set(state.running.map((r) => r.id));
+    bootPollTimer = setInterval(() => {
+      void api.fetchEnvironmentPs(c).then((instances) => {
+        if (instances.some((i) => i.id && !seenIds.has(i.id))) {
+          advance(stages.length - 2);
+          stopBootPolling();
+        }
+      }).catch(() => { /* 轮询失败不阻断——up 结果为准 */ });
+    }, 2000);
+    try {
+      const res = await api.environmentUp(c, {
+        recipe: recipeId,
+        workspace: state.workspace ?? undefined,
+      });
+      stopBootPolling();
+      if (!res.success) {
+        set({ boot: { recipeId, base: recipe?.base, stage: stages.length - 1, status: 'failed', error: res.error } });
+        state.showToast(`构建失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set({ boot: { recipeId, base: recipe?.base, stage: stages.length, status: 'done' } });
+      void state.refreshSidebar();
+      state.showToast(`✓ 环境 ${recipeId} 构建完成`);
+    } catch (err) {
+      stopBootPolling();
+      set({
+        boot: { recipeId, base: recipe?.base, stage: stages.length - 1, status: 'failed', error: err instanceof Error ? err.message : String(err) },
+      });
+      state.showToast(`构建失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  // ── 1.3.1 ④：slash 参数收集与执行 ──────────────────────────────────
+
+  async submitSlashArg(value: string) {
+    const state = get();
+    const command = state.modal?.command;
+    if (!command) return;
+    set({ modal: null });
+    await executeSlash(get, set, command, value);
+  },
+
+  async pickMessageTarget(id: string) {
+    const state = get();
+    const command = state.modal?.command;
+    if (!command) return;
+    set({ modal: null });
+    await executeSlash(get, set, command, id);
+  },
+
+  // ── 1.3.1 ⑥：专家导入（解析后逐条 expert/add） ─────────────────────
+
+  async submitExpertImport(raw: string) {
+    const c = client;
+    const parsed = parseExpertImport(raw);
+    if (!parsed.ok) return { ok: false, message: parsed.error };
+    if (!c) return { ok: false, message: '未连接 sidecar' };
+    let okCount = 0;
+    const failures: string[] = [];
+    for (const entry of parsed.entries) {
+      const res = await api.expertAdd(c, entry);
+      if (res.success) okCount++;
+      else failures.push(typeof entry.title === 'string' ? entry.title : res.error ?? '未知错误');
+    }
+    if (failures.length === 0) return { ok: true, message: `✓ 导入成功：${okCount} 条已入库` };
+    return {
+      ok: okCount > 0,
+      message: `导入完成：${okCount} 条成功，${failures.length} 条失败（${failures.slice(0, 3).join('；')}）`,
+    };
   },
 
   openDrawer(detail: ToolDetail) {
@@ -602,7 +986,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   },
 
   addHistory(text) {
-    const key = get().currentEnvKey || 'host';
+    const key = get().currentEnvKey ?? 'host';
     set((s) => {
       const list = [text, ...(s.history[key] ?? [])].slice(0, 200);
       return { history: { ...s.history, [key]: list } };
@@ -615,6 +999,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     const s = get();
     const action = escAction({
       overlayOpen: s.overlay !== null,
+      tasksOpen: s.tasksOpen,
+      queueOpen: s.queueOpen,
+      boundaryOpen: s.boundaryAsks.length > 0,
       modalOpen: s.modal !== null,
       drawerOpen: s.drawer !== null,
       pageOpen: s.page !== 'chat',
@@ -624,6 +1011,17 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       case 'close-overlay':
         set({ overlay: null });
         break;
+      case 'close-tasks':
+        set({ tasksOpen: false, tasksSelected: null });
+        break;
+      case 'close-queue':
+        set({ queueOpen: false, queueServer: [] });
+        break;
+      case 'close-boundary': {
+        const first = get().boundaryAsks[0];
+        if (first) get().dismissBoundaryAsk(first.askId);
+        break;
+      }
       case 'close-modal':
         set({ modal: null });
         break;
@@ -657,6 +1055,71 @@ function tauriInvoke(): { invoke?: (cmd: string) => Promise<unknown> } {
   return invoke ? { invoke: (cmd: string) => invoke(cmd) } : {};
 }
 
+function stopBootPolling(): void {
+  if (bootPollTimer) {
+    clearInterval(bootPollTimer);
+    bootPollTimer = null;
+  }
+}
+
+/**
+ * 设置页等组件的 sidecar client 通道（连接生命周期内非空；未连接返回
+ * null，页面显示空态）。client 本体是模块私有单例。
+ */
+export function getSettingsClient(): GuiSidecarClient | null {
+  return client;
+}
+
+/** 服务端任务中心快照（task/list；不进 state，tasks 面板打开时读）。 */
+let serverTaskCache: ServerTaskLike[] = [];
+
+// ---------------------------------------------------------------------------
+// 派生选择器（组件直接调用）
+// ---------------------------------------------------------------------------
+
+/** 当前会话派生状态（busy / phase / queue 深度）。 */
+export function selectCurrentSession(s: GuiState): SessionState {
+  return s.sessions[s.currentEnvKey ?? 'host'] ?? FALLBACK_SESSION;
+}
+
+/** /tasks 面板行装配（bg + subagent + 服务端任务中心三源合一）。 */
+export function selectTaskRows(s: GuiState): TaskRow[] {
+  return buildTaskRows(s.bgTasks, s.subagents, serverTaskCache);
+}
+
+/** 稳定的空会话单例：sessions 缺条目时兜底，避免 selector 每次返回新引用。 */
+const FALLBACK_SESSION = emptySession();
+
+/**
+ * 1.3.1 ①：chat:init 携带 workspace 后一次性恢复当前环境选定
+ * （environment/current → selectionToGuiKey）。选定与 GUI 当前线不同才切线
+ * （避免重复重连）；恢复失败静默落宿主线（不阻塞会话）。
+ */
+async function restoreEnvSelection(
+  get: () => GuiState,
+  set: (partial: Partial<GuiState>) => void,
+  workspace: string,
+): Promise<void> {
+  if (envRestoreDone) return;
+  envRestoreDone = true;
+  const c = client;
+  if (!c) return;
+  try {
+    const res = await api.fetchEnvironmentCurrent(c, workspace);
+    const selection = (res.data?.selection ?? null) as Record<string, unknown> | null;
+    const key = selectionToGuiKey(selection as { kind?: string; id?: string; instanceId?: string } | null);
+    if (key !== get().currentEnvKey) {
+      set({
+        currentEnvKey: key,
+        sessions: { ...get().sessions, [key ?? 'host']: emptySession() },
+      });
+      get().reconnect();
+    }
+  } catch {
+    // 静默——恢复失败保持宿主线。
+  }
+}
+
 async function loadModels(
   get: () => GuiState,
   set: (partial: Partial<GuiState>) => void,
@@ -669,7 +1132,7 @@ async function loadModels(
     // 1.3.0 修正：新会话在首个 turn 前不会有 chat:system-init——状态栏
     // 模型名用 model/list 的 current 兜底（1.2.9 服务端字段）。
     if (current?.modelId) {
-      const key = get().currentEnvKey || 'host';
+      const key = get().currentEnvKey ?? 'host';
       const session = get().sessions[key];
       if (!session?.model) {
         set({
@@ -685,44 +1148,163 @@ async function loadModels(
   }
 }
 
-async function runSlashCommand(get: () => GuiState, cmd: string): Promise<void> {
+/** 1.3.1 ④：slash 命令分发（GUI 本地命令先处理；其余按路由表）。 */
+async function runSlashCommand(
+  get: () => GuiState,
+  set: (partial: Partial<GuiState>) => void,
+  cmd: string,
+): Promise<void> {
   const s = get();
-  switch (cmd) {
-    case 'attach':
-      s.setPage('attach');
-      break;
-    case 'model':
-      s.openOverlay('model', '');
-      break;
-    case 'reset':
-      await s.runReset();
-      break;
-    case 'help':
-      s.showToast('/help：Esc 中断（busy）· Ctrl+R 历史 · ↑ 空输入历史 · Enter 发送（运行中发送=纠偏）');
-      break;
+  // 本地命令（不在 server 路由表里）
+  if (cmd === 'attach') {
+    s.setPage('attach');
+    return;
+  }
+  if (cmd === 'model') {
+    s.openOverlay('model', '');
+    return;
+  }
+  if (cmd === 'reset') {
+    await s.runReset();
+    return;
+  }
+  if (cmd === 'help') {
+    s.showToast('/help：Esc 中断（busy）· Ctrl+R 历史 · ↑ 空输入历史 · Enter 发送（运行中发送=纠偏）');
+    return;
+  }
+  const route = slashRoute(cmd);
+  if (!route) {
+    s.showToast(`/${cmd}：未知命令`);
+    return;
+  }
+  switch (route.command) {
+    case 'queue':
+      await s.openQueuePanel();
+      return;
+    case 'tasks':
+      await s.openTasksPanel();
+      return;
+    case 'export': {
+      if (!s.workspace) {
+        s.showToast('/export：工作区尚未就绪（等待 chat:init）');
+        return;
+      }
+      const payload = slashPayload(route, { envKey: s.currentEnvKey, workspace: s.workspace });
+      if (!payload) {
+        s.showToast(noEnvToast(route.command));
+        return;
+      }
+      const c = client;
+      if (!c) {
+        s.showToast('未连接 sidecar');
+        return;
+      }
+      s.showToast('⏳ 组装报告（含越界批准与证据回收）…');
+      try {
+        const res = await api.reportExport(c, payload as { workspace: string });
+        if (!res.success) {
+          s.showToast(`导出失败：${res.error ?? '未知错误'}`);
+          return;
+        }
+        s.showToast(exportResultToast(res.data as Record<string, unknown> | undefined));
+      } catch (err) {
+        s.showToast(`导出失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+      return;
+    }
     case 'snapshot':
     case 'rollback':
-    case 'extract':
+    case 'extract': {
+      set({
+        modal: {
+          kind: 'slash-args',
+          command: route.command,
+        },
+      });
+      return;
+    }
     case 'rewind':
-    case 'fork':
-    case 'queue':
-    case 'tasks':
-    case 'export':
-      s.showToast(`/${cmd}：MVP 占位（v19 演示语义，待接 admin 接口）`);
-      break;
-    default:
-      s.showToast(`/${cmd}：未知命令`);
+    case 'fork': {
+      const key = s.currentEnvKey ?? 'host';
+      const session = s.sessions[key] ?? emptySession();
+      const targets = route.command === 'rewind' ? rewindTargets(session.items) : forkTargets(session.items);
+      if (targets.length === 0) {
+        s.showToast(`/${cmd}：当前会话没有可回退/分叉的消息`);
+        return;
+      }
+      set({ modal: { kind: 'pick-message', command: route.command } });
+      return;
+    }
   }
 }
 
-// ---------------------------------------------------------------------------
-// 派生选择器（组件直接调用）
-// ---------------------------------------------------------------------------
-
-/** 当前会话派生状态（busy / phase / queue 深度）。 */
-export function selectCurrentSession(s: GuiState): SessionState {
-  return s.sessions[s.currentEnvKey || 'host'] ?? FALLBACK_SESSION;
+/** 参数收集完成后的执行（snapshot/rollback/extract/rewind/fork）。 */
+async function executeSlash(
+  get: () => GuiState,
+  _set: (partial: Partial<GuiState>) => void,
+  command: SlashCommandName,
+  arg: string,
+): Promise<void> {
+  const s = get();
+  const c = client;
+  if (!c) {
+    s.showToast('未连接 sidecar');
+    return;
+  }
+  const route = SLASH_ROUTES[command];
+  const payload = slashPayload(route, { envKey: s.currentEnvKey, workspace: s.workspace }, arg);
+  if (!payload) {
+    s.showToast(noEnvToast(command));
+    return;
+  }
+  if (route.needsArgs === 'name' && !String(payload.snapshot ?? payload.guestPath ?? '').trim()) {
+    s.showToast(`/${command}：参数必填`);
+    return;
+  }
+  try {
+    if (route.endpoint.kind === 'admin') {
+      const res = await c.adminPost<{ success: boolean; error?: string }>(route.endpoint.route, payload);
+      if (!res.success) {
+        s.showToast(`/${command} 失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      toastSlashSuccess(s, command, arg);
+    } else {
+      if (route.command === 'rewind') {
+        const res = await api.chatRewind(c, String(payload.userMessageId));
+        if (!res.success) {
+          s.showToast(`/rewind 失败：${res.error ?? '未知错误'}`);
+          return;
+        }
+        s.showToast('已回退——重连重建该线程历史');
+        s.reconnect();
+        return;
+      }
+      if (route.command === 'fork') {
+        const res = await api.forkSession(c, String(payload.messageId));
+        if (!res.success) {
+          s.showToast(`/fork 失败：${res.error ?? '未知错误'}`);
+          return;
+        }
+        s.showToast('已分叉新线程');
+        s.reconnect();
+      }
+    }
+  } catch (err) {
+    s.showToast(`/${command} 失败：${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
-/** 稳定的空会话单例：sessions 缺条目时兜底，避免 selector 每次返回新引用。 */
-const FALLBACK_SESSION = emptySession();
+function toastSlashSuccess(s: GuiState, command: SlashCommandName, arg: string): void {
+  if (command === 'snapshot') {
+    s.showToast(arg.trim() ? `✓ 快照 ${arg.trim()} 已建立` : '✓ 快照已建立');
+    return;
+  }
+  if (command === 'rollback') {
+    s.showToast(`✓ 已回滚到快照 ${arg.trim()}（回滚后自动恢复运行）`);
+    return;
+  }
+  if (command === 'extract') {
+    s.showToast(`✓ 已回收 ${arg.trim()} 到宿主 output/extracted/`);
+  }
+}

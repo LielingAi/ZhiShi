@@ -28,7 +28,7 @@ export function InputArea(): React.JSX.Element {
   const openOverlay = useGuiStore((s) => s.openOverlay);
   const closeOverlay = useGuiStore((s) => s.closeOverlay);
   const inputFill = useGuiStore((s) => s.inputFill);
-  const envLabel = useGuiStore((s) => s.currentEnvKey || 'host');
+  const envLabel = useGuiStore((s) => (s.currentEnvKey ?? '宿主'));
 
   // 历史 overlay 选中 → 回填输入框。
   useEffect(() => {

@@ -1,12 +1,22 @@
 /**
- * 设置占位页（MVP）：导航骨架照 v19，内容只实现「外观」（主题切换入口
- * 占位——浅色不实现）与「关于」；其余页签为占位文案。
+ * 设置页（1.3.1 ⑥）：五个页签接真——
+ *   模型     model/list + model/set-key（隐藏输入模态）+ set-default + verify
+ *   Skills   skill/list + skill/enable|disable + /api/skill/import-folder
+ *   情报     intel/status + intel/update（mode 选择）
+ *   专家知识 expert/search + expert/list + expert/add（JSON/YAML 导入）+
+ *            expert/drafts + expert/review（草稿审定）
+ *   研究记录 research/list
+ *
+ * 外观/关于页签保留（v19 形态）。Esc 经 Esc 链 close-page 返回主会话区
+ * （与主会话区互斥：page === 'settings' 时主区不渲染）。
  */
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type React from 'react';
 
-import { useGuiStore } from '../store/useGuiStore';
+import { getSettingsClient, useGuiStore } from '../store/useGuiStore';
+import * as api from '../client/api';
+import type { ExpertDraft, ExpertSummary, ModelProvider, ResearchEventRow, SkillEntity } from '../client/api';
 
 const NAV = [
   { id: 'model', icon: '◇', label: '模型' },
@@ -18,8 +28,679 @@ const NAV = [
   { id: 'about', icon: 'ⓘ', label: '关于' },
 ] as const;
 
+// ── 模型页签 ──────────────────────────────────────────────────────────
+
+function ModelTab(): React.JSX.Element {
+  const [providers, setProviders] = useState<ModelProvider[]>([]);
+  const [current, setCurrent] = useState<{ providerId?: string; modelId?: string } | null>(null);
+  const [keyProvider, setKeyProvider] = useState<string | null>(null);
+  const showToast = useGuiStore((s) => s.showToast);
+
+  const reload = useCallback(async () => {
+    const c = getSettingsClient();
+    if (!c) return;
+    try {
+      const res = await api.fetchModelList(c);
+      setProviders(res.providers);
+      setCurrent(res.current ?? null);
+    } catch {
+      // 拉取失败静默（页面显示空态）。
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  return (
+    <>
+      <div className="set-group">
+        <div className="sg-title">当前使用</div>
+        <div className="set-row">
+          <div>
+            <div className="sr-label">默认模型</div>
+            <div className="sr-desc">切换在主界面状态栏（点击模型名）</div>
+          </div>
+          <div className="sr-control">
+            <span className="sr-status ok">
+              {current?.modelId ?? '未设置'}
+              {current?.providerId ? `（${current.providerId}）` : ''}
+            </span>
+          </div>
+        </div>
+      </div>
+      <div className="set-group">
+        <div className="sg-title">供应商</div>
+        {providers.length === 0 && <div className="sr-desc">未连接 sidecar 或目录为空</div>}
+        {providers.map((p) => (
+          <div className="set-row" key={p.id}>
+            <div>
+              <div className="sr-label">{p.id}</div>
+              <div className="sr-desc">
+                {p.name ?? ''} · {p.models.length} 模型
+                {p.status && p.status !== 'not-set' ? ` · ${p.status}` : ''}
+              </div>
+            </div>
+            <div className="sr-control">
+              <span className={`sr-status ${p.hasApiKey ? 'ok' : ''}`}>
+                {p.hasApiKey ? '✓ 已配 key' : '○ 未配'}
+              </span>
+              <button className="btn small" onClick={() => setKeyProvider(p.id)}>配置 Key</button>
+              <button
+                className="btn small"
+                onClick={async () => {
+                  const c = getSettingsClient();
+                  if (!c) return;
+                  const res = await api.modelSetDefault(c, p.id);
+                  showToast(res.success ? `✓ 默认供应商已设为 ${p.id}` : `失败：${res.error ?? '未知错误'}`);
+                  void reload();
+                }}
+              >
+                设默认
+              </button>
+              <button
+                className="btn small"
+                onClick={async () => {
+                  const c = getSettingsClient();
+                  if (!c) return;
+                  showToast(`⏳ 验证 ${p.id}…`);
+                  const res = await api.modelVerify(c, p.id);
+                  showToast(res.success ? `✓ ${res.hint ?? '验证通过'}` : `✗ ${res.error ?? '验证失败'}`);
+                }}
+              >
+                验证
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+      {keyProvider && (
+        <KeyConfigModal
+          providerId={keyProvider}
+          onClose={() => setKeyProvider(null)}
+          onSaved={() => {
+            setKeyProvider(null);
+            void reload();
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+/** 隐藏输入 key 配置模态（v19 keyconfig 形态）。 */
+function KeyConfigModal({
+  providerId,
+  onClose,
+  onSaved,
+}: {
+  providerId: string;
+  onClose: () => void;
+  onSaved: () => void;
+}): React.JSX.Element {
+  const [key, setKey] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const showToast = useGuiStore((s) => s.showToast);
+
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal" style={{ width: 'min(420px, 90vw)' }}>
+        <div className="m-head">
+          <span className="m-title">
+            配置 Key · <b className="m-env-name">{providerId}</b>
+          </span>
+          <button className="m-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="m-body">
+          <div className="f-label">隐藏输入 · key 只落 ~/.zhishi/config.json（providerApiKeys）</div>
+          <input
+            className="f-input"
+            type="password"
+            autoFocus
+            placeholder="sk-…"
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !busy) void save();
+            }}
+          />
+          {err && <div className="m-error">✗ {err}</div>}
+          <div className="m-actions">
+            <button className="btn" onClick={onClose}>取消</button>
+            <button
+              className="btn primary"
+              disabled={busy}
+              onClick={() => void save()}
+            >
+              保存
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  async function save() {
+    if (!key.trim()) {
+      setErr('key 不能为空');
+      return;
+    }
+    setBusy(true);
+    try {
+      const c = getSettingsClient();
+      if (!c) {
+        setErr('未连接 sidecar');
+        return;
+      }
+      const res = await api.modelSetKey(c, providerId, key.trim());
+      if (!res.success) {
+        setErr(res.error ?? '保存失败');
+        return;
+      }
+      showToast(`✓ ${res.hint ?? `key 已保存（${providerId}）`}`);
+      onSaved();
+    } finally {
+      setBusy(false);
+    }
+  }
+}
+
+// ── Skills 页签 ───────────────────────────────────────────────────────
+
+function SkillsTab(): React.JSX.Element {
+  const [skills, setSkills] = useState<SkillEntity[]>([]);
+  const [importOpen, setImportOpen] = useState(false);
+  const showToast = useGuiStore((s) => s.showToast);
+
+  const reload = useCallback(async () => {
+    const c = getSettingsClient();
+    if (!c) return;
+    try {
+      setSkills(await api.fetchSkillList(c));
+    } catch {
+      // 静默。
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  return (
+    <div className="set-group">
+      <div className="sg-title">用户级技能 · ~/.zhishi/skills/</div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+        <span className="sr-desc" style={{ alignSelf: 'center' }}>
+          共 {skills.length} 个 · skill enable/disable 即时生效
+        </span>
+        <button className="btn small" style={{ marginLeft: 'auto' }} onClick={() => setImportOpen(true)}>
+          导入技能
+        </button>
+      </div>
+      {skills.length === 0 && <div className="sr-desc">无用户级技能（或未连接 sidecar）</div>}
+      {skills.map((sk) => (
+        <div className="set-row" key={sk.folderName ?? sk.name}>
+          <div>
+            <div className="sr-label">{sk.name}</div>
+            <div className="sr-desc">{sk.description}</div>
+          </div>
+          <div className="sr-control">
+            <span className={`sr-status ${sk.enabled ? 'ok' : ''}`}>{sk.enabled ? '启用' : '禁用'}</span>
+            <button
+              className="btn small"
+              onClick={async () => {
+                const c = getSettingsClient();
+                if (!c) return;
+                const res = await api.skillToggle(c, sk.folderName ?? sk.name, !sk.enabled);
+                showToast(res.success ? `✓ ${sk.name} 已${res.data?.enabled === false ? '禁用' : '启用'}` : `失败：${res.error ?? '未知错误'}`);
+                void reload();
+              }}
+            >
+              {sk.enabled ? '禁用' : '启用'}
+            </button>
+          </div>
+        </div>
+      ))}
+      {importOpen && <SkillImportModal onClose={() => setImportOpen(false)} onDone={() => { setImportOpen(false); void reload(); }} />}
+    </div>
+  );
+}
+
+function SkillImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }): React.JSX.Element {
+  const [path, setPath] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const showToast = useGuiStore((s) => s.showToast);
+
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal" style={{ width: 'min(460px, 90vw)' }}>
+        <div className="m-head">
+          <span className="m-title">导入技能</span>
+          <span className="m-sub">目录需含 SKILL.md（frontmatter 声明 name/description）</span>
+          <button className="m-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="m-body">
+          <div className="f-label">技能目录路径（/api/skill/import-folder）</div>
+          <input
+            className="f-input"
+            placeholder="D:\skills\my-recon"
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !busy) void doImport();
+            }}
+          />
+          {err && <div className="m-error">✗ {err}</div>}
+          <div className="m-actions">
+            <button className="btn" onClick={onClose}>取消</button>
+            <button className="btn primary" disabled={busy} onClick={() => void doImport()}>导入</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  async function doImport() {
+    if (!path.trim()) {
+      setErr('目录路径为空');
+      return;
+    }
+    setBusy(true);
+    try {
+      const c = getSettingsClient();
+      if (!c) {
+        setErr('未连接 sidecar');
+        return;
+      }
+      const res = await api.skillImportFolder(c, path.trim());
+      if (!res.success) {
+        setErr(res.error ?? '导入失败');
+        return;
+      }
+      showToast('✓ 技能已导入');
+      onDone();
+    } finally {
+      setBusy(false);
+    }
+  }
+}
+
+// ── 情报页签 ──────────────────────────────────────────────────────────
+
+function IntelTab(): React.JSX.Element {
+  const [status, setStatus] = useState<Record<string, unknown> | null>(null);
+  const [config, setConfig] = useState<Record<string, unknown> | null>(null);
+  const [mode, setMode] = useState<string>('window');
+  const [busy, setBusy] = useState(false);
+  const showToast = useGuiStore((s) => s.showToast);
+
+  const reload = useCallback(async () => {
+    const c = getSettingsClient();
+    if (!c) return;
+    try {
+      const data = await api.fetchIntelStatus(c);
+      setStatus(data.status ?? null);
+      setConfig(data.config ?? null);
+      const cfgMode = typeof data.config?.mode === 'string' ? data.config.mode : 'window';
+      setMode(cfgMode);
+    } catch {
+      // 静默。
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const st = status ?? {};
+  const fmtCount = (v: unknown) =>
+    typeof v === 'number' ? v.toLocaleString() : String(v ?? '—');
+
+  return (
+    <>
+      <div className="set-group">
+        <div className="sg-title">情报索引 · intel.db</div>
+        {st.dbExists === false && (
+          <div className="sr-desc">尚未初始化——点「更新」建立索引</div>
+        )}
+        <div className="set-row">
+          <div><div className="sr-label">最后更新</div></div>
+          <div className="sr-control"><span className="sr-status">{String(st.lastUpdateAt ?? '—')}</span></div>
+        </div>
+        <div className="set-row">
+          <div><div className="sr-label">NVD CVE</div><div className="sr-desc">窗口档</div></div>
+          <div className="sr-control"><span className="sr-status">{fmtCount(st.cveCount)} 条</span></div>
+        </div>
+        <div className="set-row">
+          <div><div className="sr-label">exploit-db</div></div>
+          <div className="sr-control"><span className="sr-status">{fmtCount(st.exploitCount)} 条</span></div>
+        </div>
+        <div className="set-row">
+          <div><div className="sr-label">nuclei 模板</div></div>
+          <div className="sr-control"><span className="sr-status">{fmtCount(st.nucleiCount)} 条</span></div>
+        </div>
+      </div>
+      <div className="set-group">
+        <div className="sg-title">更新</div>
+        <div className="set-row">
+          <div>
+            <div className="sr-label">更新索引</div>
+            <div className="sr-desc">增量拉取 · 断点续传 · 数据源失败自动多源切换</div>
+          </div>
+          <div className="sr-control">
+            {['minimal', 'window', 'full'].map((m) => (
+              <button
+                className={`btn small ${mode === m ? 'mode-on' : ''}`}
+                key={m}
+                onClick={() => setMode(m)}
+              >
+                {m}
+              </button>
+            ))}
+            <button
+              className="btn small primary"
+              disabled={busy}
+              onClick={async () => {
+                const c = getSettingsClient();
+                if (!c) return;
+                setBusy(true);
+                showToast(`⏳ 更新情报索引（${mode}）…`);
+                try {
+                  const res = await api.intelUpdate(c, mode);
+                  showToast(res.success ? '✓ 索引已更新' : `✗ ${res.error ?? '更新失败'}`);
+                  await reload();
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {busy ? '更新中…' : '更新'}
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="set-group">
+        <div className="sg-title">配置 · intel（config.json，只读展示）</div>
+        <div className="set-row">
+          <div><div className="sr-label">存储分级</div></div>
+          <div className="sr-control"><span className="sr-status">{String(config?.mode ?? mode)}</span></div>
+        </div>
+        <div className="set-row">
+          <div><div className="sr-label">窗口年数</div></div>
+          <div className="sr-control"><span className="sr-status">{String(config?.windowYears ?? '—')} 年</span></div>
+        </div>
+        <div className="set-row">
+          <div><div className="sr-label">大小上限</div></div>
+          <div className="sr-control"><span className="sr-status">{String(config?.maxSizeMb ?? '—')} MB</span></div>
+        </div>
+        <div className="set-row">
+          <div><div className="sr-label">在线回源</div></div>
+          <div className="sr-control"><span className="sr-status">{config?.onlineFallback === false ? '关' : '开'}</span></div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── 专家知识页签 ──────────────────────────────────────────────────────
+
+function ExpertTab(): React.JSX.Element {
+  const [entries, setEntries] = useState<ExpertSummary[]>([]);
+  const [query, setQuery] = useState('');
+  const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [drafts, setDrafts] = useState<ExpertDraft[]>([]);
+  const showToast = useGuiStore((s) => s.showToast);
+
+  const reloadList = useCallback(async () => {
+    const c = getSettingsClient();
+    if (!c) return;
+    try {
+      const res = await api.expertList(c);
+      if (res.success) setEntries(res.data?.entries ?? []);
+    } catch {
+      // 静默。
+    }
+  }, []);
+
+  const reloadDrafts = useCallback(async () => {
+    const c = getSettingsClient();
+    if (!c) return;
+    try {
+      const res = await api.expertDrafts(c);
+      if (res.success) setDrafts(res.data?.drafts ?? []);
+    } catch {
+      // 静默。
+    }
+  }, []);
+
+  useEffect(() => {
+    void reloadList();
+    void reloadDrafts();
+  }, [reloadList, reloadDrafts]);
+
+  const search = async () => {
+    const c = getSettingsClient();
+    if (!c) return;
+    const q = query.trim();
+    if (!q) {
+      await reloadList();
+      return;
+    }
+    const res = await api.expertSearch(c, q);
+    if (res.success) setEntries(res.data?.results ?? []);
+    else showToast(`搜索失败：${res.error ?? '未知错误'}`);
+  };
+
+  return (
+    <>
+      <div className="set-group">
+        <div className="sg-title">专家知识 · expert.db（决策级 · 人审定才进库）</div>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+          <input
+            className="d-search"
+            placeholder="搜索关键词…（expert search 语义，回车查询）"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void search();
+            }}
+          />
+          <button className="btn" onClick={() => void search()}>搜索</button>
+          <button className="btn" onClick={() => setImportOpen(true)}>导入 JSON/YAML</button>
+        </div>
+        {entries.length === 0 && <div className="sr-desc">无匹配条目——可导入或等 agent 起草</div>}
+        {entries.map((e) => (
+          <div className="set-row" key={e.id}>
+            <div>
+              <div className="sr-label">{e.title}</div>
+              <div className="sr-desc">
+                {e.domain} · {e.kind} · 审定：{e.reviewer ?? '—'}
+              </div>
+            </div>
+            <div className="sr-control">
+              <button
+                className="btn small"
+                onClick={async () => {
+                  const c = getSettingsClient();
+                  if (!c) return;
+                  const res = await api.expertShow(c, e.id);
+                  setDetail(res.success ? ((res.data?.entry ?? null) as Record<string, unknown> | null) : null);
+                }}
+              >
+                查看
+              </button>
+            </div>
+          </div>
+        ))}
+        {detail && (
+          <div className="ex-detail">
+            <div className="ex-head">
+              <span>{String(detail.title ?? '')}</span>
+              <button className="btn small" onClick={() => setDetail(null)}>收起</button>
+            </div>
+            <pre className="ex-content">{String(detail.content ?? '')}</pre>
+          </div>
+        )}
+      </div>
+      <div className="set-group">
+        <div className="sg-title">草稿</div>
+        <div className="set-row">
+          <div>
+            <div className="sr-label">待审草稿</div>
+            <div className="sr-desc">agent 起草 · 需你审定后才生效</div>
+          </div>
+          <div className="sr-control">
+            <span className="sr-status">{drafts.length} 条待审</span>
+          </div>
+        </div>
+        {drafts.map((d) => (
+          <div className="set-row" key={d.id}>
+            <div>
+              <div className="sr-label">{d.title}</div>
+              <div className="sr-desc">
+                #{d.id} · {d.domain} · {d.kind}
+              </div>
+            </div>
+            <div className="sr-control">
+              <button
+                className="btn small"
+                onClick={async () => {
+                  const c = getSettingsClient();
+                  if (!c) return;
+                  const res = await api.expertReview(c, { draftId: d.id, action: 'approve' });
+                  showToast(res.success ? `✓ 草稿 #${d.id} 已批准入库` : `✗ ${res.error ?? '审定失败'}`);
+                  void reloadDrafts();
+                  void reloadList();
+                }}
+              >
+                批准
+              </button>
+              <button
+                className="btn small"
+                onClick={async () => {
+                  const c = getSettingsClient();
+                  if (!c) return;
+                  const res = await api.expertReview(c, { draftId: d.id, action: 'discard' });
+                  showToast(res.success ? `已丢弃草稿 #${d.id}` : `✗ ${res.error ?? '丢弃失败'}`);
+                  void reloadDrafts();
+                }}
+              >
+                丢弃
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+      {importOpen && (
+        <ExpertImportModal
+          onClose={() => setImportOpen(false)}
+          onDone={(imported) => {
+            setImportOpen(false);
+            void reloadList();
+            if (imported) void reloadDrafts();
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function ExpertImportModal({
+  onClose,
+  onDone,
+}: {
+  onClose: () => void;
+  onDone: (imported: boolean) => void;
+}): React.JSX.Element {
+  const [raw, setRaw] = useState('');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submitExpertImport = useGuiStore((s) => s.submitExpertImport);
+
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal" style={{ width: 'min(560px, 90vw)' }}>
+        <div className="m-head">
+          <span className="m-title">导入专家知识</span>
+          <span className="m-sub">JSON / YAML · 单条或数组批量 · 逐条校验</span>
+          <button className="m-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="m-body">
+          <div className="f-label">
+            必填：title / kind(idea|technique|sop) / domain / applicability / content / criteria / reviewer
+          </div>
+          <textarea
+            className="f-input"
+            rows={10}
+            placeholder={'- title: 堆喷占位 size 经验\n  kind: technique\n  domain: binary\n  applicability: glibc 2.3x 堆题\n  content: 做法正文……\n  criteria: 判定条件\n  reviewer: 你的名字'}
+            value={raw}
+            onChange={(e) => setRaw(e.target.value)}
+          />
+          {msg && <div className="m-note">{msg}</div>}
+          <div className="m-actions">
+            <button className="btn" onClick={onClose}>取消</button>
+            <button
+              className="btn primary"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                const res = await submitExpertImport(raw);
+                setMsg(res.message);
+                setBusy(false);
+                if (res.ok) {
+                  setRaw('');
+                  onDone(true);
+                }
+              }}
+            >
+              导入
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 研究记录页签 ──────────────────────────────────────────────────────
+
+function ResearchTab(): React.JSX.Element {
+  const [rows, setRows] = useState<ResearchEventRow[]>([]);
+
+  useEffect(() => {
+    const c = getSettingsClient();
+    if (!c) return;
+    void api.researchList(c).then(setRows).catch(() => {});
+  }, []);
+
+  return (
+    <div className="set-group">
+      <div className="sg-title">研究留痕 · research_events</div>
+      {rows.length === 0 && <div className="sr-desc">暂无研究事件</div>}
+      {rows.map((r) => (
+        <div className="set-row" key={r.id ?? r.createdAt}>
+          <div>
+            <div className="sr-label">
+              {r.outcome === 'success' ? '✔' : r.outcome === 'failure' || r.outcome === 'failed' ? '✗' : '○'} [{r.taskKind ?? '?'}] {r.summary ?? ''}
+            </div>
+            <div className="sr-desc">
+              {r.bugClass ? `${r.bugClass} · ` : ''}
+              {r.createdAt ?? ''}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── 页面装配 ──────────────────────────────────────────────────────────
+
 export function SettingsPage(): React.JSX.Element {
-  const [pg, setPg] = useState<string>('appearance');
+  const [pg, setPg] = useState<string>('model');
   const setPage = useGuiStore((s) => s.setPage);
   const showToast = useGuiStore((s) => s.showToast);
 
@@ -42,6 +723,11 @@ export function SettingsPage(): React.JSX.Element {
           ))}
         </div>
         <div className="set-content">
+          {pg === 'model' && <ModelTab />}
+          {pg === 'skills' && <SkillsTab />}
+          {pg === 'intel' && <IntelTab />}
+          {pg === 'expert' && <ExpertTab />}
+          {pg === 'research' && <ResearchTab />}
           {pg === 'appearance' && (
             <div className="set-group">
               <div className="sg-title">主题</div>
@@ -72,18 +758,12 @@ export function SettingsPage(): React.JSX.Element {
               <div className="sg-title">zhishi · 执失</div>
               <div className="set-row">
                 <div><div className="sr-label">版本</div></div>
-                <div className="sr-control"><span className="sr-status">v1.3.0 GUI MVP</span></div>
+                <div className="sr-control"><span className="sr-status">v1.3.1 GUI</span></div>
               </div>
               <div className="set-row">
                 <div><div className="sr-label">数据目录</div></div>
                 <div className="sr-control"><span className="sr-status mono">~/.zhishi</span></div>
               </div>
-            </div>
-          )}
-          {pg !== 'appearance' && pg !== 'about' && (
-            <div className="set-group">
-              <div className="sg-title">{NAV.find((n) => n.id === pg)?.label}</div>
-              <div className="sr-desc">占位页——数据接口待后续迭代接入（模型选择在状态栏点击模型名）。</div>
             </div>
           )}
         </div>

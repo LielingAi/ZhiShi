@@ -1,6 +1,6 @@
 /**
- * Esc 链优先级单测：一次弹一层，顺序
- * overlay > modal > drawer > page > busy 中断 > none。
+ * Esc 链优先级单测（1.3.1 ②③④ 扩展）：一次弹一层，顺序
+ * overlay > tasks > queue > boundary > modal > drawer > page > busy 中断 > none。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -9,6 +9,9 @@ import { escAction } from './esc-chain';
 
 const base = {
   overlayOpen: false,
+  tasksOpen: false,
+  queueOpen: false,
+  boundaryOpen: false,
   modalOpen: false,
   drawerOpen: false,
   pageOpen: false,
@@ -18,8 +21,32 @@ const base = {
 describe('escAction', () => {
   it('overlay 优先于一切', () => {
     expect(
-      escAction({ ...base, overlayOpen: true, modalOpen: true, drawerOpen: true, pageOpen: true, busy: true }),
+      escAction({
+        ...base,
+        overlayOpen: true,
+        tasksOpen: true,
+        boundaryOpen: true,
+        modalOpen: true,
+        drawerOpen: true,
+        pageOpen: true,
+        busy: true,
+      }),
     ).toEqual({ type: 'close-overlay' });
+  });
+
+  it('tasks 面板次之（boundary 模态同时存在时不抢层）', () => {
+    expect(escAction({ ...base, tasksOpen: true, boundaryOpen: true })).toEqual({ type: 'close-tasks' });
+  });
+
+  it('queue 面板在 tasks 之后', () => {
+    expect(escAction({ ...base, queueOpen: true, boundaryOpen: true })).toEqual({ type: 'close-queue' });
+  });
+
+  it('boundary 模态进链：在 modal 之前', () => {
+    expect(escAction({ ...base, boundaryOpen: true, modalOpen: true })).toEqual({ type: 'close-boundary' });
+    expect(escAction({ ...base, boundaryOpen: true, drawerOpen: true, busy: true })).toEqual({
+      type: 'close-boundary',
+    });
   });
 
   it('modal 次之', () => {
