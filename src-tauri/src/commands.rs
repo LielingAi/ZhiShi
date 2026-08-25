@@ -1120,5 +1120,6 @@ pub fn get_sidecar_port() -> Option<u16> {
     let dir = crate::app_dirs::zhishi_data_dir()?;
     let port_file = dir.join(crate::sidecar::PORT_FILE_NAME);
     let raw = std::fs::read_to_string(&port_file).ok()?;
-    raw.trim().parse::<u16>().ok()
+    let port = raw.trim().parse::<u16>().ok();
+    port
 }

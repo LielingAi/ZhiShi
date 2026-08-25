@@ -49,7 +49,8 @@
     "format": "prettier --experimental-cli --write .",
     "format:check": "prettier --experimental-cli --check --log-level warn .",
     "clean": "rm -rf node_modules dist .turbo .eslintcache *.tsbuildinfo src-tauri/target",
-    "version": "node scripts/sync-version.js && git add src-tauri/tauri.conf.json src-tauri/Cargo.toml"
+    "version": "node scripts/sync-version.js && git add src-tauri/tauri.conf.json src-tauri/Cargo.toml",
+    "dev:gui": "cd src/gui && npm run dev"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.84.2",

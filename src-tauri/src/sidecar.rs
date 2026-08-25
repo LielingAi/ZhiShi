@@ -2021,6 +2021,24 @@ fn node_path_in_resources(resources: &std::path::Path) -> PathBuf {
 }
 
 fn find_node_executable_inner<R: Runtime>(app_handle: &AppHandle<R>) -> Option<PathBuf> {
+    // 1.3.0(dev-only)：debug 构建优先用系统 node。tsx 从源码跑服务端时,
+    // node_modules 的原生模块(better-sqlite3 等)按系统 node 的 ABI 编译,
+    // 而 debug 目录里的 bundled node(24.x) ABI 不同——加载 DB 模块直接
+    // NODE_MODULE_VERSION 失败(系统提示组装降级/turn 卡死)。发布构建不受
+    // 影响:sqlite-runtime 随包按 bundled node 编译。
+    #[cfg(debug_assertions)]
+    {
+        if let Some(paths) = std::env::var_os("PATH") {
+            let exe = if cfg!(windows) { "node.exe" } else { "node" };
+            for dir in std::env::split_paths(&paths) {
+                let candidate = dir.join(exe);
+                if candidate.exists() {
+                    ulog_info!("[sidecar] dev build: using system node {:?}", candidate);
+                    return Some(candidate);
+                }
+            }
+        }
+    }
     // Bundled Node.js lives under resource_dir/nodejs/ (shipped by build_*.sh
     // via scripts/download_nodejs.sh). Unlike the prior Bun externalBin
     // flow, Node.js is a binary + lib directory combo that can't ride
