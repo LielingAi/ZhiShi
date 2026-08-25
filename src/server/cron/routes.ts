@@ -49,6 +49,9 @@ import { isDistillArcPrompt } from '../memory/distill';
 
 import { isResearchDistillArcPrompt } from '../memory/distill-research';
 
+// 1.3.2 任务二 #5：cron 完成结论登记(task/list 行 conclusion 的数据源)。
+import { recordTaskConclusion } from './task-conclusions';
+
 import { resolveCronPermissionMode } from '../../shared/types/runtime';
 
 import type { RuntimeConfig, RuntimeType } from '../../shared/types/runtime';
@@ -659,7 +662,12 @@ export async function handleCronExecute(request: Request, jsonResponse: JsonResp
             { text: wrappedPrompt, model: effectiveModel, providerEnv: effectiveProviderEnv, permissionMode: effectivePermissionMode },
             { loopSessionId: currentLine.loopSessionId, scenario: cronScenario },
           ).then((r) => {
-            if (r.error) console.warn(`[cron] execute taskId=${taskId} invoke 失败: ${r.error}`);
+            if (r.error) {
+              console.warn(`[cron] execute taskId=${taskId} invoke 失败: ${r.error}`);
+              recordTaskConclusion(taskId, r.error);
+            } else {
+              recordTaskConclusion(taskId, r.text);
+            }
           }).catch((err) => console.error(`[cron] execute taskId=${taskId} invoke 异常:`, err));
 
           // Reset scenario after enqueue — already consumed at turn start
@@ -1582,6 +1590,10 @@ export async function handleCronExecuteSync(request: Request, jsonResponse: Json
 
 
           console.log(`[cron] execute-sync taskId=${taskId} completed, aiRequestedExit=${aiRequestedExit}, exitReason=${exitReason}`);
+
+          // 1.3.2 任务二 #5：登记本 tick 结论(exitReason 优先,回落输出文本摘要;
+          // task/list 行据此补 conclusion 字段)。
+          recordTaskConclusion(taskId, exitReason ?? textContent ?? '');
 
 
 

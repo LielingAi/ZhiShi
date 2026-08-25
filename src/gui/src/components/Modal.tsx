@@ -363,6 +363,138 @@ function NewEnvModal(): React.JSX.Element {
   );
 }
 
+// ── 1.3.2 ①：promote（决策块 → expert/add 入专家库，预填小表单） ──────
+
+/** expert/add 的 domain 闭集（src/shared/research-kinds.ts::RESEARCH_TASK_KINDS）。 */
+const EXPERT_DOMAINS = ['binary', 'pentest', 'ai-security', 'redteam', 'malware', 'whitebox', 'intel', 'ctf'];
+/** expert/add 的 kind 闭集（src/shared/expert-validate.ts::EXPERT_ENTRY_KINDS）。 */
+const EXPERT_KINDS = ['idea', 'technique', 'sop'];
+
+function PromoteModal(): React.JSX.Element | null {
+  const modal = useGuiStore((s) => s.modal);
+  const closeModal = useGuiStore((s) => s.closeModal);
+  const submitPromote = useGuiStore((s) => s.submitPromote);
+  const showToast = useGuiStore((s) => s.showToast);
+  const [domain, setDomain] = useState('binary');
+  const [kind, setKind] = useState('sop');
+  const [title, setTitle] = useState('');
+  const [applicability, setApplicability] = useState('');
+  const [criteria, setCriteria] = useState('');
+  const [content, setContent] = useState('');
+  const [reviewer, setReviewer] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const prefill = modal?.prefill;
+  const [seeded, setSeeded] = useState(false);
+  // 预填一次（title=question、applicability=场景、criteria=选择+备注 草稿）。
+  useEffect(() => {
+    if (!prefill || seeded) return;
+    setTitle(prefill.title);
+    setApplicability(prefill.applicability);
+    setCriteria(prefill.criteria);
+    setContent(prefill.content);
+    setSeeded(true);
+  }, [prefill, seeded]);
+
+  if (!prefill) return null;
+
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal">
+        <div className="m-head">
+          <span className="m-title">入专家库 · <b className="m-env-name">promote</b></span>
+          <span className="m-sub">决策沉淀为可验证基准 · expert/add（reviewer 必填）</span>
+          <button className="m-close" onClick={closeModal}>✕</button>
+        </div>
+        <div className="m-body">
+          <div className="form-col">
+            <div>
+              <div className="f-label">domain（研究域）</div>
+              <select className="f-input" value={domain} onChange={(e) => setDomain(e.target.value)}>
+                {EXPERT_DOMAINS.map((d) => (
+                  <option value={d} key={d}>{d}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <div className="f-label">kind（条目类型）</div>
+              <select className="f-input" value={kind} onChange={(e) => setKind(e.target.value)}>
+                {EXPERT_KINDS.map((k) => (
+                  <option value={k} key={k}>{k}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <div className="f-label">title（预填 = 决策问题）</div>
+              <input className="f-input" value={title} onChange={(e) => setTitle(e.target.value)} />
+            </div>
+            <div>
+              <div className="f-label">applicability（适用条件/场景）</div>
+              <input
+                className="f-input"
+                placeholder="什么场景下适用这条基准"
+                value={applicability}
+                onChange={(e) => setApplicability(e.target.value)}
+              />
+            </div>
+            <div>
+              <div className="f-label">criteria（判据 · 预填 = 选择+备注 草稿）</div>
+              <textarea className="f-input" rows={3} value={criteria} onChange={(e) => setCriteria(e.target.value)} />
+            </div>
+            <div>
+              <div className="f-label">content（正文 · 预填 = 决策块正文）</div>
+              <textarea className="f-input" rows={4} value={content} onChange={(e) => setContent(e.target.value)} />
+            </div>
+            <div>
+              <div className="f-label">reviewer（审定人 · 必填）</div>
+              <input
+                className="f-input"
+                placeholder="你的名字（人审定才进库）"
+                value={reviewer}
+                onChange={(e) => setReviewer(e.target.value)}
+              />
+            </div>
+          </div>
+          {err && <div className="m-error">✗ {err}</div>}
+          <div className="m-actions">
+            <button className="btn" onClick={closeModal}>取消</button>
+            <button
+              className="btn primary"
+              disabled={busy}
+              onClick={async () => {
+                if (!title.trim() || !content.trim() || !criteria.trim() || !reviewer.trim()) {
+                  setErr('title / content / criteria / reviewer 必填');
+                  return;
+                }
+                setBusy(true);
+                try {
+                  const res = await submitPromote({
+                    domain,
+                    kind,
+                    title: title.trim(),
+                    applicability: applicability.trim(),
+                    criteria: criteria.trim(),
+                    content: content.trim(),
+                    reviewer: reviewer.trim(),
+                  });
+                  showToast(res.message);
+                  if (res.ok) closeModal();
+                  else setErr(res.message);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              入专家库
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Modal(): React.JSX.Element | null {
   const modal = useGuiStore((s) => s.modal);
   if (!modal) return null;
@@ -379,5 +511,7 @@ export function Modal(): React.JSX.Element | null {
       return <SlashArgsModal />;
     case 'pick-message':
       return <PickMessageModal />;
+    case 'promote':
+      return <PromoteModal />;
   }
 }

@@ -2,12 +2,14 @@
  * 设置页（1.3.1 ⑥）：五个页签接真——
  *   模型     model/list + model/set-key（隐藏输入模态）+ set-default + verify
  *   Skills   skill/list + skill/enable|disable + /api/skill/import-folder
- *   情报     intel/status + intel/update（mode 选择）
+ *   情报     intel/status + intel/update（mode 选择）+
+ *            intel/config-update（1.3.2：配置部分更新，只改传入字段）
  *   专家知识 expert/search + expert/list + expert/add（JSON/YAML 导入）+
  *            expert/drafts + expert/review（草稿审定）
  *   研究记录 research/list
+ *   外观     theme 切换（1.3.2：深浅色，localStorage 持久化；原占位已接真）
  *
- * 外观/关于页签保留（v19 形态）。Esc 经 Esc 链 close-page 返回主会话区
+ * 关于页签保留（v19 形态）。Esc 经 Esc 链 close-page 返回主会话区
  * （与主会话区互斥：page === 'settings' 时主区不渲染）。
  */
 
@@ -334,6 +336,14 @@ function IntelTab(): React.JSX.Element {
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
   const [mode, setMode] = useState<string>('window');
   const [busy, setBusy] = useState(false);
+  // 1.3.2 任务二 #4：配置编辑表单（intel/config-update 部分更新）。
+  const [cfgForm, setCfgForm] = useState<{ mode: string; windowYears: string; maxSizeMb: string; onlineFallback: boolean }>({
+    mode: 'window',
+    windowYears: '',
+    maxSizeMb: '',
+    onlineFallback: true,
+  });
+  const [savingCfg, setSavingCfg] = useState(false);
   const showToast = useGuiStore((s) => s.showToast);
 
   const reload = useCallback(async () => {
@@ -345,6 +355,12 @@ function IntelTab(): React.JSX.Element {
       setConfig(data.config ?? null);
       const cfgMode = typeof data.config?.mode === 'string' ? data.config.mode : 'window';
       setMode(cfgMode);
+      setCfgForm({
+        mode: cfgMode,
+        windowYears: data.config?.windowYears !== undefined ? String(data.config.windowYears) : '',
+        maxSizeMb: data.config?.maxSizeMb !== undefined ? String(data.config.maxSizeMb) : '',
+        onlineFallback: data.config?.onlineFallback !== false,
+      });
     } catch {
       // 静默。
     }
@@ -353,6 +369,39 @@ function IntelTab(): React.JSX.Element {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  /** 配置部分更新：diff 出被改字段 → intel/config-update（只传改动）。 */
+  const saveConfig = async () => {
+    const c = getSettingsClient();
+    if (!c) return;
+    const patch: Record<string, unknown> = {};
+    if (cfgForm.mode !== String(config?.mode ?? 'window')) patch.mode = cfgForm.mode;
+    const wy = Number(cfgForm.windowYears);
+    if (cfgForm.windowYears !== '' && (!Number.isFinite(wy) || wy <= 0)) {
+      showToast('✗ windowYears 需为正数（年）');
+      return;
+    }
+    if (cfgForm.windowYears !== '' && wy !== config?.windowYears) patch.windowYears = wy;
+    const mb = Number(cfgForm.maxSizeMb);
+    if (cfgForm.maxSizeMb !== '' && (!Number.isFinite(mb) || mb <= 0)) {
+      showToast('✗ maxSizeMb 需为正数（MB）');
+      return;
+    }
+    if (cfgForm.maxSizeMb !== '' && mb !== config?.maxSizeMb) patch.maxSizeMb = mb;
+    if (cfgForm.onlineFallback !== (config?.onlineFallback !== false)) patch.onlineFallback = cfgForm.onlineFallback;
+    if (Object.keys(patch).length === 0) {
+      showToast('配置无变更');
+      return;
+    }
+    setSavingCfg(true);
+    try {
+      const res = await api.intelConfigUpdate(c, patch);
+      showToast(res.success ? '✓ 情报配置已更新' : `✗ ${res.error ?? '更新失败'}`);
+      await reload();
+    } finally {
+      setSavingCfg(false);
+    }
+  };
 
   const st = status ?? {};
   const fmtCount = (v: unknown) =>
@@ -422,22 +471,57 @@ function IntelTab(): React.JSX.Element {
         </div>
       </div>
       <div className="set-group">
-        <div className="sg-title">配置 · intel（config.json，只读展示）</div>
+        <div className="sg-title">配置 · intel（部分更新 → intel/config-update）</div>
         <div className="set-row">
           <div><div className="sr-label">存储分级</div></div>
-          <div className="sr-control"><span className="sr-status">{String(config?.mode ?? mode)}</span></div>
+          <div className="sr-control">
+            {['minimal', 'window', 'full'].map((m) => (
+              <button
+                className={`btn small ${cfgForm.mode === m ? 'mode-on' : ''}`}
+                key={m}
+                onClick={() => setCfgForm((f) => ({ ...f, mode: m }))}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="set-row">
           <div><div className="sr-label">窗口年数</div></div>
-          <div className="sr-control"><span className="sr-status">{String(config?.windowYears ?? '—')} 年</span></div>
+          <div className="sr-control">
+            <input
+              className="f-input cf-input"
+              value={cfgForm.windowYears}
+              placeholder={String(config?.windowYears ?? '3')}
+              onChange={(e) => setCfgForm((f) => ({ ...f, windowYears: e.target.value }))}
+            />
+          </div>
         </div>
         <div className="set-row">
           <div><div className="sr-label">大小上限</div></div>
-          <div className="sr-control"><span className="sr-status">{String(config?.maxSizeMb ?? '—')} MB</span></div>
+          <div className="sr-control">
+            <input
+              className="f-input cf-input"
+              value={cfgForm.maxSizeMb}
+              placeholder={String(config?.maxSizeMb ?? '512')}
+              onChange={(e) => setCfgForm((f) => ({ ...f, maxSizeMb: e.target.value }))}
+            />
+            <span className="sr-status">MB</span>
+          </div>
         </div>
         <div className="set-row">
           <div><div className="sr-label">在线回源</div></div>
-          <div className="sr-control"><span className="sr-status">{config?.onlineFallback === false ? '关' : '开'}</span></div>
+          <div className="sr-control">
+            <button
+              className={`btn small ${cfgForm.onlineFallback ? 'mode-on' : ''}`}
+              onClick={() => setCfgForm((f) => ({ ...f, onlineFallback: !f.onlineFallback }))}
+            >
+              {cfgForm.onlineFallback ? '开' : '关'}
+            </button>
+            <button className="btn small primary" disabled={savingCfg} onClick={() => void saveConfig()}>
+              {savingCfg ? '保存中…' : '保存配置'}
+            </button>
+          </div>
         </div>
       </div>
     </>
@@ -697,12 +781,48 @@ function ResearchTab(): React.JSX.Element {
   );
 }
 
+// ── 外观页签（1.3.2 ③：深浅色切换，localStorage 持久化） ──────────────
+
+function AppearanceTab(): React.JSX.Element {
+  const theme = useGuiStore((s) => s.theme);
+  const setTheme = useGuiStore((s) => s.setTheme);
+
+  return (
+    <div className="set-group">
+      <div className="sg-title">主题</div>
+      <div className="set-row">
+        <div>
+          <div className="sr-label">深色</div>
+          <div className="sr-desc">默认 · 长时间研究注视友好</div>
+        </div>
+        <div className="sr-control">
+          <span className={`sr-status ${theme === 'dark' ? 'ok' : ''}`}>
+            {theme === 'dark' ? '✓ 当前' : ''}
+          </span>
+          <button className="btn small" onClick={() => setTheme('dark')}>应用</button>
+        </div>
+      </div>
+      <div className="set-row">
+        <div>
+          <div className="sr-label">浅色</div>
+          <div className="sr-desc">明亮环境使用（body.light 变量组 · 本地持久化）</div>
+        </div>
+        <div className="sr-control">
+          <span className={`sr-status ${theme === 'light' ? 'ok' : ''}`}>
+            {theme === 'light' ? '✓ 当前' : ''}
+          </span>
+          <button className="btn small" onClick={() => setTheme('light')}>应用</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── 页面装配 ──────────────────────────────────────────────────────────
 
 export function SettingsPage(): React.JSX.Element {
   const [pg, setPg] = useState<string>('model');
   const setPage = useGuiStore((s) => s.setPage);
-  const showToast = useGuiStore((s) => s.showToast);
 
   return (
     <div className="settings-page show">
@@ -728,31 +848,7 @@ export function SettingsPage(): React.JSX.Element {
           {pg === 'intel' && <IntelTab />}
           {pg === 'expert' && <ExpertTab />}
           {pg === 'research' && <ResearchTab />}
-          {pg === 'appearance' && (
-            <div className="set-group">
-              <div className="sg-title">主题</div>
-              <div className="set-row">
-                <div>
-                  <div className="sr-label">深色</div>
-                  <div className="sr-desc">默认 · 长时间研究注视友好</div>
-                </div>
-                <div className="sr-control">
-                  <span className="sr-status ok">✓ 当前</span>
-                </div>
-              </div>
-              <div className="set-row">
-                <div>
-                  <div className="sr-label">浅色</div>
-                  <div className="sr-desc">明亮环境使用（1.3.0 占位，后续实现）</div>
-                </div>
-                <div className="sr-control">
-                  <button className="btn small" onClick={() => showToast('浅色主题占位——1.3.0 未实现')}>
-                    应用
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+          {pg === 'appearance' && <AppearanceTab />}
           {pg === 'about' && (
             <div className="set-group">
               <div className="sg-title">zhishi · 执失</div>

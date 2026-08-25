@@ -5,13 +5,16 @@
 
 ---
 
-## 1.3.2 —— 决策面板 + 服务端缺口收口（进行中）
+## 1.3.2 —— 决策面板 + 服务端缺口收口（已完成）
 
 GUI 会话视图的地基已齐（1.3.0 骨架/1.3.1 全池）。**用户拍板：按 roadmap 全量推进**——决策面板四件 + 服务端缺口五条 + 打磨候选三件（侧栏多线/主题/attach 接真；/bg 转后台为服务端大缺口，roadmap 标注留后续）。
 
-- [ ] **决策面板**（GUI 愿景的核心块，原 1.3.3 内容提前）：①分歧提请——模型在两个方向选不出来时主动提请人决策（服务端半：教模型何时提请 + 提请前先查 expert_search，有基准不问人）；②决策卡带**专家依据区**（expert_search 命中亮出 title/criteria + E#N，未命中标注「库中无基准」）；③输入为主通道（a/b 快捷键为辅）；④拍过的板落成会话里的**决策块**（可追溯 + promote 入口）。
-- [ ] **服务端缺口收口**（1.3.1 记录在案的 5 条）：①boundary-ask payload 补工具名/说明/选项字段（设计稿 §6.6 契约）+ respond 落盘 note；②环境锚恢复直接进 chat:init（免 environment/current 绕行）；③intel 配置部分更新端点；④skill import 路由可达性；⑤task/list 结论字段。
-- [ ] **打磨候选**（可选）：侧栏多线切换（一屏多线 A 形态）、主题（深浅色切换）、/bg 转后台（服务端缺口，重）、attach 页接真。
+- [x] **决策面板**（GUI 愿景的核心块，原 1.3.3 内容提前）：①分歧提请——模型在两个方向选不出来时主动提请人决策（服务端半：教模型何时提请 + 提请前先查 expert_search，有基准不问人）；②决策卡带**专家依据区**（expert_search 命中亮出 title/criteria + E#N，未命中标注「库中无基准」）；③输入为主通道（a/b 快捷键为辅）；④拍过的板落成会话里的**决策块**（可追溯 + promote 入口）。
+- [x] **服务端缺口收口**（1.3.1 记录在案的 5 条）：①boundary-ask payload 补工具名/说明/选项字段（设计稿 §6.6 契约）+ respond 落盘 note；②环境锚恢复直接进 chat:init（免 environment/current 绕行）；③intel 配置部分更新端点；④skill import 路由可达性；⑤task/list 结论字段。
+- [x] **打磨候选**（可选）：侧栏多线切换（一屏多线 A 形态）、主题（深浅色切换）、attach 页接真（environment/exec 一次性执行）。
+- [ ] /bg 转后台：服务端大缺口，留后续。
+
+> 实际落地（2026-08-25）：决策面板全链路——服务端 `request_decision` loop 工具（提请前先查 expert_search 出依据区：命中=摘要行+E#N 引用、未命中/库不可用统一标注「库中无基准」；pending 内存表无超时重启即失效）+ `chat:decision-request` 广播 + `POST /chat/decision/respond`（unknown 404/resolved 409 幂等）+ 决定经 steering/直发通道注入回 loop（B3/B5/B6 线语义全守；跨线走 invokePiSession headless 注入）+ 决策块 wire `kind:'decision'`（additive，jsonl marker 持久化，replay 可还原）+ 内核 prompt 决策点教学段（分歧/无把握且库无基准才提请，先查 expert_search 命中可验证不问人）。GUI：琥珀决策卡（专家依据区 E#N 徽章/库中无基准特殊样式 + 输入主通道 + a/b 键 + Esc 收起待答 chip 重开 + 重连去重重放）+ 决策块渲染 + 悬停「入专家库」promote（expert/add 预填，domain/kind/reviewer 由用户补）。缺口五条：①boundary-ask 补 toolName/toolDescription/options + respond note 落盘 transcript（未绑定会话不造孤儿 jsonl）；②环境锚进 chat:init（GUI 免 environment/current 绕行，旧路径兜底保留）；③intel/config-update 部分更新（锁内读改写回写 config，非法值拒绝）；④skill import 可达性验证（同主 handler 链 + ACAO 放行，GUI 已在用——仅修过期注释）；⑤task/list conclusion（内存表，cron 双通道登记，重启失效但全文仍在 transcript）。新增 58 单测（服务端 32 + GUI 38）；全量 176 文件 2232 测试绿 + typecheck + eslint 零错 + build:gui 绿；实机走查通过（用户确认：主题/侧栏多线/attach/情报部分更新/决策面板活体全过）。已知取舍：attach 交互式 pty 需服务端补端点（留后续）；promote 用 expert/add（决策块无 sourceEventId 锚点，promoted 端点不可用）。
 
 > 不做（维持）：编译发版（GUI 完成前）、TUI 退役（GUI 覆盖核心场景后）。
 > 验收：全量测试 + 实机走查。

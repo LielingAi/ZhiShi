@@ -129,6 +129,9 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   // 越界 ask 通道(design §6.6)— 红色模态的请求/超时,结构级事件,绝不丢。
   'chat:boundary-ask': 'critical',
   'chat:boundary-expired': 'critical',
+  // 1.3.2 决策面板——模型提请人拍板/人已作答,结构级事件,绝不丢。
+  'chat:decision-request': 'critical',
+  'chat:decision-resolved': 'critical',
   // env_bg 生命周期(P2 Phase 2)— 长驻进程在状态行的存在感 + 退出插行。
   'chat:bg-started': 'critical',
   'chat:bg-finished': 'critical',

@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { accessGate, canStartEntry, gateToast, hostAnchorLabel, selectionToGuiKey } from './access-gate';
+import { accessGate, canStartEntry, gateToast, hostAnchorLabel, initAnchorToGuiKey, selectionToGuiKey } from './access-gate';
 import type { SidebarEnvItem } from './envs';
 
 function item(partial: Partial<SidebarEnvItem>): SidebarEnvItem {
@@ -92,5 +92,31 @@ describe('selectionToGuiKey', () => {
   it('未知形状回落宿主线（不猜）', () => {
     expect(selectionToGuiKey({ kind: 'weird' })).toBeNull();
     expect(selectionToGuiKey({ kind: 'env' })).toBeNull();
+  });
+});
+
+describe('initAnchorToGuiKey（1.3.2 任务二 #2：chat:init environment 锚）', () => {
+  it('host（null）→ null', () => {
+    expect(initAnchorToGuiKey(null)).toBeNull();
+    expect(initAnchorToGuiKey(undefined)).toBeNull();
+  });
+
+  it('env → id；recipe → id（即 instanceId，与 selectionToGuiKey 同口径）', () => {
+    expect(initAnchorToGuiKey({ kind: 'env', id: 'pwn-vm', name: 'pwn-vm', type: 'vm' })).toBe('pwn-vm');
+    expect(
+      initAnchorToGuiKey({ kind: 'recipe', id: 'zhishi-pwn-a3f2', name: 'zhishi-pwn-a3f2', type: 'pwn-vm' }),
+    ).toBe('zhishi-pwn-a3f2');
+  });
+
+  it('未知形状回落宿主线（不猜）', () => {
+    expect(
+      initAnchorToGuiKey({ kind: 'host', id: 'x', name: '', type: '' } as unknown as {
+        kind: 'env' | 'recipe';
+        id: string;
+        name: string;
+        type: string;
+      }),
+    ).toBeNull();
+    expect(initAnchorToGuiKey({ kind: 'env', id: '', name: '', type: '' })).toBeNull();
   });
 });

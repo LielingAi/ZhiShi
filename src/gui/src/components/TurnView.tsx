@@ -11,6 +11,8 @@ import { useState } from 'react';
 import type React from 'react';
 
 import { buildBadgeSummary, type ThinkingDetail, type TurnBlock } from '../model/blocks';
+import { parseDecisionBody } from '../model/decision';
+import { useGuiStore } from '../store/useGuiStore';
 import { ToolCard } from './ToolCard';
 
 function fmtTime(ts: number): string {
@@ -58,6 +60,54 @@ function BadgeRow({ turn, expanded, onToggle }: {
   );
 }
 
+/**
+ * 1.3.2 ①：决策块首（kind:'decision' 的 user 消息）——琥珀结构化卡，不按
+ * 普通 user 气泡渲染：选择/备注/expertRefs（E#N 徽章）+ 正文；块上有
+ * promote 入口（「入专家库」→ 预填小表单 → expert/add）。
+ */
+function DecisionBlock({ turn }: { turn: TurnBlock }): React.JSX.Element {
+  const setModal = useGuiStore((s) => s.setModal);
+  const d = turn.decision;
+  if (!d) return <></>;
+  const parts = parseDecisionBody(turn.userText);
+  const promote = () => {
+    setModal({
+      kind: 'promote',
+      prefill: {
+        title: parts.question ?? '',
+        applicability: '',
+        criteria: `选择: ${d.choice}${d.note ? `\n备注: ${d.note}` : ''}`,
+        content: turn.userText,
+      },
+    });
+  };
+  return (
+    <div className="decision-block">
+      <div className="db-head">
+        <span className="db-title">⚖ 人的决定</span>
+        <span className="db-choice">{d.choice}</span>
+        <button
+          className="btn small db-promote"
+          title="把这条决策沉淀为专家知识基准（expert/add）"
+          onClick={promote}
+        >
+          入专家库
+        </button>
+      </div>
+      {parts.question && <div className="db-question">问题：{parts.question}</div>}
+      {d.note && <div className="db-note">备注：{d.note}</div>}
+      {d.expertRefs.length > 0 && (
+        <div className="db-refs">
+          {d.expertRefs.map((r) => (
+            <span className="dc-badge" key={r}>{r}</span>
+          ))}
+        </div>
+      )}
+      <div className="db-body">{turn.userText}</div>
+    </div>
+  );
+}
+
 export function TurnView({ turn }: { turn: TurnBlock }): React.JSX.Element {
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
   const expanded = userExpanded ?? turn.status === 'running';
@@ -69,13 +119,17 @@ export function TurnView({ turn }: { turn: TurnBlock }): React.JSX.Element {
     <div className="turn-block">
       <span className="b-time">{fmtTime(turn.createdAt)}</span>
 
-      {/* 块首：你的输入 */}
-      <div className="user-row">
-        <div className="bubble">
-          {turn.userText || (turn.steering ? '（纠偏）' : '（系统）')}
+      {/* 块首：你的输入（1.3.2 ①：决策消息渲染琥珀决策卡，不按普通气泡） */}
+      {turn.decision ? (
+        <DecisionBlock turn={turn} />
+      ) : (
+        <div className="user-row">
+          <div className="bubble">
+            {turn.userText || (turn.steering ? '（纠偏）' : '（系统）')}
+          </div>
+          {turn.steering && <span className="steer-badge" title="运行中发送，已进纠偏队列">纠偏</span>}
         </div>
-        {turn.steering && <span className="steer-badge" title="运行中发送，已进纠偏队列">纠偏</span>}
-      </div>
+      )}
 
       {/* 亮顶：结论聚合 */}
       {hasConclusion && (

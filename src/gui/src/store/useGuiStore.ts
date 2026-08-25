@@ -13,19 +13,32 @@
  *   - boundaryAsks / bgTasks / subagents（SSE 事件登记表，纯函数归约在 model/）
  *   - tasksOpen / tasksSelected / queueOpen / queueServer（/tasks、/queue 面板）
  *   - boot（environment/up 真进度：请求 + 轮询 environment/ps）
+ *
+ * 1.3.2 新增状态：
+ *   - decisions / activeDecisionId（决策面板登记表 + 当前弹窗指针，①）
+ *   - theme（深浅色，localStorage 持久化，③）
+ *   - 多线切换 A 形态：switchEnv 换激活指针、不丢任何线本地状态（③）
+ *   - chat:init environment 锚直接锚定环境（任务二 #2，免 environment/current 绕行）
  */
 
 import { create } from 'zustand';
 
 import { emptySession, type SessionState, type ToolDetail } from '../model/blocks';
-import { selectionToGuiKey } from '../model/access-gate';
+import { initAnchorToGuiKey, selectionToGuiKey, type InitEnvAnchor } from '../model/access-gate';
 import {
   removeBoundaryAsk,
   upsertBoundaryAsk,
   type BoundaryAsk,
 } from '../model/boundary';
+import {
+  hasDecision,
+  removeDecision,
+  upsertDecision,
+  type DecisionPending,
+} from '../model/decision';
 import { escAction } from '../model/esc-chain';
 import { bootStages } from '../model/envs';
+import { planSwitch, sessionKey } from '../model/multi-session';
 import { reduceSseEvent } from '../model/reducer';
 import { buildSendBody, classifySendResponse, type Ref } from '../model/send';
 import {
@@ -37,6 +50,7 @@ import {
   type SubagentEntry,
   type TaskRow,
 } from '../model/tasks';
+import { loadTheme, nextTheme, THEME_STORAGE_KEY, type ThemeMode } from '../model/theme';
 import {
   exportResultToast,
   forkTargets,
@@ -109,7 +123,26 @@ export interface OverlayState {
   sel: number;
 }
 
-export type ModalKind = 'new-env' | 'ssh' | 'adopt' | 'boot' | 'slash-args' | 'pick-message';
+export type ModalKind =
+  | 'new-env'
+  | 'ssh'
+  | 'adopt'
+  | 'boot'
+  | 'slash-args'
+  | 'pick-message'
+  | 'promote';
+
+/** promote（入专家库）预填：决策块 → 专家条目草稿。 */
+export interface PromotePrefill {
+  /** title = question。 */
+  title: string;
+  /** applicability = 场景（用户补）。 */
+  applicability: string;
+  /** criteria = 选择+备注 草稿。 */
+  criteria: string;
+  /** content = 决策块正文。 */
+  content: string;
+}
 
 export interface ModalState {
   kind: ModalKind;
@@ -117,6 +150,8 @@ export interface ModalState {
   recipeId?: string;
   /** slash-args / pick-message 关联的命令名（rewind/fork/snapshot/rollback/extract）。 */
   command?: SlashCommandName;
+  /** promote（入专家库）预填。 */
+  prefill?: PromotePrefill;
 }
 
 export interface DrawerState {
@@ -186,6 +221,14 @@ export interface GuiState {
   bgTasks: BgTaskEntry[];
   subagents: SubagentEntry[];
 
+  // 1.3.2 ①：决策面板登记表 + 当前弹窗指针
+  decisions: DecisionPending[];
+  /** 当前决策模态展示的 decisionId；null = 全部收起（会话头部待答指示）。 */
+  activeDecisionId: string | null;
+
+  // 1.3.2 ③：主题（深色默认；localStorage 持久化）
+  theme: ThemeMode;
+
   // 1.3.1 ③④：/tasks 与 /queue 面板
   tasksOpen: boolean;
   tasksSelected: TasksSelected | null;
@@ -231,6 +274,15 @@ export interface GuiState {
   // 1.3.1 ②：boundary
   respondBoundaryAsk(askId: string, approve: boolean, note?: string): Promise<void>;
   dismissBoundaryAsk(askId: string): void;
+  // 1.3.2 ①：decision
+  respondDecision(decisionId: string, choice: string, note?: string): Promise<void>;
+  dismissDecision(decisionId: string): void;
+  openDecision(decisionId: string): void;
+  // 1.3.2 ①：promote（决策块入专家库）
+  submitPromote(entry: Record<string, unknown>): Promise<{ ok: boolean; message: string }>;
+  // 1.3.2 ③：主题
+  toggleTheme(): void;
+  setTheme(mode: ThemeMode): void;
   // 1.3.1 ③④：tasks / queue
   openTasksPanel(): Promise<void>;
   closeTasksPanel(): void;
@@ -263,7 +315,7 @@ let envRestoreDone = false;
 /** boot 轮询句柄（dispose / 重复 boot 时清理）。 */
 let bootPollTimer: ReturnType<typeof setInterval> | null = null;
 
-function browserStorage(): { getItem(k: string): string | null } | undefined {
+function browserStorage(): Pick<Storage, 'getItem' | 'setItem'> | undefined {
   try {
     return typeof localStorage !== 'undefined' ? localStorage : undefined;
   } catch {
@@ -295,6 +347,10 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   boundaryAsks: [],
   bgTasks: [],
   subagents: [],
+
+  decisions: [],
+  activeDecisionId: null,
+  theme: loadTheme(browserStorage()),
 
   tasksOpen: false,
   tasksSelected: null,
@@ -378,7 +434,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
             };
             if (res.workspace) {
               patch.workspace = res.workspace;
-              void restoreEnvSelection(get, set, res.workspace);
+              // 1.3.2 任务二 #2：chat:init 带 environment 锚时走锚定路径
+              // （下方 applyInitEnvAnchor），旧 environment/current 仅兜底。
+              if (res.environment === undefined) void restoreEnvSelection(get, set, res.workspace);
             }
             if (res.toast) {
               patch.toast = res.toast;
@@ -391,13 +449,41 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
                       askId: res.boundaryAsk.askId,
                       kind: res.boundaryAsk.kind,
                       objects: res.boundaryAsk.objects,
+                      toolName: res.boundaryAsk.toolName,
+                      toolDescription: res.boundaryAsk.toolDescription,
+                      options: res.boundaryAsk.options,
                     })
                   : removeBoundaryAsk(s.boundaryAsks, res.boundaryAsk.askId);
             }
             if (res.bgEvent) patch.bgTasks = applyBgEvent(s.bgTasks, res.bgEvent);
             if (res.subagentEvent) patch.subagents = applySubagentEvent(s.subagents, res.subagentEvent);
+            // 1.3.2 ①：决策登记表（init reset → replay upsert → resolved remove）
+            if (res.decisionRequest || res.decisionResolved) {
+              let decisions = s.decisions;
+              if (res.decisionRequest?.type === 'reset') decisions = [];
+              if (res.decisionRequest?.type === 'upsert') {
+                decisions = upsertDecision(decisions, res.decisionRequest);
+              }
+              if (res.decisionResolved) {
+                decisions = removeDecision(decisions, res.decisionResolved.decisionId);
+              }
+              patch.decisions = decisions;
+              // 新决策到达且当前无弹窗 → 自动弹（重连重放 upsert 同此路径；
+              // 按 decisionId 去重，不会重复弹）。
+              if (res.decisionRequest?.type === 'upsert' && s.activeDecisionId === null) {
+                patch.activeDecisionId = res.decisionRequest.decisionId;
+              }
+              // 激活指针再验证：展示中的决策已不在登记表 → 弹下一个（或收起）。
+              if (s.activeDecisionId !== null && !hasDecision(decisions, s.activeDecisionId)) {
+                patch.activeDecisionId = decisions[0]?.decisionId ?? null;
+              }
+            }
             return patch;
           });
+          // 1.3.2 任务二 #2：chat:init 环境锚（免 environment/current 绕行）。
+          if (res.environment !== undefined) {
+            applyInitEnvAnchor(get, set, res.environment);
+          }
         }
       } catch (err) {
         if (!ac.signal.aborted) {
@@ -430,7 +516,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     }));
   },
 
-  // ── 环境切换（切换即换流） ──────────────────────────────────────────
+  // ── 环境切换（1.3.2 ③ A 形态：换激活指针，不丢任何线的本地状态） ──
 
   async switchEnv(key: string) {
     const state = get();
@@ -443,19 +529,22 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       state.showToast('工作区尚未就绪（等待 chat:init）');
       return;
     }
-    if (key === state.currentEnvKey) return;
+    const plan = planSwitch(state.currentEnvKey, state.sessions, key);
+    if (!plan.changed) return; // 目标线已是激活线
     const res = await api.environmentSelect(c, state.workspace, { kind: 'env', id: key });
     if (!res.success) {
       state.showToast(`切换失败：${res.error ?? '未知错误'}`);
       return;
     }
-    set((s) => ({
-      currentEnvKey: key,
-      sessions: { ...s.sessions, [key]: emptySession() },
+    // A 形态：保留目标线现有会话状态（含未完成渲染的流）——重连 replay
+    // 按 wire id 幂等续上；旧激活线原样冻结在 sessions 里，切回即续。
+    set({
+      currentEnvKey: plan.envKey,
+      sessions: plan.sessions,
       drawer: null,
       overlay: null,
       page: 'chat',
-    }));
+    });
     get().reconnect();
     void get().refreshSidebar();
     get().showToast(`◈ 已切换到 ${key} 的会话线`);
@@ -691,6 +780,81 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     // Esc 语义：收起该 ask 的模态不作答——ask 保持 pending，服务端重连
     // replay 会重弹。本地摘除，避免模态一直挡住界面。
     set((s) => ({ boundaryAsks: removeBoundaryAsk(s.boundaryAsks, askId) }));
+  },
+
+  // ── 1.3.2 ①：决策应答 / 收起 / 重开 ───────────────────────────────
+
+  async respondDecision(decisionId: string, choice: string, note?: string) {
+    const c = client;
+    const state = get();
+    if (!hasDecision(state.decisions, decisionId)) return; // 幂等守卫
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.decisionRespond(c, { decisionId, choice, note });
+      if (!res.success) {
+        // 404（未知/已失效）/409（已答）：服务端注册表已无此决策——
+        // 提示 + 摘除本地 + 重连重放刷新 pending 状态。
+        state.showToast(`应答失败：${res.error ?? '未知错误'}`);
+        set((s) => ({
+          decisions: removeDecision(s.decisions, decisionId),
+          activeDecisionId: s.activeDecisionId === decisionId ? null : s.activeDecisionId,
+        }));
+        get().reconnect();
+        return;
+      }
+      set((s) => ({
+        decisions: removeDecision(s.decisions, decisionId),
+        activeDecisionId: s.activeDecisionId === decisionId ? null : s.activeDecisionId,
+      }));
+      state.showToast('✓ 决定已提交——回注会话流继续');
+    } catch (err) {
+      state.showToast(`应答失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  dismissDecision(decisionId: string) {
+    // Esc 语义：收起不作答——decision 保持 pending，缩为会话头部待答
+    // 指示（可点开重答）。注意：与 boundary-ask 不同，这里**不摘除**
+    // 登记条目（重连 replay 会按 decisionId 去重，不会重复弹）。
+    set((s) => (s.activeDecisionId === decisionId ? { activeDecisionId: null } : {}));
+  },
+
+  openDecision(decisionId: string) {
+    if (hasDecision(get().decisions, decisionId)) {
+      set({ activeDecisionId: decisionId });
+    }
+  },
+
+  // ── 1.3.2 ①：promote（决策块 → expert/add 入专家库） ─────────────
+
+  async submitPromote(entry: Record<string, unknown>): Promise<{ ok: boolean; message: string }> {
+    const c = client;
+    if (!c) return { ok: false, message: '未连接 sidecar' };
+    try {
+      const res = await api.expertAdd(c, entry);
+      if (res.success) return { ok: true, message: '✓ 已入专家库（provenance=user，reviewer 留档）' };
+      return { ok: false, message: res.error ?? '入专家库失败' };
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  },
+
+  // ── 1.3.2 ③：主题 ─────────────────────────────────────────────────
+
+  toggleTheme() {
+    const next = nextTheme(get().theme);
+    set({ theme: next });
+    applyThemeClass(next);
+    persistTheme(next);
+  },
+
+  setTheme(mode: ThemeMode) {
+    set({ theme: mode });
+    applyThemeClass(mode);
+    persistTheme(mode);
   },
 
   // ── 1.3.1 ③④：/tasks 面板 ──────────────────────────────────────────
@@ -1002,6 +1166,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       tasksOpen: s.tasksOpen,
       queueOpen: s.queueOpen,
       boundaryOpen: s.boundaryAsks.length > 0,
+      decisionOpen: s.decisions.length > 0 && s.activeDecisionId !== null,
       modalOpen: s.modal !== null,
       drawerOpen: s.drawer !== null,
       pageOpen: s.page !== 'chat',
@@ -1020,6 +1185,11 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       case 'close-boundary': {
         const first = get().boundaryAsks[0];
         if (first) get().dismissBoundaryAsk(first.askId);
+        break;
+      }
+      case 'close-decision': {
+        // Esc 收起不作答：decision 保持 pending，缩为会话头部待答指示。
+        set({ activeDecisionId: null });
         break;
       }
       case 'close-modal':
@@ -1059,6 +1229,43 @@ function stopBootPolling(): void {
   if (bootPollTimer) {
     clearInterval(bootPollTimer);
     bootPollTimer = null;
+  }
+}
+
+/**
+ * 1.3.2 任务二 #2：chat:init 环境锚 → 直接锚定当前环境（免
+ * environment/current 绕行；旧路径 restoreEnvSelection 仅在锚字段缺失时
+ * 兜底）。锚定完成置 envRestoreDone，避免两条路径互相打架。
+ */
+function applyInitEnvAnchor(
+  get: () => GuiState,
+  set: (partial: Partial<GuiState>) => void,
+  anchor: InitEnvAnchor | null,
+): void {
+  envRestoreDone = true;
+  const guiKey = initAnchorToGuiKey(anchor);
+  if (guiKey === get().currentEnvKey) return;
+  const key = sessionKey(guiKey);
+  set({
+    currentEnvKey: guiKey,
+    sessions: { ...get().sessions, [key]: get().sessions[key] ?? emptySession() },
+    page: 'chat',
+  });
+  get().reconnect();
+}
+
+/** 主题 → body.light class（styles.css 的浅色变量组开关）。 */
+function applyThemeClass(mode: ThemeMode): void {
+  if (typeof document === 'undefined') return;
+  document.body.classList.toggle('light', mode === 'light');
+}
+
+/** 主题持久化（localStorage；失败静默——隐私模式等）。 */
+function persistTheme(mode: ThemeMode): void {
+  try {
+    browserStorage()?.setItem(THEME_STORAGE_KEY, mode);
+  } catch {
+    // 静默。
   }
 }
 
@@ -1110,6 +1317,8 @@ const FALLBACK_SESSION = emptySession();
  * 1.3.1 ①：chat:init 携带 workspace 后一次性恢复当前环境选定
  * （environment/current → selectionToGuiKey）。选定与 GUI 当前线不同才切线
  * （避免重复重连）；恢复失败静默落宿主线（不阻塞会话）。
+ * 1.3.2 任务二 #2：chat:init 带 environment 锚时走 applyInitEnvAnchor
+ * （免绕行），本函数仅作锚字段缺失时的兜底路径。
  */
 async function restoreEnvSelection(
   get: () => GuiState,

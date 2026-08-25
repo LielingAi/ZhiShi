@@ -17,6 +17,9 @@
  */
 
 import type { SidebarEnvItem } from './envs';
+import type { InitEnvAnchor } from './reducer';
+
+export type { InitEnvAnchor };
 
 // ---------------------------------------------------------------------------
 // 准入判定
@@ -87,5 +90,22 @@ export function selectionToGuiKey(selection: CurrentSelection | null | undefined
   ) {
     return selection.instanceId;
   }
+  return null;
+}
+
+/** chat:init environment 锚（resolveSessionEnvAnchor 形状，1.3.2 任务二 #2；
+ * 类型单点在 reducer.ts::InitEnvAnchor，这里只做键映射）。 */
+
+/**
+ * chat:init environment 锚 → GUI 侧会话键（null = host）。
+ *   - null（host 会话）→ null
+ *   - { kind:'env', id }      → id
+ *   - { kind:'recipe', id }   → id（resolveSessionEnvAnchor 的 recipe.id
+ *                               即 instanceId，与 selectionToGuiKey 同口径）
+ *   未知形状回落 null（宿主线），不猜。
+ */
+export function initAnchorToGuiKey(anchor: InitEnvAnchor | null | undefined): string | null {
+  if (!anchor || typeof anchor !== 'object') return null;
+  if ((anchor.kind === 'env' || anchor.kind === 'recipe') && anchor.id) return anchor.id;
   return null;
 }

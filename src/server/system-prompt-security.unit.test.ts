@@ -567,6 +567,18 @@ describe('buildSecurityKernelSection — intel_search 进内核（1.2.6）', () 
   });
 });
 
+describe('buildSecurityKernelSection — 决策点语义（1.3.2）', () => {
+  it('kernel 段声明 request_decision：分歧/无把握且库无基准才提请；先查 expert_search；提请后暂停', () => {
+    const section = buildSecurityKernelSection();
+    expect(section).toContain('request_decision');
+    expect(section).toContain('库中无基准');
+    expect(section).toContain('先查 expert_search');
+    expect(section).toContain('暂停这条线的执行');
+    expect(section).toContain('user 消息注入回来');
+    expect(section.length).toBeLessThanOrEqual(SECURITY_KERNEL_MAX_CHARS);
+  });
+});
+
 describe('buildResearchLogSection — 余量修复（1.2.6）', () => {
   it('模板完整注入：收尾标签在、无截断标记（旧 500 顶会把收尾标签截掉）', () => {
     const section = buildResearchLogSection();

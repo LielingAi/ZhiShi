@@ -1,6 +1,7 @@
 /**
  * 状态栏（1.3.1 ⑦）：env 锚（宿主显性化 ①）+ phase（spinner）+ 队列 +
- * 上下文 + 后台任务段（⛁ name×N，③ 数据）+ 模型名（点击开模型选择）。
+ * 上下文 + 后台任务段（⛁ name×N，③ 数据）+ 模型名（点击开模型选择）+
+ * 主题切换（1.3.2 ③）。
  */
 
 import type React from 'react';
@@ -16,6 +17,8 @@ export function StatusBar(): React.JSX.Element {
   const openOverlay = useGuiStore((s) => s.openOverlay);
   const bgTasks = useGuiStore((s) => s.bgTasks);
   const subagents = useGuiStore((s) => s.subagents);
+  const theme = useGuiStore((s) => s.theme);
+  const toggleTheme = useGuiStore((s) => s.toggleTheme);
 
   const phase = session.phase;
   const phaseText =
@@ -62,6 +65,13 @@ export function StatusBar(): React.JSX.Element {
             ⛁ {segments.map((g) => `${g.name}×${g.count}`).join(' · ')}
           </span>
         )}
+        <span
+          className="seg clickable theme-toggle"
+          title={theme === 'dark' ? '切换浅色主题' : '切换深色主题'}
+          onClick={toggleTheme}
+        >
+          {theme === 'dark' ? '☾ 深色' : '☀ 浅色'}
+        </span>
         {connectionState !== 'live' && (
           <span className="conn-state">
             {connectionState === 'reconnecting'

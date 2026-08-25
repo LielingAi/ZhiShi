@@ -65,12 +65,27 @@ export interface TurnMeta {
   durationMs: number;
 }
 
+/**
+ * 1.3.2 决策块标记（wire user 消息 additive 字段 kind:'decision' 的
+ * 归约结果）。带它时块首按琥珀决策卡渲染（不按普通 user 气泡）：
+ * 结构化显示 选择/备注/expertRefs + 正文；块上带「入专家库」promote 入口。
+ */
+export interface TurnDecision {
+  decisionId: string;
+  choice: string;
+  note?: string;
+  /** E#N 引用（仅命中专家库时存在）。 */
+  expertRefs: string[];
+}
+
 export interface TurnBlock {
   kind: 'turn';
   id: string;
   seq: number;
   /** 块首：你的输入。 */
   userText: string;
+  /** 1.3.2：决策块标记（kind:'decision' 的 user 消息）。 */
+  decision?: TurnDecision;
   /** 纠偏标记：busy 时发送、进了服务端 steering 队列的消息。 */
   steering: boolean;
   /** 结论聚合：assistant 全部文本。 */

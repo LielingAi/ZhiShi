@@ -65,6 +65,9 @@ import { readLoopbackJson } from './utils/loopback-response';
 
 import { managementApi } from './utils/management-api';
 
+// 1.3.2 任务二 #5：task/list 行 conclusion 字段的数据源（cron 结论登记）。
+import { taskConclusionFor } from './cron/task-conclusions';
+
 
 
 // Localhost loopback timeout for management / sidecar self-calls.
@@ -3368,6 +3371,18 @@ export async function handleTaskList(payload: {
 
   if (resp.ok) {
 
+    // 1.3.2 任务二 #5：行补 conclusion 字段(有结论就带,没有 → null)。
+    // Rust Task 无此字段;结论来自 sidecar 的 cron 执行登记(task-conclusions)。
+    const rawTasks = (resp as Record<string, unknown>).tasks;
+    if (Array.isArray(rawTasks)) {
+      const tasks = rawTasks.map((t) => {
+        const row = (t && typeof t === 'object' ? t : {}) as Record<string, unknown>;
+        const id = typeof row.id === 'string' ? row.id : '';
+        return { ...row, conclusion: id ? taskConclusionFor(id) : null };
+      });
+      return { success: true, data: tasks };
+    }
+
     return { success: true, data: (resp as Record<string, unknown>).tasks ?? [] };
 
   }
@@ -4323,6 +4338,57 @@ export function handleIntelStatus(): AdminResponse {
           progress,
         };
     return { success: true, data: { status, config: cfg } };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * 情报配置部分更新（zhishi intel config，1.3.2 任务二 #3）——PATCH 语义：
+ * 只更新传入字段并回写 config.json::intel（atomicModifyConfig 锁内读-改-写，
+ * 与 MCP/provider 等配置写同一条纪律）。未传字段保持原值；非法值 400 式
+ * 拒绝（不回写）。返回回写后的 resolveIntelConfig 合并值（含缺省）。
+ */
+export async function handleIntelConfigUpdate(payload: {
+  mode?: unknown;
+  windowYears?: unknown;
+  maxSizeMb?: unknown;
+  onlineFallback?: unknown;
+}): Promise<AdminResponse> {
+  const patch: Partial<IntelConfig> = {};
+  if (payload.mode !== undefined) {
+    if (payload.mode !== 'minimal' && payload.mode !== 'window' && payload.mode !== 'full') {
+      return { success: false, error: `intel/config: 非法 mode "${String(payload.mode)}"（允许 minimal / window / full）` };
+    }
+    patch.mode = payload.mode;
+  }
+  if (payload.windowYears !== undefined) {
+    if (typeof payload.windowYears !== 'number' || !Number.isFinite(payload.windowYears) || payload.windowYears <= 0) {
+      return { success: false, error: 'intel/config: windowYears 需为正数（年）' };
+    }
+    patch.windowYears = payload.windowYears;
+  }
+  if (payload.maxSizeMb !== undefined) {
+    if (typeof payload.maxSizeMb !== 'number' || !Number.isFinite(payload.maxSizeMb) || payload.maxSizeMb <= 0) {
+      return { success: false, error: 'intel/config: maxSizeMb 需为正数（MB）' };
+    }
+    patch.maxSizeMb = payload.maxSizeMb;
+  }
+  if (payload.onlineFallback !== undefined) {
+    if (typeof payload.onlineFallback !== 'boolean') {
+      return { success: false, error: 'intel/config: onlineFallback 需为布尔值' };
+    }
+    patch.onlineFallback = payload.onlineFallback;
+  }
+  if (Object.keys(patch).length === 0) {
+    return { success: false, error: 'intel/config: 没有可更新的字段（mode / windowYears / maxSizeMb / onlineFallback）' };
+  }
+  try {
+    const saved = await atomicModifyConfig((config) => {
+      const intel = (config.intel ?? {}) as IntelConfig;
+      return { ...config, intel: { ...intel, ...patch } };
+    });
+    return { success: true, data: { config: resolveIntelConfig((saved as { intel?: IntelConfig }).intel) } };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -5694,12 +5760,13 @@ export async function handleEnvironmentExtract(payload: {
   const destDir = join(workspace, 'output', 'extracted', id);
 
   // 越界询问:写宿主。人批准前 HTTP 请求一直 pending(TUI 模态在等)。
+  // 1.3.2 契约补全:带工具名/说明/选项,展示文案由服务端给出。
   const approved = await requestBoundaryAsk({
-
     kind: 'host-write',
-
     objects: [`${id}:${guestPath}`, `→ 宿主 ${destDir}`],
-
+    toolName: 'environment/extract',
+    toolDescription: '把环境内成果提取回宿主',
+    options: ['批准写入', '拒绝'],
   });
 
   if (!approved) return { success: false, error: '越界提取已被拒绝或超时(写宿主需人批准)' };
@@ -5787,7 +5854,13 @@ export async function handleReportExport(payload: {
       findLoopSessionId: (ws) =>
         getEnvSessionLine(loadEnvSessionsMap(), ws, envKey)?.loopSessionId,
       loadTranscript: (loopSessionId) => buildLoopTranscript(loopSessionId),
-      requestApproval: (objects) => requestBoundaryAsk({ kind: 'host-write', objects }),
+      requestApproval: (objects) => requestBoundaryAsk({
+        kind: 'host-write',
+        objects,
+        toolName: 'report/export',
+        toolDescription: '把证据与报告落回宿主',
+        options: ['批准写入', '拒绝'],
+      }),
       narrate: async (prompt, systemPrompt) => {
         if (!resolution) return { error: '模型不可用（无 provider/key）' };
         const controller = new AbortController();

@@ -1,9 +1,10 @@
 /**
- * 越界 ask 模态（1.3.1 ②）——v19 风格：琥珀边框、y/n 按钮 +
- * 自然语言应答输入框（note 为 additive 字段，服务端忽略，见交付报告）。
+ * 越界 ask 模态（1.3.1 ② + 1.3.2 任务二 #1）——v19 风格：琥珀边框、
+ * y/n 按钮 + 自然语言应答输入框。1.3.2 起渲染服务端 additive 字段
+ * toolName / toolDescription / options（有则显示）；note 被服务端消费并
+ * 落盘进 transcript（POST /chat/boundary/respond { askId, approve, note }）。
  *
  * 数据源：store.boundaryAsks（SSE chat:boundary-ask 登记、expired 摘除）。
- * 应答：POST /chat/boundary/respond { askId, approve, note }。
  * Esc：进 Esc 链（boundary 层，见 model/esc-chain.ts）——收起不作答。
  */
 
@@ -38,6 +39,13 @@ export function BoundaryModal(): React.JSX.Element | null {
         </div>
         <div className="m-body">
           <div className="bd-desc">{meta.desc}</div>
+          {/* 1.3.2 任务二 #1：服务端随 payload 给的触发工具名/说明/选项（有则显示） */}
+          {ask.toolName && (
+            <div className="bd-tool mono">{ask.toolName}</div>
+          )}
+          {ask.toolDescription && (
+            <div className="bd-desc">{ask.toolDescription}</div>
+          )}
           {ask.objects.length > 0 && (
             <div className="bd-objects">
               {ask.objects.map((o, i) => (
@@ -47,8 +55,15 @@ export function BoundaryModal(): React.JSX.Element | null {
               ))}
             </div>
           )}
+          {ask.options && ask.options.length > 0 && (
+            <div className="bd-options">
+              {ask.options.map((o, i) => (
+                <span className="bd-option" key={`${ask.askId}-opt-${i}`}>{o}</span>
+              ))}
+            </div>
+          )}
           <div className="f-label" style={{ marginTop: 10 }}>
-            自然语言应答（可选——批准/拒绝时附上一句话，留档用）
+            自然语言应答（可选——批准/拒绝时附上一句话，留档进 transcript）
           </div>
           <input
             className="f-input"

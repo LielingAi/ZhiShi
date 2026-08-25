@@ -1,6 +1,6 @@
 /**
- * Esc 链优先级单测（1.3.1 ②③④ 扩展）：一次弹一层，顺序
- * overlay > tasks > queue > boundary > modal > drawer > page > busy 中断 > none。
+ * Esc 链优先级单测（1.3.1 ②③④ + 1.3.2 ① 扩展）：一次弹一层，顺序
+ * overlay > tasks > queue > boundary > decision > modal > drawer > page > busy 中断 > none。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -12,6 +12,7 @@ const base = {
   tasksOpen: false,
   queueOpen: false,
   boundaryOpen: false,
+  decisionOpen: false,
   modalOpen: false,
   drawerOpen: false,
   pageOpen: false,
@@ -46,6 +47,18 @@ describe('escAction', () => {
     expect(escAction({ ...base, boundaryOpen: true, modalOpen: true })).toEqual({ type: 'close-boundary' });
     expect(escAction({ ...base, boundaryOpen: true, drawerOpen: true, busy: true })).toEqual({
       type: 'close-boundary',
+    });
+  });
+
+  it('decision 模态进链（1.3.2 ①）：boundary 之后、modal 之前', () => {
+    expect(escAction({ ...base, boundaryOpen: true, decisionOpen: true })).toEqual({
+      type: 'close-boundary',
+    });
+    expect(escAction({ ...base, decisionOpen: true, modalOpen: true })).toEqual({
+      type: 'close-decision',
+    });
+    expect(escAction({ ...base, decisionOpen: true, drawerOpen: true, busy: true })).toEqual({
+      type: 'close-decision',
     });
   });
 

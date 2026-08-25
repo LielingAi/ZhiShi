@@ -2,15 +2,14 @@
  * 越界 ask 的展示映射与登记表归约（1.3.1 ②，纯函数）。
  *
  * 服务端契约（src/server/loop/boundary-ask.ts）：
- *   - SSE `chat:boundary-ask` payload = { askId, kind, objects }
+ *   - SSE `chat:boundary-ask` payload = { askId, kind, objects,
+ *     toolName?, toolDescription?, options? }（1.3.2 起 additive 字段，
+ *     展示文案由服务端随 payload 给出，GUI 不再只依赖 kind 本地映射；
+ *     旧调用方不带时保持原形状，按 kind 映射兜底）。
  *     kind ∈ host-write | local-cred | net-policy | destroy-env
- *   - 应答端点 POST /chat/boundary/respond { askId, approve }
- *     （respondBoundaryAsk 只消费 approve；本 UI 附带 note 为 additive
- *       字段，服务端忽略——见交付报告「服务端缺口清单」。）
+ *   - 应答端点 POST /chat/boundary/respond { askId, approve, note? }
+ *     （1.3.2 起 note 被服务端消费并落盘进 transcript）。
  *   - 超时/作废：SSE `chat:boundary-expired` { askId }（收模态）。
- *
- * 服务端 payload 里没有工具名/说明/选项字段（设计稿 §6.6 的模态草案
- * 与实现形状有出入）——工具名等展示文案由 kind 映射表本地生成。
  */
 
 // ---------------------------------------------------------------------------
@@ -24,6 +23,14 @@ export interface BoundaryAsk {
   askId: string;
   kind: string;
   objects: string[];
+  /**
+   * 1.3.2 任务二 #1：additive 字段（服务端随 payload 给出，有则显示）——
+   * 触发工具名 / 工具说明 / 选项。旧调用方不带时保持缺省，展示由
+   * BoundaryModal 按「有则显示」渲染。
+   */
+  toolName?: string;
+  toolDescription?: string;
+  options?: string[];
   /** GUI 本地登记时间（排序/展示用）。 */
   receivedAt: number;
 }
@@ -89,7 +96,7 @@ export function boundaryAskMeta(kind: string): BoundaryKindMeta {
 /** chat:boundary-ask payload → 登记条目（幂等 upsert，按 askId）。 */
 export function upsertBoundaryAsk(
   asks: BoundaryAsk[],
-  view: { askId?: unknown; kind?: unknown; objects?: unknown },
+  view: { askId?: unknown; kind?: unknown; objects?: unknown; toolName?: unknown; toolDescription?: unknown; options?: unknown },
   receivedAt = Date.now(),
 ): BoundaryAsk[] {
   const askId = typeof view.askId === 'string' ? view.askId : '';
@@ -100,6 +107,14 @@ export function upsertBoundaryAsk(
     objects: Array.isArray(view.objects)
       ? view.objects.filter((o): o is string => typeof o === 'string')
       : [],
+    // 1.3.2 任务二 #1：additive 字段透传（有则登记，展示时原样呈现）。
+    ...(typeof view.toolName === 'string' && view.toolName ? { toolName: view.toolName } : {}),
+    ...(typeof view.toolDescription === 'string' && view.toolDescription
+      ? { toolDescription: view.toolDescription }
+      : {}),
+    ...(Array.isArray(view.options) && view.options.length > 0
+      ? { options: view.options.filter((o): o is string => typeof o === 'string') }
+      : {}),
     receivedAt,
   };
   const existing = asks.find((a) => a.askId === askId);

@@ -23,7 +23,12 @@
  *     结论区可能短暂重复前几轮的文本（replay 重建 + 活体结论并存）；
  *     单轮/工具轮（空文本）不受影响。
  *   - chat:boundary-ask / chat:boundary-expired → ReduceResult.boundaryAsk
- *     增量（store 顶层 boundaryAsks 登记表，1.3.1 ②）。
+ *     增量（store 顶层 boundaryAsks 登记表，1.3.1 ②；1.3.2 透传
+ *     toolName/toolDescription/options additive 字段）。
+ *   - chat:decision-request / chat:decision-resolved → ReduceResult.decisionRequest /
+ *     decisionResolved 增量（store 顶层 decisions 登记表，1.3.2 ①）；
+ *     chat:init → decisionRequest reset（重连重放先清再建）。
+ *   - kind:'decision' 的 user replay → 带 TurnBlock.decision 的琥珀决策块。
  *   - chat:bg-* / chat:subagent-* → ReduceResult.bgEvent / subagentEvent
  *     增量（store 顶层登记表，状态栏后台段 + /tasks 面板，1.3.1 ③）。
  *
@@ -38,6 +43,7 @@ import type {
   ThinkingDetail,
   ToolDetail,
   TurnBlock,
+  TurnDecision,
   TurnMeta,
   TurnStatus,
 } from './blocks';
@@ -198,6 +204,30 @@ export interface SseInput {
   payload: unknown;
 }
 
+/**
+ * 1.3.2 任务二 #2：chat:init 的环境锚（resolveSessionEnvAnchor 形状）。
+ * host 会话 = null；kind='env' 时 id = 环境条目 id，kind='recipe' 时
+ * id = instanceId（与 GUI 侧栏键/selectionToGuiKey 同口径）。
+ */
+export interface InitEnvAnchor {
+  kind: 'env' | 'recipe';
+  id: string;
+  name: string;
+  type: string;
+}
+
+/** chat:init payload 的 environment 字段 → 锚（非 env/recipe 形状回落 null）。 */
+export function initAnchorOf(v: unknown): InitEnvAnchor | null {
+  if (!v || typeof v !== 'object') return null;
+  const p = rec(v);
+  const kind = str(p.kind);
+  const id = str(p.id);
+  if ((kind === 'env' || kind === 'recipe') && id) {
+    return { kind, id, name: str(p.name) ?? id, type: str(p.type) ?? '' };
+  }
+  return null;
+}
+
 export interface ReduceResult {
   session: SessionState;
   /** chat:init 携带的 agentDir（工作区）——environment/select 需要。 */
@@ -208,11 +238,29 @@ export interface ReduceResult {
    * 1.3.1 ②：越界 ask 登记表增量（chat:boundary-ask → upsert；
    * chat:boundary-expired → remove）。store 顶层 boundaryAsks 消费。
    */
-  boundaryAsk?: { type: 'upsert'; askId: string; kind: string; objects: string[] } | { type: 'remove'; askId: string };
+  boundaryAsk?:
+    | { type: 'upsert'; askId: string; kind: string; objects: string[]; toolName?: string; toolDescription?: string; options?: string[] }
+    | { type: 'remove'; askId: string };
   /** 1.3.1 ③：后台任务登记表增量（chat:bg-*）。store 顶层 bgTasks 消费。 */
   bgEvent?: BgEvent;
   /** 1.3.1 ③：子代理登记表增量（chat:subagent-*）。store 顶层 subagents 消费。 */
   subagentEvent?: SubagentEvent;
+  /**
+   * 1.3.2 ①：决策面板登记表增量。chat:init → reset（重连重放会重建全部
+   * pending，先清掉已 resolved 的残影）；chat:decision-request → upsert；
+   * chat:decision-resolved → remove。store 顶层 decisions 消费。
+   */
+  decisionRequest?:
+    | { type: 'reset' }
+    | { type: 'upsert'; decisionId: string; question: string; options: string[]; expertHits: string[] };
+  /** 1.3.2 ①：chat:decision-resolved → store 摘除对应 pending。 */
+  decisionResolved?: { decisionId: string };
+  /**
+   * 1.3.2 任务二 #2：chat:init 环境锚（payload 带 environment 字段时才
+   * 设置；null = 宿主线）。store 据此锚定当前环境，免 environment/current
+   * 绕行（旧路径保留兜底）。
+   */
+  environment?: InitEnvAnchor | null;
 }
 
 export function reduceSseEvent(session: SessionState, input: SseInput): ReduceResult {
@@ -248,7 +296,16 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
           ? s.streamingTurnId
           : null;
       const workspace = str(p.agentDir);
-      return { session: s, workspace };
+      return {
+        session: s,
+        workspace,
+        // 1.3.2 ①：决策登记表 reset——重连后服务端会重放全部 pending 决策
+        // （含去重），先清掉已 resolved 的本地残影，再由 replay 重建。
+        decisionRequest: { type: 'reset' },
+        // 1.3.2 任务二 #2：环境锚（payload 带 environment 字段才透出；
+        // host = null 也要能区分于「字段缺失」——用 undefined 表示缺失）。
+        ...(p.environment !== undefined ? { environment: initAnchorOf(p.environment) } : {}),
+      };
     }
 
     // ── 历史重建（replay，服务端对每条消息都广播；按 wire 顺序重建块） ──
@@ -269,12 +326,27 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
           return { ...it, status: 'complete' as TurnStatus, conclusionStreaming: false };
         });
         const now = Date.now();
+        // 1.3.2 ①：kind:'decision' 的 user 消息 → 决策块（琥珀卡渲染；
+        // 不按普通 user 气泡）。仍是「块」容器——决策注入后模型的
+        // 后续 assistant/tool 消息照常归入本块 conclusion。
+        const decision: TurnDecision | undefined =
+          m.kind === 'decision'
+            ? {
+                decisionId: str(m.decisionId) ?? '',
+                choice: str(m.choice) ?? '',
+                ...(str(m.note) ? { note: str(m.note) } : {}),
+                expertRefs: Array.isArray(m.expertRefs)
+                  ? m.expertRefs.filter((x): x is string => typeof x === 'string')
+                  : [],
+              }
+            : undefined;
         const turn: TurnBlock = {
           kind: 'turn',
           id: `turn-${s.seq + 1}`,
           seq: s.seq + 1,
           userText: str(m.content) ?? '',
           steering: str(m.queueId) !== undefined && s.steeringIds.includes(str(m.queueId)!),
+          decision,
           conclusion: '',
           conclusionStreaming: false,
           details: [],
@@ -601,6 +673,12 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
           objects: Array.isArray(p.objects)
             ? p.objects.filter((o): o is string => typeof o === 'string')
             : [],
+          // 1.3.2 任务二 #1：additive 字段透传（有则显示，见 BoundaryModal）。
+          ...(str(p.toolName) ? { toolName: str(p.toolName) } : {}),
+          ...(str(p.toolDescription) ? { toolDescription: str(p.toolDescription) } : {}),
+          ...(Array.isArray(p.options) && p.options.length > 0
+            ? { options: p.options.filter((o): o is string => typeof o === 'string') }
+            : {}),
         },
       };
     }
@@ -609,6 +687,32 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
       const askId = str(p.askId);
       if (!askId) return { session };
       return { session, boundaryAsk: { type: 'remove', askId } };
+    }
+
+    // ── 1.3.2 ①：决策面板（登记表增量交给 store；不落会话流） ──────────
+    case 'chat:decision-request': {
+      const decisionId = str(p.decisionId);
+      if (!decisionId) return { session };
+      return {
+        session,
+        decisionRequest: {
+          type: 'upsert',
+          decisionId,
+          question: str(p.question) ?? '',
+          options: Array.isArray(p.options)
+            ? p.options.filter((o): o is string => typeof o === 'string')
+            : [],
+          expertHits: Array.isArray(p.expertHits)
+            ? p.expertHits.filter((o): o is string => typeof o === 'string')
+            : [],
+        },
+      };
+    }
+
+    case 'chat:decision-resolved': {
+      const decisionId = str(p.decisionId);
+      if (!decisionId) return { session };
+      return { session, decisionResolved: { decisionId } };
     }
 
     // ── 1.3.1 ③：后台任务 / 子代理登记表增量（不进会话流） ───────────

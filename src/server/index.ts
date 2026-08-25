@@ -292,7 +292,7 @@ import { getActiveSessionLogPath } from './AgentLogger';
 
 import { runLogRetentionSweep, startPeriodicSweep } from './log-retention';
 
-import { createSseClient, getClients } from './sse';
+import { broadcast, createSseClient, getClients } from './sse';
 
 import {
 
@@ -327,6 +327,11 @@ import {
 
   getPiLogLines,
 
+  // 1.3.2 决策面板:注入 + 当前线只读快照(boundary 应答落盘 transcript 用)。
+  injectPiDecision,
+
+  getPiCurrentSessionRef,
+
 } from './loop/chat-engine';
 
 import { buildLoopTranscript } from './loop/transcript';
@@ -336,6 +341,12 @@ import { initMcpBridge } from './loop/mcp-bridge';
 import { isKimiCodingProvider } from './loop/pi-provider';
 
 import { pendingBoundaryAsks, respondBoundaryAsk } from './loop/boundary-ask';
+
+// 1.3.2 决策面板:pending 注册表 + 重连重放。
+import { pendingDecisions, respondDecision } from './loop/decision';
+
+// 越界/决策应答落盘 transcript 的持久化通道。
+import { appendLoopMessages } from './loop/session';
 
 
 
@@ -885,6 +896,9 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'intel/update') return await api.handleIntelUpdate(payload as Parameters<typeof api.handleIntelUpdate>[0]);
 
   if (route === 'intel/status') return api.handleIntelStatus();
+
+  // 1.3.2 任务二 #3：情报配置部分更新（PATCH 语义，回写 config.json::intel）。
+  if (route === 'intel/config-update') return await api.handleIntelConfigUpdate(payload as Parameters<typeof api.handleIntelConfigUpdate>[0]);
 
   // 专家知识层（1.2.1 骨架期）：expert.db 管理面。
   if (route === 'expert/search') return await api.handleExpertSearch(payload as Parameters<typeof api.handleExpertSearch>[0]);
@@ -1966,6 +1980,16 @@ async function main() {
             client.send('chat:boundary-ask', ask);
           }
 
+          // 1.3.2 决策面板:重连重放全部待答决策——GUI 重连不丢待答面板。
+          for (const d of pendingDecisions()) {
+            client.send('chat:decision-request', {
+              decisionId: d.decisionId,
+              question: d.question,
+              options: d.options,
+              expertHits: d.expertHits,
+            });
+          }
+
           const piInitInfo = getPiSystemInitInfo();
 
           if (piInitInfo) {
@@ -2667,11 +2691,69 @@ async function main() {
         if (!askId) {
           return jsonResponse({ success: false, error: 'Missing askId' }, 400);
         }
-        const found = respondBoundaryAsk(askId, body.approve === true);
-        if (!found) {
+        // 1.3.2 缺口 1:扩字段——应答附带 note(可选),响应内容进 transcript。
+        const note = typeof body.note === 'string' && body.note.trim() ? body.note.trim() : undefined;
+        const result = respondBoundaryAsk(askId, body.approve === true);
+        if (!result.ok) {
           return jsonResponse({ success: false, error: 'ask 不存在或已作答/已过期' }, 404);
         }
+        // 落盘 note:应答作为 user 消息追加进当前 loop 线的 jsonl(transcript)。
+        // 仅在会话已绑定(存在首个用户消息)时落盘——不凭空造孤儿 jsonl。
+        if (result.view && isPiEngine()) {
+          const { loopSessionId, sessionMetaId } = getPiCurrentSessionRef();
+          if (sessionMetaId) {
+            const approved = body.approve === true;
+            const line = `【越界应答】${result.view.kind} → ${approved ? '已批准' : '已拒绝'}`
+              + (result.view.objects.length > 0 ? `\n对象: ${result.view.objects.join('、')}` : '')
+              + (note ? `\n备注: ${note}` : '');
+            void appendLoopMessages(loopSessionId, [
+              { role: 'user', content: line, timestamp: Date.now() } as unknown as Parameters<typeof appendLoopMessages>[1][number],
+            ]).catch((err) => console.warn('[chat/boundary/respond] 应答落盘失败:', err));
+          }
+        }
         return jsonResponse({ success: true });
+      }
+
+      // 1.3.2 决策应答:人的决定作为 user 消息注入回 loop + resolved 广播。
+      if (pathname === '/chat/decision/respond' && request.method === 'POST') {
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        const decisionId = typeof body.decisionId === 'string' ? body.decisionId : '';
+        const choice = typeof body.choice === 'string' ? body.choice.trim() : '';
+        if (!decisionId || !choice) {
+          return jsonResponse({ success: false, error: 'Missing decisionId or choice' }, 400);
+        }
+        const note = typeof body.note === 'string' && body.note.trim() ? body.note.trim() : undefined;
+        const result = respondDecision(decisionId, choice, note);
+        if (!result.ok) {
+          return jsonResponse(
+            {
+              success: false,
+              error: result.reason === 'resolved'
+                ? '决策已作答(幂等:重复 respond 不重复注入)'
+                : 'decisionId 不存在或已失效(服务重启后 pending 即失效)',
+            },
+            result.reason === 'resolved' ? 409 : 404,
+          );
+        }
+        const d = result.decision;
+        broadcast('chat:decision-resolved', {
+          decisionId,
+          choice,
+          ...(d.note ? { note: d.note } : {}),
+          expertRefs: d.expertRefs,
+        });
+        const injected = await injectPiDecision({
+          decisionId: d.decisionId,
+          sessionId: d.sessionId,
+          question: d.question,
+          choice,
+          note: d.note,
+          expertRefs: d.expertRefs,
+        });
+        return jsonResponse({
+          success: true,
+          data: { decisionId, injected: injected.success, ...(injected.error ? { error: injected.error } : {}) },
+        });
       }
 
       if (pathname === '/chat/reset' && request.method === 'POST') {
@@ -5265,7 +5347,11 @@ async function main() {
 
 
 
-      // POST /api/skill/import-folder - Import skill from a local folder path (Tauri only)
+      // POST /api/skill/import-folder - Import skill from a local folder path.
+      // 1.3.2 验证:非 Tauri-only——webview/浏览器直连 sidecar 可达(同一条
+      // handler 链、OPTIONS 预检 ACAO:* 放行 POST、jsonResponse 全响应带
+      // ACAO:*、127.0.0.1 无 origin 门禁;GUI 经 GuiSidecarClient.postJson
+      // 原生 fetch 直连,已在用)。旧注释「Tauri only」为过期标注。
 
       if (pathname === '/api/skill/import-folder' && request.method === 'POST') {
 

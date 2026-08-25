@@ -329,6 +329,42 @@ export function boundaryRespond(
   return client.postJson<{ success: boolean; error?: string }>('/chat/boundary/respond', input);
 }
 
+// ---------------------------------------------------------------------------
+// 1.3.2 ①：决策应答 / 1.3.2 任务二 #4：情报部分更新 / attach 执行
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /chat/decision/respond { decisionId, choice, note? }：
+ * unknown→404、已答→409（JSON envelope {success:false,error}，不抛 HTTP 错）。
+ * 成功回 { success, data: { decisionId, injected, error? } }。
+ */
+export function decisionRespond(
+  client: GuiSidecarClient,
+  input: { decisionId: string; choice: string; note?: string },
+): Promise<{
+  success: boolean;
+  error?: string;
+  data?: { decisionId?: string; injected?: boolean; error?: string };
+}> {
+  return client.postJson('/chat/decision/respond', input);
+}
+
+/** POST /api/admin/intel/config-update（部分更新，只改传入字段）。 */
+export function intelConfigUpdate(
+  client: GuiSidecarClient,
+  patch: Record<string, unknown>,
+): Promise<{ success: boolean; error?: string; data?: { config?: Record<string, unknown> } }> {
+  return client.adminPost('intel/config-update', patch);
+}
+
+/** POST /api/admin/environment/exec（环境内一次性命令，挂接 shell 的执行通道）。 */
+export function environmentExec(
+  client: GuiSidecarClient,
+  input: { id: string; command: string },
+): Promise<{ success: boolean; error?: string; data?: { stdout?: string; exitCode?: number } }> {
+  return client.adminPost('environment/exec', input);
+}
+
 export function taskList(client: GuiSidecarClient): Promise<unknown[]> {
   return client
     .adminPost<{ success: boolean; data?: unknown[] }>('task/list')
