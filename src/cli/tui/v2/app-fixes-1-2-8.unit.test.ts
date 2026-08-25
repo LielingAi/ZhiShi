@@ -1,7 +1,7 @@
 /**
  * 1.2.8 TUI BUG 修复回归(app/entry/输入一路)。
  *
- * 覆盖:H4 泵叠加 / H6 rewind 吞消息 / H5 attach 挂起隔离 / H8 崩溃兜底 /
+ * 覆盖:H4 泵叠加 / H6 rewind 吞消息 / H8 崩溃兜底 /
  * M5 gate 污染+modal 死锁 / M6 gate 盘点竞态 / M11 paste 跨 chunk /
  * L1 steering 双提示 / L2 幻影分隔条 / L10 多行斜杠 / L5 多行历史 /
  * L6 stdin utf8 / L7 状态栏滤 done。
@@ -21,7 +21,7 @@ import { SidecarClient, type FetchLike, type FetchResponseLike, type FetchInitLi
 import { LineEditor } from './editor';
 import { HistoryStore } from './history';
 import { GateController, type GateHost } from './gate-controller';
-import { createTerminalHandoff, createFatalHandler } from './entry';
+import { createFatalHandler } from './entry';
 import { composeBackgroundSeg, registerTask, finishTask } from './bg-tasks';
 import type { SessionState, UserBlock } from './types';
 
@@ -129,20 +129,19 @@ function freshSessionState(): SessionState {
   };
 }
 
-describe('H4: enterChat 先 abort 旧泵(gate→chat 不叠加泵)', () => {
-  it('/env 进出一次:旧泵 signal aborted,全场只有新泵活着', async () => {
+describe('H4: enterChat 先 abort 旧泵(重复进入不叠加泵)', () => {
+  it('chat 中再次 enterChat:旧泵 signal aborted,全场只有新泵活着', async () => {
     const sseSignals: AbortSignal[] = [];
-    const { app, input, writer } = makeApp(fakeClient({ sseSignals }), true);
+    const { app, writer } = makeApp(fakeClient({ sseSignals }), true);
     writer.enter();
     await app.start();
     await sleep(100);
     expect(sseSignals.length).toBe(1);
 
-    input.emit('data', Buffer.from('/env\r', 'utf8')); // 重进正门
-    await sleep(200);
-    expect((app as unknown as AppAny).mode).toBe('gate');
-    input.emit('data', Buffer.from('\x1b', 'utf8')); // Esc 返回 chat
-    await sleep(150); // Esc 30ms 消歧 + enterChat
+    // 1.3.5:/env 已移除——正门重进通道关闭,这里直接二次 enterChat,走的
+    // 仍是 H4 修复代码路径(先断旧泵再开新泵)。
+    (app as unknown as { enterChat(): void }).enterChat();
+    await sleep(150);
 
     expect(sseSignals.length).toBe(2);
     expect(sseSignals[0].aborted).toBe(true); // 修复前:旧泵不 abort,双泵消费同一流
@@ -171,50 +170,6 @@ describe('H6: rewind 清空整个 seenSrvIds', () => {
     expect(a.state.blocks.some((b) => b.kind === 'user' && (b as UserBlock).srvId === '2')).toBe(false);
     app.dispose();
     writer.exit();
-  });
-});
-
-describe('H5: /attach 挂起隔离(entry createTerminalHandoff)', () => {
-  it('挂起:退屏 + cooked + 暂停 stdin;恢复:全量回滚 + reflow', () => {
-    const calls: string[] = [];
-    const input = {
-      setRawMode: (v: boolean) => {
-        calls.push(`raw:${v}`);
-      },
-      pause: () => {
-        calls.push('pause');
-      },
-      resume: () => {
-        calls.push('resume-stream');
-      },
-    } as unknown as NodeJS.ReadStream;
-    const writer = {
-      exit: () => {
-        calls.push('exit');
-      },
-      enter: () => {
-        calls.push('enter');
-      },
-      resize: (c: number, r: number) => {
-        calls.push(`resize:${c}x${r}`);
-      },
-    };
-    const h = createTerminalHandoff({ input, writer, measure: () => ({ cols: 100, rows: 30 }) });
-
-    h.suspend();
-    expect(h.isSuspended()).toBe(true); // SIGINT 处理器据此屏蔽
-    h.resume();
-    expect(h.isSuspended()).toBe(false);
-    // 修复前:无 pause——子进程 stdio:'inherit' 与 TUI data 监听抢同一 fd。
-    expect(calls).toEqual([
-      'exit',
-      'raw:false',
-      'pause',
-      'resume-stream',
-      'raw:true',
-      'enter',
-      'resize:100x30',
-    ]);
   });
 });
 
@@ -315,7 +270,6 @@ describe('M6: gate 盘点竞态', () => {
       } as unknown as GateHost['client'],
       workspace: '/ws',
       editor: new LineEditor(),
-      isChatMode: () => true, // /env 重进
       enterGateMode: () => {
         calls.push('enterGateMode');
       },
@@ -354,11 +308,11 @@ describe('M6: gate 盘点竞态', () => {
     expect(calls).toEqual([]); // 修复前:踩陈旧 options,Enter 误 commit
 
     await ctl.onKey({ name: 'esc', mods: [] });
-    expect(calls).toEqual(['enterChat']); // Esc 中途退出(重进语义:回 chat)
+    expect(calls).toEqual(['requestQuit']); // Esc 中途退出(正门语义:退出到 shell)
 
     releaseGather();
     await entered;
-    expect(calls).toEqual(['enterChat']); // 迟到结果不再 render() 写屏
+    expect(calls).toEqual(['requestQuit']); // 迟到结果不再 render() 写屏
   });
 
   it('盘点正常完成:渲染选项,上下可移动', async () => {
@@ -472,7 +426,7 @@ describe('L2: stop 幻影分隔条', () => {
 });
 
 describe('L10: 多行斜杠不当命令解析', () => {
-  it('多行文本以 / 开头 → 按消息发 /chat/send,不触发 /env', async () => {
+  it('多行文本以 / 开头 → 按消息发 /chat/send,不走命令分发', async () => {
     const urls: string[] = [];
     const client = fakeClient({
       post: (url) => {
@@ -486,12 +440,12 @@ describe('L10: 多行斜杠不当命令解析', () => {
     await sleep(50);
     const a = app as unknown as AppAny;
 
-    a.editor.setText('/env\n第二行');
+    a.editor.setText('/snapshot\n第二行');
     input.emit('data', Buffer.from('\r', 'utf8'));
     await sleep(100);
     expect(urls.some((u) => u.includes('/chat/send'))).toBe(true);
-    expect(urls.some((u) => u.includes('environment/select'))).toBe(false);
-    expect((app as unknown as AppAny).mode).toBe('chat'); // 没进正门
+    expect(urls.some((u) => u.includes('environment/snapshot'))).toBe(false);
+    expect((app as unknown as AppAny).mode).toBe('chat'); // 没进命令分发
     app.dispose();
     writer.exit();
   });

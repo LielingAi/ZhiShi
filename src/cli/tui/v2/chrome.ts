@@ -103,17 +103,9 @@ export interface StatusBarState {
   envName?: string;
   envKind?: string;
   backgroundSeg?: string;
-  /** U8(1.1.10):累计 token(input/output)——room 丢弃顺序里排最低(最先丢)。 */
-  tokens?: { input: number; output: number };
   /** Right-side contextual hint, pre-computed by the app (never truncated). */
   hint: string;
   reconnecting?: boolean;
-}
-
-/** U8:token 紧凑缩写(12300 → "12.3k",850 → "850")。 */
-export function formatK(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return String(Math.round(n));
 }
 
 export function composeStatusBar(s: StatusBarState, cols: number, spinnerFrame: number): Span[] {
@@ -157,10 +149,6 @@ export function composeStatusBar(s: StatusBarState, cols: number, spinnerFrame: 
   if (s.contextPct > 0 && room > 9) {
     mid.push({ text: ` · ctx ${s.contextPct}%`, style: { fg: 'faint' } });
     room -= 9;
-  }
-  // U8:token 段排最低优先级——最后尝试,room 不够第一个被丢。
-  if (s.tokens && s.tokens.input + s.tokens.output > 0 && room > 12) {
-    mid.push({ text: ` · ⇅ ${formatK(s.tokens.input)}/${formatK(s.tokens.output)}`, style: { fg: 'faint' } });
   }
 
   const bar = [...left, ...mid];

@@ -9,7 +9,6 @@
  * 总行数）由 app 以 OverlayKeyEnv 显式注入。
  */
 
-import { HELP_ENTRIES } from './commands';
 import { HistoryStore } from './history';
 import { keyToEdit, hasMod, type Key } from './keymap';
 import type { EditAction } from './editor';
@@ -47,6 +46,8 @@ export interface OverlayKeyEnv {
   drawerTotal: number | null;
   /** U5(1.1.10):最近 N 个 tool 块 id(旧→新)——drawer ←/→ 切换的候选环。 */
   drawerToolIds: string[];
+  /** /help 面板行数(= SLASH_COMMANDS 长度)——1.3.5 起 help 列命令。 */
+  helpRowCount: number;
 }
 
 /** 归约出的副作用：app 按 type 执行，reducer 自身零副作用。 */
@@ -103,8 +104,7 @@ export function reduceOverlayKey(ov: Overlay, key: Key, env: OverlayKeyEnv): Ove
     }
     case 'help': {
       if (key.name === 'up') return { overlay: { ...ov, sel: Math.max(0, ov.sel - 1) } };
-      if (key.name === 'down') return { overlay: { ...ov, sel: Math.min(HELP_ENTRIES.length - 1, ov.sel + 1) } };
-      if (hasMod(key, 'ctrl') && key.char === 'l') return { overlay: null };
+      if (key.name === 'down') return { overlay: { ...ov, sel: Math.min(env.helpRowCount - 1, ov.sel + 1) } };
       return { overlay: ov };
     }
     case 'history': {

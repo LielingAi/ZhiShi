@@ -43,13 +43,11 @@ import {
 } from './blocks/dividers';
 import {
   SLASH_COMMANDS,
-  HELP_ENTRIES,
   filterByQuery,
   type AtItem,
 } from './commands';
 import type { GateResult } from './gate';
 import { GateController, type ManualFormState } from './gate-controller';
-import type { AttachTarget } from './attach';
 import { composeBackgroundSeg } from './bg-tasks';
 import { reduceHiddenLine, type HiddenLineOutcome } from './model';
 import {
@@ -60,7 +58,6 @@ import {
 } from './task-transcript';
 import { runSnapshot, runRollback, runExtract } from './slash/env';
 import { runExport } from './slash/report';
-import { runAttach } from './slash/attach';
 import { runModel } from './slash/model';
 import { runMcp } from './slash/mcp';
 import type { PushBlockInput, SlashContext } from './slash/types';
@@ -81,14 +78,10 @@ export interface AppDeps {
   input: NodeJS.ReadStream;
   /** Workspace (= agentDir) — environment/select persistence target. */
   workspace: string;
-  /** Pre-resolved env (--env/--new-env) — skips the gate. */
+  /** 预选环境——跳过正门直进 chat。1.3.5 起生产不再注入(flag 直通已移除),
+   *  仅保留为单测夹具(字节链路测试直进 chat 的注入缝)。 */
   presetEnv?: GateResult | null;
   history?: HistoryStore;
-  /** /attach terminal hand-off (injected by the entry). */
-  suspend?: () => void;
-  resume?: () => void;
-  /** 测试注入:替换真实 spawn(接管子进程)。生产缺省 attach.spawnAttach。 */
-  spawnAttachImpl?: (target: AttachTarget) => Promise<number>;
 }
 
 const PANEL_MAX_ROWS = 12;
@@ -108,9 +101,6 @@ export class App {
   private input: NodeJS.ReadStream;
   private workspace: string;
   private history: HistoryStore;
-  private suspend?: () => void;
-  private resume?: () => void;
-  private spawnAttachImpl?: (target: AttachTarget) => Promise<number>;
 
   private mode: 'gate' | 'chat';
   private overlay: Overlay | null = null;
@@ -129,8 +119,6 @@ export class App {
   private reconnecting = false;
   /** A′(1.1.10):loopSessionId → transcript 拉取态(同 id 不重复拉,面板关闭清空)。 */
   private transcriptCache = new Map<string, TranscriptCacheEntry>();
-  /** U3(1.1.9):Esc 清草稿的一次性恢复槽——空编辑器时 ↑/Ctrl+Y 找回,恢复即清槽。 */
-  private escDraft: string | null = null;
   private turnStartedAt = 0;
   private spinnerFrame = 0;
   private spinnerTimer: NodeJS.Timeout | null = null;
@@ -150,9 +138,6 @@ export class App {
     this.input = deps.input;
     this.workspace = deps.workspace;
     this.history = deps.history ?? new HistoryStore('agent');
-    this.suspend = deps.suspend;
-    this.resume = deps.resume;
-    this.spawnAttachImpl = deps.spawnAttachImpl;
     this.editor.setHistory(this.history.recentTexts());
     this.mode = deps.presetEnv ? 'chat' : 'gate';
     if (deps.presetEnv) {
@@ -162,7 +147,6 @@ export class App {
       client: this.client,
       workspace: this.workspace,
       editor: this.editor,
-      isChatMode: () => this.mode === 'chat',
       enterGateMode: () => {
         this.mode = 'gate';
         this.overlay = null;
@@ -182,7 +166,7 @@ export class App {
   }
 
   // gate 状态由 GateController 持有；这三个访问器保持既有读取路径
-  // （currentHint / promptLead / startSpinner 与 app-gate-reentry 测试）不变。
+  // （currentHint / promptLead / startSpinner 与启动正门测试）不变。
   private get gateCursor(): number {
     return this.gate.gateCursor;
   }
@@ -368,7 +352,6 @@ export class App {
       return;
     }
     this.editor.apply({ type: 'paste', text: body });
-    this.escDraft = null; // 新输入使恢复槽失效(一次性语义)
     this.updateLiveCompletion(); // U7a(1.1.9):粘贴与普通击键同待遇——补全联动
     this.renderChrome();
   }
@@ -477,7 +460,7 @@ export class App {
         this.scrollActive = false;
         this.writer.scrollToTail();
       } else if (!this.editor.isEmpty) {
-        this.escDraft = this.editor.text; // U3: 清空前压入一次性恢复槽
+        // 1.3.5:Esc 清草稿后 ↑/Ctrl+Y 恢复的一次性草稿槽已移除(瘦身砍项)。
         this.editor.setText('');
       } else if (this.state.status.phase === 'running') {
         void this.stop();
@@ -502,7 +485,6 @@ export class App {
       this.renderChrome();
       return;
     }
-    if (hasMod(key, 'ctrl') && key.char === 'l') return this.toggleHelp();
     if (hasMod(key, 'ctrl') && key.char === 'o') return this.toggleDrawer();
     if (hasMod(key, 'ctrl') && key.char === 'z') return this.openRewind();
     if (hasMod(key, 'ctrl') && key.char === 'r') return this.openHistorySearch();
@@ -526,18 +508,6 @@ export class App {
       this.renderChrome();
       return;
     }
-    // ↑/Ctrl+Y:U3 恢复槽优先(空编辑器 + 有槽)——恢复后清槽。
-    if (
-      this.escDraft !== null &&
-      this.editor.isEmpty &&
-      (key.name === 'up' || (hasMod(key, 'ctrl') && key.char === 'y'))
-    ) {
-      const draft = this.escDraft;
-      this.escDraft = null;
-      this.editor.setText(draft);
-      this.renderChrome();
-      return;
-    }
     // ↑/↓: completion navigation > history recall (empty/on-edge) > editor move.
     if (key.name === 'up' || key.name === 'down') {
       if (this.editor.isEmpty || (key.name === 'up' && this.editor.onFirstLine) || (key.name === 'down' && this.editor.onLastLine)) {
@@ -550,7 +520,6 @@ export class App {
     }
     const edit = keyToEdit(key);
     if (edit) {
-      this.escDraft = null; // 新输入使恢复槽失效(一次性语义)
       this.editor.apply(edit);
       this.updateLiveCompletion();
       this.renderChrome();
@@ -595,6 +564,7 @@ export class App {
           : 0,
       drawerTotal,
       drawerToolIds: ov.kind === 'drawer' ? this.recentToolBlockIds() : [],
+      helpRowCount: ov.kind === 'help' ? SLASH_COMMANDS.length : 0,
     };
   }
 
@@ -646,12 +616,9 @@ export class App {
 
   // --- overlay openers ---
 
-  private toggleHelp(): void {
-    if (this.overlay?.kind === 'help') {
-      this.closeOverlay();
-    } else {
-      this.overlay = { kind: 'help', sel: 0 };
-    }
+  /** /help:命令帮助面板(1.3.5 起只列斜杠命令——键位帮助表已随 Ctrl+L 移除)。 */
+  private openHelp(): void {
+    this.overlay = { kind: 'help', sel: 0 };
     this.renderChrome();
   }
 
@@ -1030,9 +997,6 @@ export class App {
       },
       pushBlock: (input) => this.pushBlock(input),
       startHiddenLine: (prompt) => this.startHiddenLine(prompt),
-      suspend: this.suspend,
-      resume: this.resume,
-      spawnAttachImpl: this.spawnAttachImpl,
       repaintAll: () => this.repaintAll(),
       renderChrome: () => this.renderChrome(),
     };
@@ -1041,9 +1005,6 @@ export class App {
   private async runSlash(verb: string, arg: string): Promise<void> {
     const ctx = this.slashContext();
     switch (verb) {
-      case 'attach':
-        await runAttach(ctx);
-        break;
       case 'snapshot':
         await runSnapshot(ctx, arg);
         break;
@@ -1055,9 +1016,6 @@ export class App {
         break;
       case 'export':
         await runExport(ctx, arg);
-        break;
-      case 'env':
-        await this.gate.enter();
         break;
       case 'rewind':
         this.openRewind('rewind');
@@ -1085,14 +1043,10 @@ export class App {
         await runMcp(ctx, arg);
         break;
       case 'help':
-        this.toggleHelp();
-        break;
-      case 'quit':
-      case 'exit':
-        this.quitRequested = true;
+        this.openHelp();
         break;
       default:
-        this.pushBlock({ kind: 'error', text: `未知命令: /${verb}（Ctrl+L 查看帮助）` });
+        this.pushBlock({ kind: 'error', text: `未知命令: /${verb}（/help 查看命令）` });
         break;
     }
     this.renderChrome();
@@ -1215,7 +1169,6 @@ export class App {
         envName: this.mode === 'chat' ? this.env.name : undefined,
         envKind: this.mode === 'chat' ? this.env.kind : undefined,
         backgroundSeg: this.state.status.backgroundSeg,
-        tokens: this.state.status.tokens,
         hint: this.currentHint(),
         reconnecting: this.reconnecting,
       },
@@ -1284,8 +1237,9 @@ export class App {
         break;
       }
       case 'help':
+        // 1.3.5:键位帮助表随 Ctrl+L 移除,/help 改为列斜杠命令(命令列表即帮助)。
         title = '帮助';
-        items = HELP_ENTRIES.map((h, i) => overlayRow(h.keys, h.detail, i === ov.sel, cols));
+        items = SLASH_COMMANDS.map((c, i) => overlayRow(`/${c.name}`, c.detail, i === ov.sel, cols));
         flatSel = ov.sel;
         break;
       case 'history':
@@ -1377,7 +1331,8 @@ export class App {
     }
     if (this.scrollActive) return 'Esc 回底';
     if (this.state.status.phase === 'running') return 'Esc 中断 · 输入即纠偏';
-    return 'Ctrl+L 帮助 · / 命令 · @ 引用';
+    // 1.3.5:/quit 已移除——退出走 Ctrl+C(空输入空闲)或正门 Esc。
+    return 'Ctrl+C 退出 · / 命令 · @ 引用';
   }
 
   // -------------------------------------------------------------------------

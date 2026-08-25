@@ -32,6 +32,10 @@ export interface DiscoveredLike {
   name?: string;
   state?: string;
   driver?: string;
+  /** 1.3.5：vmware 的 vmx 绝对路径（登记 payload 用；hyperv/vbox 无）。 */
+  vmx?: string;
+  /** 1.3.5：guest OS 家族（登记 payload 用；缺省不传）。 */
+  osFamily?: 'linux' | 'windows';
 }
 
 export interface SidebarEnvItem {
@@ -124,6 +128,58 @@ export function groupSidebar(
 /** 侧栏条目是否可切换（unreg 组不可切换——未登记，点了只提示）。 */
 export function isSwitchable(item: SidebarEnvItem): boolean {
   return item.group !== 'unreg';
+}
+
+// ---------------------------------------------------------------------------
+// 1.3.5 ④：本机发现「选中即注册」——登记载荷构造（TUI gate.ts:262-298 同语义）
+// ---------------------------------------------------------------------------
+
+/** environment/add 的登记载荷（kind 与必填字段对齐 server registry 校验）。 */
+export type RegisterInput =
+  | { id: string; kind: 'docker'; container: string }
+  | { id: string; kind: 'vm'; vmName: string; vmx?: string; name?: string; osFamily?: 'linux' | 'windows' };
+
+/**
+ * 本机发现条目 → environment/add 载荷。登记 id 口径与 TUI 一致：
+ *   docker        → `docker-<容器名>`  { kind:'docker', container }
+ *   vmware/hyperv/vbox → `<driver>-<名>` { kind:'vm', vmName, vmx?, osFamily? }
+ * 名字缺失 / 驱动未知 → null（调用方 toast 提示）。
+ */
+export function buildRegisterPayload(d: DiscoveredLike): RegisterInput | null {
+  const name = d.name?.trim();
+  if (!name) return null;
+  if (d.driver === 'docker') {
+    return { id: `docker-${name}`, kind: 'docker', container: name };
+  }
+  if (d.driver === 'vmware') {
+    return {
+      id: `vmware-${name}`,
+      kind: 'vm',
+      vmName: name,
+      ...(d.vmx ? { vmx: d.vmx } : {}),
+      name,
+      ...(d.osFamily ? { osFamily: d.osFamily } : {}),
+    };
+  }
+  if (d.driver === 'hyperv' || d.driver === 'vbox') {
+    return {
+      id: `${d.driver}-${name}`,
+      kind: 'vm',
+      vmName: name,
+      name,
+      ...(d.osFamily ? { osFamily: d.osFamily } : {}),
+    };
+  }
+  return null;
+}
+
+/**
+ * 登记后是否尝试直接切入：docker 状态含 'up'（如 "Up 3 hours"）、
+ * VM state 为 running 才算在跑（vmware discover 恒 unknown → 不切）。
+ */
+export function isDiscoveredRunning(d: DiscoveredLike): boolean {
+  const s = (d.state ?? '').toLowerCase();
+  return s.includes('up') || s.includes('running');
 }
 
 // ---------------------------------------------------------------------------

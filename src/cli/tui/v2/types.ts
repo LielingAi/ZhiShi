@@ -192,8 +192,6 @@ export interface StatusSnapshot {
   contextPct: number;
   /** Model label (narrow-screen first to drop). */
   model?: string;
-  /** U8(1.1.10):累计 token(input/output),message-complete/replay 累加。 */
-  tokens?: { input: number; output: number };
   /** Subagent static segment, e.g. "⛁ fuzz · 3 崩溃". */
   backgroundSeg?: string;
   /** Right-side Esc hint, derived from mode/scroll/interrupt state. */

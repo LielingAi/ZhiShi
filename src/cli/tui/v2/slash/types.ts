@@ -8,7 +8,6 @@
  */
 
 import type { SidecarClient } from '../../client';
-import type { AttachTarget } from '../attach';
 import type { DividerBlock, SessionState } from '../types';
 
 /**
@@ -31,11 +30,6 @@ export interface SlashContext {
   pushBlock(input: PushBlockInput): string;
   /** 隐藏输入接管(/model set-key):Enter 提交值,Esc / Ctrl+C 返回 null。 */
   startHiddenLine(prompt: string): Promise<string | null>;
-  /** /attach 终端交接（entry 注入；缺省则 /attach 直接不可用）。 */
-  suspend?: () => void;
-  resume?: () => void;
-  /** 测试注入:替换真实 spawn(接管子进程)。生产缺省 attach.spawnAttach。 */
-  spawnAttachImpl?: (target: AttachTarget) => Promise<number>;
   repaintAll(): void;
   renderChrome(): void;
 }

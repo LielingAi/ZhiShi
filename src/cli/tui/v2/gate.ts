@@ -316,32 +316,3 @@ export async function commitGate(
   }
   return { kind: 'env', id, envKind: option.envKind, warnings };
 }
-
-/** Flag short-circuit: --env selects, --new-env builds; no screen. */
-export async function resolveFlag(
-  client: SidecarClient,
-  workspace: string,
-  envId: string | undefined,
-  newEnvRecipe: string | undefined,
-): Promise<GateResult | null> {
-  if (envId) {
-    const res = await safe(client.adminPost<{ data?: { environments?: EnvEntry[] } }>('environment/list', {}));
-    const entry = (res?.data?.environments ?? []).find((e) => e.id === envId);
-    if (!entry) throw new Error(`环境 "${envId}" 未登记（zhishi env list 查看）`);
-    const selErr = await selectEnv(client, workspace, envId);
-    if (selErr) throw new Error(selErr);
-    return { kind: 'env', id: envId, envKind: entry.kind, warnings: [] };
-  }
-  if (newEnvRecipe) {
-    const res = await client.adminPost<{ success?: boolean; error?: string; data?: { instance?: { name?: string } } }>(
-      'environment/up',
-      { recipe: newEnvRecipe, workspace },
-    );
-    if (res.success === false) throw new Error(res.error ?? `环境 ${newEnvRecipe} 构建失败`);
-    const id = res.data?.instance?.name ?? newEnvRecipe;
-    const selErr = await selectEnv(client, workspace, id);
-    if (selErr) throw new Error(selErr);
-    return { kind: 'env', id, warnings: [] };
-  }
-  return null;
-}

@@ -26,7 +26,7 @@ import type { Span } from './row-buffer';
 import { TerminalWriter } from './terminal-writer';
 import { renderAssistant, renderUser } from './blocks/message-block';
 import { renderToolFolded } from './blocks/tool-block';
-import { buildGateOptions, moveGateCursor, commitGate, resolveFlag, type GateOption } from './gate';
+import { buildGateOptions, moveGateCursor, commitGate, type GateOption } from './gate';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -427,25 +427,6 @@ describe('gate logic (virtual admin client)', () => {
     }) as FetchLike;
     return new SidecarClient({ base: 'http://test', fetchImpl });
   }
-
-  it('--env flag resolves to a GateResult when the env exists', async () => {
-    const client = fakeAdminClient({
-      'api/admin/environment/list': {
-        success: true,
-        data: { environments: [{ id: 'ssh1', kind: 'ssh', user: 'root', host: '10.0.0.1', container: '' }] },
-      },
-      'api/admin/environment/select': { success: true },
-    });
-    const res = await resolveFlag(client, '/ws', 'ssh1', undefined);
-    expect(res).toEqual({ kind: 'env', id: 'ssh1', envKind: 'ssh', warnings: [] });
-  });
-
-  it('--env flag throws for an unknown env (before entering the TUI)', async () => {
-    const client = fakeAdminClient({
-      'api/admin/environment/list': { success: true, data: { environments: [] } },
-    });
-    await expect(resolveFlag(client, '/ws', 'nope', undefined)).rejects.toThrow('未登记');
-  });
 
   it('buildGateOptions + moveGateCursor skip disabled recipes', () => {
     const opts: GateOption[] = buildGateOptions({

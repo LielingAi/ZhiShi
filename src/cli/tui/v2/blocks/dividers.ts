@@ -96,8 +96,8 @@ export function renderWelcome(envName: string | undefined, envKind: string | und
       { text: ' 命令 · ', style: { fg: 'faint' as SemanticColor } },
       { text: '@', style: { fg: 'muted' as SemanticColor } },
       { text: ' 引用 · ', style: { fg: 'faint' as SemanticColor } },
-      { text: 'Ctrl+L', style: { fg: 'muted' as SemanticColor } },
-      { text: ' 帮助', style: { fg: 'faint' as SemanticColor } },
+      { text: 'Ctrl+C', style: { fg: 'muted' as SemanticColor } },
+      { text: ' 退出', style: { fg: 'faint' as SemanticColor } },
     ],
     [],
   ];

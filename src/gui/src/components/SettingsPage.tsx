@@ -1,7 +1,8 @@
 /**
- * 设置页（1.3.1 ⑥）：五个页签接真——
+ * 设置页（1.3.1 ⑥）：页签接真——
  *   模型     model/list + model/set-key（隐藏输入模态）+ set-default + verify
  *   Skills   skill/list + skill/enable|disable + /api/skill/import-folder
+ *   MCP      1.3.5：mcp/list + mcp/list-status + mcp/enable|disable + mcp/reload
  *   情报     intel/status + intel/update（mode 选择）+
  *            intel/config-update（1.3.2：配置部分更新，只改传入字段）
  *   专家知识 expert/search + expert/list + expert/add（JSON/YAML 导入）+
@@ -19,11 +20,13 @@ import type React from 'react';
 import { getSettingsClient, useGuiStore } from '../store/useGuiStore';
 import * as api from '../client/api';
 import type { ExpertDraft, ExpertSummary, ModelProvider, ResearchEventRow, SkillEntity } from '../client/api';
+import { composeMcpRows, type McpDisplayRow } from '../model/mcp';
 import { StateHint } from './StateHint';
 
 const NAV = [
   { id: 'model', icon: '◇', label: '模型' },
   { id: 'skills', icon: '▤', label: 'Skills' },
+  { id: 'mcp', icon: '⇄', label: 'MCP' },
   { id: 'intel', icon: '◈', label: '情报' },
   { id: 'expert', icon: '◇', label: '专家知识' },
   { id: 'research', icon: '✎', label: '研究记录' },
@@ -328,6 +331,140 @@ function SkillImportModal({ onClose, onDone }: { onClose: () => void; onDone: ()
       setBusy(false);
     }
   }
+}
+
+// ── MCP 页签（1.3.5：list/状态/启停/热重载） ────────────────────────────
+
+/** 状态列文案（composeMcpRows 的 status → 中文）。 */
+function mcpStatusText(row: McpDisplayRow): string {
+  switch (row.status) {
+    case 'connected':
+      return `connected${typeof row.toolCount === 'number' ? ` · ${row.toolCount} 工具` : ''}`;
+    case 'failed':
+      return `failed · ${row.error ?? '未知错误'}`;
+    case 'off':
+      return '已停用';
+    case 'unknown':
+      return '已启用 · 未连接';
+  }
+}
+
+function McpTab(): React.JSX.Element {
+  const [rows, setRows] = useState<McpDisplayRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const showToast = useGuiStore((s) => s.showToast);
+
+  const reload = useCallback(async () => {
+    const c = getSettingsClient();
+    if (!c) {
+      setRows(null);
+      setError('未连接 sidecar');
+      return;
+    }
+    setError(null);
+    try {
+      // 清单拉不到（含未连接）→ error 态；桥状态失败降级为全 unknown。
+      const [servers, statuses] = await Promise.all([
+        api.fetchMcpList(c).catch(() => null),
+        api.fetchMcpStatus(c).catch(() => null),
+      ]);
+      if (servers === null) {
+        setRows(null);
+        setError('mcp/list 拉取失败');
+        return;
+      }
+      setRows(composeMcpRows(servers, statuses ?? []).rows);
+    } catch {
+      setRows(null);
+      setError('MCP 状态获取失败');
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  /** 启停开关：写盘（mcp/enable|disable）→ 桥热重载 → 刷状态（TUI /mcp 同序）。 */
+  const toggle = async (row: McpDisplayRow) => {
+    const c = getSettingsClient();
+    if (!c) return;
+    setBusy(true);
+    try {
+      const res = await api.mcpToggle(c, row.id, !row.enabled);
+      if (!res.success) {
+        showToast(`✗ ${row.enabled ? '停用' : '启用'}失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      const reloadRes = await api.mcpReload(c);
+      if (!reloadRes.success) {
+        showToast(`配置已写入但桥重载失败：${reloadRes.error ?? '未知错误'}`);
+      }
+      await reload();
+      showToast(`✓ 已${row.enabled ? '停用' : '启用'} ${row.id}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reloadBridge = async () => {
+    const c = getSettingsClient();
+    if (!c) return;
+    setBusy(true);
+    try {
+      const res = await api.mcpReload(c);
+      if (!res.success) {
+        showToast(`✗ 热重载失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      await reload();
+      showToast('✓ MCP 桥已热重载（重读磁盘配置 → 重连）');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="set-group">
+      <div className="sg-title">MCP 工具服务器 · config.json</div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+        <span className="sr-desc" style={{ alignSelf: 'center' }}>
+          {rows === null ? '' : `${rows.length} 台 · 启停写盘即时生效（桥热重载）`}
+        </span>
+        <button className="btn small" style={{ marginLeft: 'auto' }} disabled={busy} onClick={() => void reloadBridge()}>
+          {busy ? '重载中…' : '⟳ 热重载'}
+        </button>
+      </div>
+      {rows === null && error === null && <StateHint kind="loading" text="加载 MCP 状态…" />}
+      {rows === null && error !== null && (
+        <StateHint kind="error" text={error} hint="确认 sidecar 已连接后点「热重载」重试" />
+      )}
+      {rows !== null && rows.length === 0 && (
+        <StateHint kind="empty" text="无 MCP 服务器" hint="在 ~/.zhishi/config.json 配置 mcpServers 或通过 zhishi mcp add 添加" />
+      )}
+      {rows !== null &&
+        rows.map((r) => (
+          <div className="set-row" key={r.id}>
+            <div>
+              <div className="sr-label">{r.id}</div>
+              <div className="sr-desc">
+                {r.source === 'builtin' ? '内置' : '自定义'}
+                {r.type ? ` · ${r.type}` : ''}
+                {r.name !== r.id ? ` · ${r.name}` : ''}
+              </div>
+            </div>
+            <div className="sr-control">
+              <span className={`sr-status ${r.status === 'connected' ? 'ok' : r.status === 'failed' ? 'bad' : ''}`}>
+                {mcpStatusText(r)}
+              </span>
+              <button className="btn small" disabled={busy} onClick={() => void toggle(r)}>
+                {r.enabled ? '停用' : '启用'}
+              </button>
+            </div>
+          </div>
+        ))}
+    </div>
+  );
 }
 
 // ── 情报页签 ──────────────────────────────────────────────────────────
@@ -846,6 +983,7 @@ export function SettingsPage(): React.JSX.Element {
         <div className="set-content">
           {pg === 'model' && <ModelTab />}
           {pg === 'skills' && <SkillsTab />}
+          {pg === 'mcp' && <McpTab />}
           {pg === 'intel' && <IntelTab />}
           {pg === 'expert' && <ExpertTab />}
           {pg === 'research' && <ResearchTab />}

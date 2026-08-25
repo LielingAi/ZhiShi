@@ -19,6 +19,12 @@
  *   - theme（深浅色，localStorage 持久化，③）
  *   - 多线切换 A 形态：switchEnv 换激活指针、不丢任何线本地状态（③）
  *   - chat:init environment 锚直接锚定环境（任务二 #2，免 environment/current 绕行）
+ *
+ * 1.3.5 新增状态（GUI 补齐四缺口）：
+ *   - 输入历史 per-env localStorage 落盘 + 子序列模糊评分（model/input-history）
+ *   - /export [sanitize] 脱敏导出（slash-args 模态收参）
+ *   - registerDiscovered：本机发现条目「选中即注册」（environment/add）
+ *   - MCP 管理在 SettingsPage 页签（数据映射在 model/mcp）
  */
 
 import { create } from 'zustand';
@@ -37,8 +43,16 @@ import {
   type DecisionPending,
 } from '../model/decision';
 import { escAction } from '../model/esc-chain';
-import { bootStages } from '../model/envs';
+import { bootStages, buildRegisterPayload, isDiscoveredRunning, type DiscoveredLike } from '../model/envs';
 import { parseSessionRows, type SessionMetaRow } from '../model/history';
+import {
+  INPUT_HISTORY_LIMIT,
+  loadInputHistory,
+  prependHistory,
+  rankInputHistory,
+  saveInputHistory,
+  INPUT_HISTORY_OVERLAY_LIMIT,
+} from '../model/input-history';
 import { buildMentionItems, fileCacheKey, fileDirOf, MENTION_DEBOUNCE_MS, parseMentionQuery } from '../model/mention';
 import { planSwitch, sessionKey } from '../model/multi-session';
 import { reduceSseEvent } from '../model/reducer';
@@ -99,7 +113,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'fork', detail: '从某条消息分叉出新线程', group: '线程' },
   { name: 'queue', detail: '查看/取消排队消息', group: '线程' },
   { name: 'tasks', detail: '查看子任务与后台进程', group: '线程' },
-  { name: 'export', detail: '导出研究报告', group: '线程' },
+  { name: 'export', detail: '导出研究报告 [sanitize 脱敏]', group: '线程' },
   { name: 'reset', detail: '重置对话（新会话）', group: '线程' },
   { name: 'model', detail: '选择模型', group: '配置' },
   { name: 'help', detail: '键位与命令帮助', group: '配置' },
@@ -164,7 +178,7 @@ export interface ModalState {
   kind: ModalKind;
   /** boot/adopt 关联的配方 id。 */
   recipeId?: string;
-  /** slash-args / pick-message 关联的命令名（rewind/fork/snapshot/rollback/extract）。 */
+  /** slash-args / pick-message 关联的命令名（rewind/fork/snapshot/rollback/extract/export）。 */
   command?: SlashCommandName;
   /** promote（入专家库）预填。 */
   prefill?: PromotePrefill;
@@ -283,6 +297,8 @@ export interface GuiState {
   refreshSidebar(): Promise<void>;
   switchEnv(key: string): Promise<void>;
   startEnv(itemKey: string): Promise<void>;
+  /** 1.3.5 ④：本机发现条目「选中即注册」（environment/add → 入侧栏 → 运行中则切入）。 */
+  registerDiscovered(itemKey: string): Promise<void>;
   send(text: string): Promise<void>;
   stopTurn(): Promise<void>;
   runReset(): Promise<void>;
@@ -636,6 +652,44 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     }
   },
 
+  // ── 1.3.5 ④：本机发现「选中即注册」（TUI gate.ts:262-298 同语义） ──
+
+  async registerDiscovered(itemKey: string) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    const item = findDiscoveredItem(state, itemKey);
+    if (!item) {
+      state.showToast('未找到该本机条目');
+      return;
+    }
+    const payload = buildRegisterPayload(item);
+    if (!payload) {
+      state.showToast('该条目缺少登记所需信息（名字/驱动）');
+      return;
+    }
+    state.showToast(`⏳ 登记 ${payload.id}…`);
+    try {
+      const res = await api.environmentAdd(c, payload);
+      if (!res.success) {
+        state.showToast(`登记失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      void state.refreshSidebar();
+      state.showToast(`✓ 已登记 ${payload.id}`);
+      // 运行中才尝试切入（docker Up / VM running）；停着的只入侧栏
+      //（无配方的已停止条目切过去是死线，等启动后再进）。
+      if (isDiscoveredRunning(item)) {
+        await state.switchEnv(payload.id);
+      }
+    } catch (err) {
+      state.showToast(`登记失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
   // ── 发送 / 纠偏 / 中断 / 重置 ───────────────────────────────────────
 
   async send(text: string) {
@@ -744,11 +798,11 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     }
     if (kind === 'history') {
       const key = s.currentEnvKey ?? 'host';
-      const list = s.history[key] ?? [];
-      const items = list
-        .filter((h) => !query || h.includes(query))
-        .slice(0, 8)
-        .map((h) => ({ name: h }));
+      // 1.3.5：内存列表优先；重启后首次召回从 localStorage 惰性补读
+      // （per-env 键，见 model/input-history.ts）。过滤从 includes 换成
+      // 子序列评分排序（TUI 同源 scorer）。
+      const list = s.history[key] ?? loadInputHistory(browserStorage(), key);
+      const items = rankInputHistory(list, query, INPUT_HISTORY_OVERLAY_LIMIT).map((h) => ({ name: h }));
       set({ overlay: { kind, title: `历史 · ${query || '全部'}`, items, sel: 0 } });
       return;
     }
@@ -1224,10 +1278,12 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
 
   addHistory(text) {
     const key = get().currentEnvKey ?? 'host';
-    set((s) => {
-      const list = [text, ...(s.history[key] ?? [])].slice(0, 200);
-      return { history: { ...s.history, [key]: list } };
-    });
+    // 1.3.5：per-env 落盘——内存列表优先，首次写入前从 localStorage 补读
+    // 该环境的历史作底，写回时持久化（重启不丢；TUI 的 jsonl 不复用）。
+    const base = get().history[key] ?? loadInputHistory(browserStorage(), key);
+    const list = prependHistory(base, text, INPUT_HISTORY_LIMIT);
+    set((s) => ({ history: { ...s.history, [key]: list } }));
+    saveInputHistory(browserStorage(), key, list);
   },
 
   // ── 1.3.3 历史面板：清单 / 会话管理 / 载回续跑 ─────────────────────
@@ -1506,6 +1562,24 @@ function stopBootPolling(): void {
     clearInterval(bootPollTimer);
     bootPollTimer = null;
   }
+}
+
+/** 1.3.5：侧栏本机发现条目键 → DiscoveredLike（docker/vm 两个数据源合一）。 */
+function findDiscoveredItem(state: GuiState, itemKey: string): DiscoveredLike | null {
+  const docker = state.discoveredDocker.find((d) => d.id === itemKey);
+  if (docker) return { id: docker.id, name: docker.name, state: docker.status, driver: 'docker' };
+  const vm = state.discoveredVm.find((v) => v.id === itemKey);
+  if (vm) {
+    return {
+      id: vm.id,
+      name: vm.name,
+      state: vm.state,
+      driver: vm.driver,
+      vmx: vm.vmx,
+      osFamily: vm.osFamily,
+    };
+  }
+  return null;
 }
 
 /**
@@ -1788,31 +1862,13 @@ async function runSlashCommand(
       await s.openTasksPanel();
       return;
     case 'export': {
+      // 1.3.5：/export [sanitize]——先闸工作区，再走 slash-args 模态收
+      // 可选 sanitize 参数（与 snapshot/rollback/extract 同一惯例）。
       if (!s.workspace) {
         s.showToast('/export：工作区尚未就绪（等待 chat:init）');
         return;
       }
-      const payload = slashPayload(route, { envKey: s.currentEnvKey, workspace: s.workspace });
-      if (!payload) {
-        s.showToast(noEnvToast(route.command));
-        return;
-      }
-      const c = client;
-      if (!c) {
-        s.showToast('未连接 sidecar');
-        return;
-      }
-      s.showToast('⏳ 组装报告（含越界批准与证据回收）…');
-      try {
-        const res = await api.reportExport(c, payload as { workspace: string });
-        if (!res.success) {
-          s.showToast(`导出失败：${res.error ?? '未知错误'}`);
-          return;
-        }
-        s.showToast(exportResultToast(res.data as Record<string, unknown> | undefined));
-      } catch (err) {
-        s.showToast(`导出失败：${err instanceof Error ? err.message : String(err)}`);
-      }
+      set({ modal: { kind: 'slash-args', command: 'export' } });
       return;
     }
     case 'snapshot':
@@ -1841,7 +1897,7 @@ async function runSlashCommand(
   }
 }
 
-/** 参数收集完成后的执行（snapshot/rollback/extract/rewind/fork）。 */
+/** 参数收集完成后的执行（snapshot/rollback/extract/rewind/fork/export）。 */
 async function executeSlash(
   get: () => GuiState,
   _set: (partial: Partial<GuiState>) => void,
@@ -1852,6 +1908,32 @@ async function executeSlash(
   const c = client;
   if (!c) {
     s.showToast('未连接 sidecar');
+    return;
+  }
+  // 1.3.5：/export [sanitize]——用法校验 + 脱敏 payload 透传（TUI
+  // src/cli/tui/v2/slash/report.ts:22-53 同语义：只认字面量 sanitize）。
+  if (command === 'export') {
+    const word = arg.trim();
+    if (word && word !== 'sanitize') {
+      s.showToast('用法：/export [sanitize]');
+      return;
+    }
+    const payload = slashPayload(SLASH_ROUTES.export, { envKey: s.currentEnvKey, workspace: s.workspace }, word);
+    if (!payload) {
+      s.showToast('/export：工作区尚未就绪（等待 chat:init）');
+      return;
+    }
+    s.showToast(`⏳ 组装报告${word === 'sanitize' ? '（脱敏版）' : ''}（含越界批准与证据回收）…`);
+    try {
+      const res = await api.reportExport(c, payload as { workspace: string; sanitize?: boolean });
+      if (!res.success) {
+        s.showToast(`导出失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      s.showToast(exportResultToast(res.data as Record<string, unknown> | undefined));
+    } catch (err) {
+      s.showToast(`导出失败：${err instanceof Error ? err.message : String(err)}`);
+    }
     return;
   }
   const route = SLASH_ROUTES[command];

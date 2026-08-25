@@ -112,9 +112,10 @@ export const SLASH_ROUTES: Record<SlashCommandName, SlashRoute> = {
     command: 'export',
     endpoint: { kind: 'admin', route: 'report/export' },
     needsEnv: false,
-    needsArgs: 'none',
-    argTitle: '',
-    argPlaceholder: '',
+    // 1.3.5：可选 sanitize 参数（脱敏导出，TUI /export [sanitize] 同语义）。
+    needsArgs: 'optional-name',
+    argTitle: '导出研究报告',
+    argPlaceholder: 'sanitize（可选——脱敏导出；留空直接导出）',
   },
 };
 
@@ -204,7 +205,11 @@ export function slashPayload(
       return {};
     case 'export': {
       if (!ctx.workspace) return null;
-      return { workspace: ctx.workspace };
+      // 1.3.5：可选 sanitize（脱敏导出）——只认 'sanitize' 一个字面量，
+      // 其余非法值由调用方（store 的用法校验）拦截，这里不透传。
+      const payload: Record<string, unknown> = { workspace: ctx.workspace };
+      if (arg && arg.trim() === 'sanitize') payload.sanitize = true;
+      return payload;
     }
   }
 }
@@ -213,5 +218,8 @@ export function slashPayload(
 export function exportResultToast(data: Record<string, unknown> | undefined): string {
   const dir = typeof data?.reportDir === 'string' ? data.reportDir : 'report';
   const evidence = typeof data?.evidenceCount === 'number' ? ` · 证据 ${data.evidenceCount} 件` : '';
-  return `报告已导出：${dir}${evidence}`;
+  const degraded =
+    Array.isArray(data?.degraded) && data.degraded.length > 0 ? ` · 降级 ${data.degraded.length} 项` : '';
+  const sanitized = data?.sanitized === true ? ' · 已脱敏' : '';
+  return `报告已导出：${dir}${evidence}${degraded}${sanitized}`;
 }

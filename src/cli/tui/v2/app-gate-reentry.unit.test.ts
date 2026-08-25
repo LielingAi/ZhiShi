@@ -1,12 +1,11 @@
 /**
- * /env 重进正门回归测试（1.1.6 #2）。
+ * 启动正门(gate)回归测试:正门五组选项的选定与退出语义。
  *
- * 修复前：gateBusy 在 commit 成功路径不复位、enterGate() 也不重置——
- * 启动正门选定成功后 /env 二次进门，onGateKey 开头被 gateBusy 吞掉，
- * 上下/Enter/Esc 全部无效（只能 Ctrl+C 杀进程）。
- * 附带：重进时 Esc 误退整个程序（startup 语义），应为取消并返回 chat。
+ * 1.3.5:/env 重进正门已移除(原「/env 重进」对应用例随砍项删除),本文件
+ * 只保留仍有效的启动路径:Enter 选定第一项 → commit 进 chat;Esc → 退出到
+ * shell(quitRequested)。正门是 TUI 的启动入口,退出语义是红线,保留回归钉。
  *
- * 无 TTY、无 sidecar：fake fetch + EventEmitter 注入按键字节。
+ * 无 TTY、无 sidecar:fake fetch + EventEmitter 注入按键字节。
  */
 
 import { describe, it, expect } from 'vitest';
@@ -66,73 +65,45 @@ function makeApp(selectCount: { n: number }): { app: App; input: EventEmitter; w
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-describe('/env 重进正门（1.1.6 #2 回归）', () => {
-  it('启动选定成功后 /env 重进：上下可移动、Enter 可再次选定', async () => {
+describe('启动正门（gate）选定与退出', () => {
+  it('启动正门:↑↓ 可移动、Enter 选定第一项 → commit 进 chat', async () => {
     const selectCount = { n: 0 };
     const { app, input, writer } = makeApp(selectCount);
     writer.enter();
     await app.start();
     await sleep(100);
 
-    // 启动正门：Enter 选定 vm1（stopped → select + 尽力 up，均成功）→ 进 chat。
-    input.emit('data', Buffer.from('\r', 'utf8'));
-    await sleep(200);
-    expect(selectCount.n).toBe(1);
-    expect((app as unknown as AppInternals).mode).toBe('chat');
-
-    // /env 重进正门。
-    input.emit('data', Buffer.from('/env\r', 'utf8'));
-    await sleep(200);
     const internals = app as unknown as AppInternals;
     expect(internals.mode).toBe('gate');
     expect(internals.gateCursor).toBe(0);
 
-    // 修复前这里所有键被 gateBusy 吞掉：down 必须真的移动光标。
-    input.emit('data', Buffer.from('[B', 'utf8')); // ↓ → manual:ssh
+    input.emit('data', Buffer.from('\x1b[B', 'utf8')); // ↓ → manual:ssh
     await sleep(50);
     expect(internals.gateCursor).toBe(1);
-    input.emit('data', Buffer.from('[A', 'utf8')); // ↑ 回到 vm1
+    input.emit('data', Buffer.from('\x1b[A', 'utf8')); // ↑ 回到 vm1
     await sleep(50);
     expect(internals.gateCursor).toBe(0);
 
-    // Enter 必须再次走完 commit。
+    // Enter 选定 vm1（stopped → select + 尽力 up，均成功）→ 进 chat。
     input.emit('data', Buffer.from('\r', 'utf8'));
     await sleep(200);
-    expect(selectCount.n).toBe(2);
+    expect(selectCount.n).toBe(1);
     expect(internals.mode).toBe('chat');
 
     app.dispose();
     writer.exit();
   });
 
-  it('/env 重进按 Esc：取消返回 chat，不退出程序；启动首次按 Esc 才退出', async () => {
-    // 启动首次：Esc → quitRequested。
-    const first = makeApp({ n: 0 });
-    first.writer.enter();
-    await first.app.start();
-    await sleep(100);
-    first.input.emit('data', Buffer.from('', 'utf8'));
-    await sleep(100); // Esc 有 30ms CSI 消歧延迟
-    expect(first.app.quitRequested).toBe(true);
-    first.app.dispose();
-    first.writer.exit();
-
-    // 重进：Esc → 返回 chat，quitRequested 保持 false。
-    const selectCount = { n: 0 };
-    const { app, input, writer } = makeApp(selectCount);
+  it('启动正门:Esc → quitRequested（退出到 shell）', async () => {
+    const { app, input, writer } = makeApp({ n: 0 });
     writer.enter();
     await app.start();
     await sleep(100);
-    input.emit('data', Buffer.from('\r', 'utf8')); // 选定进 chat
-    await sleep(200);
-    input.emit('data', Buffer.from('/env\r', 'utf8')); // 重进正门
-    await sleep(200);
     expect((app as unknown as AppInternals).mode).toBe('gate');
 
-    input.emit('data', Buffer.from('', 'utf8'));
-    await sleep(100);
-    expect(app.quitRequested).toBe(false);
-    expect((app as unknown as AppInternals).mode).toBe('chat');
+    input.emit('data', Buffer.from('\x1b', 'utf8'));
+    await sleep(100); // Esc 有 30ms CSI 消歧延迟
+    expect(app.quitRequested).toBe(true);
 
     app.dispose();
     writer.exit();

@@ -59,6 +59,8 @@ export interface DiscoveredVm {
   name?: string;
   state?: string;
   osFamily?: 'linux' | 'windows';
+  /** 1.3.5：vmware 的 vmx 绝对路径（登记 payload 用）。 */
+  vmx?: string;
 }
 
 export interface Recipe {
@@ -168,9 +170,22 @@ export interface SshAddInput {
   keyPath?: string;
 }
 
+/** 1.3.5：docker/vm 登记载荷（kind 与必填字段对齐 server registry 校验）。 */
+export type EnvironmentAddInput =
+  | SshAddInput
+  | { id: string; kind: 'docker'; container: string }
+  | {
+      id: string;
+      kind: 'vm';
+      vmName: string;
+      vmx?: string;
+      name?: string;
+      osFamily?: 'linux' | 'windows';
+    };
+
 export function environmentAdd(
   client: GuiSidecarClient,
-  input: SshAddInput,
+  input: EnvironmentAddInput,
 ): Promise<{ success: boolean; error?: string }> {
   return client.adminPost<{ success: boolean; error?: string }>('environment/add', input);
 }
@@ -313,7 +328,7 @@ export function reportExport(
 ): Promise<{
   success: boolean;
   error?: string;
-  data?: { reportDir?: string; evidenceCount?: number; degraded?: boolean; sanitized?: boolean };
+  data?: { reportDir?: string; evidenceCount?: number; degraded?: string[]; sanitized?: boolean };
 }> {
   return client.adminPost('report/export', input);
 }
@@ -683,4 +698,61 @@ export function modelVerify(
   model?: string,
 ): Promise<{ success: boolean; error?: string; hint?: string }> {
   return client.adminPost('model/verify', { id, model });
+}
+
+// ---------------------------------------------------------------------------
+// 1.3.5 新增：MCP 管理（设置页 MCP 页签——list/状态/启停/热重载）
+// ---------------------------------------------------------------------------
+
+/** admin mcp/list 的服务器条目（全量，含 enabled/isBuiltin 标记）。 */
+export interface McpServerEntity {
+  id: string;
+  name: string;
+  type?: string;
+  enabled?: boolean;
+  isBuiltin?: boolean;
+  command?: string;
+  url?: string;
+  requiresConfig?: boolean;
+  hasEnv?: boolean;
+}
+
+export function fetchMcpList(client: GuiSidecarClient): Promise<McpServerEntity[]> {
+  return client
+    .adminPost<{ success: boolean; data?: McpServerEntity[] }>('mcp/list')
+    .then((r) => (Array.isArray(r.data) ? r.data : []));
+}
+
+/** admin mcp/list-status / mcp/reload 的桥状态条目（仅已启用服务器）。 */
+export interface McpStatusEntity {
+  id: string;
+  name: string;
+  status: 'connected' | 'failed';
+  toolCount?: number;
+  error?: string;
+}
+
+export function fetchMcpStatus(client: GuiSidecarClient): Promise<McpStatusEntity[]> {
+  return client
+    .adminPost<{ success: boolean; data?: { servers?: McpStatusEntity[] } }>('mcp/list-status')
+    .then((r) => (Array.isArray(r.data?.servers) ? r.data.servers : []));
+}
+
+/** admin mcp/enable | mcp/disable { id }——写盘（桥由服务端联动）。 */
+export function mcpToggle(
+  client: GuiSidecarClient,
+  id: string,
+  enabled: boolean,
+): Promise<{ success: boolean; error?: string }> {
+  return client.adminPost<{ success: boolean; error?: string }>(enabled ? 'mcp/enable' : 'mcp/disable', { id });
+}
+
+/** admin mcp/reload {}——桥热重载（断开 → 重读磁盘 → 重连），返回新状态。 */
+export function mcpReload(
+  client: GuiSidecarClient,
+): Promise<{ success: boolean; error?: string; data?: { servers?: McpStatusEntity[] } }> {
+  return client.adminPost<{ success: boolean; error?: string; data?: { servers?: McpStatusEntity[] } }>(
+    'mcp/reload',
+    {},
+  );
 }

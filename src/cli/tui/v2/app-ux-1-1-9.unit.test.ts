@@ -3,11 +3,10 @@
  *
  *   U1 死按钮:background 块不再渲染「要我切过去吗？(y)」尾钩(服务端无
  *     subagent 会话切换入口);按 y 在空/非空编辑器都正常输入字母。
- *   U3 Esc 清草稿可恢复:Esc 清空前压一次性恢复槽,空编辑器时 ↑/Ctrl+Y
- *     找回(恢复即清槽);任何新输入使槽失效。
  *   U6 回看键位:PgUp/PgDn 整页翻页(页高=输出区可视行数),Ctrl+Home
  *     (\x1b[1;5H)跳顶;Esc 回底、滚轮翻历史语义不变(1.1.6 验收)。
  *   U7a 粘贴补补全:bracketed paste 后与普通击键一样触发 live completion。
+ *   (U3 Esc 草稿恢复槽已随 1.3.5 瘦身移除,对应用例同步删除。)
  *
  * 无 TTY、无 sidecar:fake fetch + EventEmitter 注入按键字节
  * (模式同 app-gate-reentry.unit.test.ts)。
@@ -55,7 +54,6 @@ function fakeClient(): SidecarClient {
 
 type AppInternals = {
   editor: { text: string; isEmpty: boolean };
-  escDraft: string | null;
   overlay: { kind: string } | null;
   state: SessionState;
   ingest(ev: { event?: string; data?: string }): void;
@@ -120,67 +118,6 @@ describe('U1 死按钮(1.1.9):尾钩文案移除,y 永远正常输入', () => {
     input.emit('data', Buffer.from('y', 'utf8'));
     await sleep(20);
     expect(internals.editor.text).toBe('yy'); // 非空编辑器:同样放行
-    teardown(ctx);
-  });
-});
-
-describe('U3 Esc 清草稿可恢复(1.1.9)', () => {
-  it('Esc 清空后按 ↑ 恢复草稿,恢复即清槽(再按 ↑ 走历史,不重复恢复)', async () => {
-    const ctx = await startChat();
-    const { input, internals } = ctx;
-    input.emit('data', Buffer.from('draft-one', 'utf8'));
-    await sleep(20);
-    expect(internals.editor.text).toBe('draft-one');
-
-    input.emit('data', Buffer.from('\x1b', 'utf8')); // Esc
-    await sleep(60); // 30ms CSI 消歧
-    expect(internals.editor.text).toBe('');
-    expect(internals.escDraft).toBe('draft-one');
-
-    input.emit('data', Buffer.from('\x1b[A', 'utf8')); // ↑ → 恢复
-    await sleep(20);
-    expect(internals.editor.text).toBe('draft-one');
-    expect(internals.escDraft).toBeNull();
-
-    input.emit('data', Buffer.from('\x1b[A', 'utf8')); // 再 ↑:历史为空,不动
-    await sleep(20);
-    expect(internals.editor.text).toBe('draft-one');
-    teardown(ctx);
-  });
-
-  it('Esc 清空后按 Ctrl+Y 恢复草稿', async () => {
-    const ctx = await startChat();
-    const { input, internals } = ctx;
-    input.emit('data', Buffer.from('draft-two', 'utf8'));
-    await sleep(20);
-    input.emit('data', Buffer.from('\x1b', 'utf8'));
-    await sleep(60);
-    expect(internals.editor.text).toBe('');
-
-    input.emit('data', Buffer.from('\x19', 'utf8')); // Ctrl+Y
-    await sleep(20);
-    expect(internals.editor.text).toBe('draft-two');
-    expect(internals.escDraft).toBeNull();
-    teardown(ctx);
-  });
-
-  it('清空后继续打字:恢复槽失效(一次性),不拦截后续输入', async () => {
-    const ctx = await startChat();
-    const { input, internals } = ctx;
-    input.emit('data', Buffer.from('old', 'utf8'));
-    await sleep(20);
-    input.emit('data', Buffer.from('\x1b', 'utf8'));
-    await sleep(60);
-    expect(internals.escDraft).toBe('old');
-
-    input.emit('data', Buffer.from('new', 'utf8')); // 新输入 → 槽失效
-    await sleep(20);
-    expect(internals.editor.text).toBe('new');
-    expect(internals.escDraft).toBeNull();
-
-    input.emit('data', Buffer.from('\x1b[A', 'utf8')); // ↑ 非空编辑器首行 → 历史路径(空历史不动)
-    await sleep(20);
-    expect(internals.editor.text).toBe('new');
     teardown(ctx);
   });
 });

@@ -26,7 +26,7 @@ function barState(patch: Partial<StatusBarState> = {}): StatusBarState {
     phase: 'idle',
     queueDepth: 0,
     contextPct: 0,
-    hint: 'Ctrl+L 帮助',
+    hint: 'Ctrl+C 退出 · / 命令 · @ 引用',
     ...patch,
   };
 }
@@ -36,7 +36,7 @@ describe('composeStatusBar', () => {
     const bar = composeStatusBar(barState({ envName: 'pwn-vm', envKind: 'vm', model: 'k2' }), 60, 0);
     expect(stringWidth(flatText(bar))).toBe(60);
     expect(flatText(bar)).toContain('pwn-vm');
-    expect(flatText(bar)).toContain('Ctrl+L 帮助');
+    expect(flatText(bar)).toContain('Ctrl+C 退出');
     expect(bar.every((s) => s.style?.bg === 'panel')).toBe(true);
   });
 

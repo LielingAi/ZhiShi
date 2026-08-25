@@ -66,6 +66,19 @@ describe('slashPayload', () => {
     expect(slashPayload(SLASH_ROUTES.export, { envKey: null, workspace: null })).toBeNull();
   });
 
+  it('export：sanitize 参数透传（1.3.5 脱敏导出）', () => {
+    expect(slashPayload(SLASH_ROUTES.export, envCtx, 'sanitize')).toEqual({
+      workspace: '/work',
+      sanitize: true,
+    });
+    expect(slashPayload(SLASH_ROUTES.export, envCtx, '  sanitize  ')).toEqual({
+      workspace: '/work',
+      sanitize: true,
+    });
+    // 非 sanitize 的非法值不透传（用法校验在 store 侧）
+    expect(slashPayload(SLASH_ROUTES.export, envCtx, 'sanitized')).toEqual({ workspace: '/work' });
+  });
+
   it('needsEnv 命令在宿主未锚定时 → null', () => {
     expect(slashPayload(SLASH_ROUTES.snapshot, hostCtx, 'x')).toBeNull();
     expect(slashPayload(SLASH_ROUTES.extract, hostCtx, '/x')).toBeNull();
@@ -146,5 +159,15 @@ describe('exportResultToast', () => {
   it('带证据数；缺 data 回落 report', () => {
     expect(exportResultToast({ reportDir: '/w/output/reports/x', evidenceCount: 3 })).toContain('/w/output/reports/x');
     expect(exportResultToast(undefined)).toContain('report');
+  });
+
+  it('1.3.5：脱敏与降级标注（degraded 是 string[]，TUI 同口径）', () => {
+    expect(exportResultToast({ reportDir: 'r', evidenceCount: 2, sanitized: true })).toBe(
+      '报告已导出：r · 证据 2 件 · 已脱敏',
+    );
+    expect(exportResultToast({ reportDir: 'r', degraded: ['a', 'b'] })).toBe(
+      '报告已导出：r · 降级 2 项',
+    );
+    expect(exportResultToast({ degraded: 'not-array', sanitized: false })).toBe('报告已导出：report');
   });
 });

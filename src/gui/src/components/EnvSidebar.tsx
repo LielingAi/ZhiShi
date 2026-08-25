@@ -20,6 +20,7 @@ export function EnvSidebar(): React.JSX.Element {
   const currentEnvKey = useGuiStore((s) => s.currentEnvKey);
   const switchEnv = useGuiStore((s) => s.switchEnv);
   const startEnv = useGuiStore((s) => s.startEnv);
+  const registerDiscovered = useGuiStore((s) => s.registerDiscovered);
   const openNewEnv = useGuiStore((s) => s.openNewEnv);
   const setPage = useGuiStore((s) => s.setPage);
   const showToast = useGuiStore((s) => s.showToast);
@@ -32,7 +33,14 @@ export function EnvSidebar(): React.JSX.Element {
         running,
         [
           ...discoveredDocker.map((d) => ({ id: d.id, name: d.name, state: d.status, driver: 'docker' })),
-          ...discoveredVm.map((v) => ({ id: v.id, name: v.name, state: v.state, driver: v.driver })),
+          ...discoveredVm.map((v) => ({
+            id: v.id,
+            name: v.name,
+            state: v.state,
+            driver: v.driver,
+            vmx: v.vmx,
+            osFamily: v.osFamily,
+          })),
         ],
       ),
     [envs, running, discoveredDocker, discoveredVm],
@@ -73,6 +81,18 @@ export function EnvSidebar(): React.JSX.Element {
                     }}
                   >
                     启动
+                  </button>
+                )}
+                {it.group === 'unreg' && (
+                  <button
+                    className="btn small eb-start"
+                    title={`登记 ${it.label}（environment/add，运行中则切入）`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void registerDiscovered(it.key);
+                    }}
+                  >
+                    登记
                   </button>
                 )}
               </div>

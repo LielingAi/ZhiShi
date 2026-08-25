@@ -5,15 +5,17 @@
 
 ---
 
-## 1.3.5 —— GUI 补 4 项 + TUI 瘦身（进行中）
+## 1.3.5 —— GUI 补 4 项 + TUI 瘦身（已完成）
 
 1.3.4 退役评估的去留清单拍板执行（2026-08-25 用户拍板）：**GUI 补 4 项 + TUI 砍 8 项瘦身**（TUI 退役执行留 1.3.9）。
 
-- [ ] **GUI 补 ①输入历史落盘 + 模糊评分**（轻）：移植 TUI `history.ts` 的子序列评分纯函数；GUI 输入历史按环境落盘（localStorage，per-env 键）→ 重启不丢；Ctrl+R/↑↓ 历史 overlay 换模糊评分（现为 includes）。
-- [ ] **GUI 补 ②`/export sanitize`**（轻）：export 斜杠路由支持 `sanitize` 参数（对齐 TUI `slash/report.ts:22-53` 语义，透传 `report/export` payload）。
-- [ ] **GUI 补 ③设置页 MCP 管理**（中）：设置页加 MCP 页签（`mcp/list` + 状态 + `enable|disable` + 热重载端点接线；卡片逻辑可移植 `src/cli/tui/v2/model.ts:159-239`）。
-- [ ] **GUI 补 ④本机发现「选中即注册」**（轻）：侧栏「本机已有」未注册行加「登记」动作（`environment/add` → 入侧栏 + 可切换）。
-- [ ] **TUI 瘦身（砍 7 项实删）**：①`/attach` 宿主终端挂起（slash 命令 + attach.ts + entry.ts 挂起/恢复接线——GUI AttachView 已更强）；②`/env` 重进正门（侧栏替代）；③`/quit`（Ctrl+C/SIGINT 仍在）；④`--env`/`--new-env` flag 直通（zhishi.ts 分支，改打印引导）；⑤状态栏 token 计数段；⑥Esc 草稿恢复槽；⑦Ctrl+L 帮助面板。**bracketed paste/kitty 协议解析保留到 1.3.9**（报告 §3.2 原文即「随渲染层整体退役」口径——是输入正确性依赖，非功能面，1.3.5 不碰）。TUI 相关单测同步更新，行为变化记录在案。
+- [x] **GUI 补 ①输入历史落盘 + 模糊评分**（轻）：移植 TUI `history.ts` 的子序列评分纯函数；GUI 输入历史按环境落盘（localStorage，per-env 键）→ 重启不丢；Ctrl+R/↑↓ 历史 overlay 换模糊评分（现为 includes）。
+- [x] **GUI 补 ②`/export sanitize`**（轻）：export 斜杠路由支持 `sanitize` 参数（对齐 TUI `slash/report.ts:22-53` 语义，透传 `report/export` payload）。
+- [x] **GUI 补 ③设置页 MCP 管理**（中）：设置页加 MCP 页签（`mcp/list` + 状态 + `enable|disable` + 热重载端点接线；卡片逻辑可移植 `src/cli/tui/v2/model.ts:159-239`）。
+- [x] **GUI 补 ④本机发现「选中即注册」**（轻）：侧栏「本机已有」未注册行加「登记」动作（`environment/add` → 入侧栏 + 可切换）。
+- [x] **TUI 瘦身（砍 7 项实删）**：①`/attach` 宿主终端挂起（slash 命令 + attach.ts + entry.ts 挂起/恢复接线——GUI AttachView 已更强）；②`/env` 重进正门（侧栏替代）；③`/quit`（Ctrl+C/SIGINT 仍在）；④`--env`/`--new-env` flag 直通（zhishi.ts 分支，改打印引导）；⑤状态栏 token 计数段；⑥Esc 草稿恢复槽；⑦Ctrl+L 帮助面板。**bracketed paste/kitty 协议解析保留到 1.3.9**（报告 §3.2 原文即「随渲染层整体退役」口径——是输入正确性依赖，非功能面，1.3.5 不碰）。TUI 相关单测同步更新，行为变化记录在案。
+
+> 实际落地（2026-08-25）：GUI 补四项——①输入历史 per-env localStorage 落盘（`zhishi.gui.inputHistory.<envKey>`，读写异常静默同 theme 纪律）+ TUI history.ts 子序列评分逐字移植（model/input-history.ts，20 例）；②/export sanitize（slash-routes optional-name + payload 透传，服务端语义核实：sanitize===true 生效、响应 degraded 实为 string[] 修正 api 类型，2 例）；③设置页 MCP 页签（mcp/list+list-status+enable|disable+reload 四端点接线，composeMcpRows 移植 TUI 合成语义，toggle 后补 reload——服务端 toggle 只写盘不重载桥，10 例）；④本机发现登记（docker/vmware/hyperv/vbox 载荷构造，运行中才自动切换——停着条目只入侧栏防死线，5 例）。TUI 瘦身——/attach（attach.ts+slash/attach.ts+entry 挂起恢复接线全删）、/env（连带 gate reentry 死代码清理）、/quit（退出=正门 Esc/空闲 Ctrl+C/SIGINT，hint 与欢迎卡更新「Ctrl+C 退出」）、--env/--new-env（残留打印引导）、token 段、Esc 草稿槽、Ctrl+L 帮助面板（/help 改列命令）；21 文件净 -834/+82、删 4 文件、测试 -15（381 绿，含 app 级字节链路锁定退出路径）。全量 183 文件 2329 测试绿 + typecheck + eslint 零错 + build:gui/build:cli 绿；GUI 实机走查通过（用户确认）；TUI 活体未跑（用户拍板：381 单测覆盖足够，砍项纯删除无新逻辑）。
 
 > 不做（维持）：编译发版（GUI 完成前）、TUI 新功能（冻结——本版只删不加）、B 形态引擎并行（用户已砍）、/bg 转后台（单独立版）、TUI 退役执行（1.3.9）。
 > 验收：全量测试 + 实机走查（GUI 补项走查 + TUI 活体确认瘦身后可用）。

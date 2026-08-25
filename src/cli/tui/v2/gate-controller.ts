@@ -28,8 +28,6 @@ export interface GateHost {
   workspace: string;
   /** 手动三步表单复用消息编辑器做行输入。 */
   editor: LineEditor;
-  /** 重进判定：当前已在 chat → /env 重进（Esc 返回 chat 而非退出）。 */
-  isChatMode(): boolean;
   /** 切到 gate 模式（mode='gate' + 关 overlay）。 */
   enterGateMode(): void;
   enterChat(): void;
@@ -60,8 +58,6 @@ export class GateController {
   private gathering = false;
   /** M6(1.2.8):盘点代际——Esc 中途退出后自增,迟到的 gather 结果不再写屏。 */
   private gatherGen = 0;
-  /** 正门来源：false=启动首次选择（Esc 退出到 shell），true=/env 重进（Esc 返回 chat）。 */
-  private reentry = false;
   private form: ManualFormState | null = null;
 
   constructor(host: GateHost) {
@@ -80,8 +76,7 @@ export class GateController {
   }
 
   async enter(): Promise<void> {
-    // 重进重置（1.1.6 #2）：gateBusy 成功路径不复位，/env 二次进门会吞掉所有键。
-    this.reentry = this.host.isChatMode();
+    // 复位 busy(1.1.6 #2):commit 失败路径会置位 busy,残留会把后续按键全吞掉。
     this.busy = false;
     // M6(1.2.8):盘点期间 gathering=true 挡键(options 还是陈旧数据);
     // gen 快照用于识别「Esc 已退出」的迟到结果。
@@ -155,13 +150,9 @@ export class GateController {
       // 不再 render() 写屏。
       this.gatherGen++;
       this.gathering = false;
-      // D27: 启动首次选择无 host 选项——Esc 保守退出到 shell；
-      // /env 重进时 Esc 是取消，返回 chat（1.1.6 #2）。
-      if (this.reentry) {
-        this.host.enterChat();
-      } else {
-        this.host.requestQuit();
-      }
+      // D27: 正门 Esc = 退出到 shell。/env 重进的「Esc 取消返回 chat」语义
+      // 已随 1.3.5 砍掉 /env 一并移除——正门只有启动一条进路。
+      this.host.requestQuit();
       return;
     }
     // M6(1.2.8):盘点进行中(非 Esc)键全挡——options 尚未就位,上下/Enter
@@ -201,7 +192,7 @@ export class GateController {
     } catch (err) {
       this.host.appendRaw([
         [{ text: `  ✗ ${err instanceof Error ? err.message : String(err)}`, style: { fg: 'red' } }],
-        [{ text: this.reentry ? '  请重新选择（Esc 返回）' : '  请重新选择（Esc 退出）', style: { fg: 'faint' } }],
+        [{ text: '  请重新选择（Esc 退出）', style: { fg: 'faint' } }],
       ]);
       this.busy = false;
       this.host.renderChrome();

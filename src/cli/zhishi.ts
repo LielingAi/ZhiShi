@@ -3117,22 +3117,24 @@ async function main(): Promise<void> {
 
   if (positional[0] === 'agent' && positional.length === 1 && !flags.help) {
 
-    // P1-T4（D17）: --env <id> / --new-env <recipe> 跳过首屏选择器直通对应
-    // 路径。--env 在 parseArgs 里是 repeatable flag（env 组共用），取值数组
-    // 的最后一项；--new-env → camelCase newEnv 是普通字符串 flag。
-    const envFlag = Array.isArray(flags.env) ? (flags.env as string[]).filter(Boolean).pop() : undefined;
+    // 1.3.5:TUI 瘦身——--env/--new-env 直通已移除,环境选择由启动正门 gate
+    // 承担。flag 残留时打印引导(仍进正门,不误吞值):--env 在 parseArgs 里
+    // 是 repeatable flag(env 组共用);--new-env → camelCase newEnv。
+    const envFlags = Array.isArray(flags.env) ? (flags.env as string[]).filter(Boolean) : [];
 
-    const newEnvFlag = typeof flags.newEnv === 'string' && flags.newEnv.trim() ? flags.newEnv.trim() : undefined;
+    const newEnvFlag = typeof flags.newEnv === 'string' && flags.newEnv.trim() ? flags.newEnv : undefined;
+
+    if (envFlags.length > 0 || newEnvFlag) {
+
+      console.error('环境选择已由正门承担，--env/--new-env 已移除。');
+
+    }
 
     await runAgentLoop({
 
       base: `http://127.0.0.1:${PORT}`,
 
       agentDir: process.cwd(),
-
-      envId: envFlag,
-
-      newEnvRecipe: newEnvFlag,
 
     });
 

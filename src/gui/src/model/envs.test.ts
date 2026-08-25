@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { groupSidebar, isSwitchable } from './envs';
+import { buildRegisterPayload, groupSidebar, isDiscoveredRunning, isSwitchable } from './envs';
 
 const envs = [
   { id: 'pwn@docker', kind: 'docker', name: 'pwn@docker' },
@@ -77,5 +77,64 @@ describe('startable（1.3.1 ① 启动按钮）', () => {
     const unreg = groups.find((g) => g.label === '本机已有');
     expect(run?.items[0].startable).toBe(false);
     expect(unreg?.items[0].startable).toBe(false);
+  });
+});
+
+describe('buildRegisterPayload（1.3.5 选中即注册，TUI gate.ts:262-298 同口径）', () => {
+  it('docker → docker-<名> { kind:docker, container }', () => {
+    expect(
+      buildRegisterPayload({ id: 'abc123', name: 'kali-2024', state: 'Up 3 hours', driver: 'docker' }),
+    ).toEqual({ id: 'docker-kali-2024', kind: 'docker', container: 'kali-2024' });
+  });
+
+  it('vmware → vmware-<名> { kind:vm, vmName, vmx, osFamily }', () => {
+    expect(
+      buildRegisterPayload({
+        id: 'E:\\vms\\kali.vmx',
+        name: 'kali.vmx',
+        state: 'unknown',
+        driver: 'vmware',
+        vmx: 'E:\\vms\\kali.vmx',
+        osFamily: 'linux',
+      }),
+    ).toEqual({
+      id: 'vmware-kali.vmx',
+      kind: 'vm',
+      vmName: 'kali.vmx',
+      vmx: 'E:\\vms\\kali.vmx',
+      name: 'kali.vmx',
+      osFamily: 'linux',
+    });
+  });
+
+  it('hyperv / vbox → <driver>-<名>（无 vmx，仅带 name/osFamily）', () => {
+    expect(
+      buildRegisterPayload({ id: 'win11', name: 'win11', state: 'Running', driver: 'hyperv', osFamily: 'windows' }),
+    ).toEqual({ id: 'hyperv-win11', kind: 'vm', vmName: 'win11', name: 'win11', osFamily: 'windows' });
+    expect(buildRegisterPayload({ id: 'kali', name: 'kali', driver: 'vbox' })).toEqual({
+      id: 'vbox-kali',
+      kind: 'vm',
+      vmName: 'kali',
+      name: 'kali',
+    });
+  });
+
+  it('名字缺失 / 未知驱动 → null（调用方 toast）', () => {
+    expect(buildRegisterPayload({ id: 'x', name: '', driver: 'docker' })).toBeNull();
+    expect(buildRegisterPayload({ id: 'x', name: '  ', driver: 'vmware' })).toBeNull();
+    expect(buildRegisterPayload({ id: 'x', name: 'x', driver: 'ssh' })).toBeNull();
+    expect(buildRegisterPayload({ id: 'x', driver: 'docker' })).toBeNull();
+  });
+});
+
+describe('isDiscoveredRunning（1.3.5 登记后是否切入）', () => {
+  it('docker Up / VM running → true；停着/unknown → false', () => {
+    expect(isDiscoveredRunning({ id: 'd', state: 'Up 3 hours', driver: 'docker' })).toBe(true);
+    expect(isDiscoveredRunning({ id: 'd', state: 'Up About a minute', driver: 'docker' })).toBe(true);
+    expect(isDiscoveredRunning({ id: 'd', state: 'Exited (0) 2 days ago', driver: 'docker' })).toBe(false);
+    expect(isDiscoveredRunning({ id: 'v', state: 'Running', driver: 'hyperv' })).toBe(true);
+    expect(isDiscoveredRunning({ id: 'v', state: 'powered off', driver: 'vmware' })).toBe(false);
+    expect(isDiscoveredRunning({ id: 'v', state: 'unknown', driver: 'vmware' })).toBe(false);
+    expect(isDiscoveredRunning({ id: 'v' })).toBe(false);
   });
 });

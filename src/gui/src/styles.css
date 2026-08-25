@@ -331,6 +331,8 @@ mark.h-search { background: rgba(232,163,61,.3); color: var(--text); border-radi
 .set-row .sr-control { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .set-row .sr-status { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 .set-row .sr-status.ok { color: var(--green); }
+/* 1.3.5：MCP 页签 failed 状态红色（与 StateHint error 同色口径） */
+.set-row .sr-status.bad { color: var(--red); }
 .sr-status.mono { font-family: var(--mono); }
 
 /* ===== attach 视图 ===== */

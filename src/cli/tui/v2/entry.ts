@@ -4,8 +4,11 @@
  *   session) → TerminalWriter (alternate screen) → App (gate → chat).
  *
  * The App owns the gate screen, the SSE pump and the key loop; this module
- * owns only process-level concerns: raw mode, resize, suspend/resume for
- * /attach, and clean teardown (alternate screen + raw mode restored).
+ * owns only process-level concerns: raw mode, resize, and clean teardown
+ * (alternate screen + raw mode restored).
+ *
+ * 1.3.5:/attach 终端挂起已移除(GUI AttachView/WS pty 替代),suspend/resume
+ * 接线随之删除;--env/--new-env 直通也移除,环境选择统一走启动正门 gate。
  *
  * Non-TTY (CI/pipes): prints a hint and returns cleanly — no alt screen.
  */
@@ -13,7 +16,6 @@
 import { SidecarClient, type FetchLike } from '../client';
 import { TerminalWriter } from './terminal-writer';
 import { App } from './app';
-import { resolveFlag, type GateResult } from './gate';
 import { detectColorDepth } from './style';
 import type { TimerApi } from './frame-scheduler';
 
@@ -64,45 +66,6 @@ export function createResizeDebouncer(opts: ResizeDebouncerOptions): {
   };
 }
 
-export interface TerminalHandoffDeps {
-  input: NodeJS.ReadStream;
-  writer: Pick<TerminalWriter, 'enter' | 'exit' | 'resize'>;
-  /** 读最新终端尺寸(resume 后 reflow 用)。 */
-  measure: () => { cols: number; rows: number };
-}
-
-/**
- * H5(1.2.8):/attach 终端交接。挂起:退 alt screen + 回 cooked 模式 +
- * 暂停 stdin 流——子进程 stdio:'inherit' 与 TUI 共享同一 fd(attach.ts),
- * 不 pause 的话 TUI 的 data 监听会和子进程抢键盘字节。恢复:全量回滚 +
- * 按最新尺寸 reflow。isSuspended 给 SIGINT 处理器用:挂起期间 Ctrl+C
- * 归子进程(同进程组信号广播),TUI 不得退出。
- */
-export function createTerminalHandoff(deps: TerminalHandoffDeps): {
-  suspend: () => void;
-  resume: () => void;
-  isSuspended: () => boolean;
-} {
-  let suspended = false;
-  return {
-    suspend: () => {
-      suspended = true;
-      deps.writer.exit();
-      deps.input.setRawMode?.(false);
-      deps.input.pause();
-    },
-    resume: () => {
-      deps.input.resume();
-      deps.input.setRawMode?.(true);
-      deps.writer.enter();
-      const { cols, rows } = deps.measure();
-      deps.writer.resize(cols, rows);
-      suspended = false;
-    },
-    isSuspended: () => suspended,
-  };
-}
-
 /**
  * H8(1.2.8):致命异常兜底。任何 uncaughtException/unhandledRejection 先恢复
  * 终端(退 alt screen + 回 raw mode,复用 cleanup 序列)再非零退出——否则
@@ -129,10 +92,6 @@ export interface AgentLoopOptions {
   base: string;
   /** Agent workspace dir — typically process.cwd(). */
   agentDir: string;
-  /** `--env <id>` — skip the gate screen, select named env. */
-  envId?: string;
-  /** `--new-env <recipe>` — skip the gate screen, build from recipe. */
-  newEnvRecipe?: string;
   fetchImpl?: FetchLike;
   input?: NodeJS.ReadStream;
   output?: NodeJS.WriteStream;
@@ -192,16 +151,6 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
   const client = new SidecarClient({ base: opts.base, fetchImpl: opts.fetchImpl });
 
-  // --env / --new-env short-circuit the gate; failures abort before entering
-  // the alternate screen so the error reads in the normal scrollback.
-  let presetEnv: GateResult | null = null;
-  try {
-    presetEnv = await resolveFlag(client, opts.agentDir, opts.envId, opts.newEnvRecipe);
-  } catch (err) {
-    console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
-    return;
-  }
-
   try {
     await ensureAgentSession(client, opts.agentDir);
   } catch (err) {
@@ -216,27 +165,13 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     depth: detectColorDepth(process.env),
   });
 
-  // /attach terminal hand-off: leave the alternate screen and restore cooked
-  // mode so the spawned shell owns the TTY; re-enter + reflow on child exit.
-  // H5(1.2.8):挂起同时暂停 stdin 流(子进程 stdio:'inherit' 共享同一 fd),
-  // SIGINT 屏蔽走 isSuspended(见下方等待循环)。
   const wasRaw = (input as NodeJS.ReadStream & { isRaw?: boolean }).isRaw ?? false;
-  const handoff = createTerminalHandoff({
-    input,
-    writer,
-    measure: () => ({ cols: output.columns || 80, rows: output.rows || 24 }),
-  });
-  const suspend = handoff.suspend;
-  const resume = handoff.resume;
 
   const app = new App({
     client,
     writer,
     input,
     workspace: opts.agentDir,
-    presetEnv,
-    suspend,
-    resume,
   });
 
   input.setRawMode?.(true);
@@ -282,19 +217,15 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   writer.enter();
   await app.start();
 
-  // Keep the process alive until the user quits (Esc at the gate, /quit, or
-  // Ctrl+C on an empty idle line sets app.quitRequested).
+  // Keep the process alive until the user quits. 1.3.5:/quit 已移除——退出路径
+  // 为:正门 Esc、chat 空闲时 Ctrl+C(空输入,onCtrlC → quitRequested)、以及
+  // SIGINT/SIGTERM 信号。finish 幂等(cleanup 的 exiting 标记),重复触发无副作用。
   await new Promise<void>((resolve) => {
     const finish = (): void => {
       cleanup();
       resolve();
     };
-    // H5(1.2.8):/attach 挂起期间 SIGINT 归子进程(同进程组广播),TUI 不退出——
-    // once 触发即摘的管理太脆,改 on + isSuspended 屏蔽。
-    const onSigint = (): void => {
-      if (!handoff.isSuspended()) finish();
-    };
-    process.on('SIGINT', onSigint);
+    process.on('SIGINT', finish);
     process.once('SIGTERM', finish);
     const poll = setInterval(() => {
       if (app.quitRequested) {
