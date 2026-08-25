@@ -910,6 +910,9 @@ export function createSseClient(onClose: (client: SseClient) => void): {
       'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
       'X-Accel-Buffering': 'no',
+      // 1.3.0(GUI):webview 直连——SSE 响应同样必须带 ACAO,否则浏览器
+      // 拿到流即拦断(表现为连接建立即断、无限重连)。
+      'Access-Control-Allow-Origin': '*',
     }
   });
 

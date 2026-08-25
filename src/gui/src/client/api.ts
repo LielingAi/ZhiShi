@@ -129,10 +129,19 @@ export function fetchEnvironmentRecipes(client: GuiSidecarClient): Promise<Recip
     .then((r) => r.data?.recipes ?? []);
 }
 
-export function fetchModelList(client: GuiSidecarClient): Promise<ModelProvider[]> {
+export interface ModelListResult {
+  providers: ModelProvider[];
+  current?: { providerId?: string; modelId?: string };
+}
+
+export function fetchModelList(client: GuiSidecarClient): Promise<ModelListResult> {
   return client
-    .adminPost<{ success: boolean; data?: ModelProvider[] }>('model/list')
-    .then((r) => r.data ?? []);
+    .adminPost<{
+      success: boolean;
+      data?: ModelProvider[];
+      current?: { providerId?: string; modelId?: string };
+    }>('model/list')
+    .then((r) => ({ providers: r.data ?? [], current: r.current }));
 }
 
 export function environmentSelect(

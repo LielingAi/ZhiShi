@@ -105,6 +105,7 @@ import { isSkillBlockedOnPlatform } from './utils/platform';
 import { parseSkillFrontmatter } from '../shared/slashCommands';
 
 import { resolve } from 'path';
+import { connect } from 'net';
 
 import { setMcpServers, setAgents, getMcpServers, getSidecarPort } from './agent-session';
 import { getPiAgentState, envSwitchBlocker, getEnvSessionBinding, switchEnvSession, resolveSessionEnv, resolveSessionEnvKey } from './loop/chat-engine';
@@ -6126,6 +6127,28 @@ export async function handleEnvironmentPs(): Promise<AdminResponse> {
 
     : [];
 
+  // 1.3.0(GUI 环境侧栏)：手动接入条目（kind=ssh，或 kind=vm 但无 vmx 的
+  // 地址型条目）不被 vmrun/docker 覆盖——做 TCP 22 存活探测补进 instances，
+  // 否则这些条目永远落在「已停止」分组（环境实际在跑）。
+  const manualEntries = listEnvironments(loadConfig()).filter(
+    (e) => (e.kind === 'ssh' || (e.kind === 'vm' && !e.vmx)) && e.address,
+  );
+  const probedManual = await Promise.all(
+    manualEntries.map(async (e) => {
+      const alive = await probeTcp(e.address!, 22, 1500);
+      if (!alive) return null;
+      return {
+        id: e.id,
+        name: e.name ?? e.id,
+        address: e.address,
+        status: 'running',
+        recipe: e.name ?? '',
+        workspace: '',
+        driver: (e.kind === 'ssh' ? 'ssh' : 'vm') as 'ssh' | 'vm',
+      };
+    }),
+  );
+
   const instances = [
 
     ...(dockerResult.ok ? dockerResult.instances.map((i) => ({ ...i, driver: 'docker' as const })) : []),
@@ -6135,6 +6158,8 @@ export async function handleEnvironmentPs(): Promise<AdminResponse> {
     ...(hypervResult.ok ? hypervResult.instances.map((i) => ({ ...i, driver: 'hyperv' as const })) : []),
 
     ...(vboxResult.ok ? vboxResult.instances.map((i) => ({ ...i, driver: 'vbox' as const })) : []),
+
+    ...probedManual.filter((x): x is NonNullable<typeof x> => x !== null),
 
   ];
 
@@ -7153,3 +7178,22 @@ function setNestedValue(obj: AdminAppConfig, key: string, value: unknown): Admin
 }
 
 
+
+/** 1.3.0(GUI)：TCP 连通性探测（手动接入条目的存活判定）。 */
+function probeTcp(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolveP) => {
+    const sock = connect({ host, port, timeout: timeoutMs });
+    let settled = false;
+    const done = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      sock.destroy();
+      resolveP(ok);
+    };
+    sock.once('connect', () => done(true));
+    sock.once('error', () => done(false));
+    sock.once('timeout', () => done(false));
+    // 保险：connect 的 timeout 选项在 Windows 上未必触发，外部兜底。
+    setTimeout(() => done(false), timeoutMs + 500).unref?.();
+  });
+}

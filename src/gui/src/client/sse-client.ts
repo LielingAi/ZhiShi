@@ -89,7 +89,10 @@ export class GuiSidecarClient {
 
   constructor(opts: GuiSidecarClientOptions) {
     this.base = opts.base.replace(/\/+$/, '');
-    this.fetchImpl = opts.fetchImpl ?? (fetch as unknown as GuiFetch);
+    // 1.3.0 实机修正：裸 fetch 存成方法再调用会丢 this 绑定——浏览器里
+    // 直接抛 TypeError: Illegal invocation（Node 不受影响，单测全绿没暴露）。
+    // 必须显式绑定（globalThis = window/Node 两用）。
+    this.fetchImpl = opts.fetchImpl ?? (fetch.bind(globalThis) as unknown as GuiFetch);
   }
 
   private url(path: string): string {

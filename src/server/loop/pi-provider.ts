@@ -50,6 +50,7 @@ import {
 } from '../utils/admin-config';
 import { lookupModelContextLength } from '../utils/model-capabilities';
 import { isProviderEnabled } from '../../shared/config-types';
+import { resolveKimiApiKey } from '../utils/admin-config';
 
 /** kimi for coding 固定端点（与 pi-ai 内置 kimi-coding provider 一致）。 */
 export const KIMI_CODING_BASE_URL = 'https://api.kimi.com/coding';
@@ -185,11 +186,21 @@ export function resolveLoopModel(config?: AdminAppConfig): LoopModelResolution |
   const c = config ?? loadConfig();
   const keys = (c.providerApiKeys ?? {}) as Record<string, string>;
 
-  const providerId = (c.defaultProviderId as string | undefined)
+  let providerId = (c.defaultProviderId as string | undefined)
     ?? Object.keys(keys).find((id) => typeof keys[id] === 'string' && keys[id].trim() !== '');
   if (!providerId) return null;
 
-  const apiKey = keys[providerId];
+  let apiKey = keys[providerId];
+  // 1.3.0：kimi 系模糊兜底——defaultProviderId 可能是 'kimi'（内置合成
+  // 条目），而 key 实际配在 moonshot-coding 等 id 下（1.2.9 显示层已按
+  // 此口径，这里与 /chat/model 切换路径一起对齐）。
+  if ((!apiKey || !apiKey.trim()) && isKimiCodingProvider(providerId)) {
+    const kimi = resolveKimiApiKey(c);
+    if (kimi) {
+      providerId = kimi.providerId;
+      apiKey = kimi.apiKey;
+    }
+  }
   if (!apiKey || !apiKey.trim()) return null;
 
   // provider 定义（preset/custom）可能不存在——kimi 系无定义也能解析。

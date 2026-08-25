@@ -253,7 +253,7 @@ import {
 
 } from './SessionStore';
 
-import { atomicModifyConfig, findEffectiveProvider, getAllEffectiveProviders, isProviderDisabled, loadConfig } from './utils/admin-config';
+import { atomicModifyConfig, findEffectiveProvider, getAllEffectiveProviders, isProviderDisabled, loadConfig, resolveKimiApiKey } from './utils/admin-config';
 
 
 
@@ -667,7 +667,10 @@ function jsonResponse(body: unknown, status = 200): Response {
 
     status,
 
-    headers: { 'Content-Type': 'application/json' }
+    // 1.3.0(GUI):ACAO 放行——webview/浏览器直连 sidecar 需要;CORS 预检
+    // 只覆盖 OPTIONS,不带这个头浏览器会静默拦掉一切 JSON 响应。
+
+    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
 
   });
 
@@ -2147,7 +2150,17 @@ async function main() {
           }
 
           // 无 key 的 provider 切过去会立刻让聊天不可用，先校验。
-          const apiKey = (config.providerApiKeys as Record<string, string>)[providerId];
+          // 1.3.0 修正：kimi 系走模糊解析（key 实际配在 moonshot-coding 等
+          // id 下），并持久化真实的 key id——否则 defaultProviderId='kimi'
+          // 会让 resolveLoopModel 下次解析不到 key。
+          let apiKey = (config.providerApiKeys as Record<string, string>)[providerId];
+          if ((!apiKey || !apiKey.trim()) && isKimiCodingProvider(providerId)) {
+            const kimi = resolveKimiApiKey(config);
+            if (kimi) {
+              providerId = kimi.providerId;
+              apiKey = kimi.apiKey;
+            }
+          }
           if (!apiKey || !apiKey.trim()) {
             return jsonResponse({ success: false, error: `provider ${providerId} 未配置 API key，无法切换到 ${model}` }, 400);
           }

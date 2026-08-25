@@ -182,7 +182,9 @@ function browserStorage(): { getItem(k: string): string | null } | undefined {
 }
 
 function currentSession(s: GuiState): SessionState {
-  return s.sessions[s.currentEnvKey] ?? emptySession();
+  // 1.3.0 修正：键口径与 reducer/setModel 统一（currentEnvKey || 'host'），
+  // 否则 currentEnvKey 为 null 时读写 sessions[null]，永远空会话。
+  return s.sessions[s.currentEnvKey || 'host'] ?? emptySession();
 }
 
 export const useGuiStore = create<GuiState>()((set, get) => ({
@@ -218,10 +220,11 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     const gen = ++lifecycleGen;
     void (async () => {
       const { invoke } = tauriInvoke();
+      const search = typeof window !== 'undefined' ? window.location.search : '';
       const port = await resolvePort({
         invoke,
         storage: browserStorage(),
-        search: typeof window !== 'undefined' ? window.location.search : '',
+        search,
       });
       if (gen !== lifecycleGen) return; // dispose / re-init 竞态
       if (!port) {
@@ -258,7 +261,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       try {
         for await (const input of c.openSse('/chat/stream', {
           signal: ac.signal,
-          onReconnect: () => set({ connectionState: 'reconnecting' }),
+          onReconnect: (attempt, cause) => {
+            set({ connectionState: 'reconnecting' });
+          },
         })) {
           const state = get();
           const key = state.currentEnvKey || 'host';
@@ -659,8 +664,22 @@ async function loadModels(
   const c = client;
   if (!c) return;
   try {
-    const models = await api.fetchModelList(c);
-    if (get().models.length === 0) set({ models });
+    const { providers, current } = await api.fetchModelList(c);
+    if (get().models.length === 0) set({ models: providers });
+    // 1.3.0 修正：新会话在首个 turn 前不会有 chat:system-init——状态栏
+    // 模型名用 model/list 的 current 兜底（1.2.9 服务端字段）。
+    if (current?.modelId) {
+      const key = get().currentEnvKey || 'host';
+      const session = get().sessions[key];
+      if (!session?.model) {
+        set({
+          sessions: {
+            ...get().sessions,
+            [key]: { ...(session ?? emptySession()), model: current.modelId },
+          },
+        });
+      }
+    }
   } catch {
     // 模型列表拉取失败不阻塞会话（对齐 server「失败降级不阻塞」）。
   }
@@ -702,7 +721,7 @@ async function runSlashCommand(get: () => GuiState, cmd: string): Promise<void> 
 
 /** 当前会话派生状态（busy / phase / queue 深度）。 */
 export function selectCurrentSession(s: GuiState): SessionState {
-  return s.sessions[s.currentEnvKey] ?? FALLBACK_SESSION;
+  return s.sessions[s.currentEnvKey || 'host'] ?? FALLBACK_SESSION;
 }
 
 /** 稳定的空会话单例：sessions 缺条目时兜底，避免 selector 每次返回新引用。 */
