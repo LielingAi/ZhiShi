@@ -64,12 +64,18 @@ describe('reduceSseEvent — 块归属（replay 重建）', () => {
     expect(lastTurn(s).conclusion).toBe('hi'); // 不重复累计
   });
 
-  it('带 queueId 的 user replay 标记为纠偏', () => {
-    const s = reduceSseEvent(
-      emptySession(),
-      replayUser('u1', '换个思路', { queueId: 'q-1' }),
-    ).session;
+  it('纠偏判定按 chat:steering-added 登记(而非 queueId 存在——每条消息都带 queueId)', () => {
+    // 无 steering-added 登记：即使 replay 带 queueId 也不是纠偏（1.3.0 修正）
+    const plain = reduceSseEvent(emptySession(), replayUser('u1', '普通消息', { queueId: 'q-1' })).session;
+    expect(lastTurn(plain).steering).toBe(false);
+    // 先收到 steering-added 再 replay：同 queueId → 纠偏
+    let s = reduceSseEvent(emptySession(), ev('chat:steering-added', { queueId: 'q-1', messageText: '换个思路' })).session;
+    s = reduceSseEvent(s, replayUser('u2', '换个思路', { queueId: 'q-1' })).session;
     expect(lastTurn(s).steering).toBe(true);
+    // 不同 queueId 不受影响
+    s = reduceSseEvent(emptySession(), ev('chat:steering-added', { queueId: 'q-1' })).session;
+    s = reduceSseEvent(s, replayUser('u3', '别的消息', { queueId: 'q-9' })).session;
+    expect(lastTurn(s).steering).toBe(false);
   });
 });
 

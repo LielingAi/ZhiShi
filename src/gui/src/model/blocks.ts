@@ -141,6 +141,13 @@ export interface SessionState {
   queue: QueueItem[];
   /** 当前流式中的块 id；null = 无活体流。 */
   streamingTurnId: string | null;
+  /**
+   * 纠偏队列 id 集合（1.3.0 修正）：wire 里**每条** user 消息都带
+   * queueId（发送管线必发），不能靠「有没有 queueId」判纠偏——以
+   * chat:steering-added 广播为准登记，replay 时按 id 查。
+   * 边界：重连后集合清空，历史纠偏徽标不恢复（已知取舍）。
+   */
+  steeringIds: string[];
 }
 
 export function emptySession(): SessionState {
@@ -151,6 +158,7 @@ export function emptySession(): SessionState {
     phase: 'idle',
     queue: [],
     streamingTurnId: null,
+    steeringIds: [],
   };
 }
 

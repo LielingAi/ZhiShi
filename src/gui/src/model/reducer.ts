@@ -86,7 +86,13 @@ function summarizeArgs(payload: unknown): string {
 // ---------------------------------------------------------------------------
 
 function cloneSession(s: SessionState): SessionState {
-  return { ...s, items: [...s.items], seenSrvIds: new Set(s.seenSrvIds), queue: [...s.queue] };
+  return {
+    ...s,
+    items: [...s.items],
+    seenSrvIds: new Set(s.seenSrvIds),
+    queue: [...s.queue],
+    steeringIds: [...s.steeringIds],
+  };
 }
 
 function pushItem(session: SessionState, item: StreamItem): SessionState {
@@ -256,7 +262,7 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
           id: `turn-${s.seq + 1}`,
           seq: s.seq + 1,
           userText: str(m.content) ?? '',
-          steering: srvId ? boolOfQueueId(m) : false,
+          steering: str(m.queueId) !== undefined && s.steeringIds.includes(str(m.queueId)!),
           conclusion: '',
           conclusionStreaming: false,
           details: [],
@@ -515,6 +521,7 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
       const qid = str(p.queueId);
       if (!qid) return { session };
       const s = cloneSession(session);
+      if (!s.steeringIds.includes(qid)) s.steeringIds.push(qid);
       s.queue = upsertQueue(s.queue, {
         id: qid,
         text: str(p.messageText) ?? '',
@@ -579,11 +586,6 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
-
-/** 只把带 queueId 的 user 消息标为纠偏（GUI 仅用 /chat/send，busy 即 steering）。 */
-function boolOfQueueId(m: Record<string, unknown>): boolean {
-  return typeof m.queueId === 'string' && m.queueId.length > 0;
-}
 
 /** 含某工具卡的块 id。 */
 function turnOf(session: SessionState, toolId: string): string {
