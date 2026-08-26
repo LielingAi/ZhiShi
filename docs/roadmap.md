@@ -5,15 +5,17 @@
 
 ---
 
-## 1.3.9 —— TUI 退役执行（进行中）
+## 1.3.9 —— TUI 退役执行（已完成）
 
 执行依据：`docs/design/1.3.4-tui-retirement.md`（评估报告，用户已拍板退役时点=1.3.9）。GUI 三块核心（会话+决策+历史）与全部补缺（1.3.5-1.3.8）已齐，交互式 TUI 停运条件成立。**口径：退役交互式 TUI（渲染层+app 装配），`zhishi` CLI 子命令与 `zhishi term` 链路（Rust panel_api）独立存活，勿误删**。
 
-- [ ] **摘除 src/cli/tui/ 全目录**（产品 ~7.9K 行 + 27 测试文件）：渲染层/event-reducer/gate/editor/keymap/blocks/slash/attach 等；`zhishi.ts` 摘 bare `agent` 分支（`runAgentLoop` import、:3104-3141 分发、TOP_HELP 交互行、--env/--new-env 描述）——`zhishi agent` 子命令保留，无参数改为打印引导 + 非零退出码（防 AI 调用方误判「会话已启动」）。
-- [ ] **Rust 壳三入口切换**：删 `src-tauri/src/tui_launcher.rs`；`lib.rs` single_instance 回调 → 聚焦主窗口、setup 交互启动块 → 显示主窗口（`sync_cli_resources` 镜像逻辑保留/搬家）、模块声明删除；`tray.rs` `open_session` → `show_main_window`。**三入口同批切换，漏一处=桌面入口失活**（报告最高风险）。
-- [ ] **服务端注释措辞**：index.ts / admin-api.ts 的「TUI」注释改「客户端/GUI」（零行为改动，SSE 契约全共享）。
-- [ ] **文档/资产改写**：README.md（TUI 口径 → GUI 主界面 + 截图替换）、user-guide.md §5「TUI 操作大全」改写为 GUI 操作、tui_tech_spec.md / tui-rebuild-plan.md 标注「已退役，历史归档」、bundled-skills/zhishi-cli/SKILL.md:269 更新、package.json description 更新。
-- [ ] **验证**：全量测试（删 TUI 测试后基线下降属预期）+ typecheck + eslint + build:cli/server/gui + `cargo check`；实机走查：三入口（点图标/托盘/二次实例 → GUI 窗口聚焦）、`zhishi term open/write/read/close` 回归、bare `zhishi agent` 行为、GUI 重连 SSE。
+- [x] **摘除 src/cli/tui/ 全目录**（产品 ~7.9K 行 + 27 测试文件）：渲染层/event-reducer/gate/editor/keymap/blocks/slash/attach 等；`zhishi.ts` 摘 bare `agent` 分支（`runAgentLoop` import、:3104-3141 分发、TOP_HELP 交互行、--env/--new-env 描述）——`zhishi agent` 子命令保留，无参数改为打印引导 + 非零退出码（防 AI 调用方误判「会话已启动」）。
+- [x] **Rust 壳三入口切换**：删 `src-tauri/src/tui_launcher.rs`；`lib.rs` single_instance 回调 → 聚焦主窗口、setup 交互启动块 → 显示主窗口（`sync_cli_resources` 镜像逻辑保留/搬家）、模块声明删除；`tray.rs` `open_session` → `show_main_window`。**三入口同批切换，漏一处=桌面入口失活**（报告最高风险）。
+- [x] **服务端注释措辞**：index.ts / admin-api.ts 的「TUI」注释改「客户端/GUI」（零行为改动，SSE 契约全共享）。
+- [x] **文档/资产改写**：README.md（TUI 口径 → GUI 主界面 + 截图替换）、user-guide.md §5「TUI 操作大全」改写为 GUI 操作、tui_tech_spec.md / tui-rebuild-plan.md 标注「已退役，历史归档」、bundled-skills/zhishi-cli/SKILL.md:269 更新、package.json description 更新。
+- [x] **验证**：全量测试（删 TUI 测试后基线下降属预期）+ typecheck + eslint + build:cli/server/gui + `cargo check`；实机走查：三入口（点图标/托盘/二次实例 → GUI 窗口聚焦）、`zhishi term open/write/read/close` 回归、bare `zhishi agent` 行为、GUI 重连 SSE。
+
+> 实际落地（2026-08-26）：`src/cli/tui/` 全目录删除（测试基线 196→171 文件、2524→2204 属预期——TUI 25 测试文件随目录走）；`zhishi.ts` bare `agent` 分支改「打印引导 + exitCode=1」，TOP_HELP 示例改 agent list，`agent` 子命令（list/show/enable/disable/set）原样保留。Rust：`tui_launcher.rs` 瘦身改名 `cli_launcher.rs`（保留 `sync_cli_resources` + zhishi.cmd 生成式烘焙，删 `spawn_open_tui/open_tui_session/默认工作区/终端拉起` 全套）；`lib.rs` 三处（模块声明、single_instance 回调 → `tray::show_main_window`、setup 交互启动块）；`tray.rs` `open_session` → `show_main_window`。**实机抓出真 bug**：删 TUI 启动器把「交互启动拉起全局 sidecar」的隐藏职责也删了——GUI 的 `get_sidecar_port` 只读端口文件不拉起，环境列表永不加载；修复：交互启动恢复 `start_global_sidecar`（spawn_blocking 内，reqwest::blocking 纪律）+ 显示窗口（--minimized 三件都不做）。注释措辞：server 8 处「TUI」→「客户端/GUI」；zhishi-cli SKILL.md「进环境干活」条；package.json description。文档：README 全面改写（GUI 控制面/架构图/模块表/快速开始/验证状态/文档表）+ user-guide §1-5 改写（GUI 操作+快捷键+读屏幕，CLI 命令大全保留）+ tui_tech_spec/tui-rebuild-plan 顶部加退役归档横幅。全量 171 文件 2204 测试绿 + typecheck + eslint + build:cli/server/gui + cargo check 绿；实机走查通过（用户确认：三入口聚焦 GUI、无 TUI 拉起日志、环境列表正常、bare agent 引导）。
 
 > 不做（维持）：编译发版（GUI 完成前——打包冒烟发版版做）、B 形态引擎并行（已砍）、/bg 转后台（单独立版）。
 > 验收：全量测试 + 实机走查。

@@ -55,8 +55,6 @@ import {
 
 
 
-import { runAgentLoop } from './tui/v2/entry';
-
 import { INTEL_POLL_INTERVAL_MS, startIntelProgressPolling } from './intel-progress';
 
 import { buildExpertDoc, expertEditRoundTrip, parseExpertDoc } from './expert-edit';
@@ -538,7 +536,7 @@ Examples:
 
   zhishi env exec <env-id> -- <command...>  # isolated VM one-shot exec via vmrun guest channel (P2)
 
-  zhishi agent                              # interactive agent session TUI (P1-T2)
+  zhishi agent list                          # agent 清单（1.3.9 起交互会话迁至 GUI；agent 仅子命令）
 
   zhishi agent show <agent-id>              # effective defaults for a workspace
 
@@ -3101,42 +3099,17 @@ async function main(): Promise<void> {
 
 
 
-  // P1-T2: bare `zhishi agent` enters the interactive session TUI (Screen/
-
-  // LineEditor + sidecar session REST/SSE, src/cli/tui/agent.ts). Subcommands
-
-  // (`agent list/show/enable/...`) still route to the Admin API below. Placed
-
-  // AFTER the port check — the TUI talks to the sidecar root, so ZHISHI_PORT
-
-  // is required (the T1 `--demo-tui` harness was removed with this entry;
-
-  // the real loop IS the smoke test now). Non-TTY environments print a hint
-
-  // and return cleanly inside runAgentLoop.
+  // 1.3.9 TUI 退役：bare `zhishi agent` 不再进入交互式 TUI——打印引导并以
+  // 非零退出（防 AI 调用方/脚本误判「会话已启动」）。`agent` 子命令
+  // (list/show/enable/disable/...) 继续走 Admin API。交互会话请用 GUI。
 
   if (positional[0] === 'agent' && positional.length === 1 && !flags.help) {
 
-    // 1.3.5:TUI 瘦身——--env/--new-env 直通已移除,环境选择由启动正门 gate
-    // 承担。flag 残留时打印引导(仍进正门,不误吞值):--env 在 parseArgs 里
-    // 是 repeatable flag(env 组共用);--new-env → camelCase newEnv。
-    const envFlags = Array.isArray(flags.env) ? (flags.env as string[]).filter(Boolean) : [];
+    console.error('交互式 TUI 已退役（1.3.9）——交互会话请用 GUI 主窗口。');
+    console.error('`zhishi agent <subcommand>`（list/show/enable/disable/set/...）继续可用；');
+    console.error('其余环境/模型/专家等运维操作见 `zhishi --help`。');
 
-    const newEnvFlag = typeof flags.newEnv === 'string' && flags.newEnv.trim() ? flags.newEnv : undefined;
-
-    if (envFlags.length > 0 || newEnvFlag) {
-
-      console.error('环境选择已由正门承担，--env/--new-env 已移除。');
-
-    }
-
-    await runAgentLoop({
-
-      base: `http://127.0.0.1:${PORT}`,
-
-      agentDir: process.cwd(),
-
-    });
+    process.exitCode = 1;
 
     return;
 

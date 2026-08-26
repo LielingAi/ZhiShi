@@ -266,7 +266,7 @@ zhishi env remove <id>
 
 - "样本要在断网 VM 里跑" → 隔离 VM 起好后 `env exec <id> -- ./malware`（guest-exec，不需要网络）
 
-- "进环境干活" → `env open <id>`；`zhishi agent`（无参数）首屏强制选环境
+- "进环境干活" → `env open <id>`；交互会话用 GUI 主窗口（1.3.9 起 `zhishi agent` 无参数已退役，仅子命令 list/show/enable/disable/set 可用）
 
 
 

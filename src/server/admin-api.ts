@@ -1744,7 +1744,7 @@ export function handleModelList(): AdminResponse {
 
   // PRESET_PROVIDERS、也不走 set-key 拉目录——模型目录随 pi-ai 内置。
 
-  // 补一条合成条目,TUI /model 状态卡与 /chat/model 的 kimi 反查闭环
+  // 补一条合成条目,客户端 /model 状态卡与 /chat/model 的 kimi 反查闭环
 
   // 才能覆盖它;目录从 pi-ai 内置目录取,不硬编码避免漂移。
 
@@ -5984,7 +5984,7 @@ export async function handleEnvironmentRollback(payload: {
 
 /** `environment/extract` — 成果回收(design §6.4 收尾 / §6.6 越界模态的
  * 首个真实触发面):把环境内文件 scp 回宿主 `<workspace>/output/extracted/
- * <envId>/`。这是「写宿主」类越界——先过 boundary-ask 通道问人(TUI 红
+ * <envId>/`。这是「写宿主」类越界——先过 boundary-ask 通道问人(GUI 红
  * 色模态),批准才动手,拒绝/超时即中止。凭据纪律:只用 keyPath(D-T4)。 */
 
 export async function handleEnvironmentExtract(payload: {
@@ -6023,7 +6023,7 @@ export async function handleEnvironmentExtract(payload: {
 
   const destDir = join(workspace, 'output', 'extracted', id);
 
-  // 越界询问:写宿主。人批准前 HTTP 请求一直 pending(TUI 模态在等)。
+  // 越界询问:写宿主。人批准前 HTTP 请求一直 pending(客户端模态在等)。
   // 1.3.2 契约补全:带工具名/说明/选项,展示文案由服务端给出。
   const approved = await requestBoundaryAsk({
     kind: 'host-write',
@@ -7182,7 +7182,7 @@ export async function handleEnvironmentSelect(payload: {
 
 
 /** `environment/current` — 查询某 workspace 的当前选定；从未选定 → host。
- *  1.1.6 #4：附带该环境分线绑定的 SessionStore 会话 id（TUI 启动接线用，
+ *  1.1.6 #4：附带该环境分线绑定的 SessionStore 会话 id（客户端启动接线用，
  *  additive 字段；无映射/映射无绑定会话 → null）。 */
 
 export function handleEnvironmentCurrent(payload: {

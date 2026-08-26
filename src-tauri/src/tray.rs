@@ -1,8 +1,6 @@
 // System tray implementation for ZhiShi
-// Windowless host: the tray carries "Open Session" (spawns an agent TUI
-// terminal — the product's interactive surface) plus Exit. The old
-// Open/Settings entries were removed in the W6 subtraction — there is no
-// window to raise or settings page to navigate to.
+// 1.3.9 TUI 退役:「打开会话」改为聚焦 GUI 主窗口(交互面=GUI;原「弹 TUI
+// 终端」随 tui_launcher 删除)。托盘只带「打开会话」+ 退出。
 
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -22,11 +20,9 @@ const MENU_OPEN_SESSION: &str = "open_session";
 const MENU_EXIT: &str = "exit";
 
 /// Shared action for tray left-click and the "Open Session" menu item:
-/// open an agent TUI terminal against the Global Sidecar (1.2.3 — replaces
-/// the windowless host's dead "raise window" action).
+/// focus the GUI main window (1.3.9 — replaces the retired TUI terminal).
 fn open_session<R: Runtime>(app: &tauri::AppHandle<R>) {
-    let manager = app.state::<crate::sidecar::ManagedSidecarManager>().inner().clone();
-    crate::tui_launcher::spawn_open_tui(app.clone(), manager, "tray");
+    show_main_window(app);
 }
 
 /// Initialize the system tray with icon and menu
@@ -108,10 +104,8 @@ pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::er
 
 /// Show the main window (and focus it).
 ///
-/// Kept for the remaining caller in the windowless host (notification click
-/// handler, notification.rs). With no `main` window this is a deliberate
-/// no-op. The single-instance callback no longer routes here — it opens an
-/// agent TUI terminal instead (tui_launcher, 1.2.3).
+/// 1.3.9 TUI 退役:三入口(启动/二次实例/托盘)统一走这里——GUI 主窗口是唯一
+/// 交互面。若主窗口不存在(极端时序)静默降级为无操作。
 pub fn show_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();

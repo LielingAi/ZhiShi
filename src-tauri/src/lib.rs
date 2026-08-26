@@ -21,7 +21,7 @@ mod sidecar;
 pub mod task;
 pub mod trust;
 pub mod terminal;
-pub mod tui_launcher;
+pub mod cli_launcher;
 pub mod usb_updater;
 pub mod workspace_files;
 mod tray;
@@ -100,7 +100,6 @@ pub fn run() {
     let sidecar_state_for_terminal_forwarder = sidecar_state.clone();
 
     let sidecar_state_for_management = sidecar_state.clone();
-    let sidecar_state_for_single_instance = sidecar_state.clone();
     let sidecar_state_for_launcher = sidecar_state.clone();
 
     // Track if cleanup has been performed to avoid duplicate cleanup
@@ -134,15 +133,9 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(move |app, _args, _cwd| {
             // Another instance was launched (user clicked the app icon while
-            // the host is already running). Windowless host (D13): there is no
-            // window to raise — the interactive surface is the CLI/TUI, so a
-            // repeated click opens a fresh agent TUI terminal instead (1.2.3).
-            // Runs on a blocking worker; see tui_launcher module docs.
-            tui_launcher::spawn_open_tui(
-                app.clone(),
-                sidecar_state_for_single_instance.clone(),
-                "single-instance",
-            );
+            // the host is already running). 1.3.9 TUI 退役:交互面是 GUI 主
+            // 窗口——重复点击聚焦窗口(原「弹 TUI 终端」已退役)。
+            crate::tray::show_main_window(app);
             // Notify the front-end that the user just re-activated the app via
             // an external trigger (taskbar icon, dock click on Linux, etc.).
             // The notification module piggy-backs on this to consume any
@@ -314,23 +307,25 @@ pub fn run() {
             }
 
             // CLI install chain (restored in 1.2.3 after the W6 removal left
-            // fresh machines without a `zhishi` command) + interactive-launch
-            // TUI. Runs on every boot so autostart repairs the install too;
-            // the TUI window itself is gated on interactive launch — the
-            // autostart plugin always passes `--minimized` (see the plugin
-            // registration above), which MUST never pop a terminal.
+            // fresh machines without a `zhishi` command). Runs on every boot
+            // so autostart repairs the install too. 1.3.9 TUI 退役:交互启动
+            // 不再弹 TUI 终端——但仍需拉起全局 sidecar(GUI 会话直连它),然后
+            // 显示 GUI 主窗口;autostart 传 --minimized,必须不弹窗、不拉起
+            // (sidecar 由健康监视/前端 IPC 兜底)。
             {
                 let interactive = !std::env::args().skip(1).any(|a| a == "--minimized");
                 let launcher_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let _ = tauri::async_runtime::spawn_blocking(move || {
-                        tui_launcher::sync_cli_resources(&launcher_handle);
+                        cli_launcher::sync_cli_resources(&launcher_handle);
                         if interactive {
-                            tui_launcher::open_tui_session(
+                            // start_global_sidecar 内含 reqwest::blocking——必须在
+                            // spawn_blocking 线程(此处)调用,绝不进 async runtime。
+                            let _ = crate::sidecar::start_global_sidecar(
                                 &launcher_handle,
                                 &sidecar_state_for_launcher,
-                                "launch",
                             );
+                            crate::tray::show_main_window(&launcher_handle);
                         }
                     })
                     .await;

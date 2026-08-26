@@ -15,10 +15,8 @@
 [![Node](https://img.shields.io/badge/Node-%3E%3D22-green.svg)]()
 [![Homepage](https://img.shields.io/badge/Homepage-zhishi.help-blue)](https://zhishi.help)
 
-> 📖 **新用户从这里开始：[使用指南](docs/user-guide.md)** —— 安装、选环境、配模型、TUI 命令大全、常见问题。
+> 📖 **新用户从这里开始：[使用指南](docs/user-guide.md)** —— 安装、选环境、配模型、GUI 操作、常见问题。
 > 📦 **Windows 安装包：[GitHub Releases 下载最新版](https://github.com/LielingAi/ZhiShi/releases/latest)**（NSIS 安装包 / 便携 ZIP）。
-
-![TUI 会话界面](assets/tui-session.png)
 
 > 以实战出发的**漏洞研究专用 harness**。
 
@@ -75,9 +73,7 @@ ZhiShi 是给安全研究员的工作台：二进制利用、渗透测试、白�
 一次真实研究会话长这样：
 
 ```
-ZhiShi 安全研究台
-  环境 pwn-vm（vm）
-  输入开始工作 · / 命令 · @ 引用 · Ctrl+L 帮助
+环境 pwn-vm（vm） · 能力：binary · pentest
 
 ❯ 分析 /home/researcher/ret2win/vuln，gets 溢出，打通拿 flag
 
@@ -96,19 +92,18 @@ ZhiShi 安全研究台
 
 ## 核心特性
 
-### 控制面：全屏 TUI
+### 控制面：GUI 主窗口（1.3.9 起 TUI 退役）
 
-![正门：选择本次会话的工作环境](assets/tui-env-gate.png)
-
-- 正门强制选环境（无 host 模式），`--env <id>` / `--new-env <类型>` 直通
-- 流式会话 + 工具卡折叠（只留关键信号：exit 码、崩溃、flag、CVE、端口、会话已开）
-- 会话按环境分线（每环境独立历史，来回切换各接各的，不串场）
-- 中断五档：`Esc` 停止 · 运行中输入即纠偏 · `Ctrl+Z` 回思路（rewind）· `/rollback` 回环境 · `/attach` 接管环境 shell
-- 回看：PgUp/PgDn 整页 + 滚轮逐行 + Ctrl+Home 跳顶，输入永不锁；Esc 清草稿可恢复
-- `/` 命令面板、`@` 引用、`Ctrl+R` 历史搜索、`Ctrl+L` 帮助、`/fork` 分叉线程、`/tasks` 子任务面板
-- 越界动作红色模态（写宿主等四类，逐次问人，无「永远允许」）
-- 后台长驻进程状态行可见（`⛁ fuzz · 跑着`）+ 退出插行
-- 桌面图标点击即开 TUI（安装包形态；自启静默不弹窗）
+- 环境侧栏三组（运行中/已停止/本机已有）+ 新建环境四步向导（docker 配方 / VM 配方 / 接入已有 / 手动 SSH）+ 本机发现登记/去重
+- 块化会话流（输入=块首、结论聚合亮顶、thought/工具卡折叠、抽屉详情）+ 运行中输入即纠偏
+- 环境准入闸（已停止不可进入，先启动）+ 三态判定统一
+- 决策面板（模型方向分歧提请人拍板 + 专家依据区 + 决策块落流可追溯）
+- 历史面板（会话分组/搜索/只读回看/载回续跑）+ 会话管理（重命名/置顶/归档/删除）
+- attach 真终端（xterm + WS pty：docker exec -it / ssh -tt）+ 一次性命令执行双模式
+- `/` 命令面板、`@` 补全（环境/文件/子代理/工具）、`Ctrl+R` 历史、Esc 链、深浅主题
+- 越界动作模态（写宿主等四类，逐次问人，无「永远允许」）
+- 后台长驻进程状态栏可见（`⛁ fuzz · 跑着`）+ 退出插行
+- 桌面图标/托盘/二次实例 → 聚焦 GUI 主窗口（自启静默不弹窗）
 
 ### 引擎：自研 loop（harness 本体）
 
@@ -124,26 +119,28 @@ ZhiShi 安全研究台
 | 能力包 | skills 提示词注入（binary-exploit / vuln-triage / native-code-loop / range-ops / pentest / whitebox-audit / ai-security + 用户库 `~/.zhishi/skills/`） |
 | 子代理 | bundled-agents：fuzz-runner / crash-triager / vuln-hunter / hypothesis-tester / critic；`/tasks` 面板看工作现场与完整 transcript |
 | 域包 | `bundled-domains/<域>/domain.json` —— 环境类型 / skill / 子代理 / 信号 / 验收一键声明，`zhishi domain check` 就绪自检 |
-| 模型 | 8 家内置供应商端点（kimi / deepseek / openai / moonshot / 通义 / 智谱 / 硅基流动…），`zhishi model set-key <id> <key>` 后自动拉模型列表，TUI `/model` 闭环 |
+| 模型 | 8 家内置供应商端点（kimi / deepseek / openai / moonshot / 通义 / 智谱 / 硅基流动…），`zhishi model set-key <id> <key>` 后自动拉模型列表，GUI 状态栏切换（只显示已配置供应商） |
 
 ## 快速开始
 
-> 发行版（推荐）：[GitHub Releases](https://github.com/LielingAi/ZhiShi/releases/latest) 下载 Windows 安装包/便携 ZIP → 安装 → 点击图标即开 TUI（无窗口后台宿主 + 终端会话）。要求 Node.js ≥ 22（安装包已内置）。
+> 发行版（推荐）：[GitHub Releases](https://github.com/LielingAi/ZhiShi/releases/latest) 下载 Windows 安装包/便携 ZIP → 安装 → 点击图标即开 GUI 主窗口（后台宿主管理 sidecar 生命周期）。要求 Node.js ≥ 22（安装包已内置）。
 
 开发态直跑源码：
 
 ```bash
 npm install
 
-# 终端 1：sidecar（引擎 + admin API）
+# 一条命令：Tauri 开发壳（GUI 窗口 + sidecar + vite HMR）
+npm run tauri:dev
+
+# 或分开跑——终端 1：sidecar（引擎 + admin API）
 node --import tsx/esm src/server/index.ts --agent-dir "$PWD"
 
-# 终端 2：TUI（Windows 先 set，POSIX 用 export）
-set ZHISHI_PORT=3000
-node --import tsx/esm src/cli/zhishi.ts agent
+# 终端 2：GUI（vite dev server，浏览器/窗口连 sidecar）
+npm run dev:gui
 ```
 
-TUI 启动即进正门：选择本次会话的工作环境（没有环境就从环境类型新建一个），之后一切研究都在环境内进行。
+GUI 打开即进环境侧栏：选环境（没有就从四步向导新建），之后一切研究都在环境内进行。
 
 ### 环境管理
 
@@ -190,8 +187,7 @@ npm run sync:bundled-skills # 内置 skills 同步
 # 终端 1：sidecar（编译产物，与开发态 tsx 启动等价）
 node src-tauri/resources/server-dist.js --agent-dir "$PWD"
 
-# 终端 2：TUI（编译产物 CLI；Windows 先 set ZHISHI_PORT=3000，POSIX 用 export）
-node src-tauri/resources/cli/zhishi.js agent
+# 终端 2：GUI（vite build 产物随包分发；开发态 npm run tauri:dev 已含窗口）
 ```
 
 ### 发行包（Windows：NSIS 安装包 + 便携 ZIP）
@@ -200,14 +196,14 @@ node src-tauri/resources/cli/zhishi.js agent
 npm run tauri:build   # 或 scripts/build/build_windows.ps1（完整发布流程）
 ```
 
-产物在 `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/`。安装后：Tauri 壳（无窗口）负责 sidecar 生命周期与自更新，`zhishi` 命令同步到 `~/.zhishi/bin/`。构建细节与验证清单见 `docs/spec/windows-release-build.md`。
+产物在 `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/`。安装后：Tauri 壳负责 GUI 窗口 + sidecar 生命周期与自更新，`zhishi` 命令同步到 `~/.zhishi/bin/`。构建细节与验证清单见 `docs/spec/windows-release-build.md`。
 
 ## 架构
 
 ```mermaid
 flowchart LR
-    U[研究员] <-->|全屏 TUI| TUI[zhishi agent]
-    TUI <-->|HTTP + SSE| S[Sidecar]
+    U[研究员] <-->|GUI 主窗口| G[GUI webview<br/>React + SSE]
+    G <-->|HTTP + SSE + WS| S[Sidecar]
     S --> L[自研 loop 引擎]
     L --> M[LLM 供应商<br/>kimi / deepseek / …]
     L -->|env_exec / env_bg| E1[Docker 环境]
@@ -222,8 +218,8 @@ flowchart LR
 | 引擎（loop / 工具 / 边界 / 蒸馏） | `src/server/loop/`、`src/server/memory/` |
 | 环境层（引擎探测 / 环境类型 / 生命周期 / 纳管） | `src/server/environment/` |
 | admin API（sidecar HTTP 面） | `src/server/admin-api.ts`、`src/server/index.ts` |
-| 全屏 TUI（reducer / 渲染 / 正门 / 命令） | `src/cli/tui/v2/` |
-| CLI 统一入口 | `src/cli/zhishi.ts` |
+| GUI（React + zustand + xterm；会话/环境/决策/历史） | `src/gui/` |
+| CLI 统一入口（子命令：mcp/model/env/expert/term/…） | `src/cli/zhishi.ts` |
 | 内置环境类型 / 技能 / 域包 / 子代理 | `bundled-environments/`、`bundled-skills/`、`bundled-domains/`、`bundled-agents/` |
 
 ## 验证状态
@@ -233,22 +229,22 @@ flowchart LR
 | 单元测试 | 1900+ 全绿；`tsc --noEmit` / `eslint` 零错 / depcruise 架构边界强制 |
 | 活体回归 | `npm run smoke` 一键（真端点 + 真 VM，m1-m4 全链路）；产物级 smoke（打包产物跑关键路径） |
 | 活体 dogfood | ret2win 全程打通；1.1.8 三域实战验证（whitebox 埋雷审计全中 / pentest 全链拿 flag / ai-security 注入探针全拒），详见 `docs/design/` |
-| TUI 全链路真机 | 选环境 / 流式 / 中断 / 回退 / 快照回滚 / 接管 / 后台任务 / 越界模态 / fork 全部通过 |
+| GUI 全链路真机 | 选环境 / 流式 / 中断 / 回退 / 快照回滚 / attach 终端 / 决策面板 / 历史面板 / 越界模态 / 后台任务全部通过（1.3.0-1.3.8 实机走查） |
 | 域内容件 | 四域齐备（binary / pentest / whitebox / ai-security）并经实战验证 |
 
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
-| `docs/roadmap.md` | 版本任务池（当前线：1.2.x 校准协作——研究交付 + 专家知识层） |
-| `docs/user-guide.md` | 使用指南（安装、选环境、配模型、TUI 命令大全、常见问题） |
+| `docs/roadmap.md` | 版本任务池（当前线：1.3.x GUI 主线——1.3.9 TUI 退役执行） |
+| `docs/user-guide.md` | 使用指南（安装、选环境、配模型、GUI 操作、常见问题） |
 | `docs/expert-import-guide.md` | 专家知识导入指南（命令/字段规范/JSON+YAML 格式，附可导入的 `expert-import.demo.yaml`） |
-| `docs/design/` | 各版本设计与分析稿（1.1.6–1.2.7、distill-eval） |
+| `docs/design/` | 各版本设计与分析稿（1.1.6–1.2.7、distill-eval、1.3.4 TUI 退役评估） |
 | `docs/spec/` | 长期契约与专项设计（见下） |
 | `docs/spec/expert-knowledge-plan.md` | 专家知识层迭代与技术方案（1.2.1-1.2.3） |
 | `docs/spec/security_researcher_agent_design.md` | 产品设计（决策记录 D1–D31） |
 | `docs/spec/security_researcher_agent_tech_plan.md` | 技术方案 |
-| `docs/spec/tui_tech_spec.md` / `docs/spec/tui-rebuild-plan.md` | TUI 契约与重建蓝图 |
+| `docs/spec/tui_tech_spec.md` / `docs/spec/tui-rebuild-plan.md` | 已退役（1.3.9），仅供历史归档 |
 | `docs/spec/env-bg-design.md` | 环境内长驻进程通道设计底账 |
 | `docs/spec/design-spec.md` | 交互契约（界面行为、状态、流） |
 | `docs/spec/windows-release-build.md` | Windows 发行构建与验证清单 |

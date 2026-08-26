@@ -2030,7 +2030,7 @@ async function main() {
 
         // getAgentState/getMessages 在这条路径下为空)。事件名/形状与
 
-        // SDK 路径逐字段对齐,TUI 零改动。
+        // SDK 路径逐字段对齐,客户端零改动。
 
         if (isPiEngine()) {
 
@@ -2048,7 +2048,7 @@ async function main() {
 
           client.send('chat:logs', { lines: getPiLogLines() });
 
-          // 越界 ask(design §6.6):重连重放全部待答 ask——TUI 重连不丢模态。
+          // 越界 ask(design §6.6):重连重放全部待答 ask——客户端重连不丢模态。
           for (const ask of pendingBoundaryAsks()) {
             client.send('chat:boundary-ask', ask);
           }
@@ -2071,13 +2071,13 @@ async function main() {
 
           }
 
-          // 1.2.8(M4)重连对账:队列状态快照——重连的 TUI 错过了排队时刻的
+          // 1.2.8(M4)重连对账:队列状态快照——重连的客户端错过了排队时刻的
 
           // queue:added 广播,这里逐条补发 isInFlight:false 的排队项(FIFO +
 
           // steering,kind 带上,与 chat-engine 广播形态一致),让重连后的
 
-          // TUI 队列与服务端一致。
+          // 客户端队列与服务端一致。
 
           for (const snap of getPiQueueSnapshotEvents()) {
 
@@ -2190,7 +2190,7 @@ async function main() {
           const config = loadConfig();
           let providerId: string | null = null;
           if (providerIdArg) {
-            // TUI /model use 的显式供应商语义:直接校验该供应商,不做全局反查
+            // 客户端 /model use 的显式供应商语义:直接校验该供应商,不做全局反查
             // (聚合平台同名模型撞名时全局反查会错配供应商)。
             const provider = findEffectiveProvider(providerIdArg, config);
             if (!provider) {
@@ -2757,7 +2757,7 @@ async function main() {
 
       // Reset session for "new conversation" - clears all messages and state
 
-      // 越界 ask 应答(design §6.6):TUI 红色模态的 y/n 落点。
+      // 越界 ask 应答(design §6.6):客户端模态的 y/n 落点。
       if (pathname === '/chat/boundary/respond' && request.method === 'POST') {
         const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
         const askId = typeof body.askId === 'string' ? body.askId : '';
