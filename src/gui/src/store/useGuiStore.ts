@@ -886,6 +886,11 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       get().showToast('未连接 sidecar');
       return;
     }
+    // 1.4.0 补充修复：一切操作都在环境内——未锚定环境（host）不发任何消息。
+    if (!get().currentEnvKey) {
+      get().showToast('请先选择环境——研究只发生在环境内');
+      return;
+    }
     const refs = get().refs;
     const body = buildSendBody(text, refs);
     get().addHistory(text);

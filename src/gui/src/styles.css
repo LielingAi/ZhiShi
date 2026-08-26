@@ -274,6 +274,9 @@ kbd {
   cursor: text;
 }
 .input-box:focus-within { border-color: var(--cyan-dim); box-shadow: 0 0 0 3px rgba(53,195,226,.07); }
+/* 1.4.0 补充修复：host 态输入区禁用态（灰化 + 禁光标） */
+.input-box.host { opacity: .55; cursor: not-allowed; }
+.input-box.host textarea { cursor: not-allowed; }
 .input-box textarea {
   flex: 1; min-width: 0; background: transparent; border: none; outline: none;
   color: var(--text); font-family: var(--sans); font-size: 13.5px; line-height: 1.65;
