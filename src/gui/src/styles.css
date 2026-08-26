@@ -70,7 +70,11 @@ kbd {
 .envbar .eb-title {
   padding: 12px 14px 6px; font-size: 11px; color: var(--faint);
   letter-spacing: .6px; text-transform: uppercase;
+  display: flex; align-items: center; justify-content: space-between;
 }
+/* 1.4.0：环境列表手动刷新（侧栏头部，运行状态现场重探） */
+.envbar .eb-refresh { color: var(--faint); padding: 0 4px; font-size: 12px; }
+.envbar .eb-refresh:hover { color: var(--cyan); }
 .envbar .eb-group { padding: 4px 8px; }
 .envbar .ebg-label {
   padding: 8px 6px 3px; font-size: 10.5px; color: var(--faint);

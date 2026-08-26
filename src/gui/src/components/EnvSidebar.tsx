@@ -80,9 +80,39 @@ export function EnvSidebar(): React.JSX.Element {
     [envs, running, discoveredDocker, discoveredVm],
   );
 
+  /** 从 store 最新快照重建侧栏分组（点击重探后重新判定准入）。 */
+  const freshGroupsFor = (): ReturnType<typeof groupSidebar> => {
+    const s = useGuiStore.getState();
+    return groupSidebar(
+      s.envs,
+      s.running,
+      [
+        ...s.discoveredDocker.map((d) => ({ id: d.id, name: d.name, state: d.status, driver: 'docker' })),
+        ...s.discoveredVm.map((v) => ({
+          id: v.id,
+          name: v.name,
+          state: v.state,
+          driver: v.driver,
+          vmx: v.vmx,
+          osFamily: v.osFamily,
+        })),
+      ],
+    );
+  };
+
   return (
     <aside className="envbar">
-      <div className="eb-title">环境</div>
+      <div className="eb-title">
+        环境
+        <button
+          className="btn small eb-refresh"
+          title="刷新环境列表（重新拉取运行状态）"
+          aria-label="刷新环境列表"
+          onClick={() => void useGuiStore.getState().refreshSidebar()}
+        >
+          ⟳
+        </button>
+      </div>
       {groups.map((g) => (
         <div className="eb-group" key={g.label}>
           <div className="ebg-label">{g.label}</div>
@@ -100,6 +130,24 @@ export function EnvSidebar(): React.JSX.Element {
                     return;
                   }
                   if (!gate.allow) {
+                    // 1.4.0 实机修复：环境刚启动/手动启动时侧栏快照陈旧——
+                    // 点击拦截的「未启动」环境先重探一次（ps 现场判定），
+                    // 起来就直接进；确实没起再提示先启动。
+                    if (gate.reason === 'not-started' && gate.canStart) {
+                      void (async () => {
+                        await useGuiStore.getState().refreshSidebar();
+                        const freshItem = freshGroupsFor()
+                          .flatMap((x) => x.items)
+                          .find((x) => x.key === it.key);
+                        const freshGate = freshItem ? accessGate(freshItem) : gate;
+                        if (freshItem && freshGate.allow) {
+                          await switchEnv(it.key);
+                          return;
+                        }
+                        showToast(gateToast(it, gate));
+                      })();
+                      return;
+                    }
                     showToast(gateToast(it, gate));
                     return;
                   }
