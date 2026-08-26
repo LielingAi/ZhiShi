@@ -5,6 +5,21 @@
 
 ---
 
+## 1.4.0 —— GUI 正式发版（进行中）
+
+1.3.x 线收官：GUI 覆盖核心场景（1.3.0-1.3.8）+ TUI 退役（1.3.9）+ 全局质量审计（1.3.10）全部完成。本版=**退役后的首次发版**：编译打包 GUI 版 + 发版前全量回归 + 合 master + 发布。遗留的「发版前」三件在这里收口。
+
+- [ ] **打包收口三件**：①node-pty 打包侧 pty-runtime 接入（`src-tauri/resources/pty-runtime/`，sqlite-runtime 同款模式——@lydell/node-pty 平台 prebuilds 进资源，`loadNodePty` 的 `<Resources>/pty-runtime` 回落路径已就位）；②Tauri 生产路径 WS upgrade 转发验证（attach 终端 `/api/admin/environment/term` 在打包形态经 Rust panel_api 代理的可达性——1.3.3 记录在案「未验证」，不通则终端模式降级一次性执行）；③esbuild server 外部依赖（node-pty/ws）在打包 server-dist.js 的 require 路径核验。
+- [ ] **编译打包**：NSIS 安装包 + 便携 ZIP（scripts/build/build_windows.ps1 全链路，1.2.3 链路沿用：bin 三件套 + PATH 注册 + 卸载）；GUI 窗口 + sidecar 生命周期 + cli_launcher 镜像 + zhishi.cmd 生成式。
+- [ ] **发版前全量回归**：全量测试 + typecheck + lint + 三构建 + cargo clippy；打包产物实机安装验证（装完：GUI 开窗、环境列表、会话流、attach 终端、模型配置、zhishi 命令、三入口聚焦、卸载）。
+- [ ] **版本号 + CHANGELOG**：1.4.0 release（sync-version 流程：tauri.conf.json + Cargo.toml）；CHANGELOG 1.4.0 条目（GUI 正式版 = 1.3.0-1.3.10 全部内容摘要）。
+- [ ] **合 master + 发布**：合并到主分支，GitHub Release 上传安装包（README 已是 GUI 口径）。
+
+> 验收：全量测试 + 打包产物实机安装验证（装完点图标开 GUI → 走一遍核心链路）。
+> 里程碑意义：1.3.x GUI 主线完成后的第一个正式发行版——TUI 时代终结，GUI 时代开始。
+
+---
+
 ## 1.3.10 —— 全局代码质量审计（已完成）
 
 用户定调（2026-08-26）：发版（1.4.0）前的全局代码质量审计。方法论同 1.2.8 TUI 普查 / 1.3.8 环境普查：代码级证据 + 实机驱动，产出台账分级（真 bug / 技术债 / 低危 / 记录在案），确认的逐条修复带回归测试。
