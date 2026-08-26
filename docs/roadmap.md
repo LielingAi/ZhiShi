@@ -5,6 +5,21 @@
 
 ---
 
+## 1.3.9 —— TUI 退役执行（进行中）
+
+执行依据：`docs/design/1.3.4-tui-retirement.md`（评估报告，用户已拍板退役时点=1.3.9）。GUI 三块核心（会话+决策+历史）与全部补缺（1.3.5-1.3.8）已齐，交互式 TUI 停运条件成立。**口径：退役交互式 TUI（渲染层+app 装配），`zhishi` CLI 子命令与 `zhishi term` 链路（Rust panel_api）独立存活，勿误删**。
+
+- [ ] **摘除 src/cli/tui/ 全目录**（产品 ~7.9K 行 + 27 测试文件）：渲染层/event-reducer/gate/editor/keymap/blocks/slash/attach 等；`zhishi.ts` 摘 bare `agent` 分支（`runAgentLoop` import、:3104-3141 分发、TOP_HELP 交互行、--env/--new-env 描述）——`zhishi agent` 子命令保留，无参数改为打印引导 + 非零退出码（防 AI 调用方误判「会话已启动」）。
+- [ ] **Rust 壳三入口切换**：删 `src-tauri/src/tui_launcher.rs`；`lib.rs` single_instance 回调 → 聚焦主窗口、setup 交互启动块 → 显示主窗口（`sync_cli_resources` 镜像逻辑保留/搬家）、模块声明删除；`tray.rs` `open_session` → `show_main_window`。**三入口同批切换，漏一处=桌面入口失活**（报告最高风险）。
+- [ ] **服务端注释措辞**：index.ts / admin-api.ts 的「TUI」注释改「客户端/GUI」（零行为改动，SSE 契约全共享）。
+- [ ] **文档/资产改写**：README.md（TUI 口径 → GUI 主界面 + 截图替换）、user-guide.md §5「TUI 操作大全」改写为 GUI 操作、tui_tech_spec.md / tui-rebuild-plan.md 标注「已退役，历史归档」、bundled-skills/zhishi-cli/SKILL.md:269 更新、package.json description 更新。
+- [ ] **验证**：全量测试（删 TUI 测试后基线下降属预期）+ typecheck + eslint + build:cli/server/gui + `cargo check`；实机走查：三入口（点图标/托盘/二次实例 → GUI 窗口聚焦）、`zhishi term open/write/read/close` 回归、bare `zhishi agent` 行为、GUI 重连 SSE。
+
+> 不做（维持）：编译发版（GUI 完成前——打包冒烟发版版做）、B 形态引擎并行（已砍）、/bg 转后台（单独立版）。
+> 验收：全量测试 + 实机走查。
+
+---
+
 ## 1.3.8 —— 环境/配方深入 + BUG 普查 + 环境多配方（已完成）
 
 用户定调（2026-08-26）：深入环境、配方的功能实现与 GUI 调用实现，寻找 BUG，环境多配方。1.3.7 把环境业务逻辑收干净后，本版把环境与配方两个对象的功能面做深。**讨论收敛 + 用户拍板（2026-08-26）：范围收窄——配方管理不做 GUI 化（配方是开发资产）、环境行不加详情抽屉/操作面板（违背信息不堆砌）**。
