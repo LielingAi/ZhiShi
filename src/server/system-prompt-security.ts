@@ -254,8 +254,17 @@ export function buildSecurityCapabilitiesSection(
     if (matched.length > 0) {
       const allowedRecipes = new Set(matched.flatMap((m) => m.recipes));
       validRecipes = validRecipes.filter((r) => allowedRecipes.has(r.id));
-      environments = environments.filter((e) =>
-        validRecipes.some((r) => r.id === e.recipeId || r.id === e.id || r.id === e.vmName));
+      // 1.3.8 多配方：具名环境命中任一绑定配方（recipeIds ∪ recipeId ∪
+      // id/vmName 同名回落）即保留。
+      environments = environments.filter((e) => {
+        const bound = new Set<string>([
+          ...(e.recipeIds ?? []),
+          ...(e.recipeId ? [e.recipeId] : []),
+          e.id,
+          ...(e.vmName ? [e.vmName] : []),
+        ]);
+        return validRecipes.some((r) => bound.has(r.id));
+      });
     }
   }
 
@@ -337,12 +346,19 @@ export function buildSecurityCapabilitiesSection(
       const label = entry.name && entry.name !== entry.id && !entry.name.startsWith(entry.id)
         ? `${entry.id}（${entry.name}）`
         : entry.id;
-      // 配方绑定:entry.recipeId 优先,回落 id/vmName 同名配方(老条目)。
-      const recipe = validRecipes.find(
-        (r) => r.id === entry.recipeId || r.id === entry.id || r.id === entry.vmName,
-      );
-      const binding = recipe
-        ? `（类型 ${recipe.id}：${recipe.tools.length > 0 ? recipe.tools.join('、') : '未声明工具'}）`
+      // 配方绑定：recipeIds（1.3.8 多配方集合）∪ recipeId 优先，回落
+      // id/vmName 同名配方（老条目）。绑定=展示/构建来源，工具并集。
+      const boundRecipeIds = new Set<string>([
+        ...(entry.recipeIds ?? []),
+        ...(entry.recipeId ? [entry.recipeId] : []),
+        entry.id,
+        ...(entry.vmName ? [entry.vmName] : []),
+      ]);
+      const boundRecipes = validRecipes.filter((r) => boundRecipeIds.has(r.id));
+      const binding = boundRecipes.length > 0
+        ? `（类型 ${boundRecipes.map((r) => r.id).join('+')}：${[
+            ...new Set(boundRecipes.flatMap((r) => r.tools)),
+          ].join('、')}）`
         : '（无类型绑定——手动接入/旧条目）';
       // 1.3.7 场景 3：条目带现场推导的能力集合时透明展示（推导，非声明）。
       const capNote = entry.capabilityDomains?.length

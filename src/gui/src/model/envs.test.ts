@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildRegisterPayload, capabilityBadgeText, capabilityTooltip, groupSidebar, isDiscoveredRunning, isSwitchable, matchRegisteredEnv } from './envs';
+import { buildRegisterPayload, capabilityBadgeText, capabilityTooltip, groupSidebar, isDiscoveredRunning, isSwitchable, matchRegisteredEnv, psRowMatchesEntry, resolveEnvState } from './envs';
 
 const envs = [
   { id: 'pwn@docker', kind: 'docker', name: 'pwn@docker' },
@@ -272,5 +272,134 @@ describe('能力徽章（1.3.7 场景 3）', () => {
   it('空能力集合视同未推导（不出徽章）', () => {
     const groups = groupSidebar([{ id: 'e', kind: 'docker', capabilityDomains: [] }], [], []);
     expect(groups[0].items[0].capability).toBeUndefined();
+  });
+});
+
+
+// ===== 1.3.8 ②：三态判定单点（resolveEnvState） =====
+
+describe('resolveEnvState（1.3.8 ② 三态判定唯一事实源）', () => {
+  const ENVS = [
+    { id: 'fuzz', kind: 'vm', name: 'fuzz', vmName: 'fuzz', vmx: 'E:\\VMs\\fuzz\\vmware-fuzz.vmx', recipeId: 'fuzz' },
+    { id: 'docker-kali', kind: 'docker', container: 'kali-2024', recipeId: 'pentest' },
+    { id: 'hop', kind: 'ssh' },
+  ];
+
+  it('登记条目 + ps 命中 → running（不可启动）', () => {
+    const st = resolveEnvState({ entry: ENVS[1] }, [{ id: 'docker-kali', status: 'running' }], ENVS);
+    expect(st).toEqual({ state: 'running', startable: false });
+  });
+
+  it('登记条目 + ps 未命中 → stopped；docker/vm 带 recipeId 才可启动', () => {
+    expect(resolveEnvState({ entry: ENVS[0] }, [], ENVS)).toEqual({ state: 'stopped', startable: true });
+    expect(resolveEnvState({ entry: ENVS[1] }, [], ENVS)).toEqual({ state: 'stopped', startable: true });
+    // ssh 无配方 → 不可启动
+    expect(resolveEnvState({ entry: ENVS[2] }, [], ENVS)).toEqual({ state: 'stopped', startable: false });
+    // docker 但 recipeId 空串 → 不可启动
+    expect(
+      resolveEnvState({ entry: { id: 'd', kind: 'docker', recipeId: '' } }, [], ENVS).startable,
+    ).toBe(false);
+  });
+
+  it('发现条目 → unregistered；同族命中带 registeredAs，未命中则不带', () => {
+    const hit = resolveEnvState(
+      { discovered: { id: 'abc', name: 'kali-2024', driver: 'docker', state: 'Exited (0)' } },
+      [],
+      ENVS,
+    );
+    expect(hit.state).toBe('unregistered');
+    expect(hit.registeredAs).toEqual({ key: 'docker-kali', label: 'docker-kali' });
+    expect(hit.localStopped).toBe(true);
+
+    const miss = resolveEnvState(
+      { discovered: { id: 'v', name: 'other.vmx', driver: 'vmware', state: 'unknown' } },
+      [],
+      ENVS,
+    );
+    expect(miss.state).toBe('unregistered');
+    expect(miss.registeredAs).toBeUndefined();
+    expect(miss.localStopped).toBe(false);
+  });
+
+  it('发现条目停止态判定：exit / powered / saved → localStopped', () => {
+    for (const state of ['Exited (1)', 'powered off', 'Saved']) {
+      expect(
+        resolveEnvState({ discovered: { id: 'x', name: 'x', driver: 'docker', state } }, [], []).localStopped,
+      ).toBe(true);
+    }
+    expect(
+      resolveEnvState({ discovered: { id: 'x', name: 'x', driver: 'docker', state: 'Up 2 hours' } }, [], [])
+        .localStopped,
+    ).toBe(false);
+  });
+
+  it('防御：空身份 → unregistered，不炸', () => {
+    expect(resolveEnvState({}, [], [])).toEqual({ state: 'unregistered', startable: false });
+  });
+
+  it('与 groupSidebar 同口径：stopped/unregistered 行的 startable 与 registeredAs 一致', () => {
+    const groups = groupSidebar(ENVS, [], [{ id: 'abc', name: 'kali-2024', driver: 'docker', state: 'Exited (0)' }]);
+    const stop = groups.find((g) => g.label === '已停止')!.items;
+    const unreg = groups.find((g) => g.label === '本机已有')!.items;
+    for (const e of ENVS) {
+      const st = resolveEnvState({ entry: e }, [], ENVS);
+      const item = stop.find((i) => i.key === e.id)!;
+      expect(item.startable).toBe(st.startable);
+    }
+    expect(unreg[0].registeredAs).toEqual(
+      resolveEnvState({ discovered: { id: 'abc', name: 'kali-2024', driver: 'docker', state: 'Exited (0)' } }, [], ENVS)
+        .registeredAs,
+    );
+  });
+});
+
+
+// ===== 1.3.8 B1：docker ps 行 ↔ 登记条目的匹配键统一 =====
+
+describe('psRowMatchesEntry（1.3.8 B1）', () => {
+  const entry = { id: 'zhishi-pwn-a3f2', kind: 'docker', container: 'zhishi-pwn-a3f2' };
+
+  it('主键 id 相等即命中（服务端已归一 docker 行 id 为条目 id）', () => {
+    expect(psRowMatchesEntry({ id: 'zhishi-pwn-a3f2', driver: 'docker' }, entry)).toBe(true);
+  });
+
+  it('兜底：docker 短 id 行按 row.name === entry.container 命中', () => {
+    expect(
+      psRowMatchesEntry({ id: 'a3f2b1c4d5e6', name: 'zhishi-pwn-a3f2', driver: 'docker' }, entry),
+    ).toBe(true);
+  });
+
+  it('不误伤：容器名不同不命中；非 docker 条目不走容器名兜底', () => {
+    expect(psRowMatchesEntry({ id: 'x', name: 'other', driver: 'docker' }, entry)).toBe(false);
+    expect(
+      psRowMatchesEntry(
+        { id: 'x', name: 'fuzz', driver: 'vm' },
+        { id: 'fuzz-env', kind: 'vm', container: 'fuzz' },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('groupSidebar — B1 docker 双身份收敛', () => {
+  it('短 id docker 行 ∩ 登记条目 → 只落「运行中」一组，条目不再重复落「已停止」', () => {
+    const groups = groupSidebar(
+      [{ id: 'zhishi-pwn-a3f2', kind: 'docker', container: 'zhishi-pwn-a3f2', recipeId: 'pwn' }],
+      [{ id: 'a3f2b1c4d5e6', name: 'zhishi-pwn-a3f2', status: 'Up 2 hours', driver: 'docker' }],
+      [],
+    );
+    expect(groups.map((g) => g.label)).toEqual(['运行中']);
+    // key 归一为条目 id——environment/select 只认登记 id，短 id 会落悬空 selection
+    expect(groups[0].items[0].key).toBe('zhishi-pwn-a3f2');
+    expect(groups[0].items[0].kind).toBe('docker');
+  });
+
+  it('resolveEnvState 同口径：短 id docker 行命中 → 条目状态 running', () => {
+    const entry = { id: 'zhishi-pwn-a3f2', kind: 'docker', container: 'zhishi-pwn-a3f2', recipeId: 'pwn' };
+    const st = resolveEnvState(
+      { entry },
+      [{ id: 'a3f2b1c4d5e6', name: 'zhishi-pwn-a3f2', driver: 'docker' }],
+      [entry],
+    );
+    expect(st.state).toBe('running');
   });
 });

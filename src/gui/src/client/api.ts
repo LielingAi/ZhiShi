@@ -33,6 +33,8 @@ export interface EnvEntry {
   vmx?: string;
   osFamily?: 'linux' | 'windows';
   recipeId?: string;
+  /** 多配方绑定集合（1.3.8 关联侧，含主配方；缺省等价 [recipeId]）。 */
+  recipeIds?: string[];
   address?: string;
   user?: string;
   keyPath?: string;
@@ -76,6 +78,8 @@ export interface Recipe {
   tools: string[];
   /** 1.3.7：vm 配方的 guest SSH 缺省用户（frontmatter vm_user；向导预填用）。 */
   vmUser?: string;
+  /** 1.3.8 ③b：SKILL.md 正文打法摘要（server recipes 端点透传，向导折叠展示）。 */
+  workflowSummary?: string;
 }
 
 export interface ModelEntity {
@@ -273,6 +277,18 @@ export function environmentUp(
   return client.adminPost('environment/up', input);
 }
 
+/**
+ * 1.3.8 ①：停止运行中环境（侧栏「停止」按钮）。服务端按条目路由：
+ * vmware 关 vmx、hyperv Stop-VM、vbox acpipowerbutton、docker stop+rm
+ * （src/server/admin-api.ts::handleEnvironmentDown）。
+ */
+export function environmentDown(
+  client: GuiSidecarClient,
+  input: { id: string },
+): Promise<{ success: boolean; error?: string; data?: { removed?: string } }> {
+  return client.adminPost('environment/down', input);
+}
+
 export function environmentAdopt(
   client: GuiSidecarClient,
   input: { recipe: string; vmx: string; user?: string; keyPath?: string; password?: string },
@@ -307,6 +323,14 @@ export function environmentCapabilityRefresh(
   input: { id: string },
 ): Promise<{ success: boolean; error?: string; data?: { capabilityDomains?: string[]; capabilityDerivedAt?: string } }> {
   return client.adminPost('environment/capability-refresh', input);
+}
+
+/** 1.3.8 多配方：绑定集合整体替换（含主配方，主配方不可移除）。 */
+export function environmentBindRecipes(
+  client: GuiSidecarClient,
+  input: { id: string; recipeIds: string[] },
+): Promise<{ success: boolean; error?: string; data?: { id?: string; recipeIds?: string[] } }> {
+  return client.adminPost('environment/bind-recipes', input);
 }
 
 /**

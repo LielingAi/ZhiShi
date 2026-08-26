@@ -820,6 +820,10 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
 
   if (route === 'environment/capability-refresh') return await api.handleEnvironmentCapabilityRefresh(payload as Parameters<typeof api.handleEnvironmentCapabilityRefresh>[0]);
 
+  // 1.3.8 多配方：绑定集合整体替换（含主配方，不进域裁决）
+
+  if (route === 'environment/bind-recipes') return await api.handleEnvironmentBindRecipes(payload as Parameters<typeof api.handleEnvironmentBindRecipes>[0]);
+
   // 域包清单层(P2 多域抽象层)
   if (route === 'domain/list') return api.handleDomainList();
   if (route === 'domain/check') return await api.handleDomainCheck(payload as Parameters<typeof api.handleDomainCheck>[0]);

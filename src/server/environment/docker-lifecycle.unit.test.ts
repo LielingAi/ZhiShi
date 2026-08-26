@@ -118,9 +118,10 @@ describe('parseDockerPs (pure)', () => {
 });
 
 describe('envUp', () => {
-  it('runs probe → build → run and returns the started instance', async () => {
+  it('runs probe → ps（幂等检查）→ build → run and returns the started instance', async () => {
     const { exec, calls } = scriptedExec([
       PROBE_OK,
+      ok(''), // B6 幂等检查：zhishi.env label 下无在跑容器
       ok('...build output...'),
       ok('d0e5f6a7b8c9d0e5f6a7b8c9\n'),
     ]);
@@ -135,8 +136,50 @@ describe('envUp', () => {
     expect(result.instance.recipe).toBe('web-recon');
     expect(result.instance.workspace).toBe('/work/dir');
     expect(calls[0][0]).toBe('docker');
-    expect(calls[1].slice(0, 2)).toEqual(['docker', 'build']);
-    expect(calls[2].slice(0, 2)).toEqual(['docker', 'run']);
+    expect(calls[1].slice(0, 2)).toEqual(['docker', 'ps']); // B6 幂等检查
+    expect(calls[2].slice(0, 2)).toEqual(['docker', 'build']);
+    expect(calls[3].slice(0, 2)).toEqual(['docker', 'run']);
+  });
+
+  it('B6 幂等：同配方已有在跑容器 → 直接返回现有实例，不 build 不 run', async () => {
+    const existingLine =
+      'd0e5f6a7b8c9\tzhishi-web-recon-a1b2c3d4\tzhishi-env-web-recon\tUp 2 hours\tweb-recon\t/work/dir';
+    const { exec, calls } = scriptedExec([PROBE_OK, ok(`${existingLine}\n`)]);
+    const result = await envUp(RECIPE, '/work/dir', { exec, shortId: () => 'ffffffff' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.instance.name).toBe('zhishi-web-recon-a1b2c3d4');
+    expect(result.instance.id).toBe('d0e5f6a7b8c9');
+    // 只有 probe + ps，绝不发 build/run（不再泄漏孤儿容器）
+    expect(calls).toHaveLength(2);
+    expect(calls.some((c) => c[1] === 'build' || c[1] === 'run')).toBe(false);
+  });
+
+  it('B6 幂等检查只认同配方：别的配方在跑不挡本配方 up', async () => {
+    const otherLine = 'aaaaaaaabbbb\tzhishi-pwn-12345678\tzhishi-env-pwn\tUp 1 hour\tpwn\t/other';
+    const { exec, calls } = scriptedExec([
+      PROBE_OK,
+      ok(`${otherLine}\n`),
+      ok('built'),
+      ok('d0e5f6a7b8c9d0e5f6a7b8c9\n'),
+    ]);
+    const result = await envUp(RECIPE, '/work/dir', { exec, shortId: () => 'a1b2c3d4' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.instance.name).toBe('zhishi-web-recon-a1b2c3d4');
+    expect(calls.some((c) => c[1] === 'run')).toBe(true);
+  });
+
+  it('B6 幂等检查的 ps 失败 → 容忍，照走正常 up', async () => {
+    const { exec, calls } = scriptedExec([
+      PROBE_OK,
+      { exitCode: 1, stdout: '', stderr: 'ps hiccup' },
+      ok('built'),
+      ok('d0e5f6a7b8c9d0e5f6a7b8c9\n'),
+    ]);
+    const result = await envUp(RECIPE, '/work/dir', { exec, shortId: () => 'a1b2c3d4' });
+    expect(result.ok).toBe(true);
+    expect(calls.some((c) => c[1] === 'build')).toBe(true);
   });
 
   it('rejects vm recipes as an internal routing error before touching docker', async () => {
@@ -163,6 +206,7 @@ describe('envUp', () => {
   it('surfaces build failure output', async () => {
     const { exec } = scriptedExec([
       PROBE_OK,
+      ok(''), // B6 幂等检查：无在跑容器
       { exitCode: 1, stdout: '', stderr: 'no such file: Dockerfile' },
     ]);
     const result = await envUp(RECIPE, '/work/dir', { exec });
@@ -175,6 +219,7 @@ describe('envUp', () => {
   it('surfaces run failure output', async () => {
     const { exec } = scriptedExec([
       PROBE_OK,
+      ok(''), // B6 幂等检查：无在跑容器
       ok('built'),
       { exitCode: 125, stdout: '', stderr: 'docker: Error response from daemon: Conflict.' },
     ]);

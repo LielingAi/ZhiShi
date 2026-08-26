@@ -4,8 +4,9 @@
  * docker 配方 = Dockerfile + setup.sh + SKILL.md。生命周期命令：
  *
  *   envUp(recipe, workspace)
- *     docker build -t zhishi-env-<name> <dir>
- *     docker run -d --name zhishi-<name>-<shortid>
+ *     0. 幂等：zhishi.env=<name> label 已有在跑容器 → 直接返回现有实例
+ *     1. docker build -t zhishi-env-<name> <dir>
+ *     2. docker run -d --name zhishi-<name>-<shortid>
  *       --label zhishi.env=<name> --label zhishi.workspace=<path>
  *       -v <workspace>:/workspace -w /workspace
  *       zhishi-env-<name> tail -f /dev/null        # 容器常驻，exec 进入
@@ -291,6 +292,15 @@ export async function envUp(
 
   const dockerError = await ensureDockerAvailable(exec);
   if (dockerError) return { ok: false, error: dockerError };
+
+  // 1.3.8 B6 幂等：同配方已有在跑容器（zhishi.env=<recipe> label）→ 直接
+  // 返回现有实例，不重复 build/run——重复 up 不再泄漏孤儿容器。ps 失败
+  // （docker 抖动）容忍，照走正常 up。
+  const psResult = await exec(['docker', ...buildDockerPsArgs()], DOCKER_PS_TIMEOUT_MS);
+  if (psResult.exitCode === 0 && !psResult.error) {
+    const existing = parseDockerPs(psResult.stdout).find((i) => i.recipe === recipe.id);
+    if (existing) return { ok: true, instance: existing };
+  }
 
   const buildArgs = buildDockerBuildArgs(recipe);
   const buildResult = await exec(['docker', ...buildArgs], DOCKER_BUILD_TIMEOUT_MS);

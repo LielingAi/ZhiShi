@@ -15,7 +15,8 @@
  *     5. 轮询 Get-VMNetworkAdapter 的 IPAddresses（取不到不算 up 失败，
  *        与 vmware 语义一致）
  *   hypervEnvDown(name) → Stop-VM（soft；失败引导 -TurnOff，等同断电）
- *   hypervEnvPs()       → Get-VM -Name 'zhishi-*' | ConvertTo-Json 解析
+ *   hypervEnvPs()       → Get-VM -Name 'zhishi-*'（Running 过滤）| ConvertTo-Json
+ *   hypervEnvPsAll()    → Get-VM 全量（discover 用，1.3.8 B5）
  *   hypervEnvRm(name)   → Remove-VM（须已停）+ 删实例拷贝目录
  *
  * 结构照 `vm-lifecycle.ts`：PowerShell 脚本组装与输出解析是纯函数；所有
@@ -135,12 +136,20 @@ export function buildStopVmPs(name: string): string {
 }
 
 /**
- * ps 列表：ConvertTo-Json 是可稳定解析的格式（Format-List 的对齐/本地化
+ * ps 列表（ps 语义 = 运行中）：1.3.8 B4 加 State -eq 'Running' 过滤——
+ * 此前无状态过滤，停止的 VM 也显示为运行中。discover 要的是全量（含
+ * 停止、含非 zhishi-* 前缀），走 buildListAllVmsPs。
+ * ConvertTo-Json 是可稳定解析的格式（Format-List 的对齐/本地化
  * 都不适合机器读）。单个命中时 ConvertTo-Json 输出对象而非数组——解析器
  * 两种都收。
  */
 export function buildListVmsPs(): string {
-  return `Get-VM -Name 'zhishi-*' | Select-Object Name, State | ConvertTo-Json -Compress`;
+  return `Get-VM -Name 'zhishi-*' | Where-Object { $_.State -eq 'Running' } | Select-Object Name, State | ConvertTo-Json -Compress`;
+}
+
+/** discover 列表（1.3.8 B5）：Get-VM 全量——不筛 zhishi-* 前缀、不筛状态。 */
+export function buildListAllVmsPs(): string {
+  return `Get-VM | Select-Object Name, State | ConvertTo-Json -Compress`;
 }
 
 /** 名字存在性探测：命中输出 VM 名；不存在时 Get-VM 非零退出。 */
@@ -464,13 +473,32 @@ export async function hypervEnvRm(
 export async function hypervEnvPs(
   options: HypervLifecycleOptions = {},
 ): Promise<EnvResult<{ instances: HypervInstance[] }>> {
+  return hypervListVms(buildListVmsPs(), options);
+}
+
+/**
+ * discover 用的 Hyper-V 全量枚举（1.3.8 B5）：Get-VM 无过滤（不筛 zhishi-*
+ * 前缀、不筛状态）——discover 承诺的是本机全量；会扫出用户无关 VM，与已
+ * 登记条目的去重由 GUI 的 matchRegisteredEnv（1.3.7）兜住。
+ */
+export async function hypervEnvPsAll(
+  options: HypervLifecycleOptions = {},
+): Promise<EnvResult<{ instances: HypervInstance[] }>> {
+  return hypervListVms(buildListAllVmsPs(), options);
+}
+
+/** ps/discover 共用的 Get-VM 列表执行 + 解析（脚本差异只在过滤口径）。 */
+async function hypervListVms(
+  script: string,
+  options: HypervLifecycleOptions,
+): Promise<EnvResult<{ instances: HypervInstance[] }>> {
   if ((options.platform ?? process.platform) !== 'win32') {
     return { ok: false, error: 'Hyper-V 仅 Windows 平台支持' };
   }
   const exec = options.exec ?? defaultHypervExec;
   const instancesRoot = options.instancesRoot ?? defaultHypervInstancesRoot();
 
-  const result = await exec(psArgs(buildListVmsPs()), HYPERV_LIST_TIMEOUT_MS);
+  const result = await exec(psArgs(script), HYPERV_LIST_TIMEOUT_MS);
   if (result.exitCode !== 0 || result.error) {
     return {
       ok: false,

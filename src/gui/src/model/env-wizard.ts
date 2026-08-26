@@ -20,7 +20,7 @@
  */
 
 import type { DiscoveredDocker, DiscoveredVm, Recipe, EnvEntry, PsInstance } from '../client/api';
-import { matchRegisteredEnv, type DiscoveredLike, type EnvEntryLike } from './envs';
+import { resolveEnvState, type DiscoveredLike, type EnvEntryLike } from './envs';
 
 // ---------------------------------------------------------------------------
 // 状态机
@@ -104,6 +104,14 @@ export function recipesForSource(source: WizardSource, recipes: Recipe[]): Recip
   if (source === 'docker-recipe') return recipes.filter((r) => r.base !== 'vm');
   if (source === 'vm-recipe') return recipes.filter((r) => r.base === 'vm');
   return recipes;
+}
+
+/**
+ * 1.3.8 ③a：配方生命周期差异说明（按 base 一句）——向导 Step 2 选配方与
+ * Step 3 确认页展示，docker 一次性容器 vs VM 持久可快照的差异显性化。
+ */
+export function recipeLifecycleNote(base: string | undefined): string {
+  return base === 'vm' ? '持久虚拟机，可快照回滚' : '一次性容器，用完即弃';
 }
 
 /**
@@ -198,13 +206,15 @@ export function wizardDiscoveredItems(
     })),
   ];
   return rows.map(({ like, isVm, fallbackDetail }) => {
-    const dup = matchRegisteredEnv(like, envs);
+    // 1.3.8 ②：同族判定走 resolveEnvState 单点（与侧栏同一事实源）。
+    const st = resolveEnvState({ discovered: like }, [], envs);
+    const dupLabel = st.registeredAs?.label;
     return {
       key: like.id,
       label: like.name ?? like.id,
-      detail: dup ? `${fallbackDetail} · 已登记为 ${dup.name ?? dup.id}` : fallbackDetail,
+      detail: dupLabel ? `${fallbackDetail} · 已登记为 ${dupLabel}` : fallbackDetail,
       isVm,
-      registeredAs: dup ? (dup.name ?? dup.id) : undefined,
+      registeredAs: dupLabel,
     };
   });
 }
@@ -364,6 +374,11 @@ export function wizardSummaryRows(
     rows.push({ label: '基底', value: state.source === 'vm-recipe' ? 'vm' : recipe?.base ?? 'docker' });
     rows.push({ label: '配方', value: state.params.recipeId || '—' });
     rows.push({ label: '工具清单', value: recipe?.tools.join(' · ') || '（无声明）' });
+    // 1.3.8 ③a：生命周期差异显性化（docker 一次性 / VM 可快照回滚）。
+    rows.push({
+      label: '生命周期',
+      value: recipeLifecycleNote(state.source === 'vm-recipe' ? 'vm' : recipe?.base),
+    });
     if (state.source === 'vm-recipe') {
       if (state.params.vmUser.trim()) rows.push({ label: 'guest 用户', value: state.params.vmUser.trim() });
       if (state.params.vmKeyPath.trim()) rows.push({ label: '密钥路径', value: state.params.vmKeyPath.trim() });

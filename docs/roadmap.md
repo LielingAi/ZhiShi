@@ -5,14 +5,16 @@
 
 ---
 
-## 1.3.8 —— 环境/配方深入 + BUG 普查 + 环境多配方（进行中）
+## 1.3.8 —— 环境/配方深入 + BUG 普查 + 环境多配方（已完成）
 
 用户定调（2026-08-26）：深入环境、配方的功能实现与 GUI 调用实现，寻找 BUG，环境多配方。1.3.7 把环境业务逻辑收干净后，本版把环境与配方两个对象的功能面做深。**讨论收敛 + 用户拍板（2026-08-26）：范围收窄——配方管理不做 GUI 化（配方是开发资产）、环境行不加详情抽屉/操作面板（违背信息不堆砌）**。
 
-- [ ] **停止（down）入口 + 三态判定统一**：侧栏运行中环境加停止（确认模态，VM 关机/容器停是有损操作）；运行中/已停止/本机已有三态判定收口成一个纯函数（ps/discover/registry 三源合一）。
-- [ ] **环境/配方 BUG 普查**：up/down/ps/discover/snapshot/rollback/exec/rm/adopt/build 的边界 + GUI 接线，实机驱动 + 代码审查，产出 bug 台账逐条定性修复（方法论同 1.2.8 TUI 普查）。
-- [ ] **环境多配方**：`recipeIds?: string[]` 关联侧——绑定=展示/构建来源，**不进域裁决**（能力集合=推导唯一真相源，1.3.7 场景 3 口径）；环境详情可管理配方绑定（加/减）；存量零迁移（recipeId 单值自动等价单元素集合）。组合构建另行评估，不做。
-- [ ] **配方透明化两件（轻）**：向导里 VM/docker 生命周期差异显性化（一次性 vs 持久可回滚）；配方方法教学（SKILL.md 打法 workflowSummary）默认折叠可见。
+- [x] **停止（down）入口 + 三态判定统一**：侧栏运行中环境加停止（确认模态，VM 关机/容器停是有损操作）；运行中/已停止/本机已有三态判定收口成一个纯函数（ps/discover/registry 三源合一）。
+- [x] **环境/配方 BUG 普查**：up/down/ps/discover/snapshot/rollback/exec/rm/adopt/build 的边界 + GUI 接线，实机驱动 + 代码审查，产出 bug 台账逐条定性修复（方法论同 1.2.8 TUI 普查）。
+- [x] **环境多配方**：`recipeIds?: string[]` 关联侧——绑定=展示/构建来源，**不进域裁决**（能力集合=推导唯一真相源，1.3.7 场景 3 口径）；环境详情可管理配方绑定（加/减）；存量零迁移（recipeId 单值自动等价单元素集合）。组合构建另行评估，不做。
+- [x] **配方透明化两件（轻）**：向导里 VM/docker 生命周期差异显性化（一次性 vs 持久可回滚）；配方方法教学（SKILL.md 打法 workflowSummary）默认折叠可见。
+
+> 实际落地（2026-08-26）：①停止入口——侧栏运行中行 ⏹（ssh 行不出，B12 联动）+ 确认模态（VM 关机/容器停止并移除警示）+ `environment/down`；三态判定收口 `resolveEnvState`（ps/discover/registry 三源 → running/stopped/unregistered + startable/registeredAs，groupSidebar/向导/准入闸同源）。②BUG 普查台账 15 条（6 真 bug + 9 低危），修复 8 条：**B1** docker 双身份（ps 短 id ↔ 条目容器名归一回联 + GUI psRowMatchesEntry）；**B2** hyperv/vbox 已登记条目 rm 承诺与行为相反（vmx 解析不出回落实体删除）；**B3+B12** ps 手动探测读 host+port（ssh 永远已停止修复）+ ssh 停止入口隐藏/服务端明确报错；**B4/B5** hyperv ps 加 Running 过滤与 discover 全量枚举拆双函数（vmware 全量枚举无 API 保留运行中口径注明）；**B6** docker up 按 label 幂等；**B7** ps 双行去重；**B15** 删 SshModal/submitSsh 死代码。留台账：B8-B11（select 校验/rm 清 selection/add 探测前置/legacy remove 分叉）下版本清；B13/B14 业务特性文档化。③环境多配方——`EnvironmentEntry.recipeIds[]`（含主配方、主配方不可减）+ registry 校验 + `environment/bind-recipes` 端点（整体替换、主配方恒在、best-effort 重推能力）+ up 回写初始化 `[recipe.id]` + 能力清单段绑定集合工具并集 + GUI 环境详情模态（ℹ 入口：定位锚/地址/私钥引用/能力/漂移 + 绑定 chips 加减、主配方 ⓟ）+ env-recipes 纯函数层。④配方透明化——向导生命周期说明（一次性容器 vs 持久 VM）+ workflowSummary 折叠展开（端点本就透传，server 零改动）。走查追加：侧栏视觉重构（环境名主位满宽、能力徽章短形态最多 2 域 +N、行操作收进 ⋯ 下拉菜单带文字标签——不再依赖悬停提示）。新增单测 42（server 27 + gui 15）；全量 196 文件 2524 测试绿 + typecheck + eslint + build:server/gui 绿；实机走查通过（用户确认）。
 
 > 不做（收敛后）：配方页签/详情页/编辑（配方是开发资产，管理走 CLI）、环境详情抽屉/行级操作面板（违背信息不堆砌）、组合构建、用户改配方（另行立项）、编译发版（GUI 完成前）、TUI 退役执行（1.3.9）、/bg 转后台（单独立版）。
 > 验收：全量测试 + 实机走查。

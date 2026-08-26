@@ -16,6 +16,7 @@ import {
   buildCloneVmArgs,
   buildGuestIpArgs,
   buildListRunningArgs,
+  buildListVmsArgs,
   buildShowVmInfoArgs,
   buildSnapshotListArgs,
   buildSnapshotRestoreArgs,
@@ -26,6 +27,7 @@ import {
   parseVBoxSnapshotNames,
   vboxEnvDown,
   vboxEnvPs,
+  vboxEnvPsAll,
   vboxEnvRm,
   vboxEnvUp,
   vboxVmExists,
@@ -83,6 +85,7 @@ describe('command assembly (pure)', () => {
     expect(buildStartVmArgs('n')).toEqual(['startvm', 'n', '--type', 'headless']);
     expect(buildAcpiPowerdownArgs('n')).toEqual(['controlvm', 'n', 'acpipowerbutton']);
     expect(buildListRunningArgs()).toEqual(['list', 'runningvms']);
+    expect(buildListVmsArgs()).toEqual(['list', 'vms']);
     expect(buildGuestIpArgs('n')).toEqual([
       'guestproperty', 'get', 'n', '/VirtualBox/GuestInfo/Net/0/V4/IP',
     ]);
@@ -331,6 +334,34 @@ describe('vboxEnvPs', () => {
   it('list failure → error (caller tolerates per-engine absence)', async () => {
     const { exec } = scriptedExec([{ exitCode: -1, stdout: '', stderr: '', error: 'spawn VBoxManage ENOENT' }]);
     const result = await vboxEnvPs({ exec });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('VirtualBox');
+  });
+});
+
+describe('vboxEnvPsAll（B5：discover 全量枚举）', () => {
+  it('走 list vms（全量），保留非 zhishi-* 前缀 VM，status 记 unknown', async () => {
+    const { exec, calls } = scriptedExec([
+      ok('"zhishi-pwn-vm-a1b2c3d4" {u1}\n"Windows 10" {u2}\n"user-kali" {u3}\n'),
+    ]);
+    const result = await vboxEnvPsAll({ exec });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(calls[0].slice(0, 3)).toEqual(['VBoxManage', 'list', 'vms']);
+    expect(result.instances.map((i) => i.name)).toEqual([
+      'zhishi-pwn-vm-a1b2c3d4',
+      'Windows 10',
+      'user-kali',
+    ]);
+    // list vms 输出不带状态——不猜，记 unknown
+    expect(result.instances.every((i) => i.status === 'unknown')).toBe(true);
+    // 非 zhishi-* 前缀的 VM recipe 为空（不做名字反推）
+    expect(result.instances[2].recipe).toBe('');
+  });
+
+  it('list vms 失败 → error（聚合层降级，不拖垮其它侧）', async () => {
+    const { exec } = scriptedExec([{ exitCode: -1, stdout: '', stderr: '', error: 'spawn VBoxManage ENOENT' }]);
+    const result = await vboxEnvPsAll({ exec });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain('VirtualBox');
   });

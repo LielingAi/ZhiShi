@@ -241,6 +241,12 @@ import {
 
   envUp,
 
+  type DiscoveredDocker,
+
+  type EnvInstance,
+
+  type EnvResult,
+
 } from './environment/docker-lifecycle';
 
 import {
@@ -271,11 +277,15 @@ import {
 
   hypervEnvPs,
 
+  hypervEnvPsAll,
+
   hypervEnvRm,
 
   hypervEnvUp,
 
   hypervVmExists,
+
+  type HypervInstance,
 
 } from './environment/hyperv-lifecycle';
 
@@ -285,11 +295,15 @@ import {
 
   vboxEnvPs,
 
+  vboxEnvPsAll,
+
   vboxEnvRm,
 
   vboxEnvUp,
 
   vboxVmExists,
+
+  type VboxInstance,
 
 } from './environment/vbox-lifecycle';
 
@@ -5261,6 +5275,9 @@ export async function handleEnvironmentUp(payload: {
 
               recipeId: recipe.id,
 
+              // 1.3.8 多配方：up 回写初始化绑定集合 [主配方]。
+              recipeIds: [recipe.id],
+
               vmName: instance.name,
 
               ...(entryVmx ? { vmx: entryVmx } : {}),
@@ -5346,6 +5363,9 @@ export async function handleEnvironmentUp(payload: {
       name: `${recipe.name}（${recipe.id}）`,
 
       recipeId: recipe.id,
+
+      // 1.3.8 多配方：up 回写初始化绑定集合 [主配方]。
+      recipeIds: [recipe.id],
 
       container: result.instance.name,
 
@@ -5551,6 +5571,67 @@ export async function handleEnvironmentCapabilityRefresh(payload: {
   };
 }
 
+/** `environment/bind-recipes` — 1.3.8 多配方关联侧：整体替换环境的多配方
+ *  绑定集合（绑定=展示/构建来源，不进域裁决——能力集合仍以推导为准）。
+ *  主配方 recipeId 恒在集合内；空集合拒绝；成功后尽力重推一次能力探测
+ *  （best-effort，失败不阻断——绑定本身已落盘）。 */
+export async function handleEnvironmentBindRecipes(payload: {
+  id?: string;
+  recipeIds?: string[];
+}): Promise<AdminResponse> {
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!id) return { success: false, error: 'Missing required argument: <id>' };
+
+  const raw = payload.recipeIds;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return { success: false, error: 'recipeIds 必须是非空字符串数组（含主配方）' };
+  }
+  const ids: string[] = [];
+  for (const r of raw) {
+    if (typeof r !== 'string' || !r.trim()) {
+      return { success: false, error: 'recipeIds 必须是非空字符串数组（含主配方）' };
+    }
+    const trimmed = r.trim();
+    if (!ids.includes(trimmed)) ids.push(trimmed);
+  }
+
+  const entry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
+  if (!entry) {
+    return {
+      success: false,
+      error: `未找到环境 "${id}"`,
+      recoveryHint: { recoveryCommand: 'zhishi env list', message: 'See registered environment ids.' },
+    };
+  }
+  if (entry.recipeId && !ids.includes(entry.recipeId)) {
+    return { success: false, error: `绑定集合必须包含主配方 "${entry.recipeId}"（主配方不可移除）` };
+  }
+
+  let updated: EnvironmentEntry | undefined;
+  try {
+    await atomicModifyConfig((config) => {
+      const entries = listEnvironments(config);
+      const target = findEnvironmentEntry(entries, id);
+      if (!target) throw new Error(`未找到环境 "${id}"`);
+      const next: EnvironmentEntry = { ...target, recipeIds: ids };
+      updated = next;
+      return { ...config, environments: entries.map((e) => (e.id === id ? next : e)) };
+    });
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+
+  // 尽力重推能力（绑定集合变了，工具漂移与能力集合可能变）——失败静默。
+  if (updated) {
+    try {
+      await refreshEntryCapabilities(updated);
+    } catch {
+      /* best-effort */
+    }
+  }
+  return { success: true, data: { id, recipeIds: ids } };
+}
+
 /** `environment/down` — 停一个实例。路由顺序（P2 B3 + 1.3.7）：登记条目
  * kind=vm 且 resolveVmxForEntry 解析出 vmx → vmware（id → vmx 解析在本层
  * 做，vm-lifecycle 不读 config）；Hyper-V 名字命中 → Stop-VM；
@@ -5592,6 +5673,15 @@ export async function handleEnvironmentDown(payload: {
   const downConfig = loadConfig();
 
   const downEntry = findEnvironmentEntry(listEnvironments(downConfig), id);
+
+  // 1.3.8 B12：ssh 直连条目无实体可停——明确报错（此前落到 docker 兜底，
+  // 报「docker rm 失败」之类的误导错误）。放在引擎探测前，不碰 hyperv/vbox。
+  if (downEntry?.kind === 'ssh') {
+    return {
+      success: false,
+      error: `环境 "${id}" 是 ssh 直连条目，无实体可停（停止只适用于 docker/VM 环境）`,
+    };
+  }
 
   const resolved = downEntry?.kind === 'vm'
 
@@ -6088,7 +6178,10 @@ export async function handleReportExport(payload: {
  * + 删实例目录）；VirtualBox 名字命中 → vboxEnvRm（unregistervm --delete）。
  * 1.3.7 补口：ssh 条目只摘登记（远端机器不受影响，无实体可删）；docker
  * 条目容器运行中拒绝（docker ps 探测，口径照 vm「运行中拒绝」），停着
- * 只摘登记——容器实体的删除仍归 env down（stop + rm），不走 rm。 */
+ * 只摘登记——容器实体的删除仍归 env down（stop + rm），不走 rm。
+ * 1.3.8 B2：已登记的 hyperv/vbox 条目（kind=vm 且解析不出 vmx）按条目 id
+ * 回落实体删除（hypervEnvRm/vboxEnvRm，自带运行中拒绝）+ 摘登记——此前
+ * 直接摘登记，与 GUI 的「永久删除 VM 实例」警示相反。 */
 
 /** rm 的 docker 运行探测通道（生产 = dockerContainerRunning 实查）。
  *  模块级可替换——admin 接线测试注入假探测，绝不真调 docker。 */
@@ -6104,6 +6197,29 @@ let rmDockerProbeImpl: RmDockerProbe = defaultRmDockerProbe;
 /** 测试注入 docker 运行探测（传 null 复位为生产探测）。 */
 export function __setRmDockerProbeForTests(fn: RmDockerProbe | null): void {
   rmDockerProbeImpl = fn ?? defaultRmDockerProbe;
+}
+
+/** rm 的 hyperv/vbox 实体删除通道（生产 = 各 lifecycle 实查）。
+ *  模块级可替换——admin 接线测试注入假通道，绝不真连 Hyper-V/VirtualBox。 */
+export interface RmVmEntityOps {
+  hypervExists: (name: string) => Promise<boolean>;
+  hypervRm: (name: string) => Promise<EnvResult<{ removed: string }>>;
+  vboxExists: (name: string) => Promise<boolean>;
+  vboxRm: (name: string) => Promise<EnvResult<{ removed: string }>>;
+}
+
+const defaultRmVmEntityOps: RmVmEntityOps = {
+  hypervExists: (name) => hypervVmExists(name),
+  hypervRm: (name) => hypervEnvRm(name),
+  vboxExists: (name) => vboxVmExists(name),
+  vboxRm: (name) => vboxEnvRm(name),
+};
+
+let rmVmEntityOpsImpl: RmVmEntityOps = defaultRmVmEntityOps;
+
+/** 测试注入 hyperv/vbox 实体删除通道（传 null 复位为生产通道）。 */
+export function __setRmVmEntityOpsForTests(ops: RmVmEntityOps | null): void {
+  rmVmEntityOpsImpl = ops ?? defaultRmVmEntityOps;
 }
 
 export async function handleEnvironmentRm(payload: {
@@ -6234,7 +6350,7 @@ export async function handleEnvironmentRm(payload: {
 
     // 运行中拒绝：先 down（真实 VM 的现场可能比登记值钱）。
     // id → vmx 统一走 resolveVmxForEntry（条目 vmx 优先，缺省 vmName→
-    // vmTemplates 探测）；解析不出（非 vmware 条目）跳过运行检查直接摘登记。
+    // vmTemplates 探测）。
 
     const rmVmx = resolveVmxForEntry(rmEntry, { templates: loadConfig().vmTemplates });
 
@@ -6251,6 +6367,33 @@ export async function handleEnvironmentRm(payload: {
           error: `环境 "${id}" 的 VM 还在运行——先 zhishi env down ${id}，确认不要了再 rm`,
 
         };
+
+      }
+
+      // vmware 条目：只摘登记（VM 文件是用户的真实系统，绝不删——见函数头注释）。
+
+    } else {
+
+      // 1.3.8 B2：vmx 解析不出 = hyperv/vbox 回写条目形态（id = 实例名）。
+      // 承诺与行为对齐——按条目 id 回落实体删除（hypervEnvRm/vboxEnvRm 自带
+      // 运行中拒绝），实体删除成功后摘登记；两侧都未命中才只摘登记。
+      if (await rmVmEntityOpsImpl.hypervExists(id)) {
+
+        const r = await rmVmEntityOpsImpl.hypervRm(id);
+
+        if (!r.ok) return { success: false, error: r.error };
+
+        return unregisterEntry();
+
+      }
+
+      if (await rmVmEntityOpsImpl.vboxExists(id)) {
+
+        const r = await rmVmEntityOpsImpl.vboxRm(id);
+
+        if (!r.ok) return { success: false, error: r.error };
+
+        return unregisterEntry();
 
       }
 
@@ -6392,20 +6535,55 @@ export async function handleEnvironmentExec(payload: {
 
 /** `environment/ps` — 运行中实例合集（P2 B3 四源 + D22）：docker 容器
  * （zhishi.env label）+ vmware 环境（vmrun list ∩ 登记条目 vmx）+
- * Hyper-V（Get-VM 'zhishi-*'）+ VirtualBox（list runningvms ∩ zhishi-）。
- * 单侧引擎缺席不拖垮其余——只有全部失败才报错。 */
+ * Hyper-V（Get-VM 'zhishi-*' ∩ Running，1.3.8 B4）+ VirtualBox
+ * （list runningvms ∩ zhishi-）。单侧引擎缺席不拖垮其余——只有全部失败
+ * 才报错。1.3.8 B1：docker 行 id 归一为登记条目 id（容器名），不再产出
+ * 孤儿短 id 行。 */
+
+/** environment/ps 的四源实例采集（生产 = 各 lifecycle 实查）。
+ *  模块级可替换——admin 接线测试注入假源，绝不真连 docker/vmrun/hyperv/vbox。 */
+export interface PsSources {
+  dockerPs: () => Promise<EnvResult<{ instances: EnvInstance[] }>>;
+  vmPs: () => Promise<EnvResult<{ vmxes: string[] }>>;
+  hypervPs: () => Promise<EnvResult<{ instances: HypervInstance[] }>>;
+  vboxPs: () => Promise<EnvResult<{ instances: VboxInstance[] }>>;
+}
+
+const defaultPsSources: PsSources = {
+  dockerPs: () => envPs(),
+  vmPs: () => vmEnvPs(),
+  hypervPs: () => hypervEnvPs(),
+  vboxPs: () => vboxEnvPs(),
+};
+
+let psSourcesImpl: PsSources = defaultPsSources;
+
+/** 测试注入 ps 四源（传 null 复位为生产源；Partial 可只换单侧）。 */
+export function __setPsSourcesForTests(sources: Partial<PsSources> | null): void {
+  psSourcesImpl = { ...defaultPsSources, ...(sources ?? {}) };
+}
+
+/** ps 手动条目的 TCP 存活探测通道（生产 = probeTcp 实连）。 */
+export type PsTcpProbe = (host: string, port: number, timeoutMs: number) => Promise<boolean>;
+
+let psTcpProbeImpl: PsTcpProbe = probeTcp;
+
+/** 测试注入 TCP 探测（传 null 复位为生产探测）。 */
+export function __setPsTcpProbeForTests(fn: PsTcpProbe | null): void {
+  psTcpProbeImpl = fn ?? probeTcp;
+}
 
 export async function handleEnvironmentPs(): Promise<AdminResponse> {
 
   const [dockerResult, vmResult, hypervResult, vboxResult] = await Promise.all([
 
-    envPs(),
+    psSourcesImpl.dockerPs(),
 
-    vmEnvPs(),
+    psSourcesImpl.vmPs(),
 
-    hypervEnvPs(),
+    psSourcesImpl.hypervPs(),
 
-    vboxEnvPs(),
+    psSourcesImpl.vboxPs(),
 
   ]);
 
@@ -6427,13 +6605,15 @@ export async function handleEnvironmentPs(): Promise<AdminResponse> {
 
   }
 
+  const psEntries = listEnvironments(loadConfig());
+
   // D22 直连：vmrun list 的运行中 vmx ∩ 登记条目（kind=vm 且有 vmx）→
   // 运行中环境（路径比较统一规整：大小写 / 斜杠方向不敏感）。未登记的
   // running VM 不列——那是用户在 Workstation 里手动起的机器，不归 zhishi 管。
 
   const vmInstances = vmResult.ok
 
-    ? listEnvironments(loadConfig())
+    ? psEntries
 
         .filter((e) => e.kind === 'vm' && e.vmx && vmResult.vmxes.some((v) => normalizeVmxPath(v) === normalizeVmxPath(e.vmx!)))
 
@@ -6459,20 +6639,35 @@ export async function handleEnvironmentPs(): Promise<AdminResponse> {
 
     : [];
 
+  // 1.3.8 B1：docker ps 行的 id 本是 12 位短容器 id，与登记条目 id（容器名）
+  // 双身份——同一环境在侧栏同时落「运行中」（孤儿短 id 行）与「已停止」。
+  // 按容器名 ∩ 登记条目回联，行 id 归一为条目 id（docker stop/rm 同样接受
+  // 容器名，down 不受影响）；未登记容器保持短 id 原样。
+  const dockerEntries = psEntries.filter((e) => e.kind === 'docker');
+  const dockerInstances = dockerResult.ok
+    ? dockerResult.instances.map((i) => {
+        const entry = dockerEntries.find((e) => e.container === i.name || e.id === i.name);
+        return { ...i, id: entry?.id ?? i.id, driver: 'docker' as const };
+      })
+    : [];
+
   // 1.3.0(GUI 环境侧栏)：手动接入条目（kind=ssh，或 kind=vm 但无 vmx 的
-  // 地址型条目）不被 vmrun/docker 覆盖——做 TCP 22 存活探测补进 instances，
+  // 地址型条目）不被 vmrun/docker 覆盖——做 TCP 存活探测补进 instances，
   // 否则这些条目永远落在「已停止」分组（环境实际在跑）。
-  const manualEntries = listEnvironments(loadConfig()).filter(
-    (e) => (e.kind === 'ssh' || (e.kind === 'vm' && !e.vmx)) && e.address,
+  // 1.3.8 B3：ssh 条目的连通字段是 host（不是 address），端口用条目 port
+  // （缺省 22）——此前探测 e.address:22，ssh 环境永远「已停止」。
+  const manualEntries = psEntries.filter((e) =>
+    e.kind === 'ssh' ? !!(e.host ?? e.address) : e.kind === 'vm' && !e.vmx && !!e.address,
   );
   const probedManual = await Promise.all(
     manualEntries.map(async (e) => {
-      const alive = await probeTcp(e.address!, 22, 1500);
+      const target = (e.kind === 'ssh' ? e.host ?? e.address : e.address)!;
+      const alive = await psTcpProbeImpl(target, e.port ?? 22, 1500);
       if (!alive) return null;
       return {
         id: e.id,
         name: e.name ?? e.id,
-        address: e.address,
+        address: e.address ?? target,
         status: 'running',
         recipe: e.name ?? '',
         workspace: '',
@@ -6481,9 +6676,12 @@ export async function handleEnvironmentPs(): Promise<AdminResponse> {
     }),
   );
 
+  // 1.3.8 B7：同 id 多源行去重（hyperv 已登记条目运行且端口可达时，引擎行
+  // 与手动探测行同 id 双行）——保序保留首个（引擎行优先于探测行）。
+  const seen = new Set<string>();
   const instances = [
 
-    ...(dockerResult.ok ? dockerResult.instances.map((i) => ({ ...i, driver: 'docker' as const })) : []),
+    ...dockerInstances,
 
     ...vmInstances,
 
@@ -6493,7 +6691,11 @@ export async function handleEnvironmentPs(): Promise<AdminResponse> {
 
     ...probedManual.filter((x): x is NonNullable<typeof x> => x !== null),
 
-  ];
+  ].filter((r) => {
+    if (seen.has(r.id)) return false;
+    seen.add(r.id);
+    return true;
+  });
 
   return { success: true, data: { instances } };
 
@@ -6503,9 +6705,12 @@ export async function handleEnvironmentPs(): Promise<AdminResponse> {
  * `environment/discover` — D28 自动发现本机环境（只读，不写配置）。
  *
  * 并行扫描宿主机：docker 全量容器（含已退出，去掉 zhishi.env 过滤）+ VMware
- * 全量 vmx + Hyper-V 全量 VM + VirtualBox 全量 VM。任一引擎缺席/不可用都走
- * safe 降级（该侧返回空数组），绝不抛错、绝不拖垮其它侧。结果只用于 gate 的
- * 「本机已有」分组，**从不回写 config.json**（D28 约束①）。
+ * 运行中 vmx（vmrun list 只有运行中口径，无全量枚举 API）+ Hyper-V 全量 VM
+ * （Get-VM 无过滤，1.3.8 B5）+ VirtualBox 全量 VM（list vms，1.3.8 B5）。
+ * 任一引擎缺席/不可用都走 safe 降级（该侧返回空数组），绝不抛错、绝不拖垮
+ * 其它侧。结果只用于 gate 的「本机已有」分组，**从不回写 config.json**
+ * （D28 约束①）。全量口径会扫出用户无关 VM——与已登记条目的去重由 1.3.7
+ * matchRegisteredEnv（GUI 侧）兜住。
  */
 export interface DiscoveredVm {
   driver: 'vmware' | 'hyperv' | 'vbox';
@@ -6518,12 +6723,35 @@ export interface DiscoveredVm {
   osFamily?: 'linux' | 'windows';
 }
 
+/** environment/discover 的四源枚举通道（生产 = 各 lifecycle 实查）。
+ *  模块级可替换——admin 接线测试注入假源，绝不真连 docker/vmrun/hyperv/vbox。 */
+export interface DiscoverSources {
+  dockerPsAll: () => Promise<EnvResult<{ instances: DiscoveredDocker[] }>>;
+  vmPs: () => Promise<EnvResult<{ vmxes: string[] }>>;
+  hypervPsAll: () => Promise<EnvResult<{ instances: HypervInstance[] }>>;
+  vboxPsAll: () => Promise<EnvResult<{ instances: VboxInstance[] }>>;
+}
+
+const defaultDiscoverSources: DiscoverSources = {
+  dockerPsAll: () => envPsAll(),
+  vmPs: () => vmEnvPs(),
+  hypervPsAll: () => hypervEnvPsAll(),
+  vboxPsAll: () => vboxEnvPsAll(),
+};
+
+let discoverSourcesImpl: DiscoverSources = defaultDiscoverSources;
+
+/** 测试注入 discover 四源（传 null 复位为生产源；Partial 可只换单侧）。 */
+export function __setDiscoverSourcesForTests(sources: Partial<DiscoverSources> | null): void {
+  discoverSourcesImpl = { ...defaultDiscoverSources, ...(sources ?? {}) };
+}
+
 export async function handleEnvironmentDiscover(): Promise<AdminResponse> {
   const [dockerResult, vmResult, hypervResult, vboxResult] = await Promise.all([
-    envPsAll(),
-    vmEnvPs(),
-    hypervEnvPs(),
-    vboxEnvPs(),
+    discoverSourcesImpl.dockerPsAll(),
+    discoverSourcesImpl.vmPs(),
+    discoverSourcesImpl.hypervPsAll(),
+    discoverSourcesImpl.vboxPsAll(),
   ]);
 
   const docker = dockerResult.ok ? dockerResult.instances : [];

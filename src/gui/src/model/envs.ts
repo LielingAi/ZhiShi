@@ -89,15 +89,17 @@ function capabilityOf(e: EnvEntryLike | undefined): SidebarEnvItem['capability']
     : undefined;
 }
 
-/** 能力徽章文案（侧栏行内，如「能力：pentest · binary」）。 */
+/** 能力徽章文案（侧栏行内短形态——最多 2 个域 + 「+N」，行内不挤环境名）。 */
 export function capabilityBadgeText(cap: NonNullable<SidebarEnvItem['capability']>): string {
-  return `能力：${cap.domains.join(' · ')}`;
+  const domains = cap.domains;
+  const shown = domains.slice(0, 2).join(' · ');
+  return domains.length > 2 ? `能力：${shown} +${domains.length - 2}` : `能力：${shown}`;
 }
 
-/** 能力徽章 tooltip（含推导时间与来源说明）。 */
+/** 能力徽章 tooltip（完整列表 + 推导时间与来源说明）。 */
 export function capabilityTooltip(cap: NonNullable<SidebarEnvItem['capability']>): string {
   const when = cap.derivedAt ? `，探测于 ${cap.derivedAt}` : '';
-  return `${capabilityBadgeText(cap)}（现场推导：配方绑定 ∪ 工具探测${when}）`;
+  return `能力：${cap.domains.join(' · ')}（现场推导：配方绑定 ∪ 工具探测${when}）`;
 }
 
 /**
@@ -136,6 +138,73 @@ function normalizeVmxPath(p: string): string {
   return p.trim().replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
 }
 
+/**
+ * ps 行 ↔ 登记条目的匹配键（1.3.8 B1 统一消费点）。
+ * 主键：id 相等——服务端已把 docker 行 id 归一为登记条目 id（容器名），
+ * ps 行与条目同一身份。兜底：docker 行 name = 容器名 === entry.container
+ * （兼容归一前的短 id 行），不再让同一 docker 环境裂成「运行中短 id 行 +
+ * 已停止条目行」双身份。
+ */
+export function psRowMatchesEntry(row: PsInstanceLike, entry: EnvEntryLike): boolean {
+  if (row.id === entry.id) return true;
+  return entry.kind === 'docker' && !!entry.container && row.name === entry.container;
+}
+
+// ---------------------------------------------------------------------------
+// 1.3.8 ②：三态判定统一——每环境的唯一状态判定收口为单点纯函数。
+// 三源输入（登记条目 / ps 运行实例 / discover 本机已有）→ 一个状态输出：
+//   running      已登记且 ps 里有同 id 实例
+//   stopped      已登记但不在 ps（子状态 startable：docker/vm + recipeId 可 up）
+//   unregistered 未登记的本机发现条目（子状态 registeredAs 同族已登记 / localStopped）
+// 消费方：groupSidebar（侧栏）、wizardDiscoveredItems（向导）；准入闸读的是
+// 由本函数推导出的 group/startable/registeredAs 字段（见 access-gate.ts）。
+// ---------------------------------------------------------------------------
+
+/** 环境身份：登记条目与本机发现条目恰给一个。 */
+export interface EnvStateIdentity {
+  entry?: EnvEntryLike;
+  discovered?: DiscoveredLike;
+}
+
+export interface ResolvedEnvState {
+  state: 'running' | 'stopped' | 'unregistered';
+  /** stopped 子状态：可 environment/up 启动（docker/vm 且带 recipeId）。 */
+  startable: boolean;
+  /** unregistered 子状态：同族命中已登记条目（vmx/vmName/container/id）。 */
+  registeredAs?: { key: string; label: string };
+  /** unregistered 子状态：本机条目处于停止态（exit/powered/saved）。 */
+  localStopped?: boolean;
+}
+
+export function resolveEnvState(
+  identity: EnvStateIdentity,
+  psRows: PsInstanceLike[],
+  registeredEnvs: EnvEntryLike[],
+): ResolvedEnvState {
+  if (identity.entry) {
+    const e = identity.entry;
+    if (psRows.some((r) => psRowMatchesEntry(r, e))) return { state: 'running', startable: false };
+    return {
+      state: 'stopped',
+      startable:
+        (e.kind === 'docker' || e.kind === 'vm') &&
+        typeof e.recipeId === 'string' &&
+        e.recipeId !== '',
+    };
+  }
+  const d = identity.discovered;
+  if (!d) return { state: 'unregistered', startable: false }; // 防御：空身份
+  const dup = matchRegisteredEnv(d, registeredEnvs);
+  const s = (d.state ?? '').toLowerCase();
+  const localStopped = s.includes('exit') || s.includes('powered') || s.includes('saved');
+  return {
+    state: 'unregistered',
+    startable: false,
+    registeredAs: dup ? { key: dup.id, label: dup.name ?? dup.id } : undefined,
+    localStopped,
+  };
+}
+
 export function groupSidebar(
   envs: EnvEntryLike[],
   running: PsInstanceLike[],
@@ -148,9 +217,11 @@ export function groupSidebar(
   for (const inst of running) {
     if (!inst.id) continue;
     runningIds.add(inst.id);
-    const entry = envs.find((e) => e.id === inst.id);
+    const entry = envs.find((e) => psRowMatchesEntry(inst, e));
     runItems.push({
-      key: inst.id,
+      // 1.3.8 B1：命中登记条目时 key 归一为条目 id（environment/select
+      // 只认登记 id；短 id 行切入会落悬空 selection）。
+      key: entry?.id ?? inst.id,
       label: inst.name ?? entry?.name ?? inst.id,
       group: 'run',
       detail: `${inst.driver ?? 'env'} · 运行中`,
@@ -164,7 +235,9 @@ export function groupSidebar(
 
   const stopItems: SidebarEnvItem[] = [];
   for (const e of envs) {
-    if (runningIds.has(e.id)) continue;
+    // 1.3.8 ②：状态判定走 resolveEnvState 单点（running 的在上方 ps 循环已入组）。
+    const st = resolveEnvState({ entry: e }, running, envs);
+    if (st.state !== 'stopped') continue;
     stopItems.push({
       key: e.id,
       label: e.name ?? e.id,
@@ -173,7 +246,7 @@ export function groupSidebar(
       kind: e.kind ?? 'env',
       warn: false,
       // docker/vm 条目带 recipeId 才能 environment/up（ssh 条目无配方，不可启）。
-      startable: (e.kind === 'docker' || e.kind === 'vm') && typeof e.recipeId === 'string' && e.recipeId !== '',
+      startable: st.startable,
       recipeId: typeof e.recipeId === 'string' ? e.recipeId : undefined,
       vmx: e.vmx,
       capability: capabilityOf(e),
@@ -183,23 +256,20 @@ export function groupSidebar(
   const unregItems: SidebarEnvItem[] = [];
   for (const d of discovered) {
     if (registeredIds.has(d.id)) continue;
-    const state = (d.state ?? '').toLowerCase();
-    const stopped = state.includes('exit') || state.includes('powered') || state.includes('saved');
-    // 1.3.7 实机修复 A：id 去重之外再做同族匹配（vmx/vmName/container）——
+    // 1.3.8 ②：同族匹配 + 停止态判定收口进 resolveEnvState——
     // 已登记的同族条目显徽章、不再出「登记」按钮，防重复登记。
-    const dup = matchRegisteredEnv(d, envs);
-    const dupLabel = dup ? (dup.name ?? dup.id) : '';
+    const st = resolveEnvState({ discovered: d }, running, envs);
     unregItems.push({
       key: d.id,
       label: d.name ?? d.id,
       group: 'unreg',
-      detail: dup
-        ? `${d.driver ?? 'unknown'} · 已登记为 ${dupLabel}`
-        : `${d.driver ?? 'unknown'} · 未登记${stopped ? '（停止）' : ''}`,
+      detail: st.registeredAs
+        ? `${d.driver ?? 'unknown'} · 已登记为 ${st.registeredAs.label}`
+        : `${d.driver ?? 'unknown'} · 未登记${st.localStopped ? '（停止）' : ''}`,
       kind: d.driver ?? 'unknown',
       warn: false,
       startable: false,
-      registeredAs: dup ? { key: dup.id, label: dupLabel } : undefined,
+      registeredAs: st.registeredAs,
     });
   }
 

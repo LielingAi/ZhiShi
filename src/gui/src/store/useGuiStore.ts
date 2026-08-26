@@ -45,6 +45,7 @@ import {
 import { escAction } from '../model/esc-chain';
 import { bootStages, buildRegisterPayload, isDiscoveredRunning, type DiscoveredLike, type RegisterExtras } from '../model/envs';
 import { envRemovePlan, type EnvRemoveTarget } from '../model/env-remove';
+import type { EnvDownTarget } from '../model/env-down';
 import {
   buildWizardPayload,
   findRunningEnvForRecipe,
@@ -169,13 +170,14 @@ export interface OverlayState {
 
 export type ModalKind =
   | 'new-env'
-  | 'ssh'
   | 'adopt'
   | 'boot'
   | 'slash-args'
   | 'pick-message'
   | 'promote'
-  | 'env-remove';
+  | 'env-remove'
+  | 'env-down'
+  | 'env-detail';
 
 /** promote（入专家库）预填：决策块 → 专家条目草稿。 */
 export interface PromotePrefill {
@@ -201,6 +203,10 @@ export interface ModalState {
   bootOpts?: { user?: string; keyPath?: string };
   /** 1.3.7 补口：env-remove 模态的删除目标（文案/确认强度见 model/env-remove）。 */
   envRemove?: EnvRemoveTarget;
+  /** 1.3.8 ①：env-down 模态的停止目标（文案见 model/env-down）。 */
+  envDown?: EnvDownTarget;
+  /** 1.3.8 多配方：env-detail 模态展示/管理目标（完整登记条目）。 */
+  envDetail?: EnvEntry;
 }
 
 export interface DrawerState {
@@ -329,6 +335,14 @@ export interface GuiState {
   requestEnvRemove(target: EnvRemoveTarget): void;
   /** 1.3.7 补口：确认删除（environment/rm → 成功 refreshSidebar + toast；失败 toast 服务端错误原文）。 */
   confirmEnvRemove(): Promise<void>;
+  /** 1.3.8 ①：侧栏运行中行「停止」入口——开确认模态（文案在 model/env-down）。 */
+  requestEnvDown(target: EnvDownTarget): void;
+  /** 1.3.8 ①：确认停止（environment/down → 成功 refreshSidebar + toast；失败 toast 服务端错误原文）。 */
+  confirmEnvDown(): Promise<void>;
+  /** 1.3.8 多配方：侧栏 ℹ 入口——开环境详情模态（登记条目快照）。 */
+  openEnvDetail(envId: string): void;
+  /** 1.3.8 多配方：应用绑定集合（environment/bind-recipes → 成功关模态 + refreshSidebar + toast）。 */
+  applyEnvBindings(recipeIds: string[]): Promise<void>;
   send(text: string): Promise<void>;
   stopTurn(): Promise<void>;
   runReset(): Promise<void>;
@@ -348,7 +362,6 @@ export interface GuiState {
   wizardNextStep(): void;
   wizardBackStep(): void;
   wizardExecute(): Promise<void>;
-  submitSsh(host: string, user: string, keyPath: string): Promise<void>;
   submitAdopt(vmx: string, user: string, keyPath: string, password: string): Promise<void>;
   bootEnv(recipeId: string): Promise<void>;
   submitSlashArg(value: string): Promise<void>;
@@ -789,6 +802,71 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       state.showToast(`✓ 已删除 ${target.label}`);
     } catch (err) {
       state.showToast(`删除失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  // ── 1.3.8 ①：停止运行中环境（environment/down；确认模态文案在 model/env-down） ──
+
+  requestEnvDown(target) {
+    set({ modal: { kind: 'env-down', envDown: target } });
+  },
+
+  async confirmEnvDown() {
+    const c = client;
+    const state = get();
+    const target = state.modal?.envDown;
+    if (!target) return;
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.environmentDown(c, { id: target.id });
+      if (!res.success) {
+        // 失败保留模态（可重试/取消），toast 服务端错误原文。
+        state.showToast(`停止失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set({ modal: null });
+      void state.refreshSidebar();
+      state.showToast(`✓ 已停止 ${target.label}`);
+    } catch (err) {
+      state.showToast(`停止失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  // ── 1.3.8 多配方：环境详情模态（绑定=展示/构建来源；主配方不可移除） ──
+
+  openEnvDetail(envId: string) {
+    const state = get();
+    const entry = state.envs.find((e) => e.id === envId);
+    if (!entry) {
+      state.showToast(`未找到环境 "${envId}"`);
+      return;
+    }
+    set({ modal: { kind: 'env-detail', envDetail: entry } });
+  },
+
+  async applyEnvBindings(recipeIds: string[]) {
+    const c = client;
+    const state = get();
+    const target = state.modal?.envDetail;
+    if (!target) return;
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.environmentBindRecipes(c, { id: target.id, recipeIds });
+      if (!res.success) {
+        state.showToast(`绑定更新失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set({ modal: null });
+      void state.refreshSidebar();
+      state.showToast(`✓ 已更新 ${target.id} 的配方绑定`);
+    } catch (err) {
+      state.showToast(`绑定更新失败：${err instanceof Error ? err.message : String(err)}`);
     }
   },
 
@@ -1272,26 +1350,6 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     } catch (err) {
       state.showToast(`SSH 接入失败：${err instanceof Error ? err.message : String(err)}`);
     }
-  },
-
-  async submitSsh(host: string, user: string, keyPath: string) {
-    const c = client;
-    if (!c) return;
-    const id = `${user}@${host}`;
-    const res = await api.environmentAdd(c, {
-      id,
-      kind: 'ssh',
-      host,
-      user: user || undefined,
-      keyPath: keyPath || undefined,
-    });
-    if (!res.success) {
-      get().showToast(`SSH 接入失败：${res.error ?? '未知错误'}`);
-      return;
-    }
-    set({ modal: null });
-    void get().refreshSidebar();
-    get().showToast(`✓ 已登记 ${id}`);
   },
 
   async submitAdopt(vmx: string, user: string, keyPath: string, password: string) {

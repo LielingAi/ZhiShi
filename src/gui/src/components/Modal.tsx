@@ -5,12 +5,18 @@
  *   - boot：真实 environment/up + 轮询 environment/ps 推阶段（store.bootEnv）；
  *     向导的配方来源执行步复用此模态承载进度（bootOpts 透传 VM 凭据）
  *   - SSH 接入：向导内的「手动 SSH」来源步（environment/add，补齐
- *     port/name/osFamily/recipeId）；旧 SshModal 保留为 ModalKind 兼容
+ *     port/name/osFamily/recipeId）；旧 SshModal 已随 1.3.8 B15 删除
+ *     （modal kind 'ssh' 无触发点，submitSsh 的 id 拼 user@host 过不了
+ *     registry 校验）
  *   - adopt：environment/adopt（真实——连通 → 初始化 → 快照 → vmTemplates）
  *   - slash-args：/snapshot /rollback /extract 的参数收集
  *   - pick-message：/rewind /fork 的消息选择（wire id 来源：replay srvId）
  *   - env-remove：环境删除确认（1.3.7 补口；驱动文案/确认强度在
  *     model/env-remove——hyperv/vbox 删 VM 实例形态需输入环境名二次确认）
+ *   - env-down：环境停止确认（1.3.8 ①；VM 关机/容器停止的有损操作，文案在
+ *     model/env-down）
+ *   - 向导 Step 2/3：配方生命周期差异（1.3.8 ③a，model/env-wizard::
+ *     recipeLifecycleNote）+ 打法摘要 workflowSummary 默认折叠（1.3.8 ③b）
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -19,7 +25,10 @@ import type React from 'react';
 import { selectCurrentSession, useGuiStore } from '../store/useGuiStore';
 import { bootStages } from '../model/envs';
 import { envRemovePlan } from '../model/env-remove';
+import { envDownPlan } from '../model/env-down';
+import { addRecipeBinding, boundRecipeIds, removeRecipeBinding } from '../model/env-recipes';
 import {
+  recipeLifecycleNote,
   recipesForSource,
   wizardDiscoveredItems,
   wizardStepError,
@@ -94,77 +103,6 @@ function BootModalInner({ recipeId }: { recipeId: string }): React.JSX.Element {
               </button>
             </div>
           )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── SSH 接入（真实 environment/add，保持） ──────────────────────────────
-
-function SshModal(): React.JSX.Element {
-  const closeModal = useGuiStore((s) => s.closeModal);
-  const submitSsh = useGuiStore((s) => s.submitSsh);
-  const [host, setHost] = useState('');
-  const [user, setUser] = useState('');
-  const [keyPath, setKeyPath] = useState('');
-  const [err, setErr] = useState('');
-
-  return (
-    <div className="modal-backdrop open">
-      <div className="modal">
-        <div className="m-head">
-          <span className="m-title">通过 SSH 连接主机</span>
-          <span className="m-sub">手动接入 · 三步表单</span>
-          <button className="m-close" onClick={closeModal}>✕</button>
-        </div>
-        <div className="m-body">
-          <div className="form-col">
-            <div>
-              <div className="f-label">主机 host</div>
-              <input
-                className="f-input"
-                placeholder="192.168.1.100 / jump.example.com"
-                value={host}
-                onChange={(e) => setHost(e.target.value)}
-              />
-            </div>
-            <div>
-              <div className="f-label">用户 user</div>
-              <input
-                className="f-input"
-                placeholder="root"
-                value={user}
-                onChange={(e) => setUser(e.target.value)}
-              />
-            </div>
-            <div>
-              <div className="f-label">密钥路径 keyPath</div>
-              <input
-                className="f-input"
-                placeholder="~/.ssh/id_ed25519"
-                value={keyPath}
-                onChange={(e) => setKeyPath(e.target.value)}
-              />
-            </div>
-          </div>
-          <div className="m-note">host / 用户 / 密钥路径 · 密码不走正门（keyPath 引用）</div>
-          {err && <div className="m-error">✗ {err}</div>}
-          <div className="m-actions">
-            <button className="btn" onClick={closeModal}>取消</button>
-            <button
-              className="btn primary"
-              onClick={() => {
-                if (!host.trim() || !user.trim() || !keyPath.trim()) {
-                  setErr('host / 用户 / 密钥路径 必填');
-                  return;
-                }
-                void submitSsh(host.trim(), user.trim(), keyPath.trim());
-              }}
-            >
-              连接
-            </button>
-          </div>
         </div>
       </div>
     </div>
@@ -334,6 +272,17 @@ function PickMessageModal(): React.JSX.Element | null {
 
 const WIZARD_STEP_TITLES = ['① 选来源', '② 参数', '③ 确认', '④ 执行'];
 
+/** 1.3.8 ③b：配方打法摘要（workflowSummary，SKILL.md 正文提炼）默认折叠可见。 */
+function RecipeWorkflowSummary({ recipe }: { recipe: Recipe | undefined }): React.JSX.Element | null {
+  if (!recipe?.workflowSummary) return null;
+  return (
+    <details className="wf-summary">
+      <summary>打法摘要（{recipe.id}）——展开看该环境的标准打法</summary>
+      <div className="m-note wf-body">{recipe.workflowSummary}</div>
+    </details>
+  );
+}
+
 function NewEnvModal(): React.JSX.Element | null {
   const wizard = useGuiStore((s) => s.wizard);
   const recipes = useGuiStore((s) => s.recipes);
@@ -391,6 +340,7 @@ function NewEnvModal(): React.JSX.Element | null {
     );
   } else if (wizard.step === 2 && (source === 'docker-recipe' || source === 'vm-recipe')) {
     const list = recipesForSource(source, recipes);
+    const selectedRecipe = list.find((r) => r.id === p.recipeId);
     body = (
       <>
         {list.length === 0 && <div className="ov-empty">加载配方中…（bundled-environments）</div>}
@@ -408,6 +358,12 @@ function NewEnvModal(): React.JSX.Element | null {
             <span className="np-base">{r.base ?? 'docker'}</span>
           </div>
         ))}
+        {selectedRecipe && (
+          <div className="m-hint">
+            生命周期：{recipeLifecycleNote(source === 'vm-recipe' ? 'vm' : selectedRecipe.base)}
+          </div>
+        )}
+        <RecipeWorkflowSummary recipe={selectedRecipe} />
         {source === 'vm-recipe' && (
           <div className="form-col" style={{ marginTop: 10 }}>
             <div>
@@ -560,6 +516,10 @@ function NewEnvModal(): React.JSX.Element | null {
     );
   } else if (wizard.step === 3) {
     const rows = wizardSummaryRows(wizard, { recipes, domains, envs });
+    const confirmRecipe =
+      source === 'docker-recipe' || source === 'vm-recipe'
+        ? recipes.find((r) => r.id === p.recipeId)
+        : undefined;
     body = (
       <>
         <div className="wiz-confirm">
@@ -570,6 +530,7 @@ function NewEnvModal(): React.JSX.Element | null {
             </div>
           ))}
         </div>
+        <RecipeWorkflowSummary recipe={confirmRecipe} />
         <div className="m-hint">确认无误后进执行步——构建全自动，失败即停，绝不半进</div>
       </>
     );
@@ -831,14 +792,195 @@ function EnvRemoveModal(): React.JSX.Element | null {
   );
 }
 
+// ── 1.3.8 多配方：环境详情（只读信息 + 配方绑定管理；绑定=展示/构建来源） ──
+
+function EnvDetailModal(): React.JSX.Element | null {
+  const modal = useGuiStore((s) => s.modal);
+  const recipes = useGuiStore((s) => s.recipes);
+  const closeModal = useGuiStore((s) => s.closeModal);
+  const applyEnvBindings = useGuiStore((s) => s.applyEnvBindings);
+  const entry = modal?.envDetail;
+  const [pending, setPending] = useState<string[]>([]);
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  // entry 首次进入时初始化 pending（模态切换目标时重置）。
+  const entryId = entry?.id;
+  useEffect(() => {
+    if (!entry) return;
+    setPending(boundRecipeIds(entry));
+    setDirty(false);
+  }, [entryId, entry]);
+
+  if (!entry) return null;
+
+  const primary = entry.recipeId;
+  const addable = recipes.filter((r) => !pending.includes(r.id));
+
+  const anchor =
+    entry.kind === 'ssh' ? entry.host : entry.kind === 'docker' ? entry.container : entry.vmName;
+
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal" style={{ width: 'min(520px, 92vw)' }}>
+        <div className="m-head">
+          <span className="m-title">
+            环境详情 <b className="m-env-name">{entry.id}</b>
+          </span>
+          <span className="m-sub">{entry.kind}</span>
+          <button className="m-close" onClick={closeModal}>✕</button>
+        </div>
+        <div className="m-body">
+          <div className="wiz-confirm-row"><span className="wiz-k">定位锚</span><span className="wiz-v">{anchor ?? '—'}</span></div>
+          {entry.address && (
+            <div className="wiz-confirm-row"><span className="wiz-k">地址</span><span className="wiz-v">{entry.address}</span></div>
+          )}
+          {entry.vmx && (
+            <div className="wiz-confirm-row"><span className="wiz-k">vmx</span><span className="wiz-v">{entry.vmx}</span></div>
+          )}
+          {entry.user && (
+            <div className="wiz-confirm-row"><span className="wiz-k">用户</span><span className="wiz-v">{entry.user}</span></div>
+          )}
+          {entry.keyPath && (
+            <div className="wiz-confirm-row"><span className="wiz-k">私钥</span><span className="wiz-v">{entry.keyPath}</span></div>
+          )}
+          {entry.osFamily && (
+            <div className="wiz-confirm-row"><span className="wiz-k">OS</span><span className="wiz-v">{entry.osFamily}</span></div>
+          )}
+          {entry.capabilityDomains && entry.capabilityDomains.length > 0 && (
+            <div className="wiz-confirm-row">
+              <span className="wiz-k">能力（推导）</span>
+              <span className="wiz-v">{entry.capabilityDomains.join(' · ')}</span>
+            </div>
+          )}
+          {entry.toolCheck && entry.toolCheck.missing.length > 0 && (
+            <div className="wiz-confirm-row">
+              <span className="wiz-k">工具漂移</span>
+              <span className="wiz-v">缺：{entry.toolCheck.missing.join('、')}</span>
+            </div>
+          )}
+
+          <div className="f-label" style={{ marginTop: 12 }}>配方绑定（绑定 = 展示/构建来源，不改变能力判定）</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {pending.map((rid) => {
+              const isPrimary = rid === primary;
+              return (
+                <span key={rid} className={isPrimary ? 'cap' : 'cap reg'}>
+                  {rid}
+                  {isPrimary ? ' ⓟ' : ''}
+                  {!isPrimary && (
+                    <button
+                      className="chip-x"
+                      aria-label={`解绑 ${rid}`}
+                      onClick={() => {
+                        const r = removeRecipeBinding(pending, rid, primary);
+                        if (!r.ok) return;
+                        setPending(r.next);
+                        setDirty(true);
+                      }}
+                    >
+                      ×
+                    </button>
+                  )}
+                </span>
+              );
+            })}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <select
+              className="f-input"
+              value=""
+              onChange={(e) => {
+                const v = e.target.value;
+                if (!v) return;
+                setPending(addRecipeBinding(pending, v));
+                setDirty(true);
+                e.target.value = '';
+              }}
+            >
+              <option value="">＋ 追加绑定配方…</option>
+              {addable.map((r) => (
+                <option key={r.id} value={r.id}>{r.id}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="m-actions">
+            <button className="btn" onClick={closeModal}>关闭</button>
+            <button
+              className="btn primary"
+              disabled={!dirty || busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await applyEnvBindings(pending);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              应用绑定
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 1.3.8 ①：环境停止确认（文案在 model/env-down；有损操作——VM 关机/容器停止） ──
+
+function EnvDownModal(): React.JSX.Element | null {
+  const modal = useGuiStore((s) => s.modal);
+  const closeModal = useGuiStore((s) => s.closeModal);
+  const confirmEnvDown = useGuiStore((s) => s.confirmEnvDown);
+  const [busy, setBusy] = useState(false);
+
+  const target = modal?.envDown;
+  if (!target) return null;
+  const plan = envDownPlan(target);
+
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal">
+        <div className="m-head">
+          <span className="m-title">
+            停止环境 <b className="m-env-name">{target.label}</b>
+          </span>
+          <span className="m-sub">environment/down · {target.kind}</span>
+          <button className="m-close" onClick={closeModal}>✕</button>
+        </div>
+        <div className="m-body">
+          <div className="m-danger">{plan.body}</div>
+          <div className="m-actions">
+            <button className="btn" onClick={closeModal}>取消</button>
+            <button
+              className="btn danger"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await confirmEnvDown();
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {plan.confirmLabel}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Modal(): React.JSX.Element | null {
   const modal = useGuiStore((s) => s.modal);
   if (!modal) return null;
   switch (modal.kind) {
     case 'new-env':
       return <NewEnvModal />;
-    case 'ssh':
-      return <SshModal />;
     case 'adopt':
       return <AdoptModal recipeId={modal.recipeId ?? 'vm'} />;
     case 'boot':
@@ -851,5 +993,9 @@ export function Modal(): React.JSX.Element | null {
       return <PromoteModal />;
     case 'env-remove':
       return <EnvRemoveModal />;
+    case 'env-down':
+      return <EnvDownModal />;
+    case 'env-detail':
+      return <EnvDetailModal />;
   }
 }

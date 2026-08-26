@@ -1,7 +1,8 @@
 /**
  * 环境准入闸（1.3.1 ①，纯函数）。
  *
- * 侧栏三组的点击语义：
+ * 侧栏三组的点击语义（三态判定唯一事实源：model/envs.ts::resolveEnvState，
+ * 1.3.8 ②——本闸只消费它推导出的 group/startable 字段）：
  *   - 运行中（run）  → 放行切换（environment/select）
  *   - 已停止（stop） → 拦截：toast「环境未启动，先启动再进入」；
  *                      docker/vm 且带 recipeId 的条目额外提供「启动」

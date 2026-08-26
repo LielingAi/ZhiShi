@@ -2,7 +2,8 @@
  * 环境侧栏（1.3.1 ①）：三组（运行中/已停止/本机已有）+ 准入闸 +
  * 「已停止」行的启动按钮（environment/up）+ 已登记行的「删除」图标按钮
  * （environment/rm，1.3.7 补口；运行中点击提示先停止，确认文案/强度
- * 在 model/env-remove）+ 底部「＋新建环境」「⚙ 设置」。
+ * 在 model/env-remove）+ 「运行中」行的停止按钮（environment/down，
+ * 1.3.8 ①，有损操作确认模态文案在 model/env-down）+ 底部「＋新建环境」「⚙ 设置」。
  *
  * 1.3.7 实机修复 A：「本机已有」行带 registeredAs 徽章（同族命中已登记
  * 条目，见 model/envs.matchRegisteredEnv）——不出「登记」按钮，点击
@@ -12,11 +13,13 @@
  * 按钮可见性，纯函数已单测）；本组件只接线到 store。
  */
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type React from 'react';
 
 import { useGuiStore } from '../store/useGuiStore';
 import { capabilityBadgeText, capabilityTooltip, groupSidebar } from '../model/envs';
 import { accessGate, gateToast } from '../model/access-gate';
+import { canStopEnv } from '../model/env-down';
 
 export function EnvSidebar(): React.JSX.Element {
   const envs = useGuiStore((s) => s.envs);
@@ -29,9 +32,33 @@ export function EnvSidebar(): React.JSX.Element {
   const refreshEnvCapability = useGuiStore((s) => s.refreshEnvCapability);
   const registerDiscovered = useGuiStore((s) => s.registerDiscovered);
   const requestEnvRemove = useGuiStore((s) => s.requestEnvRemove);
+  const requestEnvDown = useGuiStore((s) => s.requestEnvDown);
+  const openEnvDetail = useGuiStore((s) => s.openEnvDetail);
   const openNewEnv = useGuiStore((s) => s.openNewEnv);
   const setPage = useGuiStore((s) => s.setPage);
   const showToast = useGuiStore((s) => s.showToast);
+
+  // 1.3.8 视觉：行操作收进「⋯」下拉菜单（单入口，菜单项带文字标签）。
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!menuFor) return;
+    const onDown = (ev: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(ev.target as Node)) {
+        setMenuFor(null);
+      }
+    };
+    const onEsc = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setMenuFor(null);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [menuFor]);
 
   const groups = useMemo(
     () =>
@@ -93,30 +120,80 @@ export function EnvSidebar(): React.JSX.Element {
                 )}
                 {it.group === 'run' && <span className="snap">◆</span>}
                 {it.warn && <span className="warn">⚠</span>}
+                {/* 1.3.8 视觉：行操作收进「⋯」下拉菜单（单入口，文字标签，不依赖悬停提示） */}
                 {it.group !== 'unreg' && (
-                  <button
-                    className="btn small eb-start"
-                    title={`重推 ${it.label} 能力集合（environment/capability-refresh）`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void refreshEnvCapability(it.key);
-                    }}
-                  >
-                    ⟳
-                  </button>
+                  <span className="eb-actions">
+                    <button
+                      className="btn small eb-start"
+                      title={`操作（${it.label}）`}
+                      aria-label={`操作 ${it.label}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setMenuFor(menuFor === it.key ? null : it.key);
+                      }}
+                    >
+                      ⋯
+                    </button>
+                  </span>
                 )}
-                {!gate.allow && gate.reason === 'not-started' && gate.canStart && (
-                  <button
-                    className="btn small eb-start"
-                    title={`启动 ${it.label}（environment/up）`}
-                    aria-label={`启动环境 ${it.label}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void startEnv(it.key);
-                    }}
-                  >
-                    ▶
-                  </button>
+                {it.group !== 'unreg' && menuFor === it.key && (
+                  <div className="eb-menu" ref={menuRef} onClick={(e) => e.stopPropagation()}>
+                    {!gate.allow && gate.reason === 'not-started' && gate.canStart && (
+                      <button
+                        className="eb-menu-item"
+                        onClick={() => {
+                          setMenuFor(null);
+                          void startEnv(it.key);
+                        }}
+                      >
+                        ▶ 启动（environment/up）
+                      </button>
+                    )}
+                    {it.group === 'run' && canStopEnv(it.kind) && (
+                      <button
+                        className="eb-menu-item"
+                        onClick={() => {
+                          setMenuFor(null);
+                          requestEnvDown({ id: it.key, label: it.label, kind: it.kind });
+                        }}
+                      >
+                        ⏹ 停止（有损，需确认）
+                      </button>
+                    )}
+                    <button
+                      className="eb-menu-item"
+                      onClick={() => {
+                        setMenuFor(null);
+                        void refreshEnvCapability(it.key);
+                      }}
+                    >
+                      ⟳ 重推能力集合
+                    </button>
+                    <button
+                      className="eb-menu-item"
+                      onClick={() => {
+                        setMenuFor(null);
+                        openEnvDetail(it.key);
+                      }}
+                    >
+                      ℹ 环境详情
+                    </button>
+                    <button
+                      className="eb-menu-item danger"
+                      onClick={() => {
+                        setMenuFor(null);
+                        requestEnvRemove({
+                          id: it.key,
+                          label: it.label,
+                          kind: it.kind,
+                          vmx: it.vmx,
+                          running: it.group === 'run',
+                        });
+                      }}
+                    >
+                      🗑 删除环境…
+                    </button>
+                  </div>
                 )}
                 {it.group === 'unreg' && !it.registeredAs && (
                   <button
@@ -128,25 +205,6 @@ export function EnvSidebar(): React.JSX.Element {
                     }}
                   >
                     登记
-                  </button>
-                )}
-                {it.group !== 'unreg' && (
-                  <button
-                    className="btn small eb-start eb-del"
-                    title={`删除环境（${it.label}）`}
-                    aria-label={`删除环境 ${it.label}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      requestEnvRemove({
-                        id: it.key,
-                        label: it.label,
-                        kind: it.kind,
-                        vmx: it.vmx,
-                        running: it.group === 'run',
-                      });
-                    }}
-                  >
-                    🗑
                   </button>
                 )}
               </div>

@@ -18,7 +18,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   __setRmDockerProbeForTests,
+  __setRmVmEntityOpsForTests,
   handleEnvironmentRm,
+  type RmVmEntityOps,
 } from '../admin-api';
 import type { EnvironmentEntry } from '../../shared/config-types';
 
@@ -68,6 +70,7 @@ beforeEach(() => {
 
 afterEach(() => {
   __setRmDockerProbeForTests(null);
+  __setRmVmEntityOpsForTests(null);
   process.env.HOME = prevHome;
   process.env.USERPROFILE = prevUserProfile;
   rmSync(scratch, { recursive: true, force: true });
@@ -150,6 +153,129 @@ describe('handleEnvironmentRm — 既有守卫不受新分支影响', () => {
     const r = await handleEnvironmentRm({ id: 'vmware-fuzz.vmx' });
     expect(r.success).toBe(true);
     expect((r.data as { removed: string }).removed).toBe('vmware-fuzz.vmx');
+    expect(readEnvIds()).toEqual([]);
+  });
+});
+
+describe('handleEnvironmentRm — B2：已登记 hyperv/vbox 条目回落实体删除', () => {
+  /** hyperv/vbox up 回写条目的形态：kind=vm、id=vmName=实例名、无 vmx。 */
+  const HYPERV_ENTRY: EnvironmentEntry = {
+    id: 'zhishi-pwn-vm-a1b2c3d4',
+    kind: 'vm',
+    vmName: 'zhishi-pwn-vm-a1b2c3d4',
+    recipeId: 'pwn-vm',
+    address: '10.0.0.9',
+    createdAt: '2026-08-25T00:00:00Z',
+  };
+
+  function fakeVmOps(overrides: Partial<RmVmEntityOps>): RmVmEntityOps {
+    return {
+      hypervExists: () => Promise.resolve(false),
+      hypervRm: () => Promise.resolve({ ok: false as const, error: 'unreachable' }),
+      vboxExists: () => Promise.resolve(false),
+      vboxRm: () => Promise.resolve({ ok: false as const, error: 'unreachable' }),
+      ...overrides,
+    };
+  }
+
+  it('hyperv 命中 → 实体删除成功 + 摘登记', async () => {
+    seedEntries([HYPERV_ENTRY, SSH_ENTRY]);
+    const calls: string[] = [];
+    __setRmVmEntityOpsForTests(fakeVmOps({
+      hypervExists: (name) => {
+        calls.push(`hypervExists:${name}`);
+        return Promise.resolve(true);
+      },
+      hypervRm: (name) => {
+        calls.push(`hypervRm:${name}`);
+        return Promise.resolve({ ok: true as const, removed: name });
+      },
+    }));
+    const r = await handleEnvironmentRm({ id: HYPERV_ENTRY.id });
+    expect(r.success).toBe(true);
+    expect((r.data as { removed: string }).removed).toBe(HYPERV_ENTRY.id);
+    expect(calls).toEqual([`hypervExists:${HYPERV_ENTRY.id}`, `hypervRm:${HYPERV_ENTRY.id}`]);
+    expect(readEnvIds()).toEqual(['range-1']);
+  });
+
+  it('hyperv 运行中拒绝（实体删除侧自带安全闸）→ 失败，登记保留', async () => {
+    seedEntries([HYPERV_ENTRY]);
+    __setRmVmEntityOpsForTests(fakeVmOps({
+      hypervExists: () => Promise.resolve(true),
+      hypervRm: () =>
+        Promise.resolve({
+          ok: false as const,
+          error: `实例 "${HYPERV_ENTRY.id}" 还在运行——先 zhishi env down ${HYPERV_ENTRY.id}，确认不要了再 rm`,
+        }),
+    }));
+    const r = await handleEnvironmentRm({ id: HYPERV_ENTRY.id });
+    expect(r.success).toBe(false);
+    expect(r.error).toContain('还在运行');
+    expect(readEnvIds()).toEqual([HYPERV_ENTRY.id]);
+  });
+
+  it('hyperv 未命中、vbox 命中 → 走 vbox 实体删除 + 摘登记', async () => {
+    seedEntries([HYPERV_ENTRY]);
+    const calls: string[] = [];
+    __setRmVmEntityOpsForTests(fakeVmOps({
+      vboxExists: (name) => {
+        calls.push(`vboxExists:${name}`);
+        return Promise.resolve(true);
+      },
+      vboxRm: (name) => {
+        calls.push(`vboxRm:${name}`);
+        return Promise.resolve({ ok: true as const, removed: name });
+      },
+    }));
+    const r = await handleEnvironmentRm({ id: HYPERV_ENTRY.id });
+    expect(r.success).toBe(true);
+    expect(calls).toEqual([`vboxExists:${HYPERV_ENTRY.id}`, `vboxRm:${HYPERV_ENTRY.id}`]);
+    expect(readEnvIds()).toEqual([]);
+  });
+
+  it('两侧都未命中（实体已被用户手工删掉）→ 只摘登记', async () => {
+    seedEntries([HYPERV_ENTRY]);
+    const calls: string[] = [];
+    __setRmVmEntityOpsForTests(fakeVmOps({
+      hypervExists: () => {
+        calls.push('hypervExists');
+        return Promise.resolve(false);
+      },
+      vboxExists: () => {
+        calls.push('vboxExists');
+        return Promise.resolve(false);
+      },
+    }));
+    const r = await handleEnvironmentRm({ id: HYPERV_ENTRY.id });
+    expect(r.success).toBe(true);
+    expect(calls).toEqual(['hypervExists', 'vboxExists']); // 只探测，不删除
+    expect(readEnvIds()).toEqual([]);
+  });
+
+  it('vmware 条目（带 vmx）不走实体删除回落——只摘登记', async () => {
+    const VMWARE_ENTRY: EnvironmentEntry = {
+      id: 'fuzz',
+      kind: 'vm',
+      vmName: 'fuzz',
+      vmx: 'd:\\vmiso\\ubuntu\\fuzz.vmx',
+      createdAt: '2026-08-25T00:00:00Z',
+    };
+    seedEntries([VMWARE_ENTRY]);
+    let opsCalled = 0;
+    __setRmVmEntityOpsForTests(fakeVmOps({
+      hypervExists: () => {
+        opsCalled += 1;
+        return Promise.resolve(true);
+      },
+      vboxExists: () => {
+        opsCalled += 1;
+        return Promise.resolve(true);
+      },
+    }));
+    // vmrun 不在测试环境 → vmEnvPs !ok → 跳过运行检查 → 只摘登记。
+    const r = await handleEnvironmentRm({ id: 'fuzz' });
+    expect(r.success).toBe(true);
+    expect(opsCalled).toBe(0); // VM 文件是用户的，绝不删
     expect(readEnvIds()).toEqual([]);
   });
 });
