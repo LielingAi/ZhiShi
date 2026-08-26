@@ -1,0 +1,1 @@
+{"name":"pty-runtime","private":true,"version":"1.0.0","dependencies":{"@lydell/node-pty":"^1.2.0-beta.15"}}

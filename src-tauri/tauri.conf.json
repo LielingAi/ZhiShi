@@ -50,6 +50,7 @@
       "../src-tauri/resources/server-dist.js": "server-dist.js",
       "../src-tauri/resources/sharp-runtime": "sharp-runtime",
       "../src-tauri/resources/sqlite-runtime": "sqlite-runtime",
+      "../src-tauri/resources/pty-runtime": "pty-runtime",
       "../src-tauri/resources/tsx-runtime": "tsx-runtime",
       "../src-tauri/resources/nodejs": "nodejs",
       "../src/shared": "shared",
