@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$InstDir)
+﻿param([Parameter(Mandatory=$true)][string]$InstDir)
 # ZhiShi installer: drop zhishi CLI into ~/.zhishi/bin and register it on the
 # user PATH (HKCU). ASCII-only file (PowerShell 5.1 reads UTF-8 without BOM as ANSI).
 # The generated zhishi.cmd content must stay byte-identical with

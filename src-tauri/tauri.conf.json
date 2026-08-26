@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "ZhiShi",
-  "version": "1.2.10",
+  "version": "1.4.0",
   "identifier": "com.zhishi.app",
   "build": {
     "frontendDist": "../src/gui/dist",
