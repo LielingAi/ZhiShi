@@ -16,6 +16,7 @@
  */
 import { homedir } from 'os';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { Agent, fetch as undiciFetch } from 'undici';
 import { getZhiShiDataDir } from '../shared/app-dirs';
@@ -1684,8 +1685,20 @@ async function main(): Promise<void> {
     console.log(TOP_HELP);
     return;
   }
-// Resolve port: --port flag overrides env
+// Resolve port: --port flag overrides env; 1.4.0 起 ZHISHI_PORT 未设时回落
+// sidecar.port 文件（应用启动即写，`~/.zhishi/sidecar.port`）——PATH 安装的
+// zhishi 在应用运行时独立可用，不用手动设端口。文件缺失/损坏 → 保持原报错。
   PORT = (flags.port as string) || PORT;
+  if (!PORT) {
+    try {
+      const portFile = join(getZhiShiDataDir(), 'sidecar.port');
+      const raw = readFileSync(portFile, 'utf-8').trim();
+      const p = Number(raw);
+      if (Number.isInteger(p) && p > 0 && p < 65536) PORT = String(p);
+    } catch {
+      /* 无端口文件 → 保持原报错 */
+    }
+  }
   if (!PORT) {
     console.error('Error: ZHISHI_PORT not set. This CLI runs within the ZhiShi app.');
     process.exit(3);
