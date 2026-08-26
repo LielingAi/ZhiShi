@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-08-26
+
+> 实机反馈修复四项：登记按钮字号、侧栏底部入口恒可见、决策面板选项卡片化（单击即拍板）、窗口自适应。
+
 ## [1.4.1] - 2026-08-26
 
 > **auto loop agent**：目标式研究循环——研究员给目标，agent 自主跑完整研究周期（侦察→分析→构造→执行→评估），人在暂停点介入。
