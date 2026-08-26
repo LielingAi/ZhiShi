@@ -4,11 +4,10 @@
  */
 
 /**
- * GUI 产品版本线（设置页「关于」展示，替代组件内硬编码——1.3.10）。
- * 与 package.json / src-tauri 的发版版本号（1.2.x 线）是两条线：这里是
- * 面向用户的功能线（对齐 docs/roadmap.md 的版本里程碑）。
+ * GUI 产品版本（设置页「关于」展示，替代组件内硬编码——1.3.10）。
+ * 1.4.0 起与 package.json / src-tauri 发版版本号同线（GUI 正式发版）。
  */
-export const GUI_VERSION = '1.3.10';
+export const GUI_VERSION = '1.4.0';
 
 export const PENDING_SESSION_PREFIX = 'pending-';
 
