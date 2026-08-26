@@ -231,6 +231,8 @@ import {
 
 import {
 
+  dockerContainerRunning,
+
   envDown,
 
   envPs,
@@ -6084,7 +6086,25 @@ export async function handleReportExport(payload: {
  * 这是真实 VM 不是一次性拷贝；运行中拒绝（先 down）。.vmx 直传 → 报错
  * 引导（env rm 只对登记条目）。Hyper-V 名字命中 → hypervEnvRm（Remove-VM
  * + 删实例目录）；VirtualBox 名字命中 → vboxEnvRm（unregistervm --delete）。
- * docker 实例的删除已含在 env down 里，不走 rm。 */
+ * 1.3.7 补口：ssh 条目只摘登记（远端机器不受影响，无实体可删）；docker
+ * 条目容器运行中拒绝（docker ps 探测，口径照 vm「运行中拒绝」），停着
+ * 只摘登记——容器实体的删除仍归 env down（stop + rm），不走 rm。 */
+
+/** rm 的 docker 运行探测通道（生产 = dockerContainerRunning 实查）。
+ *  模块级可替换——admin 接线测试注入假探测，绝不真调 docker。 */
+export type RmDockerProbe = (container: string) => Promise<{ ok: boolean; running?: boolean }>;
+
+const defaultRmDockerProbe: RmDockerProbe = async (container) => {
+  const r = await dockerContainerRunning(container);
+  return r.ok ? { ok: true, running: r.running } : { ok: false };
+};
+
+let rmDockerProbeImpl: RmDockerProbe = defaultRmDockerProbe;
+
+/** 测试注入 docker 运行探测（传 null 复位为生产探测）。 */
+export function __setRmDockerProbeForTests(fn: RmDockerProbe | null): void {
+  rmDockerProbeImpl = fn ?? defaultRmDockerProbe;
+}
 
 export async function handleEnvironmentRm(payload: {
 
@@ -6114,9 +6134,14 @@ export async function handleEnvironmentRm(payload: {
 
   }
 
-  // D22 直连：.vmx 直传没有登记语境——env rm 只对登记条目，VM 文件用户自管。
+  const rmEntry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
 
-  if (/\.vmx$/i.test(id)) {
+  // D22 直连：.vmx 直传没有登记语境——env rm 只对登记条目，VM 文件用户自管。
+  // 1.3.7 修复：先查登记条目——id 恰好以 .vmx 结尾的已登记条目（旧发现登记
+  // 流的 id 形态 `<driver>-<名>.vmx`）是合法登记条目，走正常删除；只有
+  // 查不到登记条目的 .vmx 直传才拒绝。
+
+  if (!rmEntry && /\.vmx$/i.test(id)) {
 
     return {
 
@@ -6127,8 +6152,6 @@ export async function handleEnvironmentRm(payload: {
     };
 
   }
-
-  const rmEntry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
 
   // 1.1.6 #4：环境删除成功后顺手清会话分线映射里该 envId 的残留条目
   // （所有 workspace 的 env:<id> 行）；失败只告警，不影响 rm 结果。
@@ -6146,6 +6169,66 @@ export async function handleEnvironmentRm(payload: {
     }
 
   };
+
+  // 摘登记公共尾段（ssh/docker 分支共用）：atomicModifyConfig 落盘 +
+  // cleanEnvSessionLines；vm/hyperv/vbox 分支各有实体操作，不走这里。
+  const unregisterEntry = async (): Promise<AdminResponse> => {
+
+    try {
+
+      await atomicModifyConfig((config) => {
+
+        const removed = removeEnvironmentEntry(listEnvironments(config), id);
+
+        if (!removed.ok) throw new Error(removed.error);
+
+        return { ...config, environments: removed.entries };
+
+      });
+
+    } catch (err) {
+
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+
+    }
+
+    await cleanEnvSessionLines();
+
+    return { success: true, data: { removed: id } };
+
+  };
+
+  // 1.3.7 补口：ssh 条目只摘登记——远端机器不受影响（无实体可删）。
+  if (rmEntry?.kind === 'ssh') {
+
+    return unregisterEntry();
+
+  }
+
+  // 1.3.7 补口：docker 条目容器运行中拒绝（口径照 vm「运行中拒绝」：
+  // 探测失败视为不在跑，放行摘登记）；停着只摘登记——容器实体的删除
+  // 仍归 env down（stop + rm），不在这里做。
+  if (rmEntry?.kind === 'docker') {
+
+    const container = rmEntry.container ?? rmEntry.id;
+
+    const probe = await rmDockerProbeImpl(container);
+
+    if (probe.ok && probe.running) {
+
+      return {
+
+        success: false,
+
+        error: `环境 "${id}" 的容器 "${container}" 还在运行——先 zhishi env down ${id}，确认不要了再 rm`,
+
+      };
+
+    }
+
+    return unregisterEntry();
+
+  }
 
   if (rmEntry?.kind === 'vm') {
 

@@ -44,6 +44,7 @@ import {
 } from '../model/decision';
 import { escAction } from '../model/esc-chain';
 import { bootStages, buildRegisterPayload, isDiscoveredRunning, type DiscoveredLike, type RegisterExtras } from '../model/envs';
+import { envRemovePlan, type EnvRemoveTarget } from '../model/env-remove';
 import {
   buildWizardPayload,
   findRunningEnvForRecipe,
@@ -173,7 +174,8 @@ export type ModalKind =
   | 'boot'
   | 'slash-args'
   | 'pick-message'
-  | 'promote';
+  | 'promote'
+  | 'env-remove';
 
 /** promote（入专家库）预填：决策块 → 专家条目草稿。 */
 export interface PromotePrefill {
@@ -197,6 +199,8 @@ export interface ModalState {
   prefill?: PromotePrefill;
   /** 1.3.7 向导 → boot：VM 配方的可选 guest 凭据（environment/up 透传）。 */
   bootOpts?: { user?: string; keyPath?: string };
+  /** 1.3.7 补口：env-remove 模态的删除目标（文案/确认强度见 model/env-remove）。 */
+  envRemove?: EnvRemoveTarget;
 }
 
 export interface DrawerState {
@@ -321,6 +325,10 @@ export interface GuiState {
   refreshEnvCapability(envId: string): Promise<void>;
   /** 1.3.5 ④：本机发现条目「选中即注册」（environment/add → 入侧栏 → 运行中则切入）。 */
   registerDiscovered(itemKey: string, extras?: RegisterExtras): Promise<void>;
+  /** 1.3.7 补口：侧栏「删除」入口——运行中拦截 toast，否则开确认模态。 */
+  requestEnvRemove(target: EnvRemoveTarget): void;
+  /** 1.3.7 补口：确认删除（environment/rm → 成功 refreshSidebar + toast；失败 toast 服务端错误原文）。 */
+  confirmEnvRemove(): Promise<void>;
   send(text: string): Promise<void>;
   stopTurn(): Promise<void>;
   runReset(): Promise<void>;
@@ -746,6 +754,41 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       }
     } catch (err) {
       state.showToast(`登记失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  // ── 1.3.7 补口：删除已登记环境（environment/rm；确认模态文案在 model/env-remove） ──
+
+  requestEnvRemove(target) {
+    const plan = envRemovePlan(target);
+    if (!plan.allowed) {
+      get().showToast(plan.blockToast ?? '该环境暂不可删除');
+      return;
+    }
+    set({ modal: { kind: 'env-remove', envRemove: target } });
+  },
+
+  async confirmEnvRemove() {
+    const c = client;
+    const state = get();
+    const target = state.modal?.envRemove;
+    if (!target) return;
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.environmentRemove(c, { id: target.id });
+      if (!res.success) {
+        // 失败保留模态（可重试/取消），toast 服务端错误原文。
+        state.showToast(`删除失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set({ modal: null });
+      void state.refreshSidebar();
+      state.showToast(`✓ 已删除 ${target.label}`);
+    } catch (err) {
+      state.showToast(`删除失败：${err instanceof Error ? err.message : String(err)}`);
     }
   },
 

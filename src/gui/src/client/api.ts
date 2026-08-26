@@ -211,6 +211,8 @@ export type EnvironmentAddInput =
       vmx?: string;
       name?: string;
       osFamily?: 'linux' | 'windows';
+      /** 1.3.7 实机修复 B：guest 地址（exec/探测通道前提；server registry 可选字段）。 */
+      address?: string;
       user?: string;
       keyPath?: string;
       recipeId?: string;
@@ -305,6 +307,18 @@ export function environmentCapabilityRefresh(
   input: { id: string },
 ): Promise<{ success: boolean; error?: string; data?: { capabilityDomains?: string[]; capabilityDerivedAt?: string } }> {
   return client.adminPost('environment/capability-refresh', input);
+}
+
+/**
+ * 1.3.7 补口：删除已登记环境（侧栏「删除」按钮）。服务端按 kind 分派：
+ * ssh/docker 摘登记（docker 运行中拒绝）、vmware 摘登记不动 VM 文件、
+ * hyperv/vbox 删 VM 实例——语义确认文案在 model/env-remove。
+ */
+export function environmentRemove(
+  client: GuiSidecarClient,
+  input: { id: string },
+): Promise<{ success: boolean; error?: string; data?: { removed?: string } }> {
+  return client.adminPost('environment/rm', input);
 }
 
 export interface CurrentEnvResult {

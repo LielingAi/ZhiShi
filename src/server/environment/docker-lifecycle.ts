@@ -358,6 +358,44 @@ export async function envDown(
   return { ok: true, removed: instanceId };
 }
 
+/**
+ * 单容器运行探测（environment/rm 的 docker 分支前置）：`docker ps`（不带
+ * -a，只有运行中名单）按 `{{.ID}}\t{{.Names}}` 取行，名字精确命中或短 id
+ * 互为前缀即算在跑。docker 不可用 → ok:false，口径由调用方定（rm 照 vm
+ * 「运行中拒绝」语义：探测失败视为不在跑，放行摘登记）。
+ */
+export function buildDockerPsNamesArgs(): string[] {
+  return ['ps', '--format', '{{.ID}}\t{{.Names}}'];
+}
+
+/** docker ps（{{.ID}}\t{{.Names}}）行里 container 是否在跑（纯函数）。 */
+export function parseDockerRunningRows(stdout: string, container: string): boolean {
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue;
+    const cols = line.replace(/\r$/, '').split('\t');
+    const [id, name] = cols;
+    if (name === container) return true;
+    if (id && (id.startsWith(container) || container.startsWith(id))) return true;
+  }
+  return false;
+}
+
+/** envPs 的单容器版：只答「这个容器在不在跑」。 */
+export async function dockerContainerRunning(
+  container: string,
+  options: LifecycleOptions = {},
+): Promise<EnvResult<{ running: boolean }>> {
+  const exec = options.exec ?? defaultDockerExec;
+  const result = await exec(['docker', ...buildDockerPsNamesArgs()], DOCKER_PS_TIMEOUT_MS);
+  if (result.exitCode !== 0 || result.error) {
+    return {
+      ok: false,
+      error: `docker ps 失败（Docker 不可用？）：\n${outputTail(result)}`,
+    };
+  }
+  return { ok: true, running: parseDockerRunningRows(result.stdout, container) };
+}
+
 /** envPs：列出所有带 zhishi.env label 的运行中实例。 */
 export async function envPs(
   options: LifecycleOptions = {},

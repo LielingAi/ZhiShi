@@ -9,6 +9,8 @@
  *   - adopt：environment/adopt（真实——连通 → 初始化 → 快照 → vmTemplates）
  *   - slash-args：/snapshot /rollback /extract 的参数收集
  *   - pick-message：/rewind /fork 的消息选择（wire id 来源：replay srvId）
+ *   - env-remove：环境删除确认（1.3.7 补口；驱动文案/确认强度在
+ *     model/env-remove——hyperv/vbox 删 VM 实例形态需输入环境名二次确认）
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -16,8 +18,10 @@ import type React from 'react';
 
 import { selectCurrentSession, useGuiStore } from '../store/useGuiStore';
 import { bootStages } from '../model/envs';
+import { envRemovePlan } from '../model/env-remove';
 import {
   recipesForSource,
+  wizardDiscoveredItems,
   wizardStepError,
   wizardSummaryRows,
   WIZARD_SOURCE_CARDS,
@@ -348,7 +352,17 @@ function NewEnvModal(): React.JSX.Element | null {
   if (!wizard) return null;
   const p = wizard.params;
   const source = wizard.source;
-  const stepErr = wizardStepError(wizard);
+  // 1.3.7 实机修复 A：同族匹配（已登记禁勾选）在 model 层；组件复用同一份
+  // 视图模型做「VM 条目 address 必填」的本地校验（wizardStepError 是纯状态机，
+  // 拿不到 discover 数据源）。
+  const discoveredItems =
+    source === 'discovered' ? wizardDiscoveredItems(discoveredDocker, discoveredVm, envs) : [];
+  const selectedDiscovered = discoveredItems.find((it) => it.key === p.discoveredKey);
+  const stepErr =
+    wizardStepError(wizard) ??
+    (wizard.step === 2 && selectedDiscovered?.isVm && !p.discoveredAddress.trim()
+      ? '请填 VM 的 guest 地址（exec/探测通道前提，缺了探测走不通）'
+      : null);
 
   const recipeSelect = (value: string, key: 'sshRecipeId' | 'discoveredRecipeId', label: string) => (
     <div>
@@ -423,18 +437,9 @@ function NewEnvModal(): React.JSX.Element | null {
       </>
     );
   } else if (wizard.step === 2 && source === 'discovered') {
-    const items = [
-      ...discoveredDocker.map((d) => ({
-        key: d.id,
-        label: d.name ?? d.id,
-        detail: `docker · ${d.status ?? 'unknown'}`,
-      })),
-      ...discoveredVm.map((v) => ({
-        key: v.id,
-        label: v.name ?? v.id,
-        detail: `${v.driver} · ${v.state ?? 'unknown'}`,
-      })),
-    ];
+    // 1.3.7 实机修复 A：已登记条目禁勾选 + 行内标注，防同一 VM/容器重复登记。
+    const items = discoveredItems;
+    const selected = selectedDiscovered;
     body = (
       <>
         {items.length === 0 && (
@@ -442,15 +447,31 @@ function NewEnvModal(): React.JSX.Element | null {
         )}
         {items.map((it) => (
           <div
-            className={`np-item ${p.discoveredKey === it.key ? 'sel' : ''}`}
+            className={`np-item ${p.discoveredKey === it.key ? 'sel' : ''} ${it.registeredAs ? 'gated' : ''}`}
             key={it.key}
-            onClick={() => wizardSetParam('discoveredKey', it.key)}
+            onClick={() => {
+              if (it.registeredAs) return; // 已登记，不可重复勾选
+              wizardSetParam('discoveredKey', it.key);
+              // docker 条目无 address 语义——切走时清掉残留值
+              if (!it.isVm) wizardSetParam('discoveredAddress', '');
+            }}
           >
             <span className="np-name">{it.label}</span>
             <span className="np-tools">{it.detail}</span>
           </div>
         ))}
         <div className="form-col" style={{ marginTop: 10 }}>
+          {selected?.isVm && (
+            <div>
+              <div className="f-label">guest 地址 address（VM 必填——exec/探测通道前提）</div>
+              <input
+                className="f-input"
+                placeholder="192.168.56.20"
+                value={p.discoveredAddress}
+                onChange={(e) => wizardSetParam('discoveredAddress', e.target.value)}
+              />
+            </div>
+          )}
           <div>
             <div className="f-label">guest 用户（可选）</div>
             <input
@@ -748,6 +769,68 @@ function PromoteModal(): React.JSX.Element | null {
   );
 }
 
+// ── 1.3.7 补口：环境删除确认（文案/确认强度在 model/env-remove） ────────
+
+function EnvRemoveModal(): React.JSX.Element | null {
+  const modal = useGuiStore((s) => s.modal);
+  const closeModal = useGuiStore((s) => s.closeModal);
+  const confirmEnvRemove = useGuiStore((s) => s.confirmEnvRemove);
+  const [typed, setTyped] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const target = modal?.envRemove;
+  if (!target) return null;
+  const plan = envRemovePlan(target);
+  const needsType = plan.strength === 'type-name';
+  const canConfirm = !needsType || typed.trim() === target.label;
+
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal">
+        <div className="m-head">
+          <span className="m-title">
+            删除环境 <b className="m-env-name">{target.label}</b>
+          </span>
+          <span className="m-sub">environment/rm · {target.kind}</span>
+          <button className="m-close" onClick={closeModal}>✕</button>
+        </div>
+        <div className="m-body">
+          <div className={plan.danger ? 'm-danger' : 'm-note'}>{plan.body}</div>
+          {needsType && (
+            <div style={{ marginTop: 10 }}>
+              <div className="f-label">输入环境名「{target.label}」确认</div>
+              <input
+                className="f-input"
+                autoFocus
+                placeholder={target.label}
+                value={typed}
+                onChange={(e) => setTyped(e.target.value)}
+              />
+            </div>
+          )}
+          <div className="m-actions">
+            <button className="btn" onClick={closeModal}>取消</button>
+            <button
+              className={`btn ${plan.danger ? 'danger' : 'primary'}`}
+              disabled={!canConfirm || busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await confirmEnvRemove();
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {plan.confirmLabel}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Modal(): React.JSX.Element | null {
   const modal = useGuiStore((s) => s.modal);
   if (!modal) return null;
@@ -766,5 +849,7 @@ export function Modal(): React.JSX.Element | null {
       return <PickMessageModal />;
     case 'promote':
       return <PromoteModal />;
+    case 'env-remove':
+      return <EnvRemoveModal />;
   }
 }

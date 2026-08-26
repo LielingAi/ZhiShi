@@ -15,6 +15,7 @@ import {
   buildDockerPsArgs,
   buildDockerRunArgs,
   containerNameFor,
+  dockerContainerRunning,
   envDown,
   envPs,
   envPsAll,
@@ -22,6 +23,7 @@ import {
   imageTagFor,
   parseDockerPs,
   parseDockerPsAll,
+  parseDockerRunningRows,
   type DockerExec,
   type DockerExecResult,
 } from './docker-lifecycle';
@@ -278,5 +280,38 @@ describe('D28 自动发现 — envPsAll / parseDockerPsAll（全量含已退出�
     ]);
     const result = await envPsAll({ exec });
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('dockerContainerRunning（environment/rm 前置的单容器运行探测）', () => {
+  const PS_NAMES =
+    'd0e5f6a7b8c9\tzhishi-pwn-a3f2\n' +
+    'a1b2c3d4e5f6\tpostgres\n';
+
+  it('parseDockerRunningRows：名字精确命中 / 短 id 互为前缀 / 不命中', () => {
+    expect(parseDockerRunningRows(PS_NAMES, 'zhishi-pwn-a3f2')).toBe(true);
+    expect(parseDockerRunningRows(PS_NAMES, 'd0e5f6a7b8c9')).toBe(true); // 完整短 id
+    expect(parseDockerRunningRows(PS_NAMES, 'd0e5')).toBe(true); // id 前缀
+    expect(parseDockerRunningRows(PS_NAMES, 'zhishi-pwn')).toBe(false); // 名字前缀不算
+    expect(parseDockerRunningRows('', 'zhishi-pwn-a3f2')).toBe(false);
+  });
+
+  it('dockerContainerRunning：不带 -a（只查运行中），命中返回 running:true', async () => {
+    const { exec, calls } = scriptedExec([ok(PS_NAMES)]);
+    const result = await dockerContainerRunning('postgres', { exec });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.running).toBe(true);
+    expect(calls[0].slice(0, 2).join(' ')).toBe('docker ps');
+    expect(calls[0]).not.toContain('-a');
+  });
+
+  it('dockerContainerRunning：未命中 → running:false；docker 不可用 → ok:false', async () => {
+    const miss = await dockerContainerRunning('ghost', { exec: async () => ok('') });
+    expect(miss).toEqual({ ok: true, running: false });
+    const down = await dockerContainerRunning('ghost', {
+      exec: async () => ({ exitCode: 1, stdout: '', stderr: 'Cannot connect to the Docker daemon' }),
+    });
+    expect(down.ok).toBe(false);
   });
 });

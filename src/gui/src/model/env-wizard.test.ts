@@ -10,6 +10,7 @@ import {
   initialWizardState,
   recipesForSource,
   wizardBack,
+  wizardDiscoveredItems,
   wizardNext,
   wizardSelectSource,
   wizardStepError,
@@ -144,6 +145,34 @@ describe('payload 构造', () => {
       itemKey: 'k',
       extras: { user: 'root', keyPath: '~/.ssh/id', recipeId: 'pentest' },
     });
+  });
+
+  it('1.3.7 实机修复 B：本机已有 extras 补 address（trim；空串不下发）', () => {
+    const s = stateAt(4, {
+      source: 'discovered',
+      params: {
+        ...initialWizardParams(),
+        discoveredKey: 'k',
+        discoveredAddress: ' 192.168.56.20 ',
+        discoveredUser: 'root',
+      },
+    });
+    expect(buildWizardPayload(s)).toEqual({
+      type: 'register',
+      itemKey: 'k',
+      extras: { address: '192.168.56.20', user: 'root' },
+    });
+  });
+
+  it('1.3.7 实机修复 B：确认页展示 guest 地址行', () => {
+    const s = stateAt(3, {
+      source: 'discovered',
+      params: { ...initialWizardParams(), discoveredKey: 'k', discoveredAddress: '10.0.0.9' },
+    });
+    const map = Object.fromEntries(
+      wizardSummaryRows(s, { recipes: RECIPES, domains: DOMAINS }).map((r) => [r.label, r.value]),
+    );
+    expect(map['guest 地址']).toBe('10.0.0.9');
   });
 
   it('SSH → ssh-add：补 port/name/osFamily/recipeId，空值不下发', () => {
@@ -332,5 +361,39 @@ describe('wizardSummaryRows — 能力集合行（1.3.7 场景 3）', () => {
       const labels = wizardSummaryRows(s, ctx).map((r) => r.label);
       expect(labels).not.toContain('能力集合（推导）');
     }
+  });
+});
+
+
+// ===== 1.3.7 实机修复 A/B：「本机已有」步骤条目视图模型 =====
+
+describe('wizardDiscoveredItems（1.3.7 实机修复）', () => {
+  const ENVS = [
+    { id: 'fuzz', kind: 'vm', name: 'fuzz', vmName: 'fuzz', vmx: 'E:\\VMs\\fuzz\\vmware-fuzz.vmx' },
+    { id: 'docker-kali', kind: 'docker', container: 'kali-2024' },
+  ];
+
+  it('docker/VM 两源合并，VM 条目标 isVm（补收 address/user/keyPath 用）', () => {
+    const items = wizardDiscoveredItems(
+      [{ id: 'c1', name: 'alpine', status: 'Up 2 hours' }],
+      [{ id: 'v1', name: 'win11', driver: 'hyperv', state: 'Running' }],
+      [],
+    );
+    expect(items.map((i) => [i.key, i.isVm])).toEqual([['c1', false], ['v1', true]]);
+    expect(items[0].detail).toBe('docker · Up 2 hours');
+    expect(items[1].detail).toBe('hyperv · Running');
+    expect(items.every((i) => i.registeredAs === undefined)).toBe(true);
+  });
+
+  it('同族命中已登记 → registeredAs 标注（勾选禁用），detail 带「已登记为 X」', () => {
+    const items = wizardDiscoveredItems(
+      [{ id: 'abc', name: 'kali-2024', status: 'Exited (0)' }],
+      [{ id: 'v2', name: 'vmware-fuzz.vmx', driver: 'vmware', state: 'unknown', vmx: 'e:/vms/fuzz/vmware-fuzz.vmx' }],
+      ENVS,
+    );
+    expect(items[0].registeredAs).toBe('docker-kali');
+    expect(items[0].detail).toContain('已登记为 docker-kali');
+    expect(items[1].registeredAs).toBe('fuzz');
+    expect(items[1].detail).toContain('已登记为 fuzz');
   });
 });

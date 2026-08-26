@@ -19,7 +19,8 @@
  *   domain/list         data.domains: [{ kind, name, recipes, skills, subagents, … }]
  */
 
-import type { Recipe, EnvEntry, PsInstance } from '../client/api';
+import type { DiscoveredDocker, DiscoveredVm, Recipe, EnvEntry, PsInstance } from '../client/api';
+import { matchRegisteredEnv, type DiscoveredLike, type EnvEntryLike } from './envs';
 
 // ---------------------------------------------------------------------------
 // 状态机
@@ -49,6 +50,8 @@ export interface WizardParams {
   vmKeyPath: string;
   /** 本机已有：勾选的 discover 条目键（docker id / vm id）。 */
   discoveredKey: string;
+  /** 本机已有（VM 条目）：guest 地址——exec/探测通道前提，登记 payload 附带。 */
+  discoveredAddress: string;
   /** 本机已有：可选补充的 guest 用户（登记 payload 附带）。 */
   discoveredUser: string;
   /** 本机已有：可选补充的私钥路径（登记 payload 附带）。 */
@@ -78,6 +81,7 @@ export function initialWizardParams(): WizardParams {
     vmUser: '',
     vmKeyPath: '',
     discoveredKey: '',
+    discoveredAddress: '',
     discoveredUser: '',
     discoveredKeyPath: '',
     discoveredRecipeId: '',
@@ -158,6 +162,54 @@ export function wizardBack(state: EnvWizardState): EnvWizardState {
 }
 
 // ---------------------------------------------------------------------------
+// 「本机已有」步骤的条目视图模型（1.3.7 实机修复 A/B）
+// ---------------------------------------------------------------------------
+
+export interface WizardDiscoveredItem {
+  key: string;
+  label: string;
+  detail: string;
+  /** VM 条目（补收 address/user/keyPath——exec 通道前提）；docker 不需要。 */
+  isVm: boolean;
+  /** 同族命中已登记环境（vmx/vmName/container，见 envs.matchRegisteredEnv）
+   *  → 勾选禁用 + 行内标注，值 = 已登记条目展示名。 */
+  registeredAs?: string;
+}
+
+/**
+ * discover 两源（docker/VM）→ 向导勾选列表。已登记同族条目带 registeredAs
+ * 标注且不可勾选（防 1.3.7 实机反馈的「同一 VM 两个身份」重复登记）。
+ */
+export function wizardDiscoveredItems(
+  docker: DiscoveredDocker[],
+  vm: DiscoveredVm[],
+  envs: EnvEntryLike[],
+): WizardDiscoveredItem[] {
+  const rows: Array<{ like: DiscoveredLike; isVm: boolean; fallbackDetail: string }> = [
+    ...docker.map((d) => ({
+      like: { id: d.id, name: d.name, state: d.status, driver: 'docker' },
+      isVm: false,
+      fallbackDetail: `docker · ${d.status ?? 'unknown'}`,
+    })),
+    ...vm.map((v) => ({
+      like: { id: v.id, name: v.name, state: v.state, driver: v.driver, vmx: v.vmx },
+      isVm: true,
+      fallbackDetail: `${v.driver} · ${v.state ?? 'unknown'}`,
+    })),
+  ];
+  return rows.map(({ like, isVm, fallbackDetail }) => {
+    const dup = matchRegisteredEnv(like, envs);
+    return {
+      key: like.id,
+      label: like.name ?? like.id,
+      detail: dup ? `${fallbackDetail} · 已登记为 ${dup.name ?? dup.id}` : fallbackDetail,
+      isVm,
+      registeredAs: dup ? (dup.name ?? dup.id) : undefined,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // payload 构造（Step 4 分发用）
 // ---------------------------------------------------------------------------
 
@@ -166,8 +218,8 @@ export type WizardPayload =
   | {
       type: 'register';
       itemKey: string;
-      /** registerDiscovered 的附加登记字段（user/keyPath/recipeId，全可选）。 */
-      extras?: { user?: string; keyPath?: string; recipeId?: string };
+      /** registerDiscovered 的附加登记字段（address/user/keyPath/recipeId，全可选）。 */
+      extras?: { address?: string; user?: string; keyPath?: string; recipeId?: string };
     }
   | {
       type: 'ssh-add';
@@ -215,6 +267,7 @@ export function buildWizardPayload(state: EnvWizardState): WizardPayload | null 
   if (state.source === 'discovered') {
     if (!p.discoveredKey) return null;
     const extras = {
+      ...(p.discoveredAddress.trim() ? { address: p.discoveredAddress.trim() } : {}),
       ...(p.discoveredUser.trim() ? { user: p.discoveredUser.trim() } : {}),
       ...(p.discoveredKeyPath.trim() ? { keyPath: p.discoveredKeyPath.trim() } : {}),
       ...(p.discoveredRecipeId ? { recipeId: p.discoveredRecipeId } : {}),
@@ -329,6 +382,7 @@ export function wizardSummaryRows(
       ctx.envs,
     );
     if (capRow) rows.push(capRow);
+    if (state.params.discoveredAddress.trim()) rows.push({ label: 'guest 地址', value: state.params.discoveredAddress.trim() });
     if (state.params.discoveredUser.trim()) rows.push({ label: 'guest 用户', value: state.params.discoveredUser.trim() });
     if (state.params.discoveredKeyPath.trim()) rows.push({ label: '密钥路径', value: state.params.discoveredKeyPath.trim() });
     if (state.params.discoveredRecipeId) rows.push({ label: '绑定配方', value: state.params.discoveredRecipeId });

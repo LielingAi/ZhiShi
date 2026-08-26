@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildRegisterPayload, capabilityBadgeText, capabilityTooltip, groupSidebar, isDiscoveredRunning, isSwitchable } from './envs';
+import { buildRegisterPayload, capabilityBadgeText, capabilityTooltip, groupSidebar, isDiscoveredRunning, isSwitchable, matchRegisteredEnv } from './envs';
 
 const envs = [
   { id: 'pwn@docker', kind: 'docker', name: 'pwn@docker' },
@@ -132,6 +132,90 @@ describe('buildRegisterPayload（1.3.5 选中即注册；1.3.7 起 vm id = vmNam
     expect(buildRegisterPayload({ id: 'x', name: '  ', driver: 'vmware' })).toBeNull();
     expect(buildRegisterPayload({ id: 'x', name: 'x', driver: 'ssh' })).toBeNull();
     expect(buildRegisterPayload({ id: 'x', driver: 'docker' })).toBeNull();
+  });
+
+  it('1.3.7 实机修复 B：extras.address 仅 VM 透传，docker 不带', () => {
+    expect(
+      buildRegisterPayload(
+        { id: 'E:\\vms\\fuzz.vmx', name: 'fuzz.vmx', driver: 'vmware', vmx: 'E:\\vms\\fuzz.vmx' },
+        { address: '192.168.56.20', user: 'root', keyPath: '~/.ssh/id_ed25519' },
+      ),
+    ).toEqual({
+      id: 'fuzz',
+      kind: 'vm',
+      vmName: 'fuzz',
+      vmx: 'E:\\vms\\fuzz.vmx',
+      name: 'fuzz',
+      address: '192.168.56.20',
+      user: 'root',
+      keyPath: '~/.ssh/id_ed25519',
+    });
+    // docker 载荷不带 address（容器通道不需要）
+    expect(
+      buildRegisterPayload(
+        { id: 'c1', name: 'kali', driver: 'docker' },
+        { address: '10.0.0.9', user: 'root' },
+      ),
+    ).toEqual({ id: 'docker-kali', kind: 'docker', container: 'kali', user: 'root' });
+    // 空串 address 视同未填（逐字段空值剔除）
+    expect(
+      buildRegisterPayload({ id: 'v', name: 'kali', driver: 'vbox' }, { address: '' }),
+    ).toEqual({ id: 'kali', kind: 'vm', vmName: 'kali', name: 'kali' });
+  });
+});
+
+// ===== 1.3.7 实机修复 A：本机发现 ↔ 已登记 同族匹配（防重复登记） =====
+
+describe('matchRegisteredEnv（1.3.7 实机修复 A）', () => {
+  const ENVS = [
+    { id: 'fuzz', kind: 'vm', name: 'fuzz', vmName: 'fuzz', vmx: 'E:\\VMs\\fuzz\\vmware-fuzz.vmx' },
+    { id: 'docker-kali', kind: 'docker', container: 'kali-2024' },
+  ];
+
+  it('vmx 路径归一化命中（大小写 / 正反斜杠不敏感）', () => {
+    const d = { id: 'vmware-e:/vms/fuzz/vmware-fuzz.vmx', name: 'vmware-fuzz.vmx', driver: 'vmware', vmx: 'e:/VMs/fuzz/vmware-fuzz.vmx/' };
+    expect(matchRegisteredEnv(d, ENVS)?.id).toBe('fuzz');
+  });
+
+  it('vmName 命中（vmware discover 名去 .vmx stem；大小写不敏感）', () => {
+    const d = { id: 'x', name: 'Fuzz.vmx', driver: 'vmware' }; // 无 vmx 也能按名命中
+    expect(matchRegisteredEnv(d, ENVS)?.id).toBe('fuzz');
+    // hyperv/vbox 的 name 即 VM 名
+    expect(matchRegisteredEnv({ id: 'y', name: 'fuzz', driver: 'hyperv' }, ENVS)?.id).toBe('fuzz');
+  });
+
+  it('docker container 命中（entry.container === discovered.name，精确）', () => {
+    expect(matchRegisteredEnv({ id: 'abc123', name: 'kali-2024', driver: 'docker' }, ENVS)?.id).toBe('docker-kali');
+  });
+
+  it('无命中 → null（不同 VM / 不同容器 / 未知驱动）', () => {
+    expect(matchRegisteredEnv({ id: 'z', name: 'other.vmx', driver: 'vmware', vmx: 'D:\\vms\\other.vmx' }, ENVS)).toBeNull();
+    expect(matchRegisteredEnv({ id: 'z', name: 'alpine', driver: 'docker' }, ENVS)).toBeNull();
+    expect(matchRegisteredEnv({ id: 'z', name: 'kali-2024', driver: 'unknown' }, ENVS)).toBeNull();
+    expect(matchRegisteredEnv({ id: 'z', name: 'x', driver: 'vmware' }, [])).toBeNull();
+  });
+
+  it('groupSidebar：同族命中 → 带 registeredAs 徽章（detail 标注已登记为 X）', () => {
+    const groups = groupSidebar(
+      [{ id: 'fuzz', kind: 'vm', name: 'fuzz', vmName: 'fuzz', vmx: 'E:\\VMs\\fuzz\\vmware-fuzz.vmx' }],
+      [],
+      [{ id: 'vmware-e:/vms/fuzz/vmware-fuzz.vmx', name: 'vmware-fuzz.vmx', driver: 'vmware', vmx: 'E:\\VMs\\fuzz\\vmware-fuzz.vmx' }],
+    );
+    const unreg = groups.find((g) => g.label === '本机已有')!;
+    expect(unreg.items).toHaveLength(1);
+    expect(unreg.items[0].registeredAs).toEqual({ key: 'fuzz', label: 'fuzz' });
+    expect(unreg.items[0].detail).toContain('已登记为 fuzz');
+  });
+
+  it('groupSidebar：未命中的 discover 条目保持无徽章（可登记）', () => {
+    const groups = groupSidebar(
+      [{ id: 'fuzz', kind: 'vm', vmName: 'fuzz' }],
+      [],
+      [{ id: 'x', name: 'kali-2024', state: 'powered off', driver: 'vmware' }],
+    );
+    const unreg = groups.find((g) => g.label === '本机已有')!;
+    expect(unreg.items[0].registeredAs).toBeUndefined();
+    expect(unreg.items[0].detail).toContain('未登记');
   });
 });
 

@@ -9,13 +9,21 @@
  * 三组语义（照 v19）：
  *   运行中   = ps 里 status=running 的实例（优先用登记条目的名字）
  *   已停止   = 已登记但不在运行中的条目
- *   本机已有 = discover 出来的、未登记（不在 list 里）的本机容器/VM
+ *   本机已有 = discover 出来的、未登记（不在 list 里）的本机容器/VM；
+ *              1.3.7 实机修复 A：id 之外再按 vmx/vmName/container 同族匹配——
+ *              命中已登记条目的带 registeredAs 徽章（不可重复登记）
  */
 
 export interface EnvEntryLike {
   id: string;
   kind?: string;
   name?: string;
+  /** docker 条目的容器名（1.3.7 实机修复：本机发现去重的 docker 匹配键）。 */
+  container?: string;
+  /** vm 条目的 VM 名（1.3.7 实机修复：本机发现去重的 vmName 匹配键）。 */
+  vmName?: string;
+  /** vmware 条目的 vmx 路径（删除确认的驱动判定：有 vmx = 只摘登记）。 */
+  vmx?: string;
   /** 配方 id（docker/vm up 回写的条目带它；启动按钮的 up 参数来源）。 */
   recipeId?: string;
   /** 1.3.7 场景 3：服务端现场推导的能力域集合（配方绑定域 ∪ 工具探测域）。 */
@@ -58,6 +66,13 @@ export interface SidebarEnvItem {
   startable: boolean;
   /** 启动按钮的 up 配方（startable 时非空）。 */
   recipeId?: string;
+  /** vmware 条目的 vmx 路径（删除确认文案的驱动判定入参，见 model/env-remove）。 */
+  vmx?: string;
+  /**
+   * 1.3.7 实机修复 A：该发现条目命中已登记环境（同 vmx/vmName/container）。
+   * 命中后行内显「已登记为 X」徽章、不再出「登记」按钮；点击改为切入已登记条目。
+   */
+  registeredAs?: { key: string; label: string };
   /** 1.3.7 场景 3：现场推导的能力集合（透明展示，无声明 UI）。 */
   capability?: { domains: string[]; derivedAt?: string };
 }
@@ -85,6 +100,42 @@ export function capabilityTooltip(cap: NonNullable<SidebarEnvItem['capability']>
   return `${capabilityBadgeText(cap)}（现场推导：配方绑定 ∪ 工具探测${when}）`;
 }
 
+/**
+ * 1.3.7 实机修复 A：本机发现条目 ↔ 已登记环境 的同族匹配。
+ *
+ * 实机症状：同一台 VM 在侧栏出现两个身份（已登记的 fuzz 与 discover 出的
+ * vmware-fuzz.vmx）——discover id 与登记 id 口径不同，单靠 id 去重漏判。
+ * 匹配规则（按序，任一命中即算同族）：
+ *   1. vmx 路径归一化相等（反斜杠→正斜杠、忽略大小写、去尾部分隔符）
+ *   2. VM 名相等（vmware 的 discover name 是 vmx 文件名 → 去 .vmx 取 stem，
+ *      大小写不敏感——hypervisor 的 VM 名本身不分大小写）
+ *   3. docker 容器名相等（entry.container === discovered.name，精确匹配）
+ *   4. id 精确相等（与 groupSidebar 既有去重口径一致，兜底）
+ * 返回命中的已登记条目；无命中 → null。
+ */
+export function matchRegisteredEnv(
+  d: DiscoveredLike,
+  registeredEnvs: EnvEntryLike[],
+): EnvEntryLike | null {
+  const dVmx = d.vmx ? normalizeVmxPath(d.vmx) : '';
+  const dVmName = d.driver === 'vmware' || d.driver === 'hyperv' || d.driver === 'vbox'
+    ? vmNameOf(d).toLowerCase()
+    : '';
+  const dContainer = d.driver === 'docker' ? (d.name?.trim() ?? '') : '';
+  for (const e of registeredEnvs) {
+    if (dVmx && e.vmx && normalizeVmxPath(e.vmx) === dVmx) return e;
+    if (dVmName && e.vmName && e.vmName.toLowerCase() === dVmName) return e;
+    if (dContainer && e.container === dContainer) return e;
+    if (e.id === d.id) return e;
+  }
+  return null;
+}
+
+/** vmx 路径归一化：`\`→`/`、全小写、去尾部 `/`（Windows 路径比较用）。 */
+function normalizeVmxPath(p: string): string {
+  return p.trim().replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+}
+
 export function groupSidebar(
   envs: EnvEntryLike[],
   running: PsInstanceLike[],
@@ -106,6 +157,7 @@ export function groupSidebar(
       kind: inst.driver ?? entry?.kind ?? 'env',
       warn: false,
       startable: false,
+      vmx: entry?.vmx,
       capability: capabilityOf(entry),
     });
   }
@@ -123,6 +175,7 @@ export function groupSidebar(
       // docker/vm 条目带 recipeId 才能 environment/up（ssh 条目无配方，不可启）。
       startable: (e.kind === 'docker' || e.kind === 'vm') && typeof e.recipeId === 'string' && e.recipeId !== '',
       recipeId: typeof e.recipeId === 'string' ? e.recipeId : undefined,
+      vmx: e.vmx,
       capability: capabilityOf(e),
     });
   }
@@ -132,14 +185,21 @@ export function groupSidebar(
     if (registeredIds.has(d.id)) continue;
     const state = (d.state ?? '').toLowerCase();
     const stopped = state.includes('exit') || state.includes('powered') || state.includes('saved');
+    // 1.3.7 实机修复 A：id 去重之外再做同族匹配（vmx/vmName/container）——
+    // 已登记的同族条目显徽章、不再出「登记」按钮，防重复登记。
+    const dup = matchRegisteredEnv(d, envs);
+    const dupLabel = dup ? (dup.name ?? dup.id) : '';
     unregItems.push({
       key: d.id,
       label: d.name ?? d.id,
       group: 'unreg',
-      detail: `${d.driver ?? 'unknown'} · 未登记${stopped ? '（停止）' : ''}`,
+      detail: dup
+        ? `${d.driver ?? 'unknown'} · 已登记为 ${dupLabel}`
+        : `${d.driver ?? 'unknown'} · 未登记${stopped ? '（停止）' : ''}`,
       kind: d.driver ?? 'unknown',
       warn: false,
       startable: false,
+      registeredAs: dup ? { key: dup.id, label: dupLabel } : undefined,
     });
   }
 
@@ -171,13 +231,17 @@ export type RegisterInput =
       vmx?: string;
       name?: string;
       osFamily?: 'linux' | 'windows';
+      /** 1.3.7 实机修复 B：guest 地址（exec 通道前提；缺了探测走不通）。 */
+      address?: string;
       user?: string;
       keyPath?: string;
       recipeId?: string;
     };
 
-/** 1.3.7 向导：登记时可选附加字段（绑定配方/凭据，全可选，空不下发）。 */
+/** 1.3.7 向导：登记时可选附加字段（绑定配方/凭据/连通地址，全可选，空不下发）。 */
 export interface RegisterExtras {
+  /** guest 地址——仅 VM 条目下发（docker 走容器通道，不需要）。 */
+  address?: string;
   user?: string;
   keyPath?: string;
   recipeId?: string;
@@ -208,9 +272,12 @@ function vmNameOf(d: DiscoveredLike): string {
  *   docker             → `docker-<容器名>`    { kind:'docker', container }
  *   vmware/hyperv/vbox → `<vmName>`（净化后） { kind:'vm', vmName, vmx?, osFamily? }
  * 名字缺失 / 驱动未知 / id 净化为空 → null（调用方 toast 提示）。
- * 1.3.7：extras（user/keyPath/recipeId）可选附加，逐字段空值剔除。
+ * 1.3.7：extras（user/keyPath/recipeId）可选附加，逐字段空值剔除；
+ * 1.3.7 实机修复 B：extras.address 仅 VM 分支透传（docker 不需要）。
  */
 export function buildRegisterPayload(d: DiscoveredLike, extras?: RegisterExtras): RegisterInput | null {
+  // address 不进公共 extraFields——docker 条目走容器通道，address 只对 VM 有意义
+  //（vm 分支单独透传，防 docker 载荷带上语义无解的字段）。
   const extraFields = extras
     ? {
         ...(extras.user ? { user: extras.user } : {}),
@@ -234,6 +301,8 @@ export function buildRegisterPayload(d: DiscoveredLike, extras?: RegisterExtras)
       ...(d.driver === 'vmware' && d.vmx ? { vmx: d.vmx } : {}),
       name: vmName,
       ...(d.osFamily ? { osFamily: d.osFamily } : {}),
+      // 1.3.7 实机修复 B：address 是 exec/探测通道前提，登记时一并收下。
+      ...(extras?.address ? { address: extras.address } : {}),
       ...extraFields,
     };
   }
