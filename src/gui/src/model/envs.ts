@@ -18,6 +18,10 @@ export interface EnvEntryLike {
   name?: string;
   /** 配方 id（docker/vm up 回写的条目带它；启动按钮的 up 参数来源）。 */
   recipeId?: string;
+  /** 1.3.7 场景 3：服务端现场推导的能力域集合（配方绑定域 ∪ 工具探测域）。 */
+  capabilityDomains?: string[];
+  /** capabilityDomains 的推导时间（ISO）。 */
+  capabilityDerivedAt?: string;
 }
 
 export interface PsInstanceLike {
@@ -54,11 +58,31 @@ export interface SidebarEnvItem {
   startable: boolean;
   /** 启动按钮的 up 配方（startable 时非空）。 */
   recipeId?: string;
+  /** 1.3.7 场景 3：现场推导的能力集合（透明展示，无声明 UI）。 */
+  capability?: { domains: string[]; derivedAt?: string };
 }
 
 export interface SidebarGroup {
   label: '运行中' | '已停止' | '本机已有';
   items: SidebarEnvItem[];
+}
+
+/** 条目 → 能力集合（1.3.7 场景 3：无字段 = 未推导过，不是空集合）。 */
+function capabilityOf(e: EnvEntryLike | undefined): SidebarEnvItem['capability'] {
+  return e?.capabilityDomains?.length
+    ? { domains: e.capabilityDomains, derivedAt: e.capabilityDerivedAt }
+    : undefined;
+}
+
+/** 能力徽章文案（侧栏行内，如「能力：pentest · binary」）。 */
+export function capabilityBadgeText(cap: NonNullable<SidebarEnvItem['capability']>): string {
+  return `能力：${cap.domains.join(' · ')}`;
+}
+
+/** 能力徽章 tooltip（含推导时间与来源说明）。 */
+export function capabilityTooltip(cap: NonNullable<SidebarEnvItem['capability']>): string {
+  const when = cap.derivedAt ? `，探测于 ${cap.derivedAt}` : '';
+  return `${capabilityBadgeText(cap)}（现场推导：配方绑定 ∪ 工具探测${when}）`;
 }
 
 export function groupSidebar(
@@ -82,6 +106,7 @@ export function groupSidebar(
       kind: inst.driver ?? entry?.kind ?? 'env',
       warn: false,
       startable: false,
+      capability: capabilityOf(entry),
     });
   }
 
@@ -98,6 +123,7 @@ export function groupSidebar(
       // docker/vm 条目带 recipeId 才能 environment/up（ssh 条目无配方，不可启）。
       startable: (e.kind === 'docker' || e.kind === 'vm') && typeof e.recipeId === 'string' && e.recipeId !== '',
       recipeId: typeof e.recipeId === 'string' ? e.recipeId : undefined,
+      capability: capabilityOf(e),
     });
   }
 
@@ -131,43 +157,84 @@ export function isSwitchable(item: SidebarEnvItem): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// 1.3.5 ④：本机发现「选中即注册」——登记载荷构造（TUI gate.ts:262-298 同语义）
+// 1.3.5 ④：本机发现「选中即注册」——登记载荷构造
+// （1.3.7 起 id 口径与服务端「实例即环境」统一；TUI 冻结，不再对齐它）
 // ---------------------------------------------------------------------------
 
 /** environment/add 的登记载荷（kind 与必填字段对齐 server registry 校验）。 */
 export type RegisterInput =
-  | { id: string; kind: 'docker'; container: string }
-  | { id: string; kind: 'vm'; vmName: string; vmx?: string; name?: string; osFamily?: 'linux' | 'windows' };
+  | { id: string; kind: 'docker'; container: string; user?: string; keyPath?: string; recipeId?: string }
+  | {
+      id: string;
+      kind: 'vm';
+      vmName: string;
+      vmx?: string;
+      name?: string;
+      osFamily?: 'linux' | 'windows';
+      user?: string;
+      keyPath?: string;
+      recipeId?: string;
+    };
+
+/** 1.3.7 向导：登记时可选附加字段（绑定配方/凭据，全可选，空不下发）。 */
+export interface RegisterExtras {
+  user?: string;
+  keyPath?: string;
+  recipeId?: string;
+}
 
 /**
- * 本机发现条目 → environment/add 载荷。登记 id 口径与 TUI 一致：
- *   docker        → `docker-<容器名>`  { kind:'docker', container }
- *   vmware/hyperv/vbox → `<driver>-<名>` { kind:'vm', vmName, vmx?, osFamily? }
- * 名字缺失 / 驱动未知 → null（调用方 toast 提示）。
+ * 条目 id 合法化（server registry ID_PATTERN：字母数字开头 + [A-Za-z0-9._-]，
+ * ≤64）——VM 名可含空格等非法字符，id 净化后下发，vmName 保留原名。
+ * 净化后为空 → ''（调用方视为无法登记）。
  */
-export function buildRegisterPayload(d: DiscoveredLike): RegisterInput | null {
+export function sanitizeEnvId(raw: string): string {
+  return raw
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[^A-Za-z0-9]+/, '')
+    .replace(/[-._]+$/, '')
+    .slice(0, 64);
+}
+
+/** vmware discover 的 name 是 vmx 文件名（带 .vmx 后缀）→ VM 名 = 文件 stem。 */
+function vmNameOf(d: DiscoveredLike): string {
+  const raw = d.name?.trim() ?? '';
+  return d.driver === 'vmware' ? raw.replace(/\.vmx$/i, '') : raw;
+}
+
+/**
+ * 本机发现条目 → environment/add 载荷。登记 id 口径（1.3.7「实例即环境」，
+ * 与服务端统一语义对齐）：
+ *   docker             → `docker-<容器名>`    { kind:'docker', container }
+ *   vmware/hyperv/vbox → `<vmName>`（净化后） { kind:'vm', vmName, vmx?, osFamily? }
+ * 名字缺失 / 驱动未知 / id 净化为空 → null（调用方 toast 提示）。
+ * 1.3.7：extras（user/keyPath/recipeId）可选附加，逐字段空值剔除。
+ */
+export function buildRegisterPayload(d: DiscoveredLike, extras?: RegisterExtras): RegisterInput | null {
+  const extraFields = extras
+    ? {
+        ...(extras.user ? { user: extras.user } : {}),
+        ...(extras.keyPath ? { keyPath: extras.keyPath } : {}),
+        ...(extras.recipeId ? { recipeId: extras.recipeId } : {}),
+      }
+    : {};
   const name = d.name?.trim();
   if (!name) return null;
   if (d.driver === 'docker') {
-    return { id: `docker-${name}`, kind: 'docker', container: name };
+    return { id: `docker-${name}`, kind: 'docker', container: name, ...extraFields };
   }
-  if (d.driver === 'vmware') {
+  if (d.driver === 'vmware' || d.driver === 'hyperv' || d.driver === 'vbox') {
+    const vmName = vmNameOf(d);
+    const id = sanitizeEnvId(vmName);
+    if (!vmName || !id) return null;
     return {
-      id: `vmware-${name}`,
+      id,
       kind: 'vm',
-      vmName: name,
-      ...(d.vmx ? { vmx: d.vmx } : {}),
-      name,
+      vmName,
+      ...(d.driver === 'vmware' && d.vmx ? { vmx: d.vmx } : {}),
+      name: vmName,
       ...(d.osFamily ? { osFamily: d.osFamily } : {}),
-    };
-  }
-  if (d.driver === 'hyperv' || d.driver === 'vbox') {
-    return {
-      id: `${d.driver}-${name}`,
-      kind: 'vm',
-      vmName: name,
-      name,
-      ...(d.osFamily ? { osFamily: d.osFamily } : {}),
+      ...extraFields,
     };
   }
   return null;

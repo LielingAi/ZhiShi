@@ -9,7 +9,7 @@
 import { useMemo } from 'react';
 
 import { useGuiStore } from '../store/useGuiStore';
-import { groupSidebar } from '../model/envs';
+import { capabilityBadgeText, capabilityTooltip, groupSidebar } from '../model/envs';
 import { accessGate, gateToast } from '../model/access-gate';
 
 export function EnvSidebar(): React.JSX.Element {
@@ -20,6 +20,7 @@ export function EnvSidebar(): React.JSX.Element {
   const currentEnvKey = useGuiStore((s) => s.currentEnvKey);
   const switchEnv = useGuiStore((s) => s.switchEnv);
   const startEnv = useGuiStore((s) => s.startEnv);
+  const refreshEnvCapability = useGuiStore((s) => s.refreshEnvCapability);
   const registerDiscovered = useGuiStore((s) => s.registerDiscovered);
   const openNewEnv = useGuiStore((s) => s.openNewEnv);
   const setPage = useGuiStore((s) => s.setPage);
@@ -68,8 +69,25 @@ export function EnvSidebar(): React.JSX.Element {
               >
                 <span className={`st ${it.group}`} />
                 <span className="nm">{it.label}</span>
+                {it.capability && (
+                  <span className="cap" title={capabilityTooltip(it.capability)}>
+                    {capabilityBadgeText(it.capability)}
+                  </span>
+                )}
                 {it.group === 'run' && <span className="snap">◆</span>}
                 {it.warn && <span className="warn">⚠</span>}
+                {it.group !== 'unreg' && (
+                  <button
+                    className="btn small eb-start"
+                    title={`重推 ${it.label} 能力集合（environment/capability-refresh）`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void refreshEnvCapability(it.key);
+                    }}
+                  >
+                    ⟳
+                  </button>
+                )}
                 {!gate.allow && gate.reason === 'not-started' && gate.canStart && (
                   <button
                     className="btn small eb-start"

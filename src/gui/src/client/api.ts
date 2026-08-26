@@ -38,6 +38,11 @@ export interface EnvEntry {
   keyPath?: string;
   /** 配方工具自检（environment/up 回写，缺 self-check 的条目无此项）。 */
   toolCheck?: { ok: boolean; missing: string[]; checkedAt: string };
+  /** 能力域集合（1.3.7 场景 3，服务端现场推导：配方绑定域 ∪ 工具探测域）。
+   *  探测失败/未推导过的存量条目无此字段——缺省即「未推导」，不是空集合。 */
+  capabilityDomains?: string[];
+  /** capabilityDomains 的推导时间（ISO）。 */
+  capabilityDerivedAt?: string;
 }
 
 export interface PsInstance {
@@ -69,6 +74,8 @@ export interface Recipe {
   description?: string;
   base?: string;
   tools: string[];
+  /** 1.3.7：vm 配方的 guest SSH 缺省用户（frontmatter vm_user；向导预填用）。 */
+  vmUser?: string;
 }
 
 export interface ModelEntity {
@@ -136,6 +143,23 @@ export function fetchEnvironmentRecipes(client: GuiSidecarClient): Promise<Recip
     .then((r) => r.data?.recipes ?? []);
 }
 
+/** 1.3.7：domain/list 的域条目（recipe→domain 映射的数据源）。 */
+export interface DomainEntity {
+  kind: string;
+  name: string;
+  recipes: string[];
+  skills?: string[];
+  subagents?: string[];
+  signalCount?: number;
+}
+
+/** admin domain/list → { success, data: { domains } }（handleDomainList）。 */
+export function fetchDomainList(client: GuiSidecarClient): Promise<DomainEntity[]> {
+  return client
+    .adminPost<{ success: boolean; data?: { domains?: DomainEntity[] } }>('domain/list')
+    .then((r) => (Array.isArray(r.data?.domains) ? r.data.domains : []));
+}
+
 export interface ModelListResult {
   providers: ModelProvider[];
   current?: { providerId?: string; modelId?: string };
@@ -168,12 +192,18 @@ export interface SshAddInput {
   host: string;
   user?: string;
   keyPath?: string;
+  /** 1.3.7 向导补齐：非标端口（缺省 22）。 */
+  port?: number;
+  name?: string;
+  osFamily?: 'linux' | 'windows';
+  /** 1.3.7 向导补齐：绑定的配方 id（决定域归属；server registry 可选字段）。 */
+  recipeId?: string;
 }
 
 /** 1.3.5：docker/vm 登记载荷（kind 与必填字段对齐 server registry 校验）。 */
 export type EnvironmentAddInput =
   | SshAddInput
-  | { id: string; kind: 'docker'; container: string }
+  | { id: string; kind: 'docker'; container: string; user?: string; keyPath?: string; recipeId?: string }
   | {
       id: string;
       kind: 'vm';
@@ -181,6 +211,9 @@ export type EnvironmentAddInput =
       vmx?: string;
       name?: string;
       osFamily?: 'linux' | 'windows';
+      user?: string;
+      keyPath?: string;
+      recipeId?: string;
     };
 
 export function environmentAdd(
@@ -264,6 +297,14 @@ export function environmentExtract(
   input: { id: string; guestPath: string; workspace?: string },
 ): Promise<{ success: boolean; error?: string; data?: { savedTo?: string } }> {
   return client.adminPost('environment/extract', input);
+}
+
+/** 1.3.7 场景 3：能力集合重推 + 回写（侧栏「刷新」按钮）。 */
+export function environmentCapabilityRefresh(
+  client: GuiSidecarClient,
+  input: { id: string },
+): Promise<{ success: boolean; error?: string; data?: { capabilityDomains?: string[]; capabilityDerivedAt?: string } }> {
+  return client.adminPost('environment/capability-refresh', input);
 }
 
 export interface CurrentEnvResult {

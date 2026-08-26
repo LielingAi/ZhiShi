@@ -84,6 +84,12 @@ kbd {
 .eb-item .st.run { background: var(--cyan); box-shadow: 0 0 4px rgba(53,195,226,.6); }
 .eb-item .st.stop, .eb-item .st.unreg { background: var(--faint); }
 .eb-item .nm { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 1.3.7 场景 3：能力徽章（现场推导的能力域集合，透明展示） */
+.eb-item .cap {
+  flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 10px; color: var(--cyan); border: 1px solid var(--border-soft);
+  border-radius: 3px; padding: 0 4px;
+}
 .eb-item .snap { margin-left: auto; color: var(--cyan); font-size: 10px; }
 .eb-item .warn { margin-left: auto; color: var(--amber); font-size: 10px; }
 .envbar .eb-foot {
@@ -742,3 +748,17 @@ mark.h-search { background: rgba(232,163,61,.3); color: var(--text); border-radi
   padding: 24px; text-align: center;
 }
 .state-hint.center .sh-hint { margin-left: 0; }
+
+/* ===== 1.3.7 新增：新建环境向导（四步） ===== */
+.np-item.sel { background: var(--panel-3); box-shadow: inset 0 0 0 1px var(--cyan-dim); }
+.wiz-steps { display: flex; align-items: center; gap: 5px; margin-left: auto; }
+.wiz-step {
+  font-family: var(--mono); font-size: 10.5px; color: var(--faint);
+  border: 1px solid var(--border); border-radius: 3px; padding: 0 6px;
+}
+.wiz-step.cur { color: var(--cyan); border-color: var(--cyan-dim); }
+.wiz-step.done { color: var(--green); border-color: rgba(63,185,138,.4); }
+.wiz-confirm { display: flex; flex-direction: column; gap: 6px; }
+.wiz-confirm-row { display: flex; gap: 12px; font-size: 12.5px; }
+.wiz-confirm-row .wc-label { width: 72px; flex-shrink: 0; color: var(--muted); }
+.wiz-confirm-row .wc-value { color: var(--text); font-family: var(--mono); font-size: 12px; word-break: break-all; }

@@ -166,6 +166,37 @@ export function removeEnvSessionsForEnvIdFromMap(map: EnvSessionsMap, envId: str
 }
 
 /**
+ * 1.3.7 存量迁移：环境条目 id 改名（oldId → newId）时同步改行键。
+ * 覆盖 `env:<id>` 与 `recipe:<instanceId>` 两种行键后缀；目标键已存在时
+ * 保留既有行（较新），丢弃旧键行——同一线的两份映射取现存者，不合并。
+ * 无命中返回原 map（mutate 层据此跳过写盘）。
+ */
+export function renameEnvSessionEnvIdInMap(
+  map: EnvSessionsMap,
+  oldId: string,
+  newId: string,
+): EnvSessionsMap {
+  if (oldId === newId) return map;
+  const suffixes = [`::env:${oldId}`, `::recipe:${oldId}`];
+  let changed = false;
+  const lines: Record<string, EnvSessionLine> = {};
+  for (const [key, line] of Object.entries(map.lines)) {
+    const hit = suffixes.find((s) => key.endsWith(s));
+    if (!hit) {
+      lines[key] = line;
+      continue;
+    }
+    changed = true;
+    const renamedKey = key.slice(0, key.length - hit.length) + hit.replace(oldId, newId);
+    if (!(renamedKey in lines) && !(renamedKey in map.lines)) {
+      lines[renamedKey] = line;
+    }
+    // 目标键已存在 → 旧行丢弃（保留现存映射，见 docstring）
+  }
+  return changed ? { version: 1, lines } : map;
+}
+
+/**
  * 1.3.3 历史面板 — 反查某 loopSessionId 属于哪个环境线:扫描指定 workspace
  * 前缀下的行,命中返回行键后缀(环境键:env:<id> / recipe:<instanceId> / host);
  * 无映射/跨 workspace → null。GET /sessions 用它给列表行补 envKey 分组字段。
@@ -249,4 +280,13 @@ export async function removeEnvSessionsForEnvId(
   path: string = defaultEnvSessionsPath(),
 ): Promise<void> {
   await mutateEnvSessionsMap((map) => removeEnvSessionsForEnvIdFromMap(map, envId), path);
+}
+
+/** 1.3.7 存量迁移：环境条目 id 改名时同步改行键（无命中不写盘）。 */
+export async function renameEnvSessionEnvId(
+  oldId: string,
+  newId: string,
+  path: string = defaultEnvSessionsPath(),
+): Promise<void> {
+  await mutateEnvSessionsMap((map) => renameEnvSessionEnvIdInMap(map, oldId, newId), path);
 }

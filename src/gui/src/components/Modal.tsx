@@ -1,8 +1,11 @@
 /**
- * 模态（1.3.1 ⑤ 接真 + ④ 参数收集）：
- *   - 新建环境向导：配方列表（environment/recipes 真实数据）
- *   - boot：真实 environment/up + 轮询 environment/ps 推阶段（store.bootEnv）
- *   - SSH 接入：environment/add（真实落盘，保持）
+ * 模态（1.3.1 ⑤ 接真 + ④ 参数收集；1.3.7 场景 2 四步向导）：
+ *   - 新建环境向导：四步（选来源 → 收参 → 确认 → 执行），状态机/payload
+ *     构造/域映射在 model/env-wizard.ts；执行分发在 store.wizardExecute
+ *   - boot：真实 environment/up + 轮询 environment/ps 推阶段（store.bootEnv）；
+ *     向导的配方来源执行步复用此模态承载进度（bootOpts 透传 VM 凭据）
+ *   - SSH 接入：向导内的「手动 SSH」来源步（environment/add，补齐
+ *     port/name/osFamily/recipeId）；旧 SshModal 保留为 ModalKind 兼容
  *   - adopt：environment/adopt（真实——连通 → 初始化 → 快照 → vmTemplates）
  *   - slash-args：/snapshot /rollback /extract 的参数收集
  *   - pick-message：/rewind /fork 的消息选择（wire id 来源：replay srvId）
@@ -13,6 +16,12 @@ import type React from 'react';
 
 import { selectCurrentSession, useGuiStore } from '../store/useGuiStore';
 import { bootStages } from '../model/envs';
+import {
+  recipesForSource,
+  wizardStepError,
+  wizardSummaryRows,
+  WIZARD_SOURCE_CARDS,
+} from '../model/env-wizard';
 import { forkTargets, rewindTargets, SLASH_ROUTES } from '../model/slash-routes';
 import type { Recipe } from '../client/api';
 
@@ -317,46 +326,290 @@ function PickMessageModal(): React.JSX.Element | null {
   );
 }
 
-// ── 新建环境向导 ──────────────────────────────────────────────────────
+// ── 1.3.7 场景 2：新建环境四步向导（状态机在 model/env-wizard.ts） ────────
 
-function NewEnvModal(): React.JSX.Element {
+const WIZARD_STEP_TITLES = ['① 选来源', '② 参数', '③ 确认', '④ 执行'];
+
+function NewEnvModal(): React.JSX.Element | null {
+  const wizard = useGuiStore((s) => s.wizard);
   const recipes = useGuiStore((s) => s.recipes);
+  const domains = useGuiStore((s) => s.domains);
+  const envs = useGuiStore((s) => s.envs);
+  const discoveredDocker = useGuiStore((s) => s.discoveredDocker);
+  const discoveredVm = useGuiStore((s) => s.discoveredVm);
   const closeModal = useGuiStore((s) => s.closeModal);
-  const setModal = useGuiStore((s) => s.setModal);
+  const openAdopt = useGuiStore((s) => s.openAdopt);
+  const wizardPickSource = useGuiStore((s) => s.wizardPickSource);
+  const wizardSetParam = useGuiStore((s) => s.wizardSetParam);
+  const wizardNextStep = useGuiStore((s) => s.wizardNextStep);
+  const wizardBackStep = useGuiStore((s) => s.wizardBackStep);
+  const wizardExecute = useGuiStore((s) => s.wizardExecute);
+
+  if (!wizard) return null;
+  const p = wizard.params;
+  const source = wizard.source;
+  const stepErr = wizardStepError(wizard);
+
+  const recipeSelect = (value: string, key: 'sshRecipeId' | 'discoveredRecipeId', label: string) => (
+    <div>
+      <div className="f-label">{label}</div>
+      <select className="f-input" value={value} onChange={(e) => wizardSetParam(key, e.target.value)}>
+        <option value="">（不绑定）</option>
+        {recipes.map((r) => (
+          <option value={r.id} key={r.id}>{r.id}</option>
+        ))}
+      </select>
+    </div>
+  );
+
+  let body: React.JSX.Element;
+  if (wizard.step === 1) {
+    body = (
+      <>
+        {WIZARD_SOURCE_CARDS.map((c) => (
+          <div className="np-item" key={c.source} onClick={() => wizardPickSource(c.source)}>
+            <span className="np-name">{c.title}</span>
+            <span className="np-tools">{c.detail}</span>
+          </div>
+        ))}
+        <div className="m-hint">Esc 取消 · 全部来源参数带默认值，≤3 次点击到完成</div>
+      </>
+    );
+  } else if (wizard.step === 2 && (source === 'docker-recipe' || source === 'vm-recipe')) {
+    const list = recipesForSource(source, recipes);
+    body = (
+      <>
+        {list.length === 0 && <div className="ov-empty">加载配方中…（bundled-environments）</div>}
+        {list.map((r) => (
+          <div
+            className={`np-item ${p.recipeId === r.id ? 'sel' : ''}`}
+            key={r.id}
+            onClick={() => {
+              wizardSetParam('recipeId', r.id);
+              if (source === 'vm-recipe' && r.vmUser) wizardSetParam('vmUser', r.vmUser);
+            }}
+          >
+            <span className="np-name">{r.id}</span>
+            <span className="np-tools">{r.tools.join(' · ') || '（无工具声明）'}</span>
+            <span className="np-base">{r.base ?? 'docker'}</span>
+          </div>
+        ))}
+        {source === 'vm-recipe' && (
+          <div className="form-col" style={{ marginTop: 10 }}>
+            <div>
+              <div className="f-label">guest 用户（可选；缺省取配方/vmTemplates）</div>
+              <input
+                className="f-input"
+                placeholder="root"
+                value={p.vmUser}
+                onChange={(e) => wizardSetParam('vmUser', e.target.value)}
+              />
+            </div>
+            <div>
+              <div className="f-label">密钥路径（可选）</div>
+              <input
+                className="f-input"
+                placeholder="~/.ssh/id_ed25519"
+                value={p.vmKeyPath}
+                onChange={(e) => wizardSetParam('vmKeyPath', e.target.value)}
+              />
+            </div>
+            <div className="m-hint">
+              已有装好系统的 VM？模板养成与环境接入是两件事——
+              <button className="btn" onClick={() => openAdopt(p.recipeId)}>改为认领已有 VM（adopt）</button>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  } else if (wizard.step === 2 && source === 'discovered') {
+    const items = [
+      ...discoveredDocker.map((d) => ({
+        key: d.id,
+        label: d.name ?? d.id,
+        detail: `docker · ${d.status ?? 'unknown'}`,
+      })),
+      ...discoveredVm.map((v) => ({
+        key: v.id,
+        label: v.name ?? v.id,
+        detail: `${v.driver} · ${v.state ?? 'unknown'}`,
+      })),
+    ];
+    body = (
+      <>
+        {items.length === 0 && (
+          <div className="ov-empty">本机未发现可接入环境（discover 扫描为空）——可上一步换来源</div>
+        )}
+        {items.map((it) => (
+          <div
+            className={`np-item ${p.discoveredKey === it.key ? 'sel' : ''}`}
+            key={it.key}
+            onClick={() => wizardSetParam('discoveredKey', it.key)}
+          >
+            <span className="np-name">{it.label}</span>
+            <span className="np-tools">{it.detail}</span>
+          </div>
+        ))}
+        <div className="form-col" style={{ marginTop: 10 }}>
+          <div>
+            <div className="f-label">guest 用户（可选）</div>
+            <input
+              className="f-input"
+              placeholder="root"
+              value={p.discoveredUser}
+              onChange={(e) => wizardSetParam('discoveredUser', e.target.value)}
+            />
+          </div>
+          <div>
+            <div className="f-label">密钥路径（可选）</div>
+            <input
+              className="f-input"
+              placeholder="~/.ssh/id_ed25519"
+              value={p.discoveredKeyPath}
+              onChange={(e) => wizardSetParam('discoveredKeyPath', e.target.value)}
+            />
+          </div>
+          {recipeSelect(p.discoveredRecipeId, 'discoveredRecipeId', '绑定配方（可选——决定域归属）')}
+        </div>
+      </>
+    );
+  } else if (wizard.step === 2 && source === 'ssh') {
+    body = (
+      <div className="form-col">
+        <div>
+          <div className="f-label">主机 host</div>
+          <input
+            className="f-input"
+            placeholder="192.168.1.100 / jump.example.com"
+            value={p.sshHost}
+            onChange={(e) => wizardSetParam('sshHost', e.target.value)}
+          />
+        </div>
+        <div>
+          <div className="f-label">用户 user</div>
+          <input
+            className="f-input"
+            placeholder="root"
+            value={p.sshUser}
+            onChange={(e) => wizardSetParam('sshUser', e.target.value)}
+          />
+        </div>
+        <div>
+          <div className="f-label">密钥路径 keyPath</div>
+          <input
+            className="f-input"
+            placeholder="~/.ssh/id_ed25519"
+            value={p.sshKeyPath}
+            onChange={(e) => wizardSetParam('sshKeyPath', e.target.value)}
+          />
+        </div>
+        <div>
+          <div className="f-label">端口 port（可选，缺省 22）</div>
+          <input
+            className="f-input"
+            placeholder="22"
+            value={p.sshPort}
+            onChange={(e) => wizardSetParam('sshPort', e.target.value)}
+          />
+        </div>
+        <div>
+          <div className="f-label">名称 name（可选，展示用）</div>
+          <input
+            className="f-input"
+            placeholder="跳板机"
+            value={p.sshName}
+            onChange={(e) => wizardSetParam('sshName', e.target.value)}
+          />
+        </div>
+        <div>
+          <div className="f-label">OS 家族（可选）</div>
+          <select
+            className="f-input"
+            value={p.sshOsFamily}
+            onChange={(e) => wizardSetParam('sshOsFamily', e.target.value)}
+          >
+            <option value="">（未知）</option>
+            <option value="linux">linux</option>
+            <option value="windows">windows</option>
+          </select>
+        </div>
+        {recipeSelect(p.sshRecipeId, 'sshRecipeId', '绑定配方（可选——决定域归属）')}
+        <div className="m-note">host / 用户 / 密钥路径 必填 · 密码不走正门（keyPath 引用）</div>
+      </div>
+    );
+  } else if (wizard.step === 3) {
+    const rows = wizardSummaryRows(wizard, { recipes, domains, envs });
+    body = (
+      <>
+        <div className="wiz-confirm">
+          {rows.map((r) => (
+            <div className="wiz-confirm-row" key={r.label}>
+              <span className="wc-label">{r.label}</span>
+              <span className="wc-value">{r.value}</span>
+            </div>
+          ))}
+        </div>
+        <div className="m-hint">确认无误后进执行步——构建全自动，失败即停，绝不半进</div>
+      </>
+    );
+  } else {
+    const actionText =
+      source === 'docker-recipe' || source === 'vm-recipe'
+        ? 'environment/up 全自动构建（进度走构建模态轮询）'
+        : source === 'discovered'
+          ? 'environment/add 登记入侧栏（运行中则自动切入）'
+          : 'environment/add 登记 SSH 主机';
+    body = (
+      <>
+        <div className="wiz-confirm">
+          <div className="wiz-confirm-row">
+            <span className="wc-label">动作</span>
+            <span className="wc-value">{actionText}</span>
+          </div>
+        </div>
+        <div className="m-hint">点「开始创建」一键发起；此后零动手</div>
+      </>
+    );
+  }
 
   return (
     <div className="modal-backdrop open">
       <div className="modal">
         <div className="m-head">
           <span className="m-title">新建环境</span>
-          <span className="m-sub">选择一个环境类型，构建全自动</span>
+          <span className="m-sub">四步向导 · 参数全带默认值</span>
+          <span className="wiz-steps">
+            {WIZARD_STEP_TITLES.map((t, i) => (
+              <span
+                className={`wiz-step ${i + 1 === wizard.step ? 'cur' : i + 1 < wizard.step ? 'done' : ''}`}
+                key={t}
+              >
+                {t}
+              </span>
+            ))}
+          </span>
           <button className="m-close" onClick={closeModal}>✕</button>
         </div>
         <div className="m-body">
-          {recipes.length === 0 && <div className="ov-empty">加载配方中…（bundled-environments）</div>}
-          {recipes.map((r) => (
-            <div
-              className="np-item"
-              key={r.id}
-              onClick={() => {
-                setModal(
-                  r.base === 'vm'
-                    ? { kind: 'adopt', recipeId: r.id }
-                    : { kind: 'boot', recipeId: r.id },
-                );
-              }}
-            >
-              <span className="np-name">{r.id}</span>
-              <span className="np-tools">{r.tools.join(' · ')}</span>
-              <span className="np-base">{r.base ?? 'docker'}</span>
-            </div>
-          ))}
-        </div>
-        <div className="m-foot">
-          <button className="btn" style={{ width: '100%' }} onClick={() => setModal({ kind: 'ssh' })}>
-            🔌 通过 SSH 连接已有主机…
-          </button>
-          <div className="m-foot-note">host / 用户 / 密钥路径 · 密码不走正门（keyPath 引用）</div>
+          {body}
+          {stepErr && wizard.step === 2 && <div className="m-error">✗ {stepErr}</div>}
+          <div className="m-actions">
+            {wizard.step > 1 && (
+              <button className="btn" onClick={wizardBackStep}>上一步</button>
+            )}
+            <button className="btn" onClick={closeModal}>取消</button>
+            {wizard.step < 3 && wizard.step > 1 && (
+              <button className="btn primary" disabled={stepErr !== null} onClick={wizardNextStep}>
+                下一步
+              </button>
+            )}
+            {wizard.step === 3 && (
+              <button className="btn primary" onClick={wizardNextStep}>确认，去执行</button>
+            )}
+            {wizard.step === 4 && (
+              <button className="btn primary" onClick={() => void wizardExecute()}>开始创建</button>
+            )}
+          </div>
         </div>
       </div>
     </div>

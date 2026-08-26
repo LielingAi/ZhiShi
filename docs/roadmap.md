@@ -5,7 +5,7 @@
 
 ---
 
-## 1.3.7 —— 环境业务逻辑：讨论 + 优化（进行中）
+## 1.3.7 —— 环境业务逻辑：讨论 + 优化（已完成）
 
 用户定调（2026-08-26）：环境与环境创建的业务逻辑现在很乱，本版先讨论后迭代。三个场景 + 调研结论：**用户拍板（2026-08-26）：三场景全做，场景 3 选 B 方案（纯系统推导，域不进用户界面），顺序 2→1→3，实现完成后直接推送，无需中途确认**。口径修正：「自动切换环境」改为「自动切换域（注入面）」，执行宿主始终人选定不切。
 
@@ -16,9 +16,11 @@
 - 建环境入口**七路径无统一向导**：docker 配方 up / VM 配方 up / VM adopt / VM build（仅 CLI）/ 本机发现登记 / ssh 手动 / 通用 add；GUI/TUI/CLI 三端能力面不一致（build 与 up --vm-base 在 GUI 无入口；ssh 表单丢 port/name/osFamily/recipeId 字段——手动 ssh 条目永无配方绑定，域只能靠信号猜）。
 - 「recipeId 回落同名配方」规则三处复制；「运行中」判定四引擎拼装无统一状态机；发现→登记映射两端自拼不一致。
 
-- [ ] **讨论一：环境归属模型**——用户场景「我已有 VM 系统，它属于哪个环境？」：现状 VM 机器=环境条目 1:1（vmware/hyperv 两套语义）。议题：是否引入「机器（machine）↔ 环境（environment）分离」或至少统一 vm 条目语义；已有 VM 的归位路径（discover/adopt/register）要不要收敛成一个「接入已有环境」统一流程。
-- [ ] **讨论二：新建向导分步化**——用户场景「新建环境应该一步一步往下选择」：七路径收敛为「选来源类型 → 分步参数 → 确认 → 构建/接入 → 完成」的 GUI 向导（docker 配方 / VM 配方 / 接入已有 VM / 本机发现 / SSH 手动五类型），环境多时不乱。同时补 ssh 表单缺的字段（port/name/osFamily/recipeId）。
-- [ ] **讨论三：多能力环境**——用户场景「一个环境需要承载多个能力，现在不允许」：数据模型 `recipeId` 单值 → 环境可声明多配方/多域（如 `recipeIds[]` 或 `domains[]`，含主域/默认域）；与 1.2.7 域判定衔接（域信号在环境声明的能力集合内切换，集合外强信号才提请）；「自动切换环境」口径澄清为「自动切换域（注入面），执行宿主不自动切」。
+- [x] **讨论一：环境归属模型**——用户场景「我已有 VM 系统，它属于哪个环境？」：现状 VM 机器=环境条目 1:1（vmware/hyperv 两套语义）。议题：是否引入「机器（machine）↔ 环境（environment）分离」或至少统一 vm 条目语义；已有 VM 的归位路径（discover/adopt/register）要不要收敛成一个「接入已有环境」统一流程。
+- [x] **讨论二：新建向导分步化**——用户场景「新建环境应该一步一步往下选择」：七路径收敛为「选来源类型 → 分步参数 → 确认 → 构建/接入 → 完成」的 GUI 向导（docker 配方 / VM 配方 / 接入已有 VM / 本机发现 / SSH 手动五类型），环境多时不乱。同时补 ssh 表单缺的字段（port/name/osFamily/recipeId）。
+- [x] **讨论三：多能力环境**——用户场景「一个环境需要承载多个能力，现在不允许」：数据模型 `recipeId` 单值 → 环境可声明多配方/多域（如 `recipeIds[]` 或 `domains[]`，含主域/默认域）；与 1.2.7 域判定衔接（域信号在环境声明的能力集合内切换，集合外强信号才提请）；「自动切换环境」口径澄清为「自动切换域（注入面），执行宿主不自动切」。
+
+> 实际落地（2026-08-26）：**场景 2（GUI 新建向导）**——四步向导（选来源 docker 配方/VM 配方/本机已有/手动 SSH → 按类型收参全默认可跳 → 确认页展基底/配方/工具清单/域绑定 → 执行复用 BootModal 轮询），SSH 补 port/name/osFamily/recipeId（recipeId 让手动 ssh 也能绑域），model/env-wizard.ts 纯状态机 21 例。**场景 1（vm 语义统一+迁移）**——vm 条目统一「实例即环境」（id=vmName，vmx 降级纯定位；vmware「模板即环境」废除，up 回写实例条目）；id→vmx 解析收敛为 `resolveVmxForEntry`（条目 vmx 优先 → vmTemplates 探测回落），删「id 以 .vmx 结尾」启发式路由；存量迁移 `vm-entry-migration.ts`（锁内重读重算 + tmp+rename + .bak + 幂等，同步迁移 env-sessions/selection 引用）；GUI 接入 payload 收敛（buildRegisterPayload 一处，vm id=vmName+ID_PATTERN 净化）+ adopt 入口改到向导 VM 步骤次级按钮（模板养成与环境接入分开）。**场景 3（多能力环境，B 方案纯推导）**——capability-derive.ts：工具→配方→域反推表（67 个 bundled 工具）+ 批量探测（复用 buildToolCheckScript 一次 exec，绑定域恒在集合不需探测证据）+ `EnvironmentEntry.capabilityDomains/capabilityDerivedAt` additive 落盘（up/add/capability-refresh/domain-check 四处计算，探测失败不写字段不误判空集合）；域推导链收窄：基线=capabilityDomains[0] ?? 旧链，信号裁决只统计集合∪基线内域（集合外强信号不切，阈值不变，存量零迁移行为逐字节不变）；能力清单段注入推导集合+工具并集+漂移标注；GUI 侧栏能力徽章+⟳刷新按钮+向导确认页推导集合行。实机抓出：旧 submitSsh 的 `user@host` id 过不了 registry 校验（向导净化规避）。新增单测 45（server 37+gui 8，含场景 1/2 的 21+22）；全量 190 文件 2438 测试绿 + typecheck + eslint + build:server/build:gui 绿。**活体验证（curl 直连 sidecar）**：启动迁移日志「vm-entry migration done」、`environment/list` 新字段在线、`environment/capability-refresh` 对 pwn-vm 真探测回写 `["binary","ai-security","pentest","whitebox"]`（按现场工具推导）并持久化。
 
 > 不做（维持）：编译发版（GUI 完成前）、TUI 退役执行（1.3.9）、/bg 转后台（单独立版）。
 > 验收：全量测试 + 实机走查（讨论结论落地后）。

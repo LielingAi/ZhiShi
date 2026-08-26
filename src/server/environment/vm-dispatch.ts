@@ -24,7 +24,7 @@ export type DownRouteTarget = VmDriverKind | 'docker';
 
 /** down/rm 路由所需的探测结果（调用方容错收集：引擎没装 → false）。 */
 export interface VmRouteProbes {
-  /** id 以 .vmx 结尾（直停），或登记条目 kind=vm 且带 vmx（D22 直连）。 */
+  /** 登记条目 kind=vm 且 resolveVmxForEntry 解析出 vmx（1.3.7：不再看 id 后缀）。 */
   vmwareInstance: boolean;
   /** Hyper-V 里存在名为 id 的 VM（Get-VM 命中）。 */
   hypervVm: boolean;

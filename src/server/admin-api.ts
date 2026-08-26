@@ -88,6 +88,18 @@ import { resolveSshTarget, execInEnvironment, buildScpArgv } from './loop/env-ex
 
 import { buildToolCheckScript, parseToolCheckOutput } from './environment/recipes';
 
+import {
+  CAPABILITY_PROBE_TIMEOUT_MS,
+  boundDomainsForEntry,
+  buildToolDomainIndex,
+  collectProbeSurface,
+  mergeCapabilityDomains,
+  parseProbePresentTools,
+  probedDomainsForTools,
+  probeEnvironmentCapabilities,
+  type CapabilityExecFn,
+} from './environment/capability-derive';
+
 import { requestBoundaryAsk } from './loop/boundary-ask';
 
 import { detectOsFamilyFromVmx } from './environment/os-family';
@@ -294,6 +306,8 @@ import {
 } from './environment/vm-adopt';
 
 import {
+
+  resolveVmxForEntry,
 
   vmGuestExec,
 
@@ -4871,6 +4885,22 @@ export async function handleEnvironmentAdd(
 
   }
 
+  // 能力集合顺手探测(1.3.7 场景 3):有可用通道的条目(ssh 有 host /
+  // docker 有 container / vm 有 address)登记前试推一次「配方绑定域 ∪
+  // 工具探测域」。探测是锦上添花不是门槛——失败静默,不阻塞登记。
+  const probeable =
+    (entry.kind === 'ssh' && entry.host) ||
+    (entry.kind === 'docker' && entry.container) ||
+    (entry.kind === 'vm' && entry.address);
+  if (probeable) {
+    const probed = await probeEnvironmentCapabilities(entry, {
+      recipes: scanRecipes(defaultRecipesRoot()),
+      manifests: loadDomainManifests(),
+      exec: (e, script, opts) => capabilityExecImpl(e, script, opts),
+    });
+    if (probed) Object.assign(entry, probed);
+  }
+
   try {
 
     const saved = await atomicModifyConfig((config) => {
@@ -5156,9 +5186,9 @@ export async function handleEnvironmentUp(payload: {
     : process.cwd();
 
   // VM 配方（P2）：按 frontmatter vm_engine 分发驱动（缺省 vmware）。
-  // vmware 走 D22 直连：vmTemplates 条目就是环境本身，up 后回写 env 条目
-  // （id = recipe.id，kind: vm，vmx 为 down/rm/ps 定位锚），幂等重 up。
-  // hyperv/vbox 仍是派生实例模型（id = 实例名，拿到地址才回写条目）。
+  // 1.3.7「实例即环境」：三驱动统一 id = 实例名（vmware = vmx stem，
+  // hyperv/vbox = 派生实例名），up 后回写 env 条目（kind: vm，
+  // vmx 只是 vmware 条目的定位辅助），幂等重 up。
   // vmBase 解析顺序（P2 V6）：--vm-base 旗标 > 配方 frontmatter vm_base >
   // config.json::vmTemplates（env adopt 的产出）。vmTemplates 回落只对
   // vmware 生效（P2 B3）——hyperv/vbox 的模板引用只走 vm_base/--vm-base，
@@ -5208,48 +5238,18 @@ export async function handleEnvironmentUp(payload: {
 
     const instance = result.instance;
 
-    // D22：vmware 条目 id = recipe.id（一台 VM 一个条目），vmx 是定位锚，
-    // 无论是否拿到 address 都登记（down/rm/ps 靠 vmx）。幂等重 up：同 id
-    // 条目先摘再加（刷新 address / vmx），不报「已存在」。hyperv/vbox 仍
-    // 是派生实例模型：id = 实例名，只在拿到地址时回写。
+    // 1.3.7「实例即环境」：三驱动统一 id = 实例名（vmware = vmx 文件 stem，
+    // hyperv/vbox = 派生实例名）。vmx 退化为纯定位辅助（down/rm/ps/快照/
+    // 回滚 的解析锚），不再决定 id 语义。vmware 无论是否拿到 address 都
+    // 登记（断网 VM 走 guest-exec 通道）；hyperv/vbox 仍只在拿到地址时
+    // 回写。幂等重 up：同 id 条目先摘再加（刷新 address / vmx），不报「已存在」。
     if (driver === 'vmware' || instance.address) {
 
       try {
 
-        const entry = driver === 'vmware'
+        const entryVmx = driver === 'vmware' ? (instance as VmInstance).vmx : undefined;
 
-          ? {
-
-              id: recipe.id,
-
-              kind: 'vm' as const,
-
-              name: `${recipe.name}（${recipe.id}）`,
-
-              recipeId: recipe.id,
-
-              vmName: recipe.id,
-
-              vmx: (instance as VmInstance).vmx,
-
-              // OS 家族:vmx 静态判定(guestOS 字段),读不到缺省 linux。
-              ...((instance as VmInstance).vmx && detectOsFamilyFromVmx((instance as VmInstance).vmx)
-                ? { osFamily: detectOsFamilyFromVmx((instance as VmInstance).vmx)! }
-                : {}),
-
-              ...(instance.address ? { address: instance.address } : {}),
-
-              ...(user ? { user } : {}),
-
-              ...(keyPath ? { keyPath } : {}),
-
-              ...(passwordRef ? { passwordRef } : {}),
-
-              createdAt: new Date().toISOString(),
-
-            }
-
-          : {
+        const entry = {
 
               id: instance.name,
 
@@ -5260,6 +5260,13 @@ export async function handleEnvironmentUp(payload: {
               recipeId: recipe.id,
 
               vmName: instance.name,
+
+              ...(entryVmx ? { vmx: entryVmx } : {}),
+
+              // OS 家族:vmx 静态判定(guestOS 字段),读不到缺省 linux。
+              ...(entryVmx && detectOsFamilyFromVmx(entryVmx)
+                ? { osFamily: detectOsFamilyFromVmx(entryVmx)! }
+                : {}),
 
               ...(instance.address ? { address: instance.address } : {}),
 
@@ -5273,11 +5280,12 @@ export async function handleEnvironmentUp(payload: {
 
             };
 
-        // 配方工具自检(与 docker 路径对齐,1.2.5「配」):拿到地址的 VM
-        // 回写前当场验声明工具(ssh 通道),证据落条目 toolCheck;无地址
-        // (断网/未就绪)或通道失败 → 降级为无自检,不阻断 up。
+        // 探测全集自检(1.3.7 场景 3,与 docker 路径对齐):拿到地址的 VM
+        // 回写前当场跑一条批量探测(全配方工具并集)——声明工具漂移证据落
+        // toolCheck,在场工具→域 ∪ 配方绑定域落 capabilityDomains;无地址
+        // (断网/未就绪)或通道失败 → 降级为无自检无能力字段,不阻断 up。
         if (instance.address) {
-          Object.assign(entry, await runRecipeToolCheck(entry, recipe.tools));
+          Object.assign(entry, await runEnvProbeWithCapabilities(entry, recipe.tools));
         }
 
         await atomicModifyConfig((config) => {
@@ -5339,10 +5347,18 @@ export async function handleEnvironmentUp(payload: {
 
       container: result.instance.name,
 
-      // 配方工具自检:构建后当场验声明工具真实存在(声明与实装的漂移
-      // 证据落进条目;失败降级为无自检,不阻断 up)。
-      ...(await runRecipeToolCheck(
-        { id: result.instance.name, kind: 'docker', container: result.instance.name, createdAt: '' },
+      // 探测全集自检(1.3.7 场景 3):构建后当场跑一条批量探测(全配方工具
+      // 并集)——声明工具漂移证据落 toolCheck,在场工具→域 ∪ 配方绑定域落
+      // capabilityDomains;失败降级为无自检无能力字段,不阻断 up。
+      // 注意 stub 条目必须带 recipeId——绑定域反查(candidate)靠它。
+      ...(await runEnvProbeWithCapabilities(
+        {
+          id: result.instance.name,
+          kind: 'docker',
+          container: result.instance.name,
+          recipeId: recipe.id,
+          createdAt: '',
+        },
         recipe.tools,
       )),
 
@@ -5406,9 +5422,136 @@ export async function runRecipeToolCheck(
   }
 }
 
-/** `environment/down` — 停一个实例。路由顺序（P2 B3 + D22）：id 以 .vmx
- * 结尾 → vmware 直停；登记条目 kind=vm 且带 vmx → vmware（id → vmx 解析
- * 在本层做，vm-lifecycle 不读 config）；Hyper-V 名字命中 → Stop-VM；
+// ---------------------------------------------------------------------------
+// 1.3.7 场景 3 — 能力集合现场推导（B 方案：配方绑定域 ∪ 工具探测域）
+// ---------------------------------------------------------------------------
+
+/**
+ * 能力探测的执行通道（生产 = env-exec 统一分派）。模块级可替换——up/add/
+ * capability-refresh 的接线测试注入假通道，绝不真连环境。
+ */
+const defaultCapabilityExec: CapabilityExecFn = (entry, script, opts) =>
+  execInEnvironment(entry, script, opts);
+let capabilityExecImpl: CapabilityExecFn = defaultCapabilityExec;
+
+/** 测试注入能力探测通道（传 null 复位为生产通道）。 */
+export function __setCapabilityExecForTests(fn: CapabilityExecFn | null): void {
+  capabilityExecImpl = fn ?? defaultCapabilityExec;
+}
+
+/**
+ * 探测全集自检（1.3.7：把 env up 的 toolCheck 步骤扩成「探测全集」）——
+ * 一条批量探测命令覆盖「全配方工具并集 ∪ 本配方声明工具」，一份输出两吃：
+ *   - toolCheck：parseToolCheckOutput(stdout, 本配方声明)（漂移证据，语义不变）；
+ *   - 能力集合：OK 行工具 → 工具→域反推 ∪ 配方绑定域（capability-derive.ts）。
+ * 通道失败 → {}（不写能力字段也不写 toolCheck，保 baseline 行为，不阻断 up）。
+ */
+export async function runEnvProbeWithCapabilities(
+  entry: EnvironmentEntry,
+  recipeTools: string[],
+): Promise<{
+  toolCheck?: { ok: boolean; missing: string[]; checkedAt: string };
+  capabilityDomains?: string[];
+  capabilityDerivedAt?: string;
+}> {
+  const recipes = scanRecipes(defaultRecipesRoot());
+  const surface = [...new Set([...collectProbeSurface(recipes), ...recipeTools])].sort((a, b) =>
+    a.localeCompare(b),
+  );
+  if (surface.length === 0) return {};
+  try {
+    const r = await capabilityExecImpl(entry, buildToolCheckScript(surface), {
+      timeoutMs: CAPABILITY_PROBE_TIMEOUT_MS,
+    });
+    if (!r.ok) return {};
+    const stdout = r.stdout ?? '';
+    const now = new Date().toISOString();
+    const out: {
+      toolCheck?: { ok: boolean; missing: string[]; checkedAt: string };
+      capabilityDomains?: string[];
+      capabilityDerivedAt?: string;
+    } = {};
+    if (recipeTools.length > 0) {
+      out.toolCheck = { ...parseToolCheckOutput(stdout, recipeTools), checkedAt: now };
+    }
+    const manifests = loadDomainManifests();
+    const domains = mergeCapabilityDomains(
+      boundDomainsForEntry(entry, manifests),
+      probedDomainsForTools(
+        parseProbePresentTools(stdout),
+        buildToolDomainIndex(recipes, manifests),
+        manifests,
+      ),
+    );
+    if (domains.length > 0) {
+      out.capabilityDomains = domains;
+      out.capabilityDerivedAt = now;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 能力重推 + 回写（environment/capability-refresh 与 domain/check 顺带刷新共用）。
+ * 探测失败 → null（调用方保留旧能力字段，不清空）。
+ */
+export async function refreshEntryCapabilities(
+  entry: EnvironmentEntry,
+): Promise<{ capabilityDomains: string[]; capabilityDerivedAt: string } | null> {
+  const probed = await probeEnvironmentCapabilities(entry, {
+    recipes: scanRecipes(defaultRecipesRoot()),
+    manifests: loadDomainManifests(),
+    exec: (e, script, opts) => capabilityExecImpl(e, script, opts),
+  });
+  if (!probed) return null;
+  try {
+    await atomicModifyConfig((config) => {
+      const entries = listEnvironments(config).map((e) =>
+        e.id === entry.id
+          ? { ...e, capabilityDomains: probed.capabilityDomains, capabilityDerivedAt: probed.capabilityDerivedAt }
+          : e,
+      );
+      return { ...config, environments: entries };
+    });
+  } catch (err) {
+    console.warn(`[environment/capability] 能力字段回写失败：${err instanceof Error ? err.message : String(err)}`);
+  }
+  return probed;
+}
+
+/** `environment/capability-refresh` — 重推一个登记环境的能力集合并回写
+ *  （GUI 手动刷新入口）。探测通道不可用 → success:false，旧能力字段不动。 */
+export async function handleEnvironmentCapabilityRefresh(payload: {
+  id?: string;
+}): Promise<AdminResponse> {
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!id) return { success: false, error: 'Missing required argument: <id>' };
+  const entry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
+  if (!entry) {
+    return {
+      success: false,
+      error: `未找到环境 "${id}"`,
+      recoveryHint: { recoveryCommand: 'zhishi env list', message: 'See registered environment ids.' },
+    };
+  }
+  const probed = await refreshEntryCapabilities(entry);
+  if (!probed) {
+    return {
+      success: false,
+      error: `环境 "${id}" 能力探测失败（ssh 不通 / 容器未运行 / 无已知工具命中）——能力字段未改动`,
+    };
+  }
+  return {
+    success: true,
+    data: { id, capabilityDomains: probed.capabilityDomains, capabilityDerivedAt: probed.capabilityDerivedAt },
+  };
+}
+
+/** `environment/down` — 停一个实例。路由顺序（P2 B3 + 1.3.7）：登记条目
+ * kind=vm 且 resolveVmxForEntry 解析出 vmx → vmware（id → vmx 解析在本层
+ * 做，vm-lifecycle 不读 config）；Hyper-V 名字命中 → Stop-VM；
  * VirtualBox 名字命中 → controlvm acpipowerbutton；否则按 docker 容器处理
  * （stop + rm）。引擎探测失败容错（没装不炸路由，落到下一个）。 */
 
@@ -5440,20 +5583,21 @@ export async function handleEnvironmentDown(payload: {
 
   }
 
-  // D22 直连：vmware 命中规则 = id 以 .vmx 结尾（直停），或登记条目
-  // kind=vm 且带 vmx（在这里把 env id 解析成 vmx）。
+  // 1.3.7「实例即环境」：删除「id 以 .vmx 结尾」启发式路由——vmware 命中
+  // 只看登记条目（kind=vm），id → vmx 统一走 resolveVmxForEntry（条目 vmx
+  // 字段优先，缺省回落 vmName → vmTemplates 探测；vm-lifecycle 不读 config）。
 
-  const downEntry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
+  const downConfig = loadConfig();
 
-  const vmwareVmx = /\.vmx$/i.test(id)
+  const downEntry = findEnvironmentEntry(listEnvironments(downConfig), id);
 
-    ? id
+  const resolved = downEntry?.kind === 'vm'
 
-    : downEntry?.kind === 'vm' && downEntry.vmx
+    ? resolveVmxForEntry(downEntry, { templates: downConfig.vmTemplates })
 
-      ? downEntry.vmx
+    : undefined;
 
-      : undefined;
+  const vmwareVmx = resolved?.ok ? resolved.vmx : undefined;
 
   const vmwareHit = vmwareVmx !== undefined;
 
@@ -5507,13 +5651,15 @@ export async function handleEnvironmentDown(payload: {
 
 
 
-/** W1 — snapshot/rollback 的条目解析:登记 vm 环境 + vmx 定位;docker
-
- * 明确「暂未支持」,其余形态给可读错误。 */
+/** W1 — snapshot/rollback 的条目解析:登记 vm 环境 + vmx 定位(1.3.7 起
+ * 统一走 resolveVmxForEntry:条目 vmx 字段优先,缺省回落 vmName→vmTemplates
+ * 探测);docker 明确「暂未支持」,其余形态给可读错误。 */
 
 function resolveSnapshotTarget(id: string): { vmx: string } | { error: string } {
 
-  const entry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
+  const config = loadConfig();
+
+  const entry = findEnvironmentEntry(listEnvironments(config), id);
 
   if (!entry) return { error: `环境 "${id}" 未登记(zhishi env list 查看)` };
 
@@ -5531,17 +5677,23 @@ function resolveSnapshotTarget(id: string): { vmx: string } | { error: string } 
 
   }
 
-  if (entry.kind !== 'vm' || !entry.vmx) {
+  const resolved = entry.kind === 'vm'
+
+    ? resolveVmxForEntry(entry, { templates: config.vmTemplates })
+
+    : undefined;
+
+  if (!resolved || !resolved.ok) {
 
     return {
 
-      error: `环境 "${id}" 不是带 vmx 定位的 VM 条目(kind=${entry.kind}),快照仅支持登记了 vmx 的 vm 环境`,
+      error: `环境 "${id}" 解析不到 .vmx 定位(kind=${entry.kind}),快照仅支持可解析 vmx 的 vm 环境`,
 
     };
 
   }
 
-  return { vmx: entry.vmx };
+  return { vmx: resolved.vmx };
 
 }
 
@@ -5594,7 +5746,23 @@ export async function handleDomainCheck(payload: { id?: string }): Promise<Admin
       const recipe = recipes.find((r) => r.id === recipeId);
       const entry = runnableEntries.find((e) => e.container === recipeId || e.name?.includes(recipeId));
       if (!recipe || !entry || recipe.tools.length === 0) continue;
-      const check = await runRecipeToolCheck(entry, recipe.tools);
+      // 1.3.7 场景 3：探测全集一次两吃——漂移证据照报，能力集合顺带刷新回写
+      // （capability-refresh 的批量形态；探测失败的条目不动旧能力字段）。
+      const check = await runEnvProbeWithCapabilities(entry, recipe.tools);
+      if (check.capabilityDomains) {
+        try {
+          await atomicModifyConfig((config) => ({
+            ...config,
+            environments: listEnvironments(config).map((e) =>
+              e.id === entry.id
+                ? { ...e, capabilityDomains: check.capabilityDomains, capabilityDerivedAt: check.capabilityDerivedAt }
+                : e,
+            ),
+          }));
+        } catch (err) {
+          console.warn(`[domain/check] 能力字段回写失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
       if (check.toolCheck && !check.toolCheck.ok) {
         issues.push({
           level: 'error',
@@ -5981,13 +6149,17 @@ export async function handleEnvironmentRm(payload: {
 
   if (rmEntry?.kind === 'vm') {
 
-    // 运行中拒绝：先 down（真实 VM 的现场可能比登记值钱）
+    // 运行中拒绝：先 down（真实 VM 的现场可能比登记值钱）。
+    // id → vmx 统一走 resolveVmxForEntry（条目 vmx 优先，缺省 vmName→
+    // vmTemplates 探测）；解析不出（非 vmware 条目）跳过运行检查直接摘登记。
 
-    if (rmEntry.vmx) {
+    const rmVmx = resolveVmxForEntry(rmEntry, { templates: loadConfig().vmTemplates });
+
+    if (rmVmx.ok) {
 
       const ps = await vmEnvPs();
 
-      if (ps.ok && ps.vmxes.some((v) => normalizeVmxPath(v) === normalizeVmxPath(rmEntry.vmx!))) {
+      if (ps.ok && ps.vmxes.some((v) => normalizeVmxPath(v) === normalizeVmxPath(rmVmx.vmx))) {
 
         return {
 

@@ -255,6 +255,9 @@ import {
 
 import { atomicModifyConfig, findEffectiveProvider, getAllEffectiveProviders, isProviderDisabled, loadConfig, resolveKimiApiKey } from './utils/admin-config';
 
+// 1.3.7 场景 1：存量 vm 环境条目「实例即环境」一次性迁移（幂等，失败不炸启动）。
+import { runLegacyVmEntryMigration } from './environment/vm-entry-migration';
+
 
 
 
@@ -813,6 +816,10 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
 
   if (route === 'environment/discover') return await api.handleEnvironmentDiscover();
 
+  // 1.3.7 场景 3：能力集合重推 + 回写（GUI 手动刷新入口）
+
+  if (route === 'environment/capability-refresh') return await api.handleEnvironmentCapabilityRefresh(payload as Parameters<typeof api.handleEnvironmentCapabilityRefresh>[0]);
+
   // 域包清单层(P2 多域抽象层)
   if (route === 'domain/list') return api.handleDomainList();
   if (route === 'domain/check') return await api.handleDomainCheck(payload as Parameters<typeof api.handleDomainCheck>[0]);
@@ -1201,6 +1208,25 @@ async function main() {
   initLogger(getClients);
 
   startupBeacon('initLogger done — switching to console.log');
+
+
+
+  // 1.3.7 场景 1：存量 vm 环境条目「实例即环境」一次性迁移（config.json
+  // + env-sessions/env-selection 引用同步）。幂等（无旧条目零写盘）、
+  // 快速（三个小 JSON）、失败不炸启动——在绑端口前跑完，保证任何
+  // environment/* 处理器读到的已是新 id 口径。
+
+  try {
+
+    await runLegacyVmEntryMigration();
+
+    startupBeacon('vm-entry migration done');
+
+  } catch (err) {
+
+    console.warn('[env-migration] 迁移异常（不影响启动）:', err instanceof Error ? err.message : String(err));
+
+  }
 
 
 

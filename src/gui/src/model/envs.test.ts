@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildRegisterPayload, groupSidebar, isDiscoveredRunning, isSwitchable } from './envs';
+import { buildRegisterPayload, capabilityBadgeText, capabilityTooltip, groupSidebar, isDiscoveredRunning, isSwitchable } from './envs';
 
 const envs = [
   { id: 'pwn@docker', kind: 'docker', name: 'pwn@docker' },
@@ -80,14 +80,14 @@ describe('startable（1.3.1 ① 启动按钮）', () => {
   });
 });
 
-describe('buildRegisterPayload（1.3.5 选中即注册，TUI gate.ts:262-298 同口径）', () => {
+describe('buildRegisterPayload（1.3.5 选中即注册；1.3.7 起 vm id = vmName「实例即环境」）', () => {
   it('docker → docker-<名> { kind:docker, container }', () => {
     expect(
       buildRegisterPayload({ id: 'abc123', name: 'kali-2024', state: 'Up 3 hours', driver: 'docker' }),
     ).toEqual({ id: 'docker-kali-2024', kind: 'docker', container: 'kali-2024' });
   });
 
-  it('vmware → vmware-<名> { kind:vm, vmName, vmx, osFamily }', () => {
+  it('vmware → id = vmName = vmx 文件 stem（去 .vmx 后缀）', () => {
     expect(
       buildRegisterPayload({
         id: 'E:\\vms\\kali.vmx',
@@ -98,25 +98,33 @@ describe('buildRegisterPayload（1.3.5 选中即注册，TUI gate.ts:262-298 同
         osFamily: 'linux',
       }),
     ).toEqual({
-      id: 'vmware-kali.vmx',
+      id: 'kali',
       kind: 'vm',
-      vmName: 'kali.vmx',
+      vmName: 'kali',
       vmx: 'E:\\vms\\kali.vmx',
-      name: 'kali.vmx',
+      name: 'kali',
       osFamily: 'linux',
     });
   });
 
-  it('hyperv / vbox → <driver>-<名>（无 vmx，仅带 name/osFamily）', () => {
+  it('hyperv / vbox → id = vmName（无 vmx，仅带 name/osFamily）', () => {
     expect(
       buildRegisterPayload({ id: 'win11', name: 'win11', state: 'Running', driver: 'hyperv', osFamily: 'windows' }),
-    ).toEqual({ id: 'hyperv-win11', kind: 'vm', vmName: 'win11', name: 'win11', osFamily: 'windows' });
+    ).toEqual({ id: 'win11', kind: 'vm', vmName: 'win11', name: 'win11', osFamily: 'windows' });
     expect(buildRegisterPayload({ id: 'kali', name: 'kali', driver: 'vbox' })).toEqual({
-      id: 'vbox-kali',
+      id: 'kali',
       kind: 'vm',
       vmName: 'kali',
       name: 'kali',
     });
+  });
+
+  it('VM 名含非法字符 → id 净化（registry ID_PATTERN），vmName 保留原名', () => {
+    expect(
+      buildRegisterPayload({ id: 'w', name: 'Windows 10 x64', driver: 'hyperv' }),
+    ).toEqual({ id: 'Windows-10-x64', kind: 'vm', vmName: 'Windows 10 x64', name: 'Windows 10 x64' });
+    // 净化后为空（全是非法字符）→ null
+    expect(buildRegisterPayload({ id: 'w', name: '中文虚拟机', driver: 'hyperv' })).toBeNull();
   });
 
   it('名字缺失 / 未知驱动 → null（调用方 toast）', () => {
@@ -136,5 +144,49 @@ describe('isDiscoveredRunning（1.3.5 登记后是否切入）', () => {
     expect(isDiscoveredRunning({ id: 'v', state: 'powered off', driver: 'vmware' })).toBe(false);
     expect(isDiscoveredRunning({ id: 'v', state: 'unknown', driver: 'vmware' })).toBe(false);
     expect(isDiscoveredRunning({ id: 'v' })).toBe(false);
+  });
+});
+
+
+// ===== 1.3.7 场景 3：能力集合（现场推导）透明展示 =====
+
+describe('能力徽章（1.3.7 场景 3）', () => {
+  it('已停止/运行中条目带 capabilityDomains → capability 进侧栏项', () => {
+    const groups = groupSidebar(
+      [
+        { id: 'pwn-box', kind: 'docker', recipeId: 'pwn', capabilityDomains: ['binary', 'pentest'], capabilityDerivedAt: '2026-08-25T12:00:00Z' },
+        { id: 'legacy', kind: 'docker' }, // 存量条目无字段 → 无徽章
+      ],
+      [{ id: 'run-1', status: 'running', driver: 'docker' }],
+      [],
+    );
+    const stop = groups.find((g) => g.label === '已停止')!.items;
+    expect(stop.find((i) => i.key === 'pwn-box')?.capability).toEqual({
+      domains: ['binary', 'pentest'],
+      derivedAt: '2026-08-25T12:00:00Z',
+    });
+    expect(stop.find((i) => i.key === 'legacy')?.capability).toBeUndefined();
+  });
+
+  it('运行中条目经登记条目反查能力集合', () => {
+    const groups = groupSidebar(
+      [{ id: 'r1', kind: 'docker', capabilityDomains: ['pentest'] }],
+      [{ id: 'r1', status: 'running', driver: 'docker' }],
+      [],
+    );
+    expect(groups[0].items[0].capability?.domains).toEqual(['pentest']);
+  });
+
+  it('徽章文案与 tooltip（含探测时间）', () => {
+    const cap = { domains: ['pentest', 'binary'], derivedAt: '2026-08-25T12:00:00Z' };
+    expect(capabilityBadgeText(cap)).toBe('能力：pentest · binary');
+    expect(capabilityTooltip(cap)).toContain('能力：pentest · binary');
+    expect(capabilityTooltip(cap)).toContain('现场推导');
+    expect(capabilityTooltip(cap)).toContain('2026-08-25T12:00:00Z');
+  });
+
+  it('空能力集合视同未推导（不出徽章）', () => {
+    const groups = groupSidebar([{ id: 'e', kind: 'docker', capabilityDomains: [] }], [], []);
+    expect(groups[0].items[0].capability).toBeUndefined();
   });
 });

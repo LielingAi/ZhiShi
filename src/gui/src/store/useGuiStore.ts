@@ -43,7 +43,18 @@ import {
   type DecisionPending,
 } from '../model/decision';
 import { escAction } from '../model/esc-chain';
-import { bootStages, buildRegisterPayload, isDiscoveredRunning, type DiscoveredLike } from '../model/envs';
+import { bootStages, buildRegisterPayload, isDiscoveredRunning, type DiscoveredLike, type RegisterExtras } from '../model/envs';
+import {
+  buildWizardPayload,
+  findRunningEnvForRecipe,
+  initialWizardState,
+  wizardBack,
+  wizardNext,
+  wizardSelectSource,
+  type EnvWizardState,
+  type WizardParams,
+  type WizardSource,
+} from '../model/env-wizard';
 import { parseSessionRows, type SessionMetaRow } from '../model/history';
 import {
   INPUT_HISTORY_LIMIT,
@@ -84,6 +95,7 @@ import type {
   AgentEntity,
   DiscoveredDocker,
   DiscoveredVm,
+  DomainEntity,
   EnvEntry,
   LoopTranscriptLine,
   ModelProvider,
@@ -183,6 +195,8 @@ export interface ModalState {
   command?: SlashCommandName;
   /** promote（入专家库）预填。 */
   prefill?: PromotePrefill;
+  /** 1.3.7 向导 → boot：VM 配方的可选 guest 凭据（environment/up 透传）。 */
+  bootOpts?: { user?: string; keyPath?: string };
 }
 
 export interface DrawerState {
@@ -281,6 +295,11 @@ export interface GuiState {
   // 1.3.1 ⑤：boot 进度
   boot: BootState | null;
 
+  // 1.3.7：新建环境向导（状态机纯函数在 model/env-wizard.ts）+ 域清单
+  wizard: EnvWizardState | null;
+  /** domain/list 结果（确认页 recipe→domain 映射；拉取失败保持 []）。 */
+  domains: DomainEntity[];
+
   // UI 面板
   overlay: OverlayState | null;
   modal: ModalState | null;
@@ -298,8 +317,10 @@ export interface GuiState {
   refreshSidebar(): Promise<void>;
   switchEnv(key: string): Promise<void>;
   startEnv(itemKey: string): Promise<void>;
+  /** 1.3.7 场景 3：重推环境能力集合（environment/capability-refresh → 刷新侧栏）。 */
+  refreshEnvCapability(envId: string): Promise<void>;
   /** 1.3.5 ④：本机发现条目「选中即注册」（environment/add → 入侧栏 → 运行中则切入）。 */
-  registerDiscovered(itemKey: string): Promise<void>;
+  registerDiscovered(itemKey: string, extras?: RegisterExtras): Promise<void>;
   send(text: string): Promise<void>;
   stopTurn(): Promise<void>;
   runReset(): Promise<void>;
@@ -309,8 +330,16 @@ export interface GuiState {
   moveOverlay(delta: number): void;
   pickOverlay(index: number): void;
   openNewEnv(): void;
+  /** 1.3.7 场景 1：向导「VM 配方构建」次级入口——改为认领已有 VM（adopt 模板养成）。 */
+  openAdopt(recipeId: string): void;
   closeModal(): void;
   setModal(modal: ModalState | null): void;
+  // 1.3.7：新建环境向导 actions（分发逻辑在 wizardExecute）
+  wizardPickSource(source: WizardSource): void;
+  wizardSetParam(key: keyof WizardParams, value: string): void;
+  wizardNextStep(): void;
+  wizardBackStep(): void;
+  wizardExecute(): Promise<void>;
   submitSsh(host: string, user: string, keyPath: string): Promise<void>;
   submitAdopt(vmx: string, user: string, keyPath: string, password: string): Promise<void>;
   bootEnv(recipeId: string): Promise<void>;
@@ -427,6 +456,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   queueServer: [],
 
   boot: null,
+
+  wizard: null,
+  domains: [],
 
   overlay: null,
   modal: null,
@@ -572,11 +604,12 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   async refreshSidebar() {
     const c = client;
     if (!c) return;
-    const [envs, running, discover, recipes] = await Promise.allSettled([
+    const [envs, running, discover, recipes, domains] = await Promise.allSettled([
       api.fetchEnvironmentList(c),
       api.fetchEnvironmentPs(c),
       api.fetchEnvironmentDiscover(c),
       api.fetchEnvironmentRecipes(c),
+      api.fetchDomainList(c),
     ]);
     set((s) => ({
       envs: envs.status === 'fulfilled' ? envs.value : s.envs,
@@ -584,6 +617,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       discoveredDocker: discover.status === 'fulfilled' ? discover.value.docker : s.discoveredDocker,
       discoveredVm: discover.status === 'fulfilled' ? discover.value.vm : s.discoveredVm,
       recipes: recipes.status === 'fulfilled' ? recipes.value : s.recipes,
+      domains: domains.status === 'fulfilled' ? domains.value : s.domains,
     }));
   },
 
@@ -653,9 +687,33 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     }
   },
 
+  // ── 1.3.7 场景 3：能力集合手动刷新（重推 + 回写，透明展示推导结果） ──
+
+  async refreshEnvCapability(envId: string) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    state.showToast(`⏳ 重推 ${envId} 能力集合…`);
+    try {
+      const res = await api.environmentCapabilityRefresh(c, { id: envId });
+      if (!res.success) {
+        state.showToast(`能力重推失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      void state.refreshSidebar();
+      const domains = res.data?.capabilityDomains ?? [];
+      state.showToast(`✓ ${envId} 能力：${domains.join(' · ') || '（无）'}`);
+    } catch (err) {
+      state.showToast(`能力重推失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
   // ── 1.3.5 ④：本机发现「选中即注册」（TUI gate.ts:262-298 同语义） ──
 
-  async registerDiscovered(itemKey: string) {
+  async registerDiscovered(itemKey: string, extras?: RegisterExtras) {
     const c = client;
     const state = get();
     if (!c) {
@@ -667,7 +725,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       state.showToast('未找到该本机条目');
       return;
     }
-    const payload = buildRegisterPayload(item);
+    const payload = buildRegisterPayload(item, extras);
     if (!payload) {
       state.showToast('该条目缺少登记所需信息（名字/驱动）');
       return;
@@ -1081,15 +1139,96 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
 
   openNewEnv() {
     if (get().recipes.length === 0) void get().refreshSidebar();
-    set({ modal: { kind: 'new-env' } });
+    // 1.3.7：新建入口 = 一个四步向导（状态机重置在 model/env-wizard.ts）。
+    set({ modal: { kind: 'new-env' }, wizard: initialWizardState() });
   },
 
   closeModal() {
-    set({ modal: null });
+    set({ modal: null, wizard: null });
+  },
+
+  // adopt 是模板养成（写 vmTemplates），与环境接入是两件事——从向导切过去
+  // 时关掉向导态，认领会话的配方取当前向导所选（缺省 'vm'）。
+  openAdopt(recipeId) {
+    set({ wizard: null, modal: { kind: 'adopt', recipeId: recipeId || 'vm' } });
   },
 
   setModal(modal) {
     set({ modal });
+  },
+
+  // ── 1.3.7：新建环境向导（选源/收参/确认/执行；状态机在 model/env-wizard） ──
+
+  wizardPickSource(source) {
+    const s = get();
+    if (!s.wizard) return;
+    set({ wizard: wizardSelectSource(s.wizard, source, s.recipes) });
+  },
+
+  wizardSetParam(key, value) {
+    const s = get();
+    if (!s.wizard) return;
+    set({ wizard: { ...s.wizard, params: { ...s.wizard.params, [key]: value } } });
+  },
+
+  wizardNextStep() {
+    const s = get();
+    if (!s.wizard) return;
+    set({ wizard: wizardNext(s.wizard) });
+  },
+
+  wizardBackStep() {
+    const s = get();
+    if (!s.wizard) return;
+    set({ wizard: wizardBack(s.wizard) });
+  },
+
+  async wizardExecute() {
+    const state = get();
+    const w = state.wizard;
+    if (!w) return;
+    const payload = buildWizardPayload(w);
+    if (!payload) {
+      state.showToast('向导参数不完整');
+      return;
+    }
+    if (payload.type === 'up') {
+      // 复用 BootModal 的进度轮询：换模态即触发 bootEnv（bootOpts 透传 VM 凭据）。
+      set({
+        wizard: null,
+        modal: {
+          kind: 'boot',
+          recipeId: payload.input.recipe,
+          bootOpts: { user: payload.input.user, keyPath: payload.input.keyPath },
+        },
+      });
+      return;
+    }
+    if (payload.type === 'register') {
+      const key = payload.itemKey;
+      const extras = payload.extras;
+      set({ wizard: null, modal: null });
+      await get().registerDiscovered(key, extras);
+      return;
+    }
+    // ssh-add：environment/add 真实落盘（host/user/keyPath 必填已在状态机校验）。
+    const c = client;
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.environmentAdd(c, payload.input);
+      if (!res.success) {
+        state.showToast(`SSH 接入失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set({ wizard: null, modal: null });
+      void get().refreshSidebar();
+      get().showToast(`✓ 已登记 ${payload.input.id}`);
+    } catch (err) {
+      state.showToast(`SSH 接入失败：${err instanceof Error ? err.message : String(err)}`);
+    }
   },
 
   async submitSsh(host: string, user: string, keyPath: string) {
@@ -1148,6 +1287,8 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     }
     const recipe = state.recipes.find((r) => r.id === recipeId);
     const stages = bootStages(recipe?.base);
+    // 1.3.7：向导带入的 VM 凭据（environment/up 的 user/keyPath，空不下发）。
+    const bootOpts = state.modal?.kind === 'boot' ? state.modal.bootOpts : undefined;
     stopBootPolling();
     set({ boot: { recipeId, base: recipe?.base, stage: 0, status: 'running' } });
     const advance = (to: number) => {
@@ -1171,6 +1312,8 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       const res = await api.environmentUp(c, {
         recipe: recipeId,
         workspace: state.workspace ?? undefined,
+        ...(bootOpts?.user ? { user: bootOpts.user } : {}),
+        ...(bootOpts?.keyPath ? { keyPath: bootOpts.keyPath } : {}),
       });
       stopBootPolling();
       if (!res.success) {
@@ -1179,8 +1322,13 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         return;
       }
       set({ boot: { recipeId, base: recipe?.base, stage: stages.length, status: 'done' } });
-      void state.refreshSidebar();
+      await state.refreshSidebar();
       state.showToast(`✓ 环境 ${recipeId} 构建完成`);
+      // 1.3.7：完成入侧栏后，仅当环境运行中才自动切入（workspace 就绪前提）。
+      if (get().workspace) {
+        const target = findRunningEnvForRecipe(recipeId, get().envs, get().running);
+        if (target) await get().switchEnv(target);
+      }
     } catch (err) {
       stopBootPolling();
       set({
