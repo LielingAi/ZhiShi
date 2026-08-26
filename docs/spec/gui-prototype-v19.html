@@ -1,0 +1,1433 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  @font-face { font-family: 'DejaVu Sans Mono'; src: url('fonts/DejaVuSansMono.ttf') format('truetype'); font-weight: 400; font-display: swap; }
+  @font-face { font-family: 'DejaVu Sans Mono'; src: url('fonts/DejaVuSansMono-Bold.ttf') format('truetype'); font-weight: 700; font-display: swap; }
+</style>
+<title>zhishi GUI 原型 v19 — 全功能交互版</title>
+<style>
+  :root {
+    --bg: #0b0e13; --bg-deep: #080a0e;
+    --panel: #0f141b; --panel-2: #141a23; --panel-3: #1a2130;
+    --border: #1d2531; --border-soft: #171e28;
+    --text: #d7dde7; --text-dim: #97a1b0; --muted: #6d7787; --faint: #4a5464;
+    --cyan: #35c3e2; --cyan-dim: #1d6a7d;
+    --amber: #e8a33d; --purple: #9f7cf0;
+    --red: #e5534b; --green: #3fb98a;
+    --mono: "DejaVu Sans Mono", "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code", Consolas, ui-monospace, monospace;
+    --sans: "IBM Plex Sans", "Segoe UI Variable Text", "Segoe UI", -apple-system, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    --shadow: 0 8px 32px rgba(0,0,0,.45);
+  }
+  body.light {
+    --bg: #f5f6f8; --bg-deep: #eceef2;
+    --panel: #ffffff; --panel-2: #f2f4f7; --panel-3: #e6e9ef;
+    --border: #d8dde5; --border-soft: #e3e7ee;
+    --text: #1c2430; --text-dim: #44506a; --muted: #6b7686; --faint: #9aa3b0;
+    --shadow: 0 8px 32px rgba(20,30,50,.18);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; }
+  body { background:var(--bg); color:var(--text); font-family:var(--sans); font-size:13.5px; line-height:1.6; overflow:hidden; -webkit-font-smoothing:antialiased; transition:background .15s, color .15s; }
+  ::selection { background:rgba(53,195,226,.22); }
+  button { font-family:inherit; }
+  .hidden { display:none !important; }
+
+  .btn { font-size:12px; color:var(--text-dim); background:var(--panel-2); border:1px solid var(--border); border-radius:6px; padding:3px 10px; cursor:pointer; transition:all .12s; }
+  .btn:hover { color:var(--text); border-color:var(--faint); background:var(--panel-3); }
+  .btn.primary { color:var(--cyan); border-color:var(--cyan-dim); background:rgba(53,195,226,.07); }
+  .btn.primary:hover { background:rgba(53,195,226,.14); }
+  .btn.small { padding:1px 7px; font-size:11.5px; }
+  kbd { font-family:var(--mono); font-size:10.5px; color:var(--muted); border:1px solid var(--border); border-bottom-width:2px; border-radius:4px; padding:0 4px; background:var(--panel-2); }
+
+  /* ===== 桌面壳 ===== */
+  #shell { display:flex; height:100vh; max-width:1400px; margin:0 auto; border-left:1px solid var(--border-soft); border-right:1px solid var(--border-soft); }
+
+  /* ===== 环境栏 ===== */
+  #envbar { width:190px; flex-shrink:0; display:flex; flex-direction:column; background:var(--bg-deep); border-right:1px solid var(--border); }
+  #envbar .eb-title { padding:12px 14px 6px; font-size:11px; color:var(--faint); letter-spacing:.6px; text-transform:uppercase; }
+  #envbar .eb-group { padding:4px 8px; }
+  #envbar .ebg-label { padding:8px 6px 3px; font-size:10.5px; color:var(--faint); letter-spacing:.4px; text-transform:uppercase; }
+  .eb-item { display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:6px; cursor:pointer; font-size:12.5px; color:var(--text-dim); transition:background .1s; user-select:none; }
+  .eb-item:hover { background:var(--panel-2); color:var(--text); }
+  .eb-item.cur { background:var(--panel-3); color:var(--text); }
+  .eb-item .st { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+  .st.run { background:var(--cyan); box-shadow:0 0 4px rgba(53,195,226,.6); }
+  .st.stop { background:var(--faint); }
+  .eb-item .nm { font-family:var(--mono); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .eb-item .snap { margin-left:auto; color:var(--cyan); font-size:10px; }
+  .eb-item .warn { margin-left:auto; color:var(--amber); font-size:10px; }
+  #envbar .eb-foot { margin-top:auto; padding:10px 8px; border-top:1px solid var(--border-soft); display:flex; flex-direction:column; gap:6px; }
+  #envbar .eb-foot .btn { text-align:left; }
+
+  /* ===== 主区 ===== */
+  #main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #app-toolbar { display:flex; align-items:center; gap:8px; height:40px; padding:0 12px; border-bottom:1px solid var(--border); background:var(--bg-deep); flex-shrink:0; }
+  #app-toolbar .at-env { font-family:var(--mono); font-size:12px; color:var(--text-dim); }
+  #app-toolbar .at-env .ok { color:var(--cyan); }
+  #stream-wrap { flex:1; display:flex; min-height:0; }
+  #stream { flex:1; min-width:0; overflow-y:auto; padding:16px 26px 20px; }
+  #stream::-webkit-scrollbar { width:10px; }
+  #stream::-webkit-scrollbar-thumb { background:var(--panel-3); border-radius:5px; border:2px solid var(--bg); }
+
+  /* ===== 对话流 ===== */
+  .block { position:relative; margin-bottom:14px; }
+  .block .b-time { position:absolute; right:0; top:2px; font-family:var(--mono); font-size:11px; color:var(--faint); opacity:0; transition:opacity .12s; font-variant-numeric: tabular-nums; }
+  .block:hover .b-time { opacity:1; }
+  .block.user { display:flex; justify-content:flex-end; }
+  .block.user .bubble { max-width:72%; background:rgba(232,163,61,.13); border:1px solid rgba(232,163,61,.32); border-radius:12px 12px 3px 12px; padding:8px 14px; color:var(--text); font-weight:500; }
+  .block.assistant .b-body { color:var(--text-dim); padding-left:2px; max-width:88%; }
+  .assistant-body p { margin:2px 0 4px; }
+  .assistant-body code.inline { font-family:var(--mono); font-size:12px; color:var(--cyan); background:var(--panel-2); border:1px solid var(--border); border-radius:4px; padding:0 4px; }
+  .code-block { font-family:var(--mono); font-size:12px; line-height:1.6; font-variant-numeric: tabular-nums; background:var(--bg-deep); border-left:2px solid var(--purple); border-radius:0 6px 6px 0; padding:10px 14px; margin:6px 0 6px 14px; color:var(--text-dim); overflow-x:auto; white-space:pre; }
+  .code-block .hl { color:var(--purple); } .code-block .c { color:var(--faint); }
+  .thought-card { display:inline-flex; align-items:center; gap:8px; font-family:var(--mono); font-size:12px; color:var(--faint); padding:2px 0; cursor:pointer; user-select:none; }
+  .thought-card::before { content:"⏵"; font-size:10px; }
+  .thought-card .dur { color:var(--muted); font-size:11px; }
+  .thought-card.expanded::before { content:"⏷"; }
+  .thought-body { display:none; font-size:12.5px; color:var(--muted); padding:6px 0 2px 18px; border-left:1px solid var(--border); margin-left:6px; }
+  .thought-card.expanded ~ .thought-body { display:block; }
+  .tool-card { cursor:pointer; user-select:none; font-family:var(--mono); font-size:12px; color:var(--muted); padding:1px 0; }
+  .tool-card:hover { color:var(--text-dim); }
+  .tool-card .t-step { color:var(--faint); margin-right:6px; font-size:11px; }
+  .tool-card .t-name { font-weight:600; color:var(--text-dim); }
+  .tool-card .sig { color:var(--text-dim); }
+  .tool-card .sig.hit { color:var(--green); }
+  .tool-card .sig.fail { color:var(--red); }
+  .tool-card .dur { color:var(--faint); }
+  .tool-card .open-hint { color:var(--faint); font-size:11px; opacity:0; transition:opacity .12s; margin-left:6px; }
+  .tool-card:hover .open-hint { opacity:1; }
+  .tool-card.active { color:var(--text); }
+  .spinner { display:inline-block; width:11px; height:11px; border:1.5px solid var(--cyan-dim); border-top-color:var(--cyan); border-radius:50%; vertical-align:-1px; margin-right:5px; animation:spin .9s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .result-block { display:flex; align-items:center; gap:10px; font-family:var(--mono); font-size:12.5px; padding:3px 0; }
+  .result-block .flag { color:var(--green); font-weight:700; }
+  .result-block .path { color:var(--muted); }
+
+  .result-actions { display:flex; gap:6px; margin:5px 0 0 2px; }
+  .divider-line { display:flex; align-items:center; gap:10px; color:var(--amber); font-family:var(--mono); font-size:12px; padding:2px 0; }
+  .divider-line::before, .divider-line::after { content:""; flex:1; height:1px; background:var(--border); }
+  .error-line { color:var(--red); font-size:12.5px; padding:2px 0; }
+  .ready-line { display:flex; align-items:center; gap:8px; color:var(--muted); font-family:var(--mono); font-size:12px; padding:2px 0 8px; }
+  .ready-line .ok { color:var(--cyan); }
+  .sys-line { color:var(--faint); font-size:12px; font-family:var(--mono); padding:1px 0; }
+  .chip { display:inline-flex; align-items:center; gap:4px; font-family:var(--mono); font-size:12px; color:var(--muted); background:var(--panel); border:1px solid var(--border); border-radius:5px; padding:0 6px; cursor:pointer; transition:all .12s; user-select:none; }
+  .chip:hover { color:var(--cyan); background:rgba(53,195,226,.08); border-color:var(--cyan-dim); }
+  .chip::before { content:"@"; opacity:.7; }
+
+  /* ===== 底部 ===== */
+  #bottom-area { border-top:1px solid var(--border); background:var(--panel); }
+  #statusbar { display:flex; align-items:center; gap:14px; height:30px; padding:0 16px; font-size:12px; white-space:nowrap; border-bottom:1px solid var(--border-soft); font-variant-numeric: tabular-nums; }
+  .env-anchor { font-family:var(--mono); font-size:12px; color:var(--cyan); font-weight:600; }
+  .env-anchor::before { content:"◈ "; opacity:.75; }
+  .seg { color:var(--muted); } .seg b { color:var(--text-dim); font-weight:500; }
+  .status-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; vertical-align:1px; }
+  .status-dot.running { background:var(--cyan); box-shadow:0 0 6px rgba(53,195,226,.7); animation:pulse 1.6s ease-in-out infinite; }
+  .status-dot.idle { background:var(--muted); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  #statusbar .right { margin-left:auto; display:flex; align-items:center; gap:12px; }
+  #statusbar .seg[onclick] { border-radius:4px; padding:1px 4px; transition:background .1s, color .1s; }
+  #statusbar .seg[onclick]:hover { background:var(--panel-2); color:var(--text); }
+  .bg-seg { color:var(--muted); font-family:var(--mono); font-size:11.5px; }
+  .bg-seg .cnt { color:var(--amber); }
+  #input-area { padding:8px 16px 12px; }
+  #input-chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px; }
+  #input-chips .chip .x { cursor:pointer; margin-left:2px; opacity:.7; }
+  #input-box { display:flex; align-items:flex-end; gap:10px; padding:8px 10px 8px 12px; background:var(--bg-deep); border:1px solid var(--border); border-radius:6px; transition:border-color .12s, box-shadow .12s; }
+  #input-box:focus-within { border-color:var(--cyan-dim); box-shadow:0 0 0 3px rgba(53,195,226,.07); }
+  #input-box textarea { flex:1; min-width:0; background:transparent; border:none; outline:none; color:var(--text); font-family:var(--sans); font-size:13.5px; line-height:1.65; letter-spacing:.1px; resize:none; height:22px; max-height:130px; padding-top:2px; scrollbar-width:none; }
+  #input-box textarea::-webkit-scrollbar { display:none; }
+  #input-box textarea::placeholder { color:var(--faint); }
+  #send-btn { width:32px; height:32px; border-radius:6px; background:var(--cyan); border:none; color:#081018; font-size:15px; font-weight:700; cursor:pointer; flex-shrink:0; display:flex; align-items:center; justify-content:center; transition:background .12s; }
+  #send-btn:hover { background:#52d0ea; }
+
+  /* ===== 抽屉 ===== */
+  #drawer { width:0; overflow:hidden; background:var(--panel); border-left:1px solid var(--border); transition:width .15s ease; display:flex; flex-direction:column; }
+  #drawer.open { width:360px; }
+  #drawer-head { display:flex; align-items:center; gap:8px; height:40px; padding:0 12px; border-bottom:1px solid var(--border); flex-shrink:0; }
+  #drawer-head span { font-size:12px; color:var(--faint); font-family:var(--mono); }
+  #drawer-head .d-close { margin-left:auto; background:none; border:none; color:var(--faint); font-size:15px; cursor:pointer; padding:2px 6px; border-radius:4px; }
+  #drawer-head .d-close:hover { color:var(--text); background:var(--panel-2); }
+  #drawer-body { flex:1; overflow-y:auto; padding:12px 14px; min-height:0; }
+  .d-section { margin-bottom:14px; }
+  .d-label { font-size:11px; color:var(--faint); letter-spacing:.4px; text-transform:uppercase; margin-bottom:5px; display:flex; align-items:center; gap:8px; }
+  .d-label::after { content:""; flex:1; height:1px; background:var(--border-soft); }
+  .d-head { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+  .d-head .d-name { font-family:var(--mono); font-size:12.5px; font-weight:600; color:var(--text); }
+  .d-badge { font-family:var(--mono); font-size:11px; padding:1px 8px; border-radius:4px; }
+  .d-badge.ok { color:var(--green); background:rgba(63,185,138,.1); border:1px solid rgba(63,185,138,.35); }
+  .d-badge.fail { color:var(--red); background:rgba(229,83,75,.1); border:1px solid rgba(229,83,75,.4); }
+  .d-head .d-dur { font-family:var(--mono); font-size:11px; color:var(--faint); }
+  .d-head .d-lines { font-family:var(--mono); font-size:11px; color:var(--faint); margin-left:auto; }
+  .d-cmd { font-family:var(--mono); font-size:11.5px; color:var(--muted); background:var(--panel-2); border:1px solid var(--border-soft); border-radius:6px; padding:5px 10px; margin-bottom:8px; white-space:nowrap; overflow-x:auto; }
+  .d-cmd::before { content:"$ "; color:var(--faint); }
+  .d-output { font-family:var(--mono); font-size:12px; line-height:1.65; font-variant-numeric: tabular-nums; color:var(--text-dim); background:var(--bg-deep); border:1px solid var(--border-soft); border-radius:6px; padding:10px 12px; white-space:pre-wrap; word-break:break-all; }
+  .d-output .hl-flag { color:var(--green); font-weight:700; }
+  .d-output .hl-green { color:var(--green); }
+  .d-output .hl-amber { color:var(--amber); }
+  .d-output .hl-cyan { color:var(--cyan); }
+  .d-toolbar { display:flex; gap:8px; margin-top:8px; }
+  .d-search { flex:1; font-family:var(--mono); font-size:12px; background:var(--bg-deep); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:5px 10px; outline:none; }
+  .d-search:focus { border-color:var(--cyan-dim); }
+  mark.h-search { background:rgba(232,163,61,.3); color:var(--text); border-radius:2px; padding:0 1px; }
+  .d-output .hl-red { color:var(--red); } .d-output .hl-green { color:var(--green); } .d-output .hl-cyan { color:var(--cyan); }
+  .d-meta { font-family:var(--mono); font-size:11.5px; color:var(--muted); display:flex; gap:12px; flex-wrap:wrap; margin-top:6px; }
+  .d-meta b { color:var(--text-dim); font-weight:500; }
+
+  /* ===== 设置页 ===== */
+  #settings-page { flex:1; display:none; min-height:0; background:var(--bg); flex-direction:column; }
+  #settings-page.show { display:flex; }
+  #settings-head { display:flex; align-items:center; height:40px; padding:0 14px; border-bottom:1px solid var(--border); background:var(--bg-deep); flex-shrink:0; }
+  #settings-head .sh-close { margin-left:auto; background:none; border:none; color:var(--faint); font-size:14px; cursor:pointer; padding:2px 8px; border-radius:4px; }
+  #settings-head .sh-close:hover { color:var(--text); background:var(--panel-2); }
+  #set-main { display:flex; flex:1; min-height:0; overflow:hidden; }
+  #set-nav { width:150px; border-right:1px solid var(--border); padding:10px 8px; flex-shrink:0; overflow-y:auto; }
+  .set-nav-item { display:flex; align-items:center; gap:8px; padding:7px 12px; border-radius:6px; cursor:pointer; font-size:12.5px; color:var(--muted); transition:all .1s; }
+  .set-nav-item:hover { color:var(--text-dim); background:var(--panel-2); }
+  .set-nav-item.on { color:var(--text); background:var(--panel-3); }
+  .set-nav-item .sn-ic { font-family:var(--mono); font-size:12px; width:16px; text-align:center; }
+  #set-content { flex:1; overflow-y:auto; padding:14px 18px; }
+  .set-group { max-width:520px; margin-bottom:18px; }
+  .set-group .sg-title { font-size:11px; color:var(--faint); letter-spacing:.6px; text-transform:uppercase; margin-bottom:6px; }
+  .set-row { display:flex; align-items:center; gap:12px; padding:9px 2px; }
+  .set-row + .set-row { border-top:1px solid var(--border-soft); }
+  .set-row .sr-label { font-size:13px; color:var(--text); }
+  .set-row .sr-desc { font-size:11.5px; color:var(--muted); margin-top:1px; }
+  .set-row .sr-control { margin-left:auto; display:flex; align-items:center; gap:8px; flex-shrink:0; }
+  .set-row .sr-status { font-family:var(--mono); font-size:11px; color:var(--muted); }
+  .set-row .sr-status.ok { color:var(--green); }
+  .toggle { position:relative; width:34px; height:19px; border-radius:10px; background:var(--panel-3); border:1px solid var(--border); cursor:pointer; transition:background .12s; flex-shrink:0; }
+  .toggle::after { content:""; position:absolute; top:2px; left:2px; width:13px; height:13px; border-radius:50%; background:var(--muted); transition:all .12s; }
+  .toggle.on { background:rgba(53,195,226,.25); border-color:var(--cyan-dim); }
+  .toggle.on::after { left:17px; background:var(--cyan); }
+
+  /* ===== 模态 ===== */
+  .modal-backdrop { position:fixed; inset:0; z-index:100; background:rgba(5,7,10,.66); display:none; align-items:center; justify-content:center; }
+  .modal-backdrop.open { display:flex; }
+  .modal { width:min(560px, 90vw); background:var(--panel); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); animation:modal-in .15s ease; overflow:hidden; }
+  @keyframes modal-in { from { opacity:0; transform:translateY(6px) scale(.985); } to { opacity:1; transform:none; } }
+  .modal .m-head { display:flex; align-items:center; gap:10px; padding:14px 18px; border-bottom:1px solid var(--border); }
+  .modal .m-head .m-title { font-size:14px; font-weight:600; }
+  .modal .m-head .m-sub { font-size:11.5px; color:var(--muted); }
+  .modal .m-head .m-close { margin-left:auto; background:none; border:none; color:var(--faint); font-size:15px; cursor:pointer; padding:2px 6px; border-radius:4px; }
+  .modal .m-head .m-close:hover { color:var(--text); background:var(--panel-2); }
+  .modal .m-body { padding:14px 18px; max-height:62vh; overflow-y:auto; }
+  .bs { display:flex; align-items:center; gap:12px; padding:7px 0; font-size:13px; }
+  .bs .bs-idx { font-family:var(--mono); font-size:11px; color:var(--faint); width:16px; text-align:right; flex-shrink:0; }
+  .bs .bs-name { color:var(--text-dim); }
+  .bs .bs-state { margin-left:auto; font-family:var(--mono); font-size:11.5px; }
+  .bs.done .bs-name { color:var(--muted); } .bs.done .bs-state { color:var(--faint); }
+  .bs.done .bs-state::before { content:"✓ "; color:var(--green); }
+  .bs.cur .bs-name { color:var(--text); } .bs.cur .bs-state { color:var(--cyan); }
+  .bs.fail .bs-name { color:var(--red); } .bs.fail .bs-state { color:var(--red); }
+  .np-item { display:flex; align-items:center; gap:12px; padding:10px 12px; border-radius:8px; cursor:pointer; transition:background .1s; }
+  .np-item:hover { background:var(--panel-2); }
+  .np-item .np-name { font-family:var(--mono); font-size:13px; color:var(--text); font-weight:600; width:110px; flex-shrink:0; }
+  .np-item .np-tools { font-size:11.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; font-family:var(--mono); }
+  .np-item .np-base { font-size:10px; color:var(--purple); border:1px solid rgba(159,124,240,.4); border-radius:3px; padding:0 5px; font-family:var(--mono); flex-shrink:0; }
+
+  /* ===== 通用 overlay（命令面板 / @引用 / 历史 / 模型 / 任务） ===== */
+  #overlay-backdrop { position:fixed; left:50%; bottom:120px; transform:translateX(-50%); z-index:150; width:min(560px, 92vw); display:none; }
+  #overlay-backdrop.open { display:block; }
+  #overlay-panel { background:var(--panel-3); border:1px solid var(--border); border-radius:10px; box-shadow:var(--shadow); overflow:hidden; }
+  #overlay-title { padding:8px 14px; font-size:11px; color:var(--faint); border-bottom:1px solid var(--border); letter-spacing:.4px; text-transform:uppercase; }
+  #overlay-list { max-height:280px; overflow-y:auto; padding:4px; }
+  .ov-item { display:flex; align-items:center; gap:10px; padding:6px 10px; border-radius:6px; cursor:pointer; font-size:12.5px; }
+  .ov-item:hover { background:var(--panel-2); }
+  .ov-item.sel { background:var(--cyan-dim); color:var(--text); }
+  .ov-item .ov-name { font-family:var(--mono); font-size:12.5px; color:var(--text); }
+  .ov-item .ov-detail { color:var(--muted); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ov-item .ov-tag { margin-left:auto; font-size:10px; color:var(--faint); border:1px solid var(--border); border-radius:3px; padding:0 5px; flex-shrink:0; }
+  .ov-item .ov-cur { margin-left:auto; color:var(--cyan); font-size:10.5px; font-family:var(--mono); }
+
+  /* ===== attach 视图（主区全屏接管） ===== */
+  #attach-view { flex:1; display:none; min-height:0; background:var(--bg-deep); flex-direction:column; }
+  #attach-view.show { display:flex; }
+  #attach-head { display:flex; align-items:center; gap:10px; height:40px; padding:0 14px; border-bottom:1px solid var(--border); background:var(--bg-deep); flex-shrink:0; }
+  #attach-head .ah-env { font-family:var(--mono); font-size:12.5px; color:var(--cyan); font-weight:600; }
+  #attach-head .ah-hint { font-size:11.5px; color:var(--faint); }
+  #attach-head .ah-close { margin-left:auto; background:none; border:none; color:var(--faint); font-size:14px; cursor:pointer; padding:2px 8px; border-radius:4px; }
+  #attach-head .ah-close:hover { color:var(--text); background:var(--panel-2); }
+  #attach-term { flex:1; overflow-y:auto; padding:12px 16px; font-family:var(--mono); font-size:12.5px; line-height:1.65; }
+  #attach-term .at-welcome { color:var(--faint); }
+  #attach-term .at-out { color:var(--text-dim); white-space:pre-wrap; word-break:break-all; }
+  #attach-term .at-out .hl-flag { color:var(--green); font-weight:700; }
+  #attach-term .at-out .hl-red { color:var(--red); }
+  #attach-term .at-cmd { color:var(--text); }
+  #attach-input-line { display:flex; align-items:center; gap:8px; padding:8px 16px 12px; border-top:1px solid var(--border-soft); background:var(--bg-deep); }
+  .at-prompt { font-family:var(--mono); font-size:12.5px; color:var(--green); flex-shrink:0; }
+  #attach-input { flex:1; background:transparent; border:none; outline:none; color:var(--text); font-family:var(--mono); font-size:12.5px; }
+  .eb-item .eb-act { margin-left:auto; color:var(--faint); font-size:11px; opacity:0; transition:opacity .1s; padding:0 3px; }
+  .eb-item:hover .eb-act { opacity:1; }
+  .eb-item .eb-act:hover { color:var(--cyan); }
+
+  /* ===== 后台回报 ===== */
+  #bg-report-card { position:fixed; top:16px; right:24px; z-index:20; display:none; align-items:center; gap:10px; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:8px 12px; font-size:12px; color:var(--text-dim); box-shadow:var(--shadow); }
+  #bg-report-card .tag { font-family:var(--mono); font-size:11px; color:var(--cyan); }
+  #bg-report-card .close { background:none; border:none; color:var(--faint); cursor:pointer; font-size:13px; padding:0 2px; }
+
+  #toast { position:fixed; bottom:84px; left:50%; transform:translateX(-50%) translateY(8px); background:var(--panel-3); border:1px solid var(--border); border-radius:8px; color:var(--text-dim); font-size:12.5px; padding:8px 16px; box-shadow:var(--shadow); z-index:200; opacity:0; pointer-events:none; transition:all .15s; }
+  #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  .block.enter { animation:enter .15s ease; }
+  @keyframes enter { from { opacity:0; transform:translateY(3px); } to { opacity:1; transform:none; } }
+  @media (max-width: 900px) { #drawer.open { width:min(360px, 85vw); position:absolute; right:0; top:0; bottom:0; z-index:30; box-shadow:var(--shadow); } #main { position:relative; } #envbar { width:150px; } }
+</style>
+</head>
+<body>
+
+<div id="shell">
+  <!-- ===== 环境栏（动态渲染） ===== -->
+  <aside id="envbar">
+    <div class="eb-title">环境</div>
+    <div id="env-list"></div>
+    <div class="eb-foot">
+      <button class="btn" onclick="openNewEnv()">＋ 新建环境</button>
+      <button class="btn" onclick="openSettings()">⚙ 设置</button>
+    </div>
+  </aside>
+
+  <main id="main">
+    <div id="app-toolbar">
+      <span class="at-env" id="at-env"><span class="ok">◈</span> pwn@docker · 就绪 · snap-clean</span>
+    </div>
+
+    <div id="stream-wrap">
+      <div id="stream"><!-- 会话流动态渲染 --></div>
+      <div id="drawer">
+        <div id="drawer-head">
+          <span>工具输出</span>
+          <button class="d-close" onclick="closeDrawer()">✕</button>
+        </div>
+        <div id="drawer-body"></div>
+      </div>
+    </div>
+
+    <!-- 设置页 -->
+    <div id="settings-page">
+      <div id="settings-head">
+        <button class="sh-close" onclick="closeSettings()">✕</button>
+      </div>
+      <div id="set-main">
+        <div id="set-nav">
+          <div class="set-nav-item on" data-pg="model" onclick="setPage(this)"><span class="sn-ic">◇</span>模型</div>
+          <div class="set-nav-item" data-pg="skills" onclick="setPage(this)"><span class="sn-ic">▤</span>Skills</div>
+          <div class="set-nav-item" data-pg="intel" onclick="setPage(this)"><span class="sn-ic">◈</span>情报</div>
+          <div class="set-nav-item" data-pg="expert" onclick="setPage(this)"><span class="sn-ic">◇</span>专家知识</div>
+          <div class="set-nav-item" data-pg="research" onclick="setPage(this)"><span class="sn-ic">✎</span>研究记录</div>
+          <div class="set-nav-item" data-pg="appearance" onclick="setPage(this)"><span class="sn-ic">◐</span>外观</div>
+          <div class="set-nav-item" data-pg="about" onclick="setPage(this)"><span class="sn-ic">ⓘ</span>关于</div>
+        </div>
+        <div id="set-content">
+          <div class="set-page" id="pg-model">
+            <div class="set-group">
+              <div class="sg-title">当前使用</div>
+              <div class="set-row">
+                <div><div class="sr-label">默认模型</div><div class="sr-desc">切换在主界面状态栏（点击模型名）</div></div>
+                <div class="sr-control"><span class="sr-status ok" id="cur-model-status"></span></div>
+              </div>
+            </div>
+            <div class="set-group">
+              <div class="sg-title">供应商</div>
+              <div id="provider-list"></div>
+            </div>
+          </div>
+          <div class="set-page" id="pg-skills" style="display:none">
+            <div class="set-group">
+              <div class="sg-title">系统技能 · bundled-skills</div>
+              <div style="display:flex;gap:8px;margin-bottom:8px">
+                <span style="font-size:11.5px;color:var(--faint);align-self:center">用户级技能目录：~/.zhishi/skills/</span>
+                <button class="btn small" style="margin-left:auto" onclick="openSkillImport()">导入技能</button>
+              </div>
+              <div id="skills-list"></div>
+            </div>
+            <div style="font-size:11.5px;color:var(--faint);margin-top:4px">共 12 个内置技能 · skill enable/disable 即时生效</div>
+          </div>
+          <div class="set-page" id="pg-intel" style="display:none">
+            <div class="set-group">
+              <div class="sg-title">情报索引 · intel.db</div>
+              <div class="set-row"><div><div class="sr-label">最后更新</div></div><div class="sr-control"><span class="sr-status" id="intel-last"></span></div></div>
+              <div class="set-row"><div><div class="sr-label">NVD CVE</div><div class="sr-desc">窗口档 · 近 3 年</div></div><div class="sr-control"><span class="sr-status" id="intel-nvd"></span></div></div>
+              <div class="set-row"><div><div class="sr-label">exploit-db 索引</div></div><div class="sr-control"><span class="sr-status" id="intel-exp"></span></div></div>
+              <div class="set-row"><div><div class="sr-label">nuclei 模板</div></div><div class="sr-control"><span class="sr-status" id="intel-nuc"></span></div></div>
+            </div>
+            <div class="set-group">
+              <div class="sg-title">更新</div>
+              <div class="set-row"><div><div class="sr-label">更新索引</div><div class="sr-desc">增量拉取 · 断点续传 · 数据源失败自动多源切换</div></div><div class="sr-control"><button class="btn small" onclick="runIntelUpdate()">更新</button></div></div>
+            </div>
+            <div class="set-group">
+              <div class="sg-title">配置 · intel（config.json）</div>
+              <div class="set-row"><div><div class="sr-label">存储分级</div><div class="sr-desc">minimal 最小窗口 / window 近 N 年 / full 全量</div></div><div class="sr-control" id="intel-mode-ctl"></div></div>
+              <div class="set-row"><div><div class="sr-label">窗口年数</div><div class="sr-desc">window 模式保留年数</div></div><div class="sr-control"><span class="sr-status" id="intel-years"></span></div></div>
+              <div class="set-row"><div><div class="sr-label">大小上限</div><div class="sr-desc">intel.db 上限（MB），update 末尾自适应裁剪</div></div><div class="sr-control"><span class="sr-status" id="intel-size"></span></div></div>
+              <div class="set-row"><div><div class="sr-label">在线回源</div><div class="sr-desc">intel_search 未命中时回源 NVD（5s 超时静默降级）</div></div><div class="sr-control"><div class="toggle on" id="intel-fallback" onclick="INTEL_CONFIG.onlineFallback=!INTEL_CONFIG.onlineFallback;this.classList.toggle('on');toast('在线回源已'+(INTEL_CONFIG.onlineFallback?'开启':'关闭'))"></div></div></div>
+            </div>
+          </div>
+          <div class="set-page" id="pg-expert" style="display:none">
+            <div class="set-group">
+              <div class="sg-title">专家知识 · expert.db（决策级 · 人审定才进库）</div>
+              <div style="display:flex;gap:8px;margin-bottom:8px">
+                <input id="expert-search" placeholder="搜索关键词…（expert search 语义）" style="flex:1;padding:6px 10px;background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12.5px;outline:none" oninput="renderExpert(this.value)">
+                <button class="btn" onclick="openExpertImport()">导入 JSON/YAML</button>
+              </div>
+              <div id="expert-list"></div>
+            </div>
+            <div class="set-group">
+              <div class="sg-title">草稿</div>
+              <div class="set-row"><div><div class="sr-label">待审草稿</div><div class="sr-desc">agent 起草 · 需你审定后才生效</div></div><div class="sr-control"><span class="sr-status" id="expert-drafts"></span><button class="btn small" onclick="toast('打开审定队列（批准/编辑/丢弃）')">审定</button></div></div>
+            </div>
+          </div>
+          <div class="set-page" id="pg-research" style="display:none">
+            <div class="set-group">
+              <div class="sg-title">研究留痕 · research_events</div>
+              <div id="research-list"></div>
+            </div>
+            <div class="set-group">
+              <div class="sg-title">记忆 · 蒸馏弧</div>
+              <div class="set-row"><div><div class="sr-label">认知弧</div><div class="sr-desc">每小时压缩全局工作史 → 认知摘要</div></div><div class="sr-control"><span class="sr-status ok">2h 前蒸馏</span></div></div>
+              <div class="set-row"><div><div class="sr-label">安全蒸馏弧</div><div class="sr-desc">每 6 小时按研究域蒸馏成败信号</div></div><div class="sr-control"><span class="sr-status ok">4h 前蒸馏</span></div></div>
+            </div>
+          </div>
+          <div class="set-page" id="pg-appearance" style="display:none">
+            <div class="set-group">
+              <div class="sg-title">主题</div>
+              <div class="set-row"><div><div class="sr-label">深色</div><div class="sr-desc">默认 · 长时间研究注视友好</div></div><div class="sr-control"><button class="btn small" onclick="setTheme('dark')">应用</button></div></div>
+              <div class="set-row"><div><div class="sr-label">浅色</div><div class="sr-desc">明亮环境使用</div></div><div class="sr-control"><button class="btn small" onclick="setTheme('light')">应用</button></div></div>
+            </div>
+          </div>
+          <div class="set-page" id="pg-about" style="display:none">
+            <div class="set-group">
+              <div class="sg-title">zhishi · 执失</div>
+              <div class="set-row"><div><div class="sr-label">版本</div></div><div class="sr-control"><span class="sr-status">v1.2.10</span></div></div>
+              <div class="set-row"><div><div class="sr-label">数据目录</div></div><div class="sr-control"><span class="sr-status" style="font-family:var(--mono)">~/.zhishi</span></div></div>
+              <div class="set-row"><div><div class="sr-label">环境引擎</div></div><div class="sr-control"><span class="sr-status ok">✓ 已检测</span></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- attach 视图 -->
+    <div id="attach-view">
+      <div id="attach-head">
+        <span class="ah-env" id="attach-env">◈ pwn@docker</span>
+        <span class="ah-hint">已接管 shell · <kbd>exit</kbd> 或 <kbd>Esc</kbd> 返回会话流</span>
+        <button class="ah-close" onclick="closeAttach()">✕</button>
+      </div>
+      <div id="attach-term"></div>
+      <div id="attach-input-line">
+        <span class="at-prompt" id="attach-prompt">root@pwn-docker:#</span>
+        <input id="attach-input" autocomplete="off" spellcheck="false" placeholder="输入命令…（exit 返回）">
+      </div>
+    </div>
+
+    <!-- 底部 -->
+    <div id="bottom-area">'
+      <div id="statusbar">
+        <span class="status-dot idle" id="status-dot"></span>
+        <span class="env-anchor" id="env-anchor-label">pwn@docker</span>
+        <span class="seg"><b id="phase-text">空闲</b></span>
+        <span class="seg">· 队列 0</span>
+        <span class="seg">· 上下文 <b id="ctx-pct">42%</b></span>
+        <span class="seg" style="cursor:pointer" onclick="openModelPicker()" title="点击切换模型">· <span style="color:var(--faint)" id="status-model">deepseek-v4-pro</span> <span style="color:var(--faint);font-size:10px">▾</span></span>
+        <div class="right">
+          <span class="bg-seg">⛁ <span class="cnt" id="bg-cnt">fuzz · 3 崩溃</span></span>
+        </div>
+      </div>
+      <div id="input-area">
+        <div id="input-chips"></div>
+        <div id="input-box">
+          <textarea id="chat-input" placeholder="向 pwn@docker 提问…（/ 命令 · @ 引用）" rows="1"></textarea>
+          <button id="send-btn" onclick="sendMsg()" title="发送">↑</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 构建进度模态 -->
+    <div class="modal-backdrop" id="boot-backdrop">
+      <div class="modal">
+        <div class="m-head">
+          <span class="m-title" id="boot-title">构建环境 <b style="color:var(--cyan);font-family:var(--mono)" id="boot-env">pwn</b></span>
+          <span class="m-sub" id="boot-sub">docker · 新建环境 · 构建全自动</span>
+        </div>
+        <div class="m-body">
+          <div id="boot-stages"></div>
+          <div style="margin-top:12px;font-size:11.5px;color:var(--faint)"><kbd>Esc</kbd> 取消 · 失败即停，绝不半进</div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- 新建环境模态 -->
+<div class="modal-backdrop" id="newenv-backdrop">
+  <div class="modal">
+    <div class="m-head">
+      <span class="m-title">新建环境</span>
+      <span class="m-sub">选择一个环境类型，构建全自动</span>
+      <button class="m-close" onclick="closeNewEnv()">✕</button>
+    </div>
+    <div class="m-body" id="newenv-body"></div>
+    <div style="padding:10px 18px 14px;border-top:1px solid var(--border-soft)">
+      <button class="btn" onclick="openSshForm()" style="width:100%">🔌 通过 SSH 连接已有主机…</button>
+      <div style="font-size:11px;color:var(--faint);margin-top:5px">host / 用户 / 密钥路径 · 密码不走正门（keyPath 引用，D-T4）</div>
+    </div>
+  </div>
+</div>
+
+<!-- Key 配置模态 -->
+<div class="modal-backdrop" id="keyconfig-backdrop">
+  <div class="modal" style="width:min(420px, 90vw)">
+    <div class="m-head">
+      <span class="m-title">配置 Key · <b style="font-family:var(--mono);color:var(--cyan)" id="key-provider-name"></b></span>
+      <button class="m-close" onclick="closeKeyConfig()">✕</button>
+    </div>
+    <div class="m-body">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">隐藏输入，不落盘明文（原型演示）</div>
+      <input id="key-input" type="password" placeholder="sk-…" style="width:100%;padding:8px 10px;background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12.5px;outline:none">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+        <button class="btn" onclick="closeKeyConfig()">取消</button>
+        <button class="btn primary" onclick="saveKey()">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 专家知识导入模态 -->
+<div class="modal-backdrop" id="expert-import-backdrop">
+  <div class="modal" style="width:min(560px, 90vw)">
+    <div class="m-head">
+      <span class="m-title">导入专家知识</span>
+      <span class="m-sub">JSON / YAML · 单条或数组批量 · 逐条校验</span>
+      <button class="m-close" onclick="closeExpertImport()">✕</button>
+    </div>
+    <div class="m-body">
+      <div style="font-size:11.5px;color:var(--faint);margin-bottom:6px;font-family:var(--mono)">必填：title / kind(idea|technique|sop) / domain / applicability / content / criteria</div>
+      <textarea id="expert-import-input" rows="10" placeholder="- title: 堆喷占位 size 经验&#10;  kind: technique&#10;  domain: binary&#10;  applicability: glibc 2.3x 堆题&#10;  content: 做法正文……&#10;  criteria: 判定条件&#10;  reviewer: 你的名字" style="width:100%;padding:10px 12px;background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12px;line-height:1.6;outline:none;resize:vertical"></textarea>
+      <div id="expert-import-msg" style="font-size:12px;margin-top:8px;display:none"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+        <button class="btn" onclick="closeExpertImport()">取消</button>
+        <button class="btn primary" onclick="doExpertImport()">导入</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SSH 连接模态 -->
+<div class="modal-backdrop" id="ssh-backdrop">
+  <div class="modal" style="width:min(440px, 90vw)">
+    <div class="m-head">
+      <span class="m-title">通过 SSH 连接主机</span>
+      <span class="m-sub">手动接入 · 三步表单</span>
+      <button class="m-close" onclick="closeSshForm()">✕</button>
+    </div>
+    <div class="m-body">
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:4px">主机 host</div><input id="ssh-host" placeholder="192.168.1.100 / jump.example.com" style="width:100%;padding:8px 10px;background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12.5px;outline:none"></div>
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:4px">用户 user</div><input id="ssh-user" placeholder="root" style="width:100%;padding:8px 10px;background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12.5px;outline:none"></div>
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:4px">密钥路径 keyPath</div><input id="ssh-key" placeholder="~/.ssh/id_ed25519" style="width:100%;padding:8px 10px;background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12.5px;outline:none"></div>
+      </div>
+      <div id="ssh-msg" style="font-size:12px;margin-top:10px;display:none"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+        <button class="btn" onclick="closeSshForm()">取消</button>
+        <button class="btn primary" onclick="connectSsh()">连接</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- VM 认领（adopt）模态 -->
+<div class="modal-backdrop" id="adopt-backdrop">
+  <div class="modal" style="width:min(460px, 90vw)">
+    <div class="m-head">
+      <span class="m-title">认领已有 VM · adopt</span>
+      <span class="m-sub" id="adopt-type">pwn-vm</span>
+      <button class="m-close" onclick="closeAdoptForm()">✕</button>
+    </div>
+    <div class="m-body">
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:4px">vmx 路径</div><input id="adopt-vmx" placeholder="D:\VMs\pwn-vm\pwn-vm.vmx" style="width:100%;padding:8px 10px;background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12.5px;outline:none"></div>
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:4px">guest 用户</div><input id="adopt-user" placeholder="root" style="width:100%;padding:8px 10px;background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12.5px;outline:none"></div>
+        <div><div style="font-size:12px;color:var(--muted);margin-bottom:4px">guest 密码（现场输入 · 不落盘 · D-T4）</div><input id="adopt-pass" type="password" placeholder="••••••••" style="width:100%;padding:8px 10px;background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12.5px;outline:none"></div>
+      </div>
+      <div style="font-size:11px;color:var(--faint);margin-top:8px">认领流程：连通测试 → 初始化（setup）→ 建立快照 zhishi-clean → 登记 vmTemplates。模板只读，日常 up 秒级 revert。</div>
+      <div id="adopt-msg" style="font-size:12px;margin-top:8px;display:none"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+        <button class="btn" onclick="closeAdoptForm()">取消</button>
+        <button class="btn primary" onclick="doAdopt()">认领</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 技能导入模态 -->'
+<div class="modal-backdrop" id="skill-import-backdrop">
+  <div class="modal" style="width:min(460px, 90vw)">
+    <div class="m-head">
+      <span class="m-title">导入技能</span>
+      <span class="m-sub">用户级技能 → ~/.zhishi/skills/</span>
+      <button class="m-close" onclick="closeSkillImport()">✕</button>
+    </div>
+    <div class="m-body">
+      <div style="font-size:11.5px;color:var(--faint);margin-bottom:6px;font-family:var(--mono)">技能目录需含 SKILL.md（frontmatter 声明 name/description）</div>
+      <input id="skill-import-path" placeholder="技能目录名，如 my-recon" style="width:100%;padding:8px 10px;background:var(--bg-deep);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12.5px;outline:none">
+      <div id="skill-import-msg" style="font-size:12px;margin-top:8px;display:none"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+        <button class="btn" onclick="closeSkillImport()">取消</button>
+        <button class="btn primary" onclick="doSkillImport()">导入</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 通用 overlay -->'''
+<div id="overlay-backdrop">
+  <div id="overlay-panel">
+    <div id="overlay-title"></div>
+    <div id="overlay-list"></div>
+  </div>
+</div>
+
+<div id="bg-report-card">
+  <span class="tag">fuzz-runner 回报</span>
+  <span>7 崩溃去重后 3 个，crash-01 可达 EIP</span>
+  <button class="btn small" onclick="this.closest('#bg-report-card').style.display='none';toast('会话已切换：resume fuzz 线程')">切过去</button>
+  <button class="close" onclick="this.parentElement.style.display='none'">✕</button>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ==================== 数据（mock，交互真实） ====================
+const ENVIRONMENTS = [
+  { id: 'pwn@docker', kind: 'docker', type: 'pwn', state: 'run', snap: true, detail: 'docker · 类型 pwn' },
+  { id: 'rev-vm', kind: 'vm', type: 'rev', state: 'run', snap: false, detail: 'vm · 隔离网' },
+  { id: 'audit-box', kind: 'docker', type: 'code-audit', state: 'stop', snap: true, detail: 'docker · 类型 code-audit' },
+  { id: 'win10-lab', kind: 'vm', type: 'dev', state: 'stop', snap: false, detail: 'vm · vmware · 用户机器', warn: true },
+  { id: 'kali-2024', kind: 'vm', type: 'discover', state: 'stop', snap: false, detail: 'vmware · 未登记', unreg: true },
+];
+const RECIPES = [
+  { id: 'pwn', base: 'docker', tools: 'gdb+pwndbg · pwntools · one_gadget · ROPgadget' },
+  { id: 'pwn-vm', base: 'vm', tools: 'gdb · pwntools · ROPgadget · VM 隔离 · 快照回滚' },
+  { id: 'fuzz', base: 'docker', tools: 'AFL++ 全家 · libFuzzer · ASan/UBSan' },
+  { id: 'fuzz-vm', base: 'vm', tools: 'AFL++ · 内核 fuzz · VM 级隔离 · 快照' },
+  { id: 'pentest', base: 'docker', tools: 'nmap · nuclei · sqlmap · impacket · ZAP · Playwright' },
+  { id: 'pentest-vm', base: 'vm', tools: '渗透工具集 · 独立网段 · 干净快照' },
+  { id: 'ai-security', base: 'docker', tools: 'garak · promptfoo · PyRIT · Gandalf 靶场' },
+  { id: 'code-audit', base: 'docker', tools: 'OpenGrep · Joern · ast-grep · bandit · SCA' },
+  { id: 'rev', base: 'docker', tools: 'Ghidra headless · ghidriff · radare2 · 固件解剖' },
+  { id: 'dev', base: 'docker', tools: 'C/C++/汇编/Python 全工具链 · 通用兜底' },
+];
+const PROVIDERS = [
+  { id: 'deepseek', keyed: true, desc: 'anthropic 兼容端点 · 主供应商' },
+  { id: 'anthropic-api', keyed: false, desc: '官方 API' },
+  { id: 'openai', keyed: false, desc: 'OpenAI 兼容端点' },
+  { id: 'moonshot', keyed: false, desc: 'Kimi 官方 · moonshot.cn' },
+  { id: 'dashscope', keyed: false, desc: '通义 · dashscope' },
+  { id: 'zhipu', keyed: false, desc: '智谱 · GLM' },
+  { id: 'siliconflow', keyed: false, desc: '硅基流动聚合' },
+  { id: 'kimi', keyed: false, desc: 'pi 内置 kimi-coding（合成条目）' },
+];
+const MODELS = [
+  { provider: 'deepseek', model: 'deepseek-v4-pro', ctx: '1M', cur: true },
+  { provider: 'deepseek', model: 'deepseek-v4-flash', ctx: '1M', cur: false },
+  { provider: 'kimi', model: 'kimi-coding-latest', ctx: '200K', cur: false },
+  { provider: 'anthropic-api', model: 'claude-opus-4-6', ctx: '1M', cur: false },
+  { provider: 'anthropic-api', model: 'claude-sonnet-4-6', ctx: '200K', cur: false },
+];
+const SKILLS = [
+  { id: 'agent-browser', desc: '浏览器自动化（CDP 驱动系统浏览器）', on: true },
+  { id: 'ai-security', desc: 'AI 安全测试：越狱/注入/数据泄露探针', on: true },
+  { id: 'binary-exploit', desc: '二进制利用实战框架（0day/1day/exp）', on: true },
+  { id: 'download-anything', desc: '任意内容下载（受限网络对策）', on: true },
+  { id: 'native-code-loop', desc: '原生代码编译运行调试闭环', on: true },
+  { id: 'pentest', desc: '渗透测试：侦察/枚举/利用/拿 shell', on: true },
+  { id: 'range-ops', desc: '靶场运维：环境启停/快照/网络', on: true },
+  { id: 'task-alignment', desc: '任务对齐：目标拆解与验收标准', on: true },
+  { id: 'task-implement', desc: '任务实现：方案到落地的执行纪律', on: true },
+  { id: 'vuln-triage', desc: '漏洞研判：严重度分级与复现确认', on: true },
+  { id: 'whitebox-audit', desc: '白盒审计：源码级漏洞挖掘方法', on: true },
+  { id: 'zhishi-cli', desc: 'zhishi CLI 使用指南（产品能力入口）', on: true },
+];
+const AT_ITEMS = [
+  { name: 'exploit.py', detail: '环境内文件 · 121 字节', tag: '文件' },
+  { name: 'flag.txt', detail: '环境内文件 · 33 字节', tag: '文件' },
+  { name: 'crash-01', detail: '崩溃样本 · SIGSEGV · EIP 可控', tag: '产物' },
+  { name: 'snap-clean', detail: '快照 · 14:30 干净现场', tag: '快照' },
+  { name: 'pwn@docker', detail: '环境 · docker · 运行中', tag: '环境' },
+  { name: 'fuzz', detail: '后台任务 · 3 崩溃', tag: '任务' },
+];
+const HISTORY = [
+  '帮我看下这个崩溃是不是可控的', '对比 crash-01 和 crash-03 的 RIP 差异',
+  '试试 ret2win 的 one_gadget', '把 exploit.py 改成通用 payload',
+  '检查 /work 目录下有什么产物', 'fuzz 结果去重后有几个真崩溃',
+  '这个 flag 是怎么读出来的，复现一遍', '给当前环境打个快照',
+  '导出今天的研究报告', '分析一下 win() 的反汇编',
+];
+const TASKS = [
+  { id: 'fuzz', desc: 'fuzz-runner · afl++ 长跑', status: '运行中', outputCount: 3, conclusion: '7 崩溃去重后 3 个，crash-01 可达 EIP' },
+  { id: 'dedup', desc: '子任务 · 崩溃去重', status: '已完成', outputCount: 7, conclusion: '去重完成：3 个真崩溃' },
+  { id: 'nmap-bg', desc: '后台进程 · nmap 扫描', status: 'exit=0', outputCount: 12, conclusion: '端口 80/443/8080 开放' },
+];
+const TOOL_OUTPUTS = {
+  't1': { args: "cd /work && gdb -batch -ex 'info registers' core", exit: 0, ms: 1200, out: "Program received signal SIGSEGV, Segmentation fault.\nRIP: 0x41414141  ← 可控\nRSP: 0x7ffffffde40\nRAX: 0x0\n\n溢出点确认：EIP 被 pattern 覆盖" },
+  't2': { args: 'python3 offset.py', exit: 0, ms: 800, out: "offset = 56\npattern 命中：0x41414141 @ offset 56" },
+  't3': { args: 'python3 exploit.py && ./vuln < payload', exit: 1, ms: 900, out: "Program received signal SIGSEGV, Segmentation fault.\n0x00000000004011d8 in win ()   ← movaps 对齐失败点\n\n第一发未到达 flag：栈指针未 16 字节对齐" },
+  't4': { args: 'python3 exploit.py && cat /work/flag.txt', exit: 0, ms: 1900, out: "flag{d0n7_tru5t_th3_574ck}\nvictory: win() called, shell opened\n$ id\nuid=0(root) gid=0(root)" },
+  'dyn': { args: '本轮执行命令（mock）', exit: 0, ms: 1400, out: '命令已执行完成\n$ echo ok\nok\n\n（原型演示输出）' },
+};
+const EXPERTS = [
+  { id: 1, domain: 'binary', title: '栈溢出从崩溃到控制流的最小判定链', kind: 'technique', reviewer: '内置' },
+  { id: 2, domain: 'pentest', title: 'SQLite UNION 注入标准利用链', kind: 'sop', reviewer: '内置' },
+  { id: 3, domain: 'pentest', title: 'SQL 注入报错形态速查', kind: 'sop', reviewer: '内置' },
+  { id: 4, domain: 'whitebox', title: 'Python Web 高危 sink 速查与利用判据', kind: 'technique', reviewer: '内置' },
+  { id: 5, domain: 'ai-security', title: '间接提示注入的探针构造与判定证据等级', kind: 'technique', reviewer: '内置' },
+];
+const RESEARCH_EVENTS = [
+  { id: 'r-1042', kind: 'binary-exploit', ok: true, note: 'ret2win 打通 · flag 已提取', ev: '/work/flag.txt', time: '14:31' },
+  { id: 'r-1041', kind: 'binary-exploit', ok: false, note: 'movaps 对齐失败（第一发）', ev: 'crash-01', time: '14:30' },
+  { id: 'r-1040', kind: 'fuzz', ok: true, note: '7 崩溃去重后 3 个真崩溃', ev: 'fuzz/crashes/', time: '13:52' },
+  { id: 'r-1039', kind: 'intel', ok: true, note: 'CVE-2024-23334 受影响版本确认', ev: 'intel.db', time: '13:40' },
+  { id: 'r-1038', kind: 'whitebox', ok: false, note: '目标无输入过滤点，放弃该面', ev: null, time: '13:21' },
+];
+const INTEL = { lastUpdate: '2026-08-23 18:40', nvd: 152031, exploitDb: 61872, nuclei: 89413, mode: 'window' };
+const INTEL_CONFIG = { mode: 'minimal', windowYears: 3, maxSizeMb: 300, onlineFallback: true };
+const SLASH = [
+  { name: 'attach', detail: '接管环境 shell', group: '环境' },
+  { name: 'snapshot', detail: '给当前环境打快照 [名]', group: '环境' },
+  { name: 'rollback', detail: '回滚到快照 <名>', group: '环境' },
+  { name: 'extract', detail: '回收环境内文件到宿主 <路径>', group: '环境' },
+  { name: 'rewind', detail: '回退到历史消息', group: '线程' },
+  { name: 'fork', detail: '从某条消息分叉出新线程', group: '线程' },
+  { name: 'queue', detail: '查看/取消排队消息', group: '线程' },
+  { name: 'tasks', detail: '查看子任务与后台进程', group: '线程' },
+  { name: 'export', detail: '导出研究报告', group: '线程' },
+  { name: 'reset', detail: '重置对话（新会话）', group: '线程' },
+  { name: 'help', detail: '键位与命令帮助', group: '配置' },
+  { name: 'quit', detail: '退出会话界面', group: '配置' },
+];
+
+// ==================== 状态 ====================
+let curEnv = 'pwn@docker';
+let curModel = { provider: 'deepseek', model: 'deepseek-v4-pro', ctx: '1M' };
+let turnBusy = false, turnTimer = null, turnAborted = false, stepSeq = 0;
+const inputRefs = [];
+
+// ==================== 渲染：环境栏 ====================
+let curAttachEnv = 'pwn@docker';
+let attachHist = [], attachHistIdx = -1;
+const ATTACH_CMDS = {
+  'ls': 'exploit.py  flag.txt  vuln  payload  crash-01  core  exp.py',
+  'ls -la': 'total 32\ndrwxr-xr-x 2 root root 4096 Jul 24 14:28 .\n-rw-r--r-- 1 root root  121 Jul 24 14:28 exploit.py\n-rw-r--r-- 1 root root   33 Jul 24 14:31 flag.txt\n-rwxr-xr-x 1 root root  902 Jul 24 14:29 vuln',
+  'pwd': '/work',
+  'id': 'uid=0(root) gid=0(root) groups=0(root)',
+  'whoami': 'root',
+  'uname -a': 'Linux pwn-docker 6.8.0-45-generic #45-Ubuntu SMP x86_64 GNU/Linux',
+  'cat flag.txt': 'flag{d0n7_tru5t_th3_574ck}',
+  'cat /work/flag.txt': 'flag{d0n7_tru5t_th3_574ck}',
+  'checksec --file=./vuln': 'Arch:     amd64-64-little\nRELRO:    Partial RELRO\nStack:    No canary found\nNX:       NX disabled\nPIE:      PIE enabled',
+  'help': '可用：ls · pwd · id · whoami · uname -a · cat flag.txt · checksec --file=./vuln · exit',
+};
+function openAttach(envId) {
+  curAttachEnv = envId;
+  document.getElementById('attach-env').textContent = '◈ ' + envId;
+  document.getElementById('attach-prompt').textContent = 'root@' + envId.split('@')[0] + ':#';
+  const term = document.getElementById('attach-term');
+  term.innerHTML = '<div class="at-welcome">已连接到 ' + envId + '（D18 直连 · 快照 zhishi-clean 已 revert）<br>输入 exit 返回会话流（会话流在后台继续接收）</div>';
+  attachHist = []; attachHistIdx = -1;
+  document.getElementById('attach-view').classList.add('show');
+  document.getElementById('stream-wrap').style.display = 'none';
+  document.getElementById('bottom-area').style.display = 'none';
+  document.getElementById('phase-text').textContent = '已 attach';
+  const inp = document.getElementById('attach-input');
+  inp.value = '';
+  setTimeout(() => inp.focus(), 50);
+}
+function closeAttach() {
+  document.getElementById('attach-view').classList.remove('show');
+  document.getElementById('stream-wrap').style.display = 'flex';
+  document.getElementById('bottom-area').style.display = 'block';
+  if (!turnBusy) document.getElementById('phase-text').textContent = '空闲';
+  toast('已返回会话流 · attach 期间的消息已在后台接收');
+}
+function attachRun() {
+  const inp = document.getElementById('attach-input');
+  const cmd = inp.value.trim();
+  const term = document.getElementById('attach-term');
+  if (!cmd) return;
+  const who = 'root@' + curAttachEnv.split('@')[0] + ':#';
+  term.innerHTML += '<div class="at-cmd">' + who + ' ' + escapeHtml(cmd) + '</div>';
+  attachHist.push(cmd); attachHistIdx = attachHist.length;
+  inp.value = '';
+  if (cmd === 'exit' || cmd === 'logout') { closeAttach(); return; }
+  const out = ATTACH_CMDS[cmd];
+  if (out !== undefined) {
+    let hl = escapeHtml(out);
+    hl = hl.replace(/flag\{[^}]*\}/g, '<span class="hl-flag">$&</span>');
+    hl = hl.replace(/No canary found|NX disabled/g, '<span class="hl-red">$&</span>');
+    term.innerHTML += '<div class="at-out">' + hl.replace(/\n/g, '<br>') + '</div>';
+  } else {
+    term.innerHTML += '<div class="at-out"><span class="hl-red">bash: ' + escapeHtml(cmd.split(' ')[0]) + ': command not found</span><br>输入 help 查看可用命令</div>';
+  }
+  term.scrollTop = term.scrollHeight;
+}
+document.getElementById('attach-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); attachRun(); }
+  if (e.key === 'ArrowUp') { e.preventDefault(); if (attachHistIdx > 0) { attachHistIdx--; document.getElementById('attach-input').value = attachHist[attachHistIdx]; } }
+  if (e.key === 'ArrowDown') { e.preventDefault(); if (attachHistIdx < attachHist.length - 1) { attachHistIdx++; document.getElementById('attach-input').value = attachHist[attachHistIdx]; } else { attachHistIdx = attachHist.length; document.getElementById('attach-input').value = ''; } }
+});
+function renderEnvBar() {
+  const list = document.getElementById('env-list');
+  const groups = [
+    { label: '运行中', items: ENVIRONMENTS.filter(e => e.state === 'run') },
+    { label: '已停止', items: ENVIRONMENTS.filter(e => e.state === 'stop' && !e.unreg) },
+    { label: '本机已有', items: ENVIRONMENTS.filter(e => e.unreg) },
+  ];
+  list.innerHTML = groups.map(g => g.items.length ? `
+    <div class="eb-group">
+      <div class="ebg-label">${g.label}</div>
+      ${g.items.map(e => `
+        <div class="eb-item ${e.id === curEnv ? 'cur' : ''}" data-env="${e.id}" title="${e.detail}${e.snap ? ' · ◆ 快照' : ''}${e.warn ? ' · ⚠ 不可达' : ''}" onclick="switchEnv('${e.id}')">
+          <span class="st ${e.state}"></span><span class="nm">${e.id}</span>
+          ${e.snap ? '<span class="snap">◆</span>' : ''}${e.warn ? '<span class="warn">⚠</span>' : ''}
+          <span class="eb-act" title="attach 进入环境 shell" onclick="event.stopPropagation();openAttach('${e.id}')">⛁</span>
+        </div>`).join('')}
+    </div>` : '').join('');
+}
+function switchEnv(id) {
+  curEnv = id;
+  renderEnvBar();
+  applyEnv(id);
+  appendBlock(`<div class="block"><div class="sys-line">◈ 已切到 ${id} 的会话线（每环境独立历史 · resume 语义）</div></div>`);
+  toast('◈ 已切换到 ' + id);
+}
+function applyEnv(name) {
+  document.getElementById('at-env').innerHTML = `<span class="ok">◈</span> ${name} · 就绪 · snap-clean`;
+  document.getElementById('env-anchor-label').textContent = name;
+  document.getElementById('chat-input').placeholder = `向 ${name} 提问…（/ 命令 · @ 引用）`;
+}
+
+// ==================== 渲染：初始会话流 ====================
+function appendBlock(html) {
+  const d = document.createElement('div');
+  d.className = 'block enter';
+  d.innerHTML = html;
+  document.getElementById('stream').appendChild(d);
+  scrollBottom();
+}
+function scrollBottom() { const s = document.getElementById('stream'); s.scrollTop = s.scrollHeight; }
+function renderInitialStream() {
+  const s = document.getElementById('stream');
+  s.innerHTML = `
+    <div class="ready-line"><span class="ok">◈</span> pwn@docker 已就绪 · 快照 snap-clean · 连接 1.2s</div>
+    <div class="block"><span class="b-time">14:29</span>
+      <div class="thought-card" onclick="toggleThought(this)">推理环境布局与偏移<span class="dur"> · 4s</span></div>
+      <div class="thought-body">先从 crash dump 确认 EIP 覆盖源，再看栈布局是否满足 ret2win 的约束。</div></div>
+    <div class="block"><span class="b-time">14:29:05</span>
+      <div class="tool-card" data-key="t1" onclick="openTool('t1', this)">
+        <span class="t-step">①</span><span class="t-name">env_exec</span> <span class="sig hit">✔ SIGSEGV at 0x41414141</span><span class="dur"> · 1.2s</span><span class="open-hint">查看 ▸</span></div></div>
+    <div class="block"><span class="b-time">14:29:08</span>
+      <div class="tool-card" data-key="t2" onclick="openTool('t2', this)">
+        <span class="t-step">②</span><span class="t-name">env_exec</span> <span class="sig">✔ offset=56</span><span class="dur"> · 0.8s</span><span class="open-hint">查看 ▸</span></div></div>
+    <div class="block assistant"><span class="b-time">14:29</span>
+      <div class="b-body assistant-body"><p>EIP 被 <code class="inline">0x41414141</code> 覆盖，偏移 <code class="inline">56</code>。栈上无 canary，NX 关闭。构造 payload：</p>
+      <div class="code-block"><span class="c"># exploit.py · 关键段</span>
+payload = b<span class="hl">"A"*56</span> + p64(win_addr)</div></div></div>
+    <div class="block user"><span class="b-time">14:30</span><div class="bubble">打吧，别用 reverse_shell，本地验证就行</div></div>
+    <div class="block"><span class="b-time">14:30:12</span>
+      <div class="tool-card" data-key="t3" onclick="openTool('t3', this)">
+        <span class="t-step">③</span><span class="t-name">env_exec</span> <span class="sig fail">✗ exit=1 段错误</span><span class="dur"> · 0.9s</span><span class="open-hint">查看 ▸</span></div></div>
+    <div class="block assistant"><span class="b-time">14:31</span>
+      <div class="b-body assistant-body"><p>movaps 对齐问题，补一个 <code class="inline">ret</code> 滑板：</p>
+      <div class="code-block">payload = b<span class="hl">"A"*56</span> + p64(ret_addr) + p64(win_addr)</div></div></div>
+    <div class="block"><span class="b-time">14:31:03</span>
+      <div class="tool-card" data-key="t4" onclick="openTool('dyn', this)">
+        <span class="t-step">④</span><span class="t-name">env_exec</span> <span class="sig hit">✔ flag 已读取</span><span class="dur"> · 1.9s</span><span class="open-hint">查看 ▸</span></div></div>
+    <div class="block"><span class="b-time">14:31:03</span>
+      <div class="result-block">
+        <span style="color:var(--green);font-weight:700">✔</span>
+        <span class="flag">flag{d0n7_tru5t_th3_574ck}</span><span class="path">→ /work/flag.txt</span>
+        </div>
+      <div class="result-actions">
+        <button class="btn small" onclick="toast('已复制校验命令：cat /work/flag.txt | sha256sum')">复制校验命令</button>
+        <button class="btn small" onclick="openAttach('pwn@docker')">attach 进去</button></div></div>
+    <div class="block"><div class="divider-line"><span>⏸ 已中断 14:32</span></div></div>
+    <div class="block"><div class="error-line"><span style="font-weight:700">✗</span>工具 reverse_shell 被边界规则拒绝（env≠host）。已跳过。</div></div>`;
+}
+
+// ==================== 抽屉（按工具卡区分输出） ====================
+function highlightOutput(text) {
+  let html = escapeHtml(text);
+  html = html.replace(/(flag\{[^}]*\})/gi, '<span class="hl-flag">$1</span>');
+  html = html.replace(/(SIGSEGV|SIGABRT|SIGILL|Segmentation fault|core dumped)/gi, '<span class="hl-red">$1</span>');
+  html = html.replace(/(0x[0-9a-fA-F]+)/g, '<span class="hl-cyan">$1</span>');
+  html = html.replace(/(CVE-\d{4}-\d+)/gi, '<span class="hl-amber">$1</span>');
+  html = html.replace(/(\d+\/tcp\s+open)/gi, '<span class="hl-green">$1</span>');
+  html = html.replace(/(exit=\d+)/g, m => m === 'exit=0' ? m : '<span class="hl-red">' + m + '</span>');
+  html = html.replace(/\b(error|failed|denied|timed out|refused)\b/gi, '<span class="hl-red">$1</span>');
+  return html;
+}
+function openTool(key, el) {
+  document.querySelectorAll('.tool-card').forEach(c => c.classList.remove('active'));
+  if (el) el.classList.add('active');
+  const t = TOOL_OUTPUTS[key] || TOOL_OUTPUTS.dyn;
+  const ok = t.exit === 0;
+  const lineCount = t.out.split('\n').length;
+  document.getElementById('drawer-body').innerHTML = `
+    <div class="d-head">
+      <span class="d-name">env_exec</span>
+      <span class="d-badge ${ok ? 'ok' : 'fail'}">${ok ? '✔ exit 0' : '✗ exit ' + t.exit}</span>
+      <span class="d-dur">${(t.ms / 1000).toFixed(1)}s</span>
+      <span class="d-lines">${lineCount} 行</span>
+    </div>
+    <div class="d-cmd">${escapeHtml(t.args)}</div>
+    <div class="d-output">${highlightOutput(t.out)}</div>
+    <div class="d-toolbar">
+      <input class="d-search" placeholder="搜索输出…" oninput="filterDrawer(this.value)">
+      <button class="btn small" onclick="copyOutput()">复制</button>
+    </div>`;
+  document.getElementById('drawer').classList.add('open');
+}
+function filterDrawer(q) {
+  const out = document.querySelector('#drawer-body .d-output');
+  if (!out) return;
+  const raw = out.dataset.raw || (out.dataset.raw = out.innerHTML);
+  if (!q) { out.innerHTML = raw; return; }
+  const idx = raw.toLowerCase().indexOf(escapeHtml(q.toLowerCase()));
+  if (idx >= 0) {
+    out.innerHTML = raw.slice(0, idx) + '<mark class="h-search">' + raw.slice(idx, idx + escapeHtml(q).length) + '</mark>' + raw.slice(idx + escapeHtml(q).length);
+  }
+}
+function copyOutput() {
+  const out = document.querySelector('#drawer-body .d-output');
+  if (!out) return;
+  const text = out.textContent.trim();
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast('✓ 输出已复制（' + text.length + ' 字符）'), () => toast('复制失败'));
+  } else {
+    toast('复制失败（环境不支持剪贴板 API）');
+  }
+}
+function closeDrawer() {
+  document.getElementById('drawer').classList.remove('open');
+  document.querySelectorAll('.tool-card').forEach(c => c.classList.remove('active'));
+}
+
+// ==================== Mock turn 引擎（思考 → 工具 → 回答 → 可能结论） ====================
+function renderMsg(text) {
+  return escapeHtml(text).replace(/@([\w.-]+)/g, '<span class="chip">$1</span>');
+}
+function sendMsg() {
+  const ta = document.getElementById('chat-input');
+  const v = ta.value.trim();
+  if (!v || turnBusy) return;
+  const refs = inputRefs.splice(0).map(r => r.name);
+  const text = v + (refs.length ? '（引用：' + refs.join(', ') + '）' : '');
+  HISTORY.unshift(v);
+  appendBlock(`<div class="block user"><span class="b-time">现在</span><div class="bubble">${renderMsg(v)}</div></div>`);
+  document.getElementById('input-chips').innerHTML = '';
+  ta.value = ''; ta.style.height = '22px';
+  startTurn(text);
+}
+function startTurn(text) {
+  turnBusy = true; turnAborted = false;
+  document.getElementById('phase-text').textContent = '思考中';
+  document.getElementById('status-dot').className = 'status-dot running';
+  stepSeq = 0;
+  // 思考卡
+  const thought = document.createElement('div');
+  thought.className = 'block enter';
+  thought.innerHTML = `<div class="thought-card">分析「${escapeHtml(text.slice(0, 30))}」…<span class="dur"> · 进行中</span></div>`;
+  document.getElementById('stream').appendChild(thought);
+  scrollBottom();
+  turnTimer = setTimeout(() => nextStep(text, thought), 900);
+}
+function nextStep(text, thoughtEl) {
+  if (turnAborted) return;
+  thoughtEl.querySelector('.thought-card').classList.add('expanded');
+  thoughtEl.querySelector('.thought-body')?.remove();
+  thoughtEl.innerHTML += `<div class="thought-body">优先在环境内验证，再看是否有现成结论可复用。</div>`;
+  stepSeq++;
+  const tool = document.createElement('div');
+  tool.className = 'block enter';
+  tool.innerHTML = `<div class="tool-card" data-key="dyn">
+      <span class="t-step">${'①②③④⑤⑥'[stepSeq - 1]}</span><span class="t-name">env_exec</span> <span class="t-running"><span class="spinner"></span>执行中…</span></div>`;
+  document.getElementById('stream').appendChild(tool);
+  scrollBottom();
+  turnTimer = setTimeout(() => finishTool(tool, text), 1400);
+}
+function finishTool(toolEl, text) {
+  if (turnAborted) return;
+  const hitFlag = /flag|验证|打通|成功/.test(text);
+  const sig = hitFlag ? '✔ flag 已读取' : '✔ exit=0';
+  toolEl.innerHTML = `<div class="tool-card" data-key="dyn" onclick="openTool('dyn', this)">
+      <span class="t-step">${'①②③④⑤⑥'[stepSeq - 1]}</span><span class="t-name">env_exec</span> <span class="sig hit">${sig}</span><span class="dur"> · 1.4s</span><span class="open-hint">查看 ▸</span></div>`;
+  scrollBottom();
+  turnTimer = setTimeout(() => finishReply(text, hitFlag), 900);
+}
+function finishReply(text, hitFlag) {
+  if (turnAborted) return;
+  const replyHtml = hitFlag
+    ? `已按你的要求验证完成。<p><code class="inline">flag{d0n7_tru5t_th3_574ck}</code> 已从环境内读取（/work/flag.txt），结论与上次一致。</p><div class="code-block"><span class="c"># 校验</span>
+cat /work/flag.txt | sha256sum</div>`
+    : `收到，已执行。当前结论：环境内未发现新的突破点，建议继续沿 ret2win 方向验证。<p>需要我 <code class="inline">@crash-01</code> 的详细回溯，或直接 attach 进去自己看？</p>`;
+  const replyPlain = hitFlag
+    ? '已按你的要求验证完成。flag{d0n7_tru5t_th3_574ck} 已从环境内读取（/work/flag.txt），结论与上次一致。校验：cat /work/flag.txt | sha256sum'
+    : '收到，已执行。当前结论：环境内未发现新的突破点，建议继续沿 ret2win 方向验证。需要我 @crash-01 的详细回溯，或直接 attach 进去自己看？';
+  const blk = document.createElement('div');
+  blk.className = 'block assistant enter';
+  blk.innerHTML = `<span class="b-time">现在</span><div class="b-body assistant-body"></div>`;
+  document.getElementById('stream').appendChild(blk);
+  const body = blk.querySelector('.b-body');
+  scrollBottom();
+  let i = 0;
+  const typeTimer = setInterval(() => {
+    if (turnAborted) { clearInterval(typeTimer); return; }
+    i += 2;
+    body.textContent = replyPlain.slice(0, i) + (i < replyPlain.length ? '▌' : '');
+    scrollBottom();
+    if (i >= replyPlain.length) {
+      clearInterval(typeTimer);
+      body.innerHTML = replyHtml;
+      scrollBottom();
+      const pct = parseInt(document.getElementById('ctx-pct').textContent) || 42;
+      document.getElementById('ctx-pct').textContent = Math.min(99, pct + 3) + '%';
+      if (hitFlag) {
+    appendBlock(`<div class="block">
+      <div class="result-block"><span style="color:var(--green);font-weight:700">✔</span>
+        <span class="flag">flag{d0n7_tru5t_th3_574ck}</span><span class="path">→ /work/flag.txt</span>
+        </div>
+      <div class="result-actions">
+        <button class="btn small" onclick="toast('已复制校验命令')">复制校验命令</button>
+        <button class="btn small" onclick="openAttach('pwn@docker')">attach 进去</button></div></div>`);
+  }
+  turnBusy = false; turnAborted = false;
+  document.getElementById('phase-text').textContent = '空闲';
+      document.getElementById('status-dot').className = 'status-dot idle';
+    }
+  }, 16);
+}
+function abortTurn() {
+  if (!turnBusy) return;
+  clearTimeout(turnTimer);
+  turnAborted = true; turnBusy = false;
+  const running = document.querySelector('.tool-card .t-running');
+  if (running) {
+    const card = running.closest('.tool-card');
+    card.innerHTML = `<span class="t-step">${'①②③④⑤⑥'[stepSeq - 1]}</span><span class="t-name">env_exec</span> <span class="sig fail">✗ 已中断</span>`;
+  }
+  appendBlock(`<div class="block"><div class="divider-line"><span>⏸ 已中断 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span></div></div>`);
+  document.getElementById('phase-text').textContent = '已中断';
+  document.getElementById('status-dot').className = 'status-dot idle';
+  toast('已停止当前动作');
+}
+
+// ==================== 输入区：/ 与 @ 补全、历史 ====================
+const ta = document.getElementById('chat-input');
+let overlayMode = null, overlayItems = [], overlaySel = 0, overlayQuery = '';
+function closeOverlay() { overlayMode = null; document.getElementById('overlay-backdrop').classList.remove('open'); }
+function renderOverlay() {
+  document.getElementById('overlay-backdrop').classList.add('open');
+  const list = document.getElementById('overlay-list');
+  list.innerHTML = overlayItems.map((it, i) => `
+    <div class="ov-item ${i === overlaySel ? 'sel' : ''}" onclick="pickOverlay(${i})">
+      <span class="ov-name">${it.name}</span>
+      <span class="ov-detail">${it.detail || ''}</span>
+      ${it.tag ? `<span class="ov-tag">${it.tag}</span>` : ''}${it.cur ? '<span class="ov-cur">● 当前</span>' : ''}
+    </div>`).join('');
+}
+function pickOverlay(i) {
+  const it = overlayItems[i];
+  if (!it) return;
+  if (overlayMode === 'slash') {
+    runSlash(it.name);
+  } else if (overlayMode === 'at') {
+    inputRefs.push(it);
+    renderChips();
+    ta.value = ta.value.replace(/@\w*$/, '').replace(/@[\w.-]*$/, '');
+    closeOverlay();
+    ta.focus();
+  } else if (overlayMode === 'history') {
+    ta.value = it.name; ta.focus();
+    closeOverlay();
+  } else if (overlayMode === 'model') {
+    curModel = { provider: it.provider, model: it.model, ctx: it.ctx };
+    document.getElementById('status-model').textContent = it.model;
+    renderSettingsModel();
+    closeOverlay();
+    toast('已切换模型：' + it.model);
+  }
+}
+function renderChips() {
+  const box = document.getElementById('input-chips');
+  box.innerHTML = inputRefs.map((r, i) => `<span class="chip">${r.name}<span class="x" onclick="inputRefs.splice(${i},1);renderChips()">✕</span></span>`).join('');
+}
+function openSlashOverlay(q) {
+  overlayMode = 'slash'; overlayQuery = q;
+  overlayItems = SLASH.filter(c => c.name.startsWith(q)).map(c => ({ name: '/' + c.name, detail: c.detail, tag: c.group }));
+  overlaySel = 0;
+  document.getElementById('overlay-title').textContent = '命令';
+  renderOverlay();
+}
+function openAtOverlay(q) {
+  overlayMode = 'at'; overlayQuery = q;
+  overlayItems = AT_ITEMS.filter(i => i.name.includes(q)).map(i => ({ name: i.name, detail: i.detail, tag: i.tag }));
+  overlaySel = 0;
+  document.getElementById('overlay-title').textContent = '引用环境对象';
+  renderOverlay();
+}
+function openHistoryOverlay(q) {
+  overlayMode = 'history'; overlayQuery = q;
+  overlayItems = HISTORY.filter(h => !q || h.includes(q)).slice(0, 8).map(h => ({ name: h }));
+  overlaySel = 0;
+  document.getElementById('overlay-title').textContent = '历史 · ' + (q || '全部');
+  renderOverlay();
+}
+function openModelPicker() {
+  overlayMode = 'model';
+  overlayItems = MODELS.map(m => ({ name: m.model, detail: m.provider + ' · ' + m.ctx + ' ctx', provider: m.provider, model: m.model, ctx: m.ctx, cur: m.cur }));
+  overlaySel = 0;
+  document.getElementById('overlay-title').textContent = '选择模型';
+  renderOverlay();
+}
+function openTasksOverlay() {
+  overlayMode = 'tasks';
+  overlayItems = TASKS.map(t => ({ name: t.id, detail: t.desc + ' · ' + t.status + ' · ' + t.conclusion, tag: t.status }));
+  overlaySel = 0;
+  document.getElementById('overlay-title').textContent = '子任务与后台进程';
+  renderOverlay();
+}
+ta.addEventListener('input', () => {
+  ta.style.height = '22px';
+  ta.style.height = Math.min(ta.scrollHeight, 130) + 'px';
+  const v = ta.value;
+  const m = v.match(/@([\w.-]*)$/);
+  if (m) { openAtOverlay(m[1]); return; }
+  if (v.startsWith('/')) { openSlashOverlay(v.slice(1)); return; }
+  if (overlayMode === 'at' || overlayMode === 'slash') closeOverlay();
+});
+ta.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !overlayMode) { e.preventDefault(); sendMsg(); }
+  if (overlayMode) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); overlaySel = (overlaySel + 1) % overlayItems.length; renderOverlay(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); overlaySel = (overlaySel - 1 + overlayItems.length) % overlayItems.length; renderOverlay(); }
+    else if (e.key === 'Enter') { e.preventDefault(); pickOverlay(overlaySel); }
+    else if (e.key === 'Escape') { closeOverlay(); }
+    return;
+  }
+  if (e.key === 'Escape') abortTurn();
+  if (e.key === 'r' && e.ctrlKey) { e.preventDefault(); openHistoryOverlay(''); }
+  if (e.key === 'k' && e.ctrlKey) { e.preventDefault(); openSlashOverlay(''); }
+  if (e.key === 'ArrowUp' && !ta.value) { e.preventDefault(); openHistoryOverlay(''); }
+});
+
+// ==================== / 命令执行 ====================
+function runSlash(name) {
+  const cmd = name.slice(1);
+  closeOverlay();
+  const actions = {
+    snapshot: () => { appendBlock(`<div class="block"><div class="sys-line">/snapshot 已执行：快照 snap-${String(Date.now()).slice(-4)} 已建立（◆）</div></div>`); },
+    tasks: () => openTasksOverlay(),
+    model: () => openModelPicker(),
+    help: () => { appendBlock(`<div class="block"><div class="sys-line">/help 已执行：Esc 中断 · Ctrl+R 历史 · Ctrl+Z 回退 · Enter 发送（运行中发送 = 纠偏）</div></div>`); },
+    reset: () => { renderInitialStream(); toast('对话已重置'); },
+    export: () => { appendBlock(`<div class="block"><div class="sys-line">/export 已执行：报告已导出 report.md + evidence/（mock）</div></div>`); },
+    rewind: () => toast('回退到历史消息（原型演示）'),
+    attach: () => openAttach(curEnv),
+    rollback: () => toast('/rollback <快照名>：原型演示'),
+    extract: () => toast('/extract <环境内路径>：原型演示'),
+    fork: () => toast('/fork：原型演示'),
+    queue: () => toast('队列为空'),
+    quit: () => toast('退出会话界面'),
+  };
+  (actions[cmd] || (() => toast('/' + cmd + '：原型演示')) )();
+  if (cmd !== 'tasks' && cmd !== 'model') {
+    // 已处理动作不再重复插行
+  }
+}
+
+// ==================== 设置 ====================
+function setPage(el) {
+  document.querySelectorAll('.set-nav-item').forEach(n => n.classList.toggle('on', n === el));
+  document.querySelectorAll('.set-page').forEach(p => p.style.display = 'none');
+  document.getElementById('pg-' + el.dataset.pg).style.display = 'block';
+}
+function openSettings() {
+  renderSettingsModel();
+  renderSkillsList();
+  renderIntel();
+  renderIntelConfig();
+  renderExpert();
+  renderResearch();
+  document.getElementById('settings-page').classList.add('show');
+  document.getElementById('stream-wrap').style.display = 'none';
+  document.getElementById('bottom-area').style.display = 'none';
+}
+function closeSettings() {
+  document.getElementById('settings-page').classList.remove('show');
+  document.getElementById('stream-wrap').style.display = 'flex';
+  document.getElementById('bottom-area').style.display = 'block';
+}
+function renderSettingsModel() {
+  document.getElementById('cur-model-status').textContent = curModel.model + ' · ' + curModel.ctx + ' ctx';
+  document.getElementById('provider-list').innerHTML = PROVIDERS.map(p => `
+    <div class="set-row">
+      <div><div class="sr-label">${p.id}</div><div class="sr-desc">${p.desc}</div></div>
+      <div class="sr-control">
+        <span class="sr-status ${p.keyed ? 'ok' : ''}">${p.keyed ? '✓ 已配 key' : '○ 未配'}</span>
+        <button class="btn small" onclick="openKeyConfig('${p.id}')">配置</button>
+      </div>
+    </div>`).join('');
+}
+function renderIntel() {
+  document.getElementById('intel-nvd').textContent = INTEL.nvd.toLocaleString() + ' 条 · window' ;
+  document.getElementById('intel-exp').textContent = INTEL.exploitDb.toLocaleString() + ' 条';
+  document.getElementById('intel-nuc').textContent = INTEL.nuclei.toLocaleString() + ' 条';
+  document.querySelector('#pg-intel .sr-status').textContent = INTEL.lastUpdate;
+}
+function runIntelUpdate() {
+  toast('⏳ 正在更新情报索引（增量拉取 · 断点续传）…');
+  setTimeout(() => { INTEL.lastUpdate = new Date().toLocaleString('zh-CN'); renderIntel(); toast('✓ 索引已更新至最新'); }, 2000);
+}
+function renderExpert(query) {
+  const q = (query || '').trim().toLowerCase();
+  const list = EXPERTS.filter(e => !q || e.title.toLowerCase().includes(q) || e.domain.toLowerCase().includes(q) || e.kind.includes(q));
+  document.getElementById('expert-list').innerHTML = list.length ? list.map(e => `
+    <div class="set-row">
+      <div><div class="sr-label">${e.title}</div><div class="sr-desc">${e.domain} · ${e.kind} · 审定：${e.reviewer}</div></div>
+      <div class="sr-control"><button class="btn small" onclick="toast('查看条目 #' + e.id + ' 全文（原型演示）')">查看</button></div>
+    </div>`).join('') : '<div style="font-size:12px;color:var(--faint);padding:8px 2px">无匹配条目 — 可导入或等 agent 起草</div>';
+  document.getElementById('expert-drafts').textContent = '2 条待审（expert_draft 起草）';
+}
+function openExpertImport() { document.getElementById('expert-import-backdrop').classList.add('open'); document.getElementById('expert-import-msg').style.display = 'none'; }
+function closeExpertImport() { document.getElementById('expert-import-backdrop').classList.remove('open'); }
+function doExpertImport() {
+  const raw = document.getElementById('expert-import-input').value.trim();
+  const msg = document.getElementById('expert-import-msg');
+  msg.style.display = 'block';
+  if (!raw) { msg.innerHTML = '<span style="color:var(--red)">✗ 内容为空</span>'; return; }
+  const hasTitle = /title\s*:/.test(raw);
+  const hasKind = /kind\s*:/.test(raw) && /(idea|technique|sop)/.test(raw);
+  const hasDomain = /domain\s*:/.test(raw);
+  if (!hasTitle || !hasKind || !hasDomain) {
+    msg.innerHTML = '<span style="color:var(--red)">✗ 校验失败：title / kind(idea|technique|sop) / domain 必填</span>';
+    return;
+  }
+  const title = (raw.match(/title\s*:\s*(.+)/) || [,''])[1].trim().slice(0, 40);
+  const domain = (raw.match(/domain\s*:\s*(.+)/) || [,'unknown'])[1].trim();
+  const kind = (raw.match(/kind\s*:\s*(.+)/) || [,'technique'])[1].trim();
+  EXPERTS.push({ id: EXPERTS.length + 1, domain: domain, title: title, kind: kind, reviewer: '你' });
+  msg.innerHTML = '<span style="color:var(--green)">✓ 导入成功：' + title + '（校验通过，已入库 expert.db）</span>';
+  document.getElementById('expert-import-input').value = '';
+  renderExpert(document.getElementById('expert-search').value);
+  setTimeout(closeExpertImport, 1200);
+}
+function renderResearch() {
+  document.getElementById('research-list').innerHTML = RESEARCH_EVENTS.map(r => `
+    <div class="set-row">
+      <div><div class="sr-label">${r.ok ? '✔' : '✗'} [${r.kind}] ${r.note}</div><div class="sr-desc">${r.ev ? '证据：' + r.ev : '无证据'} · ${r.time}</div></div>
+    </div>`).join('');
+}
+function renderIntelConfig() {
+  const modeCtl = document.getElementById('intel-mode-ctl');
+  modeCtl.innerHTML = ['minimal','window','full'].map(m => `<button class="btn small" style="${m===INTEL_CONFIG.mode?'color:var(--cyan);border-color:var(--cyan-dim)':''}" onclick="INTEL_CONFIG.mode='${m}';renderIntelConfig();toast('存储分级已切换：' + '${m}')">${m}</button>`).join(' ');
+  document.getElementById('intel-years').textContent = INTEL_CONFIG.windowYears + ' 年';
+  document.getElementById('intel-size').textContent = INTEL_CONFIG.maxSizeMb + ' MB';
+  document.getElementById('intel-fallback').classList.toggle('on', INTEL_CONFIG.onlineFallback);
+}
+function openSkillImport() { document.getElementById('skill-import-backdrop').classList.add('open'); document.getElementById('skill-import-msg').style.display = 'none'; }
+function closeSkillImport() { document.getElementById('skill-import-backdrop').classList.remove('open'); }
+function doSkillImport() {
+  const name = document.getElementById('skill-import-path').value.trim();
+  const msg = document.getElementById('skill-import-msg');
+  msg.style.display = 'block';
+  if (!name) { msg.innerHTML = '<span style="color:var(--red)">✗ 技能目录名为空</span>'; return; }
+  if (SKILLS.some(s => s.id === name)) { msg.innerHTML = '<span style="color:var(--amber)">⚠ 已存在同名技能（系统或用户级）</span>'; return; }
+  SKILLS.push({ id: name, desc: '用户级技能 · ~/.zhishi/skills/' + name, on: true, user: true });
+  msg.innerHTML = '<span style="color:var(--green)">✓ 已导入用户级技能：' + name + '（SKILL.md 校验通过）</span>';
+  document.getElementById('skill-import-path').value = '';
+  renderSkillsList();
+  setTimeout(closeSkillImport, 1200);
+}
+let adoptType = '';
+function openAdoptForm(type) {
+  closeNewEnv();
+  adoptType = type;
+  document.getElementById('adopt-type').textContent = type;
+  document.getElementById('adopt-msg').style.display = 'none';
+  document.getElementById('adopt-backdrop').classList.add('open');
+}
+function closeAdoptForm() { document.getElementById('adopt-backdrop').classList.remove('open'); }
+function doAdopt() {
+  const vmx = document.getElementById('adopt-vmx').value.trim();
+  const user = document.getElementById('adopt-user').value.trim();
+  const pass = document.getElementById('adopt-pass').value.trim();
+  const msg = document.getElementById('adopt-msg');
+  msg.style.display = 'block';
+  if (!vmx || !user || !pass) { msg.innerHTML = '<span style="color:var(--red)">✗ vmx / guest 用户 / 密码 必填</span>'; return; }
+  if (!vmx.toLowerCase().endsWith('.vmx')) { msg.innerHTML = '<span style="color:var(--red)">✗ vmx 路径需以 .vmx 结尾</span>'; return; }
+  // 密码不落盘：直接置空
+  document.getElementById('adopt-pass').value = '';
+  closeAdoptForm();
+  startAdopt(adoptType, vmx, user);
+}
+function startAdopt(name, vmx, user) {
+  document.getElementById('boot-env').textContent = name;
+  document.getElementById('boot-sub').textContent = 'vm · 认领 ' + vmx.split(/[\\/]/).pop() + '（guest: ' + user + '）';
+  const stages = ['连通测试（SSH 握手）', '初始化环境（setup）', '建立快照 zhishi-clean', '登记 vmTemplates', '会话锚定'];
+  const box = document.getElementById('boot-stages');
+  box.innerHTML = stages.map((s, i) => `<div class="bs"><span class="bs-idx">${'①②③④⑤⑥'[i]}</span><span class="bs-name">${s}</span><span class="bs-state">待 …</span></div>`).join('');
+  document.getElementById('boot-backdrop').classList.add('open');
+  const els = box.querySelectorAll('.bs');
+  let i = 0;
+  function next() {
+    if (i > 0) { const p = els[i - 1]; p.classList.remove('cur'); p.classList.add('done'); }
+    if (i >= els.length) { finishAdopt(name, vmx); return; }
+    const s = els[i]; s.classList.add('cur');
+    s.querySelector('.bs-state').innerHTML = '<span class="spinner"></span>…';
+    i++;
+    buildTimer = setTimeout(next, 700 + i * 380);
+  }
+  next();
+}
+function finishAdopt(name, vmx) {
+  setTimeout(() => {
+    document.getElementById('boot-backdrop').classList.remove('open');
+    ENVIRONMENTS.push({ id: name, kind: 'vm', type: name, state: 'run', snap: true, detail: 'vm · adopt · ' + vmx.split(/[\\/]/).pop() });
+    renderEnvBar();
+    switchEnv(name);
+    appendBlock(`<div class="block"><div class="sys-line">VM ${name} 已认领（vmTemplates 登记 · 快照 zhishi-clean 已建 · 密码未落盘）</div></div>`);
+  }, 500);
+}
+function openSshForm() {
+  closeNewEnv();
+  document.getElementById('ssh-backdrop').classList.add('open');
+  document.getElementById('ssh-msg').style.display = 'none';
+}
+function closeSshForm() { document.getElementById('ssh-backdrop').classList.remove('open'); }
+function connectSsh() {
+  const host = document.getElementById('ssh-host').value.trim();
+  const user = document.getElementById('ssh-user').value.trim();
+  const key = document.getElementById('ssh-key').value.trim();
+  const msg = document.getElementById('ssh-msg');
+  msg.style.display = 'block';
+  if (!host || !user || !key) { msg.innerHTML = '<span style="color:var(--red)">✗ host / 用户 / 密钥路径 必填</span>'; return; }
+  const id = user + '@' + host;
+  if (ENVIRONMENTS.some(e => e.id === id)) { msg.innerHTML = '<span style="color:var(--amber)">⚠ 该主机已登记</span>'; return; }
+  ENVIRONMENTS.push({ id: id, kind: 'ssh', type: 'ssh', state: 'run', snap: false, detail: 'ssh · 密钥引用 ' + key });
+  renderEnvBar();
+  switchEnv(id);
+  msg.innerHTML = '<span style="color:var(--green)">✓ 连接成功：' + id + '（已登记入环境列表）</span>';
+  setTimeout(() => { closeSshForm(); toast('◈ 已连接到 ' + id); }, 1000);
+}
+function renderSkillsList() {
+  document.getElementById('skills-list').innerHTML = SKILLS.map(s => `
+    <div class="set-row">
+      <div><div class="sr-label">${s.id}</div><div class="sr-desc">${s.desc}</div></div>
+      <div class="sr-control"><span class="sr-status ${s.on ? 'ok' : ''}">${s.on ? '✓ 启用' : '○ 禁用'}</span><div class="toggle ${s.on ? 'on' : ''}" onclick="this.classList.toggle('on');s.on=!s.on;toast('skill ' + s.id + ' 已' + (s.on?'启用':'禁用'))"></div></div>
+    </div>`).join('');
+}
+function openKeyConfig(providerId) {
+  document.getElementById('key-provider-name').textContent = providerId;
+  document.getElementById('key-input').value = '';
+  document.getElementById('keyconfig-backdrop').classList.add('open');
+  setTimeout(() => document.getElementById('key-input').focus(), 50);
+}
+function closeKeyConfig() { document.getElementById('keyconfig-backdrop').classList.remove('open'); }
+function saveKey() {
+  const name = document.getElementById('key-provider-name').textContent;
+  const p = PROVIDERS.find(x => x.id === name);
+  if (p) { p.keyed = true; renderSettingsModel(); }
+  closeKeyConfig();
+  toast('✓ ' + name + ' key 已保存（原型演示）');
+}
+function setTheme(mode) {
+  document.body.classList.toggle('light', mode === 'light');
+  toast('主题已切换为' + (mode === 'light' ? '浅色' : '深色'));
+}
+
+// ==================== 新建环境 ====================
+function openNewEnv() {
+  document.getElementById('newenv-body').innerHTML = RECIPES.map(r => `
+    <div class="np-item" onclick="${r.base === 'vm' ? `openAdoptForm('${r.id}')` : `startBuild('${r.id}','${r.base}')`}">
+      <span class="np-name">${r.id}</span><span class="np-tools">${r.tools}</span>
+      <span class="np-base">${r.base}</span>
+    </div>`).join('');
+  document.getElementById('newenv-backdrop').classList.add('open');
+}
+function closeNewEnv() { document.getElementById('newenv-backdrop').classList.remove('open'); }
+let buildTimer = null;
+function startBuild(name, base) {
+  closeNewEnv();
+  document.getElementById('boot-env').textContent = name;
+  const stages = base === 'vm'
+    ? ['快照 revert · zhishi-clean', '启动 VM（vmrun start）', '等待 SSH 就绪', '取 guest 地址', '连接握手', '会话锚定']
+    : ['拉取镜像', '初始化脚本', '工具自检', '网络就绪', '连接握手', '会话锚定'];
+  document.getElementById('boot-sub').textContent = base === 'vm'
+    ? 'vm · 快照约定：每次进入都是干净现场（zhishi-clean）'
+    : base + ' · 新建环境 · 构建全自动';
+  const box = document.getElementById('boot-stages');
+  box.innerHTML = stages.map((s, i) => `<div class="bs"><span class="bs-idx">${'①②③④⑤⑥'[i]}</span><span class="bs-name">${s}</span><span class="bs-state">待 …</span></div>`).join('');
+  document.getElementById('boot-backdrop').classList.add('open');
+  const els = box.querySelectorAll('.bs');
+  let i = 0;
+  function next() {
+    if (i > 0) { const p = els[i - 1]; p.classList.remove('cur'); p.classList.add('done'); }
+    if (i >= els.length) { finishBuild(name); return; }
+    const s = els[i]; s.classList.add('cur');
+    s.querySelector('.bs-state').innerHTML = '<span class="spinner"></span>…';
+    i++;
+    buildTimer = setTimeout(next, 600 + i * 350);
+  }
+  next();
+}
+function finishBuild(name) {
+  setTimeout(() => {
+    document.getElementById('boot-backdrop').classList.remove('open');
+    ENVIRONMENTS.push({ id: name, kind: 'docker', type: name, state: 'run', snap: true, detail: 'docker · 新建' });
+    renderEnvBar();
+    switchEnv(name);
+    appendBlock(`<div class="block"><div class="sys-line">环境 ${name} 构建完成 · 已加入左侧列表（◆ 初始快照）</div></div>`);
+  }, 500);
+}
+
+// ==================== 其它 ====================
+function toggleThought(el) { el.classList.toggle('expanded'); }
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+let toastTimer = null;
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (overlayMode) { closeOverlay(); return; }
+  if (document.getElementById('keyconfig-backdrop').classList.contains('open')) { closeKeyConfig(); return; }
+  if (document.getElementById('expert-import-backdrop').classList.contains('open')) { closeExpertImport(); return; }
+  if (document.getElementById('skill-import-backdrop').classList.contains('open')) { closeSkillImport(); return; }
+  if (document.getElementById('ssh-backdrop').classList.contains('open')) { closeSshForm(); return; }
+  if (document.getElementById('adopt-backdrop').classList.contains('open')) { closeAdoptForm(); return; }
+  if (document.getElementById('newenv-backdrop').classList.contains('open')) { closeNewEnv(); return; }
+  if (document.getElementById('boot-backdrop').classList.contains('open')) { document.getElementById('boot-backdrop').classList.remove('open'); clearTimeout(buildTimer); return; }
+  if (document.getElementById('attach-view').classList.contains('show')) { closeAttach(); return; }
+  if (document.getElementById('settings-page').classList.contains('show')) { closeSettings(); return; }
+});
+
+// ==================== 启动 ====================
+renderEnvBar();
+renderInitialStream();
+applyEnv(curEnv);
+document.getElementById('status-model').textContent = curModel.model;
+document.getElementById('bg-report-card').style.display = 'flex';
+</script>
+</body>
+</html>

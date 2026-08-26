@@ -17,7 +17,7 @@
  *   vmEnvPs()           → vmrun list 的全部运行中 vmx（与登记条目求交在
  *                         admin-api 层做——本模块不读 config）
  *
- * env 条目 id = recipe.id（一台 VM 一个环境条目）；rm = 只摘登记
+ * env 条目 id = VM 实例名（1.3.7「实例即环境」：vmx 文件 stem）；rm = 只摘登记
  * （removeEnvironmentEntry），实现在 admin-api——真实 VM 不是一次性拷贝。
  *
  * 访客通道：up 拿到 address 后由 admin-api 回写 env 条目（kind: vm），
@@ -38,12 +38,12 @@ import { resolveVmrunBinary } from './vmrun-path';
 
 export type EnvResult<T> = ({ ok: true } & T) | { ok: false; error: string };
 
-/** 一个直连的 VM 环境（D22：id = recipe.id，vmx 路径即定位锚）。 */
+/** 一个直连的 VM 环境（1.3.7 实例即环境：id = VM 名，vmx 是纯定位辅助）。 */
 export interface VmInstance {
-  /** = recipe.id（一台 VM 一个环境条目）。 */
+  /** = VM 实例名（vmx 文件 stem；一条 VM 一个环境条目，与 hyperv/vbox 口径一致）。 */
   id: string;
   name: string;
-  /** 环境 .vmx 绝对路径（down/rm/ps 的定位锚）。 */
+  /** 环境 .vmx 绝对路径（down/rm/ps/快照/回滚 的定位辅助，不决定 id 语义）。 */
   vmx: string;
   /** guest 地址（up 时 getGuestIPAddress 取得；取不到则缺省）。 */
   address?: string;
@@ -75,6 +75,16 @@ export interface VmLifecycleOptions {
 /** hyperv/vbox 驱动仍用派生实例名（zhishi-<recipe>-<shortid>），保留此 helper。 */
 export function vmInstanceNameFor(recipeId: string, shortId: string): string {
   return `zhishi-${recipeId}-${shortId}`;
+}
+
+/**
+ * vmware 直连 VM 的实例名 = vmx 文件 stem（去路径、去 .vmx 后缀）。
+ * 1.3.7「实例即环境」：env 条目 id / VmInstance.id 都由它派生——同一台 VM
+ * （同一 vmx）永远得到同一个 id，up 幂等重登、迁移判定都靠这个确定性。
+ */
+export function vmNameFromVmx(vmx: string): string {
+  const base = vmx.replace(/\.vmx$/i, '');
+  return base.split(/[\\/]/).pop()?.trim() ?? '';
 }
 
 /** 全部命令带 `-T ws`（Workstation 宿主类型），否则 vmrun 可能误判宿主。 */
@@ -328,8 +338,9 @@ export async function vmEnvUp(
   return {
     ok: true,
     instance: {
-      id: recipe.id,
-      name: recipe.id,
+      // 1.3.7 实例即环境：id/name = VM 名（vmx stem），不再是 recipe.id。
+      id: vmNameFromVmx(vmx),
+      name: vmNameFromVmx(vmx),
       vmx,
       address,
       status: 'running',

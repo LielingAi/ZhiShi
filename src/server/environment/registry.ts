@@ -85,6 +85,25 @@ export function validateEnvironmentEntry(input: unknown): EnvResult<{ entry: Env
     }
   }
 
+  // 多配方绑定集合（1.3.8 关联侧）：可选字符串数组，trim + 去重 + 保序；
+  // 主配方 recipeId 必须在集合内（缺省时集合等价 [recipeId]，调用方兜底）。
+  if (source.recipeIds !== undefined && source.recipeIds !== null) {
+    if (!Array.isArray(source.recipeIds)) {
+      return fail('env 字段 "recipeIds" 必须是字符串数组');
+    }
+    const ids: string[] = [];
+    for (const raw of source.recipeIds) {
+      if (typeof raw !== 'string') return fail('env 字段 "recipeIds" 必须是字符串数组');
+      const trimmed = raw.trim();
+      if (!trimmed) continue;
+      if (!ids.includes(trimmed)) ids.push(trimmed);
+    }
+    if (ids.length > 0) entry.recipeIds = ids;
+    if (entry.recipeIds && entry.recipeId && !entry.recipeIds.includes(entry.recipeId)) {
+      return fail('env 字段 "recipeIds" 必须包含主配方 recipeId');
+    }
+  }
+
   // port：可选数字（1-65535），字符串数字也收（CLI flag 总是字符串）
   if (source.port !== undefined && source.port !== null && source.port !== '') {
     const port = typeof source.port === 'number' ? source.port : Number(String(source.port).trim());

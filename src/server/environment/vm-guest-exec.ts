@@ -219,6 +219,30 @@ export function resolveVmxForVmName(
   };
 }
 
+/**
+ * 1.3.7「实例即环境」——vm 条目的 id → vmx 唯一解析点（down/rm/snapshot/
+ * rollback/guest-exec 全走这里，取代旧的「id 以 .vmx 结尾」启发式路由）。
+ * 顺序：条目自带 vmx 字段（定位辅助，up/登记时写入）→ vmName（缺省回落
+ * entry.id）经 vmTemplates 的 recipeId / vmx 文件名 / 目录名探测。
+ * 非 vm 条目 / 解析不到 → ok:false + 可读错误。
+ */
+export function resolveVmxForEntry(
+  entry: Pick<EnvironmentEntry, 'id' | 'kind' | 'vmName' | 'vmx'>,
+  options: {
+    /** config.json::vmTemplates（vmName → vmx 回落的探测表）。 */
+    templates?: Record<string, GuestExecTemplateRef>;
+  } = {},
+): EnvResult<{ vmx: string; templateUser?: string }> {
+  if (entry.kind !== 'vm') {
+    return { ok: false, error: `环境 "${entry.id}" 不是 VM 条目（kind=${entry.kind}）` };
+  }
+  if (entry.vmx && /\.vmx$/i.test(entry.vmx)) {
+    return { ok: true, vmx: entry.vmx };
+  }
+  const vmName = entry.vmName?.trim() || entry.id;
+  return resolveVmxForVmName(vmName, options);
+}
+
 // ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
@@ -304,7 +328,7 @@ export async function vmGuestExec(
   const vmwareError = await ensureVmwareAvailable(exec);
   if (vmwareError) return { ok: false, error: vmwareError };
 
-  const resolved = resolveVmxForVmName(vmName, {
+  const resolved = resolveVmxForEntry(entry, {
     templates: options.templates,
   });
   if (!resolved.ok) return { ok: false, error: resolved.error };

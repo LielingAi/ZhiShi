@@ -1,12 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Minimal permissions for the windowless ZhiShi host (no windows/webviews remain; kept so plugin ACL generation has a capability to attach to)",
-  "windows": [],
+  "description": "GUI 主窗口权限（1.3.6 起 webview 承载 GUI；dialog 用于 skills/expert 文件选择）",
+  "windows": ["main"],
   "permissions": [
     "core:default",
     "updater:default",
     "notification:allow-is-permission-granted",
-    "autostart:default"
+    "autostart:default",
+    "dialog:default"
   ]
 }

@@ -21,7 +21,7 @@ mod sidecar;
 pub mod task;
 pub mod trust;
 pub mod terminal;
-pub mod tui_launcher;
+pub mod cli_launcher;
 pub mod usb_updater;
 pub mod workspace_files;
 mod tray;
@@ -46,7 +46,7 @@ pub fn is_cli_mode(args: &[String]) -> bool {
     cli::is_cli_mode(args)
 }
 
-/// Run in CLI mode — forward args to the Bun CLI script and return exit code.
+/// Run in CLI mode — forward args to the Node.js CLI script and return exit code.
 pub fn run_cli(args: &[String]) -> i32 {
     cli::run(args)
 }
@@ -100,7 +100,6 @@ pub fn run() {
     let sidecar_state_for_terminal_forwarder = sidecar_state.clone();
 
     let sidecar_state_for_management = sidecar_state.clone();
-    let sidecar_state_for_single_instance = sidecar_state.clone();
     let sidecar_state_for_launcher = sidecar_state.clone();
 
     // Track if cleanup has been performed to avoid duplicate cleanup
@@ -125,7 +124,7 @@ pub fn run() {
     let task_state: task::ManagedTaskStore =
         Arc::new(task::TaskStore::new(data_dir.clone()));
     // Expose the same Arc via a OnceLock singleton so the Rust Management API
-    // (used by Bun CLI bridge → /api/admin/task/*) can read/write tasks without
+    // (used by Node CLI bridge → /api/admin/task/*) can read/write tasks without
     // access to Tauri `State`. It points at the same inner store.
     task::set_task_store(task_state.clone());
 
@@ -134,15 +133,9 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(move |app, _args, _cwd| {
             // Another instance was launched (user clicked the app icon while
-            // the host is already running). Windowless host (D13): there is no
-            // window to raise — the interactive surface is the CLI/TUI, so a
-            // repeated click opens a fresh agent TUI terminal instead (1.2.3).
-            // Runs on a blocking worker; see tui_launcher module docs.
-            tui_launcher::spawn_open_tui(
-                app.clone(),
-                sidecar_state_for_single_instance.clone(),
-                "single-instance",
-            );
+            // the host is already running). 1.3.9 TUI 退役:交互面是 GUI 主
+            // 窗口——重复点击聚焦窗口(原「弹 TUI 终端」已退役)。
+            crate::tray::show_main_window(app);
             // Notify the front-end that the user just re-activated the app via
             // an external trigger (taskbar icon, dock click on Linux, etc.).
             // The notification module piggy-backs on this to consume any
@@ -154,6 +147,10 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
+        // 1.3.6(GUI):skills/expert 导入用系统文件选择器（目录/文件）。
+        .plugin(tauri_plugin_dialog::init())
+        // 1.3.0(GUI):最小 IPC 面——webview 前端拿 sidecar 端口(SSE 直连)。
+        .invoke_handler(tauri::generate_handler![crate::commands::get_sidecar_port])
         .manage(sidecar_state)
         .manage(terminal_state)
         .manage(task_state)
@@ -244,8 +241,8 @@ pub fn run() {
             });
 
             // Seed system skills + environment recipes at startup. The renderer
-            // used to invoke these via IPC; with the GUI deleted (CLI+agent form)
-            // nothing else triggers them — run the version gates here.
+            // can no longer trigger these (the invoke surface exposes only
+            // get_sidecar_port), so the version gates run here.
             {
                 let seed_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -275,12 +272,7 @@ pub fn run() {
                 let (mut provider, mut mcp, mut agents, mut channels, mut cron, mut proxy) =
                     ("?".to_string(), 0u32, 0u32, 0u32, 0u32, false);
                 if let Some(ref dir) = data_dir {
-                    if let Ok(c) = std::fs::read_to_string(dir.join("config.json"))
-                        .ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).ok_or(()) {
-                        // won't reach — see below
-                        let _ = c;
-                    }
-                    // Simpler: parse as Value directly. strip_bom tolerates a
+                    // Parse as Value directly. strip_bom tolerates a
                     // Windows-editor-prepended UTF-8 BOM (issue #170 #6) so the
                     // boot log reflects real config values instead of "?".
                     if let Ok(cfg) = std::fs::read_to_string(dir.join("config.json"))
@@ -310,23 +302,25 @@ pub fn run() {
             }
 
             // CLI install chain (restored in 1.2.3 after the W6 removal left
-            // fresh machines without a `zhishi` command) + interactive-launch
-            // TUI. Runs on every boot so autostart repairs the install too;
-            // the TUI window itself is gated on interactive launch — the
-            // autostart plugin always passes `--minimized` (see the plugin
-            // registration above), which MUST never pop a terminal.
+            // fresh machines without a `zhishi` command). Runs on every boot
+            // so autostart repairs the install too. 1.3.9 TUI 退役:交互启动
+            // 不再弹 TUI 终端——但仍需拉起全局 sidecar(GUI 会话直连它),然后
+            // 显示 GUI 主窗口;autostart 传 --minimized,必须不弹窗、不拉起
+            // (sidecar 由健康监视/前端 IPC 兜底)。
             {
                 let interactive = !std::env::args().skip(1).any(|a| a == "--minimized");
                 let launcher_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let _ = tauri::async_runtime::spawn_blocking(move || {
-                        tui_launcher::sync_cli_resources(&launcher_handle);
+                        cli_launcher::sync_cli_resources(&launcher_handle);
                         if interactive {
-                            tui_launcher::open_tui_session(
+                            // start_global_sidecar 内含 reqwest::blocking——必须在
+                            // spawn_blocking 线程(此处)调用,绝不进 async runtime。
+                            let _ = crate::sidecar::start_global_sidecar(
                                 &launcher_handle,
                                 &sidecar_state_for_launcher,
-                                "launch",
                             );
+                            crate::tray::show_main_window(&launcher_handle);
                         }
                     })
                     .await;
@@ -336,7 +330,7 @@ pub fn run() {
             // Inject Sidecar state into management API
             management_api::set_sidecar_state(sidecar_state_for_management);
 
-            // Start management API (internal HTTP server for Bun→Rust IPC)
+            // Start management API (internal HTTP server for Node→Rust IPC)
             tauri::async_runtime::spawn(async move {
                 match management_api::start_management_api().await {
                     Ok(port) => ulog_info!("[App] Management API started on port {}", port),
@@ -485,12 +479,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
                 ulog_info!("[App] Dock icon clicked (Reopen), showing main window");
-                use tauri::Manager;
-                if let Some(window) = _app_handle.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
-                }
+                crate::tray::show_main_window(_app_handle);
             }
             _ => {}
         }

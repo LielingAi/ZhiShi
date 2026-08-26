@@ -19,6 +19,8 @@ import {
 
 import { findAgentByWorkspacePath } from '../utils/admin-config';
 
+import { findEnvKeyForLoopSession, loadEnvSessionsMap } from '../environment/env-sessions';
+
 import { snapshotForOwnedSession } from '../utils/session-snapshot';
 
 import { resolveLastRealUserMessagePreview, shrinkSessionMessagesForClient } from '../utils/session-message-preview';
@@ -146,9 +148,20 @@ export async function handleListSessions(url: URL, jsonResponse: JsonResponseFn)
 
           // Matches PATCH response behavior (see PATCH /sessions/:id).
 
+          // 1.3.3 历史面板:按 env-sessions 分线映射给每行补 envKey(additive,
+          // 无 loopSessionId / 无映射的行不带该字段)——列表按 env 分组的数据源。
+
+          const envMap = loadEnvSessionsMap();
+
           const safeSessions = sessions
 
             .map(normalizeSessionListPreview)
+
+            .map((s) => (s.loopSessionId
+
+              ? { ...s, envKey: findEnvKeyForLoopSession(envMap, s.agentDir, s.loopSessionId) ?? undefined }
+
+              : s))
 
             .map(redactSessionMetadata);
 
@@ -790,6 +803,14 @@ export async function handlePatchSession(pathname: string, request: Request, jso
 
           favorite?: boolean;
 
+          /** 1.3.3 历史面板 — 置顶(排序信号,与 favorite 收藏语义独立)。 */
+
+          pinned?: boolean;
+
+          /** 1.3.3 历史面板 — 归档(默认不出主列表,数据不删)。 */
+
+          archived?: boolean;
+
           model?: string | null;
 
           permissionMode?: string | null;
@@ -871,6 +892,18 @@ export async function handlePatchSession(pathname: string, request: Request, jso
           // (the JSON serializer drops undefined keys).
 
           updates.favorite = payload.favorite === true ? true : undefined;
+
+        }
+
+        if (payload.pinned !== undefined) {
+
+          updates.pinned = payload.pinned === true ? true : undefined;
+
+        }
+
+        if (payload.archived !== undefined) {
+
+          updates.archived = payload.archived === true ? true : undefined;
 
         }
 

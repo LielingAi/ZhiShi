@@ -32,6 +32,7 @@ import {
   vmEnvPs,
   vmEnvUp,
   vmInstanceNameFor,
+  vmNameFromVmx,
   type VmExec,
   type VmExecResult,
 } from './vm-lifecycle';
@@ -92,6 +93,13 @@ describe('command assembly (pure)', () => {
     expect(vmInstanceNameFor('pwn-vm', 'a1b2c3d4')).toBe('zhishi-pwn-vm-a1b2c3d4');
   });
 
+  it('vmNameFromVmx: vmx 路径 → 实例名（stem，去路径去后缀；1.3.7 id 语义源）', () => {
+    expect(vmNameFromVmx('C:\\VMs\\kali\\kali.vmx')).toBe('kali');
+    expect(vmNameFromVmx('/vms/Win10/Win10.vmx')).toBe('Win10');
+    expect(vmNameFromVmx('plain')).toBe('plain');
+    expect(vmNameFromVmx('C:\\VMs\\x\\.vmx')).toBe('');
+  });
+
   it('all vmrun commands carry -T ws (Workstation host type)', () => {
     expect(buildVmrunStartArgs('/i/x.vmx')).toEqual(['-T', 'ws', 'start', '/i/x.vmx', 'nogui']);
     expect(buildVmrunStopArgs('/i/x.vmx')).toEqual(['-T', 'ws', 'stop', '/i/x.vmx', 'soft']);
@@ -133,7 +141,7 @@ describe('output parsing (pure)', () => {
 });
 
 describe('vmEnvUp (D22 direct: no copy, in-place on the vmx)', () => {
-  it('happy path: probe → list(miss) → revert(snapshot exists) → start → get IP, id = recipe.id', async () => {
+  it('happy path: probe → list(miss) → revert(snapshot exists) → start → get IP, id = VM 名（vmx stem）', async () => {
     const root = makeTempRoot();
     const vmx = makeVmx(root);
     const { exec, calls } = scriptedExec([
@@ -147,8 +155,9 @@ describe('vmEnvUp (D22 direct: no copy, in-place on the vmx)', () => {
     const result = await vmEnvUp(VM_RECIPE, '/work/dir', { exec, vmBase: vmx });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.instance.id).toBe('pwn-vm');
-    expect(result.instance.name).toBe('pwn-vm');
+    // 1.3.7「实例即环境」：id/name = VM 名（vmx stem "ubuntu"），不再是 recipe.id
+    expect(result.instance.id).toBe('ubuntu');
+    expect(result.instance.name).toBe('ubuntu');
     expect(result.instance.vmx).toBe(vmx); // 直连：就是传入的 vmx，无实例目录拷贝
     expect(result.instance.address).toBe('192.168.126.130');
     expect(result.instance.recipe).toBe('pwn-vm');

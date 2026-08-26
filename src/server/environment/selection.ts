@@ -169,6 +169,34 @@ export function setWorkspaceSelection(
 }
 
 /**
+ * 1.3.7 存量迁移：环境条目 id 改名（oldId → newId）时同步改选定记录。
+ * 覆盖 selection kind=env 的 id 与 kind=recipe 的 instanceId；无命中返回
+ * 原 store（mutate 层据此跳过写盘）。
+ */
+export function renameSelectionEnvIdInStore(
+  store: EnvSelectionStore,
+  oldId: string,
+  newId: string,
+): EnvSelectionStore {
+  if (oldId === newId) return store;
+  let changed = false;
+  const workspaces: Record<string, WorkspaceSelectionRecord> = {};
+  for (const [workspace, record] of Object.entries(store.workspaces)) {
+    const s = record.selection;
+    if (s.kind === 'env' && s.id === oldId) {
+      workspaces[workspace] = { ...record, selection: { kind: 'env', id: newId } };
+      changed = true;
+    } else if (s.kind === 'recipe' && s.instanceId === oldId) {
+      workspaces[workspace] = { ...record, selection: { ...s, instanceId: newId } };
+      changed = true;
+    } else {
+      workspaces[workspace] = record;
+    }
+  }
+  return changed ? { version: 1, workspaces } : store;
+}
+
+/**
  * 状态行/日志用的短标记。env 条目在服务端无法分辨 ssh/vm/docker（要看
  * registry 条目），选择器按条目数据给出精确 tag，这里只兜底：
  *   host                       → host
@@ -228,4 +256,13 @@ export async function mutateSelectionStore(
     writeFileSync(tmp, serializeSelectionStore(next), 'utf-8');
     renameSync(tmp, path);
   });
+}
+
+/** 1.3.7 存量迁移：环境条目 id 改名时同步改选定记录（无命中不写盘）。 */
+export async function renameSelectionEnvId(
+  oldId: string,
+  newId: string,
+  path: string = defaultSelectionStorePath(),
+): Promise<void> {
+  await mutateSelectionStore((store) => renameSelectionEnvIdInStore(store, oldId, newId), path);
 }

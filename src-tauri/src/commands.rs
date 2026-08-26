@@ -1107,3 +1107,19 @@ mod path_safety_crosscheck_tests {
         assert_eq!(owned, arr(&fixture(), "winSensitiveSubdirs"));
     }
 }
+
+// ============= GUI IPC (1.3.0) =============
+// The GUI webview needs the sidecar port to open SSE/HTTP. Reading the same
+// port file the CLI uses keeps one source of truth; the frontend polls this
+// until the sidecar finishes booting (port file appears).
+
+/// 1.3.0(GUI): return the current sidecar port for the webview frontend.
+/// None = sidecar not started yet (frontend should poll and show booting).
+#[tauri::command]
+pub fn get_sidecar_port() -> Option<u16> {
+    let dir = crate::app_dirs::zhishi_data_dir()?;
+    let port_file = dir.join(crate::sidecar::PORT_FILE_NAME);
+    let raw = std::fs::read_to_string(&port_file).ok()?;
+    let port = raw.trim().parse::<u16>().ok();
+    port
+}

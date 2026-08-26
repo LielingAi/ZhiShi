@@ -567,6 +567,18 @@ describe('buildSecurityKernelSection — intel_search 进内核（1.2.6）', () 
   });
 });
 
+describe('buildSecurityKernelSection — 决策点语义（1.3.2）', () => {
+  it('kernel 段声明 request_decision：分歧/无把握且库无基准才提请；先查 expert_search；提请后暂停', () => {
+    const section = buildSecurityKernelSection();
+    expect(section).toContain('request_decision');
+    expect(section).toContain('库中无基准');
+    expect(section).toContain('先查 expert_search');
+    expect(section).toContain('暂停这条线的执行');
+    expect(section).toContain('user 消息注入回来');
+    expect(section.length).toBeLessThanOrEqual(SECURITY_KERNEL_MAX_CHARS);
+  });
+});
+
 describe('buildResearchLogSection — 余量修复（1.2.6）', () => {
   it('模板完整注入：收尾标签在、无截断标记（旧 500 顶会把收尾标签截掉）', () => {
     const section = buildResearchLogSection();
@@ -776,5 +788,184 @@ describe('buildSystemPromptAppend — securityResearchDomain 透传能力清单�
     });
     expect(prompt).toContain('- pwn（docker）：pwndbg');
     expect(prompt).toContain('- pentest（docker）：nmap');
+  });
+});
+
+
+// ===== 1.3.7 场景 3：多能力环境（B 方案纯系统推导）——能力集合进推导链与注入面 =====
+
+describe('resolveSessionResearchDomain — 能力集合基线优先（1.3.7 场景 3）', () => {
+  const MANIFESTS: DomainManifest[] = [
+    { kind: 'binary', name: '二进制', recipes: ['pwn', 'fuzz'], skills: [], subagents: [], signals: [], acceptance: [] },
+    { kind: 'pentest', name: '渗透', recipes: ['pentest'], skills: [], subagents: [], signals: [], acceptance: [] },
+  ];
+  // 多能力环境：绑定 pwn（binary 域），探测出 pentest 工具 → 集合 [binary, pentest]。
+  const MULTI_ENV: EnvironmentEntry = {
+    id: 'pwn-box', kind: 'docker', container: 'zhishi-pwn-a3f2', recipeId: 'pwn',
+    capabilityDomains: ['binary', 'pentest'], capabilityDerivedAt: '2026-08-25T12:00:00Z', createdAt: '',
+  };
+
+  it('env 现场：条目带 capabilityDomains → 基线 = 集合首个 research 域', () => {
+    const d = data({ environments: [MULTI_ENV], selection: { kind: 'env', id: 'pwn-box' } });
+    expect(resolveSessionResearchDomain(d, MANIFESTS)).toBe('binary');
+  });
+
+  it('recipe 现场：instanceId 命中登记条目 → 同样走能力集合基线', () => {
+    const d = data({
+      environments: [MULTI_ENV],
+      selection: { kind: 'recipe', name: 'pwn', instanceId: 'pwn-box' },
+    });
+    expect(resolveSessionResearchDomain(d, MANIFESTS)).toBe('binary');
+  });
+
+  it('集合首位不是 research 域时 → 取集合中首个 research 域', () => {
+    const wb: EnvironmentEntry = {
+      id: 'audit-box', kind: 'docker', container: 'audit-box', recipeId: 'code-audit',
+      capabilityDomains: ['unknown-domain', 'binary'], createdAt: '',
+    };
+    const d = data({ environments: [wb], selection: { kind: 'env', id: 'audit-box' } });
+    expect(resolveSessionResearchDomain(d, MANIFESTS)).toBe('binary');
+  });
+
+  it('存量零迁移：无 capabilityDomains 字段 → 旧 recipeId 链逐字节不变', () => {
+    const legacy: EnvironmentEntry = { id: 'pwn-box', kind: 'docker', container: 'c', recipeId: 'fuzz', createdAt: '' };
+    const d = data({ environments: [legacy], selection: { kind: 'env', id: 'pwn-box' } });
+    expect(resolveSessionResearchDomain(d, MANIFESTS)).toBe('binary');
+    const r = data({ selection: { kind: 'recipe', name: 'pentest', instanceId: 'ghost-instance' } });
+    expect(resolveSessionResearchDomain(r, MANIFESTS)).toBe('pentest');
+  });
+});
+
+describe('resolveSessionDomain — 裁决空间收窄（1.3.7 场景 3）', () => {
+  const SIGNAL_MANIFESTS: DomainManifest[] = [
+    {
+      kind: 'binary', name: '二进制', recipes: ['pwn', 'fuzz'], skills: [], subagents: [],
+      signals: [{ re: 'SIGSEGV', label: '崩溃信号' }, { re: 'core dumped', label: 'core dump' }],
+      acceptance: [],
+    },
+    {
+      kind: 'pentest', name: '渗透', recipes: ['pentest'], skills: [], subagents: [],
+      signals: [{ re: 'session \\d+ opened', label: '会话已开' }, { re: '\\[\\+\\]', label: '成功标记' }],
+      acceptance: [],
+    },
+    {
+      kind: 'intel', name: '情报', recipes: ['intel-box'], skills: [], subagents: [],
+      signals: [{ re: 'CVE-\\d+-\\d+', label: 'CVE 命中' }],
+      acceptance: [],
+    },
+  ];
+  const msg = (content: unknown) => ({ content });
+  // 多能力环境：集合 = [binary, pentest]（intel 在集合外）。
+  const MULTI_ENV: EnvironmentEntry = {
+    id: 'pwn-box', kind: 'docker', container: 'c', recipeId: 'pwn',
+    capabilityDomains: ['binary', 'pentest'], createdAt: '',
+  };
+  const multiData = () => data({ environments: [MULTI_ENV], selection: { kind: 'env', id: 'pwn-box' } });
+
+  it('集合内切换：pentest 强信号（≥3 且 ≥2 倍）→ 改判 pentest（集合内阈值不变）', () => {
+    const messages = [
+      msg('SIGSEGV'),               // binary ×1
+      msg('session 1 opened'),      // pentest ×3
+      msg('session 2 opened'),
+      msg('[+] shell'),
+    ];
+    expect(resolveSessionDomain(messages, multiData(), SIGNAL_MANIFESTS)).toBe('pentest');
+  });
+
+  it('集合外不切：intel 强信号再强也不改判（这台环境没推导出 intel 能力）', () => {
+    const messages = [
+      msg('CVE-2026-1111'), msg('CVE-2026-2222'), msg('CVE-2026-3333'), msg('CVE-2026-4444'),
+    ];
+    // 无收窄的对照语义下这会改判 intel；收窄后维持基线 binary。
+    expect(resolveSessionDomain(messages, multiData(), SIGNAL_MANIFESTS)).toBe('binary');
+  });
+
+  it('缺省回落：条目无 capabilityDomains → 全域裁决（集合外强信号照常改判）', () => {
+    const legacy: EnvironmentEntry = { id: 'pwn-box', kind: 'docker', container: 'c', recipeId: 'pwn', createdAt: '' };
+    const d = data({ environments: [legacy], selection: { kind: 'env', id: 'pwn-box' } });
+    const messages = [
+      msg('CVE-2026-1111'), msg('CVE-2026-2222'), msg('CVE-2026-3333'),
+    ];
+    expect(resolveSessionDomain(messages, d, SIGNAL_MANIFESTS)).toBe('intel');
+  });
+
+  it('集合内弱信号不翻盘：pentest 命中 <3 → 维持基线 binary', () => {
+    const messages = [msg('session 1 opened'), msg('[+] shell'), msg('SIGSEGV')];
+    expect(resolveSessionDomain(messages, multiData(), SIGNAL_MANIFESTS)).toBe('binary');
+  });
+
+  it('无基线场景不受影响：host 现场无能力集合 → 全域信号裁决', () => {
+    const messages = [msg('session 1 opened'), msg('[+] 拿到 shell')];
+    expect(resolveSessionDomain(messages, data(), SIGNAL_MANIFESTS)).toBe('pentest');
+  });
+});
+
+describe('buildSecurityCapabilitiesSection — 能力集合呈现（1.3.7 场景 3）', () => {
+  const CAP_MANIFESTS: DomainManifest[] = [
+    { kind: 'binary', name: '二进制', recipes: ['pwn', 'fuzz'], skills: [], subagents: [], signals: [], acceptance: [] },
+    { kind: 'pentest', name: '渗透', recipes: ['pentest'], skills: [], subagents: [], signals: [], acceptance: [] },
+  ];
+  const MULTI_ENV: EnvironmentEntry = {
+    id: 'pwn-box', kind: 'docker', container: 'zhishi-pwn-a3f2', recipeId: 'pwn',
+    capabilityDomains: ['binary', 'pentest'], capabilityDerivedAt: '2026-08-25T12:00:00Z',
+    toolCheck: { ok: false, missing: ['hydra'], checkedAt: '2026-08-25T12:00:00Z' },
+    createdAt: '',
+  };
+  const capData = () => data({
+    engines: enginesReport(['docker']),
+    recipes: [
+      recipe('pwn', ['gdb', 'pwntools']),
+      recipe('fuzz', ['afl-fuzz']),
+      recipe('pentest', ['nmap', 'hydra']),
+      recipe('dev', ['clang']),
+    ],
+    environments: [MULTI_ENV],
+    selection: { kind: 'env', id: 'pwn-box' },
+  });
+
+  it('能力集合行 + 集合内配方工具并集（去重）+ 漂移证据标注（toolCheck 口径）', () => {
+    const section = buildSecurityCapabilitiesSection(capData(), { manifests: CAP_MANIFESTS });
+    expect(section).toContain('当前环境能力集合（现场推导：配方绑定 ∪ 工具探测，探测于 2026-08-25T12:00:00Z）：binary · pentest');
+    expect(section).toContain('可用工具（能力集合内配方并集）：gdb、pwntools、afl-fuzz、nmap、hydra（声明了但环境里没有：hydra）');
+    // 集合内各域配方都列出（收窄空间 = 整个能力集合，不是单域）
+    expect(section).toContain('- pwn（docker）：gdb、pwntools');
+    expect(section).toContain('- fuzz（docker）：afl-fuzz');
+    expect(section).toContain('- pentest（docker）：nmap、hydra');
+    // 集合外配方（dev 不属于任何能力域）被收窄掉
+    expect(section).not.toContain('- dev（docker）');
+    // 具名环境条目带能力徽章
+    expect(section).toContain('- pwn-box → docker:zhishi-pwn-a3f2（类型 pwn：gdb、pwntools）；能力：binary·pentest');
+  });
+
+  it('能力集合存在时收窄优先于 options.domain（集合 ⊇ 单域，放宽不丢能力）', () => {
+    const section = buildSecurityCapabilitiesSection(capData(), { domain: 'binary', manifests: CAP_MANIFESTS });
+    // 单域收窄下 pentest 会被裁掉；能力集合放宽后保留
+    expect(section).toContain('- pentest（docker）：nmap、hydra');
+  });
+
+  it('无能力集合（存量零迁移）→ 不出现能力行，逐字节维持旧行为', () => {
+    const legacy: EnvironmentEntry = { id: 'pwn-box', kind: 'docker', container: 'zhishi-pwn-a3f2', recipeId: 'pwn', createdAt: '' };
+    const d = data({
+      engines: enginesReport(['docker']),
+      recipes: [recipe('pwn', ['gdb']), recipe('pentest', ['nmap'])],
+      environments: [legacy],
+      selection: { kind: 'env', id: 'pwn-box' },
+    });
+    const section = buildSecurityCapabilitiesSection(d, { manifests: CAP_MANIFESTS });
+    expect(section).not.toContain('能力集合');
+    expect(section).not.toContain('可用工具（能力集合内配方并集）');
+    expect(section).toContain('- pwn-box → docker:zhishi-pwn-a3f2（类型 pwn：gdb）');
+  });
+
+  it('recipe 现场（instanceId 命中登记条目）同样注入能力集合行', () => {
+    const d = data({
+      engines: enginesReport(['docker']),
+      recipes: [recipe('pwn', ['gdb']), recipe('pentest', ['nmap'])],
+      environments: [MULTI_ENV],
+      selection: { kind: 'recipe', name: 'pwn', instanceId: 'pwn-box' },
+    });
+    const section = buildSecurityCapabilitiesSection(d, { manifests: CAP_MANIFESTS });
+    expect(section).toContain('当前环境能力集合');
+    expect(section).toContain('binary · pentest');
   });
 });

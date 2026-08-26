@@ -97,6 +97,20 @@ vi.mock('./boundary', () => ({ makeBoundaryHook: () => async () => undefined }))
 vi.mock('./output-guard', () => ({ makeOutputGuardHook: () => async () => undefined }));
 vi.mock('./compaction', () => ({ makeCompactionTransform: () => async (m: unknown) => m }));
 
+// A1(1.3.10):invoke 零广播回归——bg 回收走可注入 mock(bg-exec 的
+// envBgReap + bg-registry 的内存登记表),不碰真盘/真 SSH;默认空登记表,
+// 需要回收路径的测试再往里塞条目。
+const envBgReapMock = vi.fn(async (..._args: unknown[]) => ({ ok: true, outcome: 'reaped' }));
+vi.mock('./bg-exec', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./bg-exec')>();
+  return { ...orig, envBgReap: (...args: unknown[]) => envBgReapMock(...args) };
+});
+const bgRegistryListMock = vi.fn(() => [] as { tag: string; pid: number; envId: string }[]);
+vi.mock('./bg-registry', () => ({
+  initBgRegistry: () => ({}),
+  getBgRegistry: () => ({ list: () => bgRegistryListMock(), remove: () => {} }),
+}));
+
 // 1.2.7(§三)域接线断言:skills 采集走真实实现,spy 记录入参(domain)。
 const collectEnabledSkillsSpy = vi.fn();
 vi.mock('./skills', async (importOriginal) => {
@@ -140,6 +154,7 @@ vi.mock('./refs', () => ({
 
 import {
   cancelPiQueueItem,
+  chatSendErrorStatus,
   ensureMetaLoopLine,
   envSwitchBlocker,
   forcePiQueueItem,
@@ -150,8 +165,10 @@ import {
   getPiQueueStatus,
   getPiSystemInitInfo,
   initPiChatEngine,
+  injectPiDecision,
   invokePiSession,
   isPiEngine,
+  PI_NO_PROVIDER_ERROR,
   queuePiChatMessage,
   resetPiChat,
   resolveLoopEngine,
@@ -164,6 +181,8 @@ import {
   switchEnvSession,
   switchPiSession,
 } from './chat-engine';
+// A1:标题钩子槽(真实现,单测里手动装 spy——invoke 线必须不触发)。
+import { setPostTurnTitleHook } from '../turn-hooks';
 // B10(1.2.6)回归:配置面会话标识的真实读取口(chat-engine 不经 mock 写它)。
 import { getSessionId } from '../agent-session';
 
@@ -220,6 +239,7 @@ function gateFirstTurn() {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  bgRegistryListMock.mockReturnValue([]);
   envSessionsData.clear();
   resetPiChat();
   resolveLoopModelMock.mockReturnValue(RESOLUTION);
@@ -265,6 +285,14 @@ describe('引擎开关(M4c 硬切:恒 pi,sdk 请求告警回落)', () => {
 
   it('getPiAgentState 携带 loopEngine=pi(TUI 状态区)', () => {
     expect(getPiAgentState().loopEngine).toBe('pi');
+  });
+});
+
+describe('chatSendErrorStatus(/chat/send 错误分类,C2)', () => {
+  it('配置缺失 → 400;其余保持 429 限流语义', () => {
+    expect(chatSendErrorStatus(PI_NO_PROVIDER_ERROR)).toBe(400);
+    expect(chatSendErrorStatus('Message must have text or images.')).toBe(429);
+    expect(chatSendErrorStatus('等待 turn 完成超时(600000ms)')).toBe(429);
   });
 });
 
@@ -732,7 +760,7 @@ describe('系统提示组装(buildSystemPromptAppend 接入)', () => {
   });
 });
 
-describe('chat:status broadcast(W1,TUI 状态行数据源)', () => {
+describe('chat:status broadcast(W1,GUI 状态行数据源)', () => {
   it('turn 开始 running → done idle(首尾各一次)', async () => {
     await sendPiChatMessage({ text: 'hi' });
     await waitTurnSettled();
@@ -1108,6 +1136,39 @@ describe('1.2.6 批次B 回归(B2 cron invoke 通道 / B4 force 单起点 / B5 s
       expect(ref.sessionMetaId).toBe('meta-new');
       expect(appendLoopMessagesMock.mock.calls[0][0]).toBe(ref.loopSessionId);
     });
+
+    it('invoke 通道零广播:标题钩子跳过、bg 回收静默(A1 回归)', async () => {
+      // 契约:headless 不广播——firePostTurnTitleHook(generateAndApplyTitle
+      // 尾段 broadcast chat:session-title-changed)对 invoke 线跳过;
+      // reapBgOnLifecyclePoint(broadcast:false)照常杀进程/清登记,但不广播
+      // chat:bg-finished。
+      const titleSpy = vi.fn();
+      setPostTurnTitleHook(titleSpy);
+      try {
+        configEnvironments.mockReturnValue([VM_ENTRY]);
+        bgRegistryListMock.mockReturnValue([{ tag: 'bg-1', pid: 42, envId: 'pwn-vm' }]);
+        broadcastMock.mockClear();
+        const r = await invokePiSession(
+          { text: 'cron 任务', providerEnv: { apiKey: 'k' } },
+          { loopSessionId: 'ls-silent' },
+        );
+        expect(r.error).toBeUndefined();
+        expect(r.loopSessionId).toBe('ls-silent');
+        // 标题钩子零触发。
+        expect(titleSpy).not.toHaveBeenCalled();
+        // bg 回收照做(杀 + 清登记)——等 fire-and-forget 回收链走完。
+        await vi.waitFor(() => {
+          expect(envBgReapMock).toHaveBeenCalledWith(
+            expect.objectContaining({ id: 'pwn-vm' }), 'bg-1', 42,
+          );
+        });
+        await new Promise((res) => setTimeout(res, 0));
+        // 全程零广播(含 bg-finished / session-title-changed)。
+        expect(broadcastMock).not.toHaveBeenCalled();
+      } finally {
+        setPostTurnTitleHook(() => {});
+      }
+    });
   });
 
   describe('B4:force 塞回队首 + promote 统一接管(无双 turn 并发)', () => {
@@ -1455,5 +1516,136 @@ describe('1.2.7 域补丁:子代理继承会话域(delegate_task 按域收窄)',
       .rejects.toThrow(/未知子代理 "fuzz-runner"\(可用:critic\/hypothesis-tester\/vuln-hunter\)/);
     // whitebox 清单内(vuln-hunter/hypothesis-tester/critic)仍可派发
     await expect(delegate.execute('tc2', { task: 't', agent: 'critic' })).resolves.toBeDefined();
+  });
+});
+
+// ===== 1.3.2 决策面板：注入/决策块 wire/additive =====
+
+describe('1.3.2 决策注入(injectPiDecision:同线直发/steering、跨线 invoke)', () => {
+  const DEC = {
+    decisionId: 'dec-1',
+    sessionId: 'ls-dec', // beforeEach 后当前线是 ls-1——测试内按需改同线
+    question: '继续 fuzz 还是转手动审计?',
+    choice: '转手动审计 crash-03',
+    note: '12h 内出结论',
+    expertRefs: ['E#3'],
+  };
+
+  it('同线闲时:直发 turn——wire 决策块(additive 字段)+ prompt 带 decision marker', async () => {
+    const current = getPiCurrentSessionRef().loopSessionId;
+    const r = await injectPiDecision({ ...DEC, sessionId: current });
+    expect(r.success).toBe(true);
+    await waitTurnSettled();
+    // wire 决策块:user 消息带 kind:'decision' + 决策字段
+    const wire = getPiMessages().find((m) => m.role === 'user') as unknown as Record<string, unknown>;
+    expect(wire.kind).toBe('decision');
+    expect(wire.decisionId).toBe('dec-1');
+    expect(wire.choice).toBe('转手动审计 crash-03');
+    expect(wire.note).toBe('12h 内出结论');
+    expect(wire.expertRefs).toEqual(['E#3']);
+    expect((wire.content as string)).toContain('【人的决定】');
+    // loop prompt 带 marker(随 done.messages 持久化 → 重放可还原)
+    const opts = runLoopMock.mock.calls[0][0] as { messages?: Array<Record<string, unknown>> };
+    expect(opts.messages).toHaveLength(1);
+    expect(opts.messages![0].decision).toEqual({
+      decisionId: 'dec-1',
+      choice: '转手动审计 crash-03',
+      note: '12h 内出结论',
+      expertRefs: ['E#3'],
+    });
+    // live echo 广播带决策块
+    const replay = broadcastMock.mock.calls.find((c) => c[0] === 'chat:message-replay');
+    expect((replay![1] as { message: Record<string, unknown> }).message.kind).toBe('decision');
+  });
+
+  it('同线 busy:进 steering——注入消息带 decision marker + wire 补写', async () => {
+    const release = gateFirstTurn();
+    await sendPiChatMessage({ text: 'one' });
+    const current = getPiCurrentSessionRef().loopSessionId;
+    broadcastMock.mockClear();
+    const r = await injectPiDecision({ ...DEC, sessionId: current, note: undefined });
+    expect(r.success).toBe(true);
+    // busy → steering 队列(chat:steering-added),不直发
+    const steeringItem = getPiQueueStatus().find((i) => i.kind === 'steering');
+    expect(steeringItem?.messagePreview).toContain('【人的决定】');
+    // 运行中 loop 的 getSteeringMessages:注入消息带 decision marker
+    const opts = runLoopMock.mock.calls[0][0] as { getSteeringMessages?: () => Promise<AgentMessage[]> };
+    const injected = await opts.getSteeringMessages!();
+    expect(injected).toHaveLength(1);
+    expect((injected[0] as { decision?: unknown }).decision).toMatchObject({ decisionId: 'dec-1', choice: '转手动审计 crash-03' });
+    // 补 wire + replay 广播(决策块字段同直发路径)
+    const replay = broadcastMock.mock.calls.find((c) => c[0] === 'chat:message-replay');
+    expect((replay![1] as { message: Record<string, unknown> }).message.kind).toBe('decision');
+    release();
+    await waitTurnSettled();
+  });
+
+  it('跨线:走 invoke 通道注入目标线(headless,不动引擎 wire、不串线)', async () => {
+    const r = await injectPiDecision({ ...DEC, sessionId: 'ls-other' });
+    expect(r.success).toBe(true);
+    // runLoop 以 messages 形态带 marker 跑;续存写目标线 'ls-other'(不串线)
+    const opts = runLoopMock.mock.calls[0][0] as { messages?: Array<Record<string, unknown>>; prompt?: string };
+    expect(opts.messages).toHaveLength(1);
+    expect(opts.messages![0].decision).toMatchObject({ decisionId: 'dec-1', choice: '转手动审计 crash-03' });
+    expect(appendLoopMessagesMock.mock.calls[0][0]).toBe('ls-other');
+    // headless:引擎 wire 没有决策块(不污染单例回放)
+    expect(getPiMessages().some((m) => (m as unknown as Record<string, unknown>).kind === 'decision')).toBe(false);
+  });
+});
+
+describe('1.3.2 决策块重放还原(loopMessagesToWire)', () => {
+  it('loop jsonl 的 decision marker → wire kind:decision 决策块(additive)', async () => {
+    getSessionsByAgentDirMock.mockReturnValue([
+      { id: 'meta-dec', loopSessionId: 'ls-dec', lastActiveAt: '2026-08-16T01:00:00Z' },
+    ]);
+    loadLoopSessionMock.mockReturnValue({
+      messages: [
+        {
+          role: 'user',
+          content: '【人的决定】\n问题: 继续 fuzz?\n选择: 转手动',
+          timestamp: 1,
+          decision: { decisionId: 'dec-9', choice: '转手动', note: '备注 x', expertRefs: ['E#1', 'E#2'] },
+        } as unknown as AgentMessage,
+        assistantMsg('收到'),
+      ],
+      meta: null,
+    });
+    resetPiChat();
+    envSessionsData.set('E:/ws::host', { loopSessionId: 'ls-dec', updatedAt: '' });
+    await initPiChatEngine('E:/ws');
+    const wire = getPiMessages();
+    const dec = wire[0] as unknown as Record<string, unknown>;
+    expect(dec.role).toBe('user');
+    expect(dec.kind).toBe('decision');
+    expect(dec.decisionId).toBe('dec-9');
+    expect(dec.choice).toBe('转手动');
+    expect(dec.note).toBe('备注 x');
+    expect(dec.expertRefs).toEqual(['E#1', 'E#2']);
+    // 无 marker 的普通 user 消息形状不变(不破坏现有字段)
+    const normal = wire[1] as unknown as Record<string, unknown>;
+    expect(normal.role).toBe('assistant');
+    expect(normal.kind).toBeUndefined();
+  });
+});
+
+describe('1.3.2 环境锚进 chat:init(getPiAgentState.environment)', () => {
+  it('host 选定(未锚定)→ environment=null', () => {
+    selectionMock.mockReturnValue({ kind: 'host' });
+    expect(getPiAgentState().environment).toBeNull();
+  });
+
+  it('env 选定 → {kind:env, id, name, type=环境类型}', () => {
+    selectionMock.mockReturnValue({ kind: 'env', id: 'pwn-vm' });
+    configEnvironments.mockReturnValue([VM_ENTRY]);
+    expect(getPiAgentState().environment).toEqual({
+      kind: 'env', id: 'pwn-vm', name: 'pwn-vm', type: 'vm',
+    });
+  });
+
+  it('recipe 选定 → {kind:recipe, id=实例, name=实例, type=配方 id}', () => {
+    selectionMock.mockReturnValue({ kind: 'recipe', name: 'pwn', instanceId: 'zhishi-pwn-a3f2' });
+    expect(getPiAgentState().environment).toEqual({
+      kind: 'recipe', id: 'zhishi-pwn-a3f2', name: 'zhishi-pwn-a3f2', type: 'pwn',
+    });
   });
 });

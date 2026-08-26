@@ -13,6 +13,10 @@
  *      env-selection.json 按 workspace 查）。按环境分组呈现「哪个现场有
  *      什么工具」，配方行附正文工作流摘要（1.2.5「用」，每环境 ≤400 字符，
  *      提炼在 recipes.ts）；无引擎/无配方/无具名环境且未选现场时整段零注入。
+ *      1.3.7 场景 3：选中环境带现场推导能力集合（capabilityDomains =
+ *      配方绑定域 ∪ 工具探测域）时，域收窄空间放宽到整个集合，并注入
+ *      「能力集合 + 集合内配方工具并集」行（探测在场证据沿用 toolCheck
+ *      漂移标注口径）；无能力字段（存量零迁移）逐字节维持旧行为。
  *   3. `<zhishi-native-code>`      — 代码原生语境（静态）：工具链在环境配方
  *      里、闭环通道用法、环境标记约定（E6）、行为约定、恶意样本 env≠host
  *      纪律（D14 硬闸存在，提醒而非依赖 LLM 自觉）。
@@ -121,6 +125,8 @@ Recon 侦察 → Analyze 分析 → Construct 构造 → Execute 执行 → Eval
 
 求助时机（1.2.1 实战校准）：专家知识是**最后的落脚点**——先尽力（你的知识、skills 方法、蒸馏经验），识别到知识缺口再查 expert_search。缺口的信号是「反复失败 / 没有把握 / 找不到先例」，**不是进展慢**——慢慢做对不需要救援。查不到不阻塞，继续。
 
+决策点（人拍板）：方向分歧（方案互斥且代价不可逆）、关键取舍无把握、且专家库无基准时，用 request_decision 提请人决定。提请前先查 expert_search——命中可验证基准就按它走、不问人；查不到（库中无基准）才提请。提请后暂停这条线的执行，等决定以 user 消息注入回来再继续，不要边等边推进。
+
 执行纪律：
 - **长任务走 env_bg**：预计超过 30 秒的命令（循环/长扫描/fuzz/监听）用 env_bg 后台跑再 poll——env_exec 是一次性等返回，堵住它会拖死本轮。
 
@@ -165,6 +171,29 @@ const ENGINE_DISPLAY_NAME: Record<string, string> = {
   libvirt: 'libvirt（VM 环境）',
   ssh: 'ssh（远程/靶场接入）',
 };
+
+/**
+ * 当前现场选中的注册表条目（1.3.7 场景 3 能力集合的载体）：
+ * env 选择按 id 查；recipe 选择按 instanceId 查（1.3.7「实例即环境」起
+ * up 回写的条目 id = 实例名）。host 现场 / 查不到 → undefined。
+ */
+export function selectedEnvironmentEntry(
+  data: SecurityCapabilitiesData | undefined,
+): EnvironmentEntry | undefined {
+  const sel = data?.selection;
+  if (!sel || sel.kind === 'host') return undefined;
+  const id = sel.kind === 'env' ? sel.id : sel.instanceId;
+  return findEnvironmentEntry(data?.environments ?? [], id);
+}
+
+/** 当前现场的能力集合（服务端现场推导落盘；无 → undefined = 缺省行为）。 */
+export function selectedCapabilityDomains(
+  data: SecurityCapabilitiesData | undefined,
+): { domains: string[]; derivedAt?: string; entry: EnvironmentEntry } | undefined {
+  const entry = selectedEnvironmentEntry(data);
+  if (!entry?.capabilityDomains?.length) return undefined;
+  return { domains: entry.capabilityDomains, derivedAt: entry.capabilityDerivedAt, entry };
+}
 
 /** 当前现场的一行描述；env 选择优先按注册表条目解析出精确标记（E6）。 */
 function describeSelection(data: SecurityCapabilitiesData): string {
@@ -214,13 +243,28 @@ export function buildSecurityCapabilitiesSection(
   // 域收窄（1.2.7）：命中清单 → 配方只留该域清单引用的，具名环境只留绑定了
   // 这些配方的（绑定规则同 envBlock：recipeId 优先，回落 id/vmName 同名配方）。
   // 域未命中清单 → 不动（全量，宁多勿缺）。
-  if (options.domain) {
-    const manifest = (options.manifests ?? (domainManifestsCache ??= loadDomainManifests()))
-      .find((m) => m.kind === options.domain);
-    if (manifest) {
-      validRecipes = validRecipes.filter((r) => manifest.recipes.includes(r.id));
-      environments = environments.filter((e) =>
-        validRecipes.some((r) => r.id === e.recipeId || r.id === e.id || r.id === e.vmName));
+  // 1.3.7 场景 3：当前现场有能力集合（现场推导落盘）时，收窄空间从单个
+  // resolved 域放宽到整个能力集合——一个环境承载多个能力，集合内各域的
+  // 配方与工具都该让模型看得见。
+  const capability = selectedCapabilityDomains(data);
+  const filterKinds = capability?.domains ?? (options.domain ? [options.domain] : undefined);
+  if (filterKinds) {
+    const all = options.manifests ?? (domainManifestsCache ??= loadDomainManifests());
+    const matched = all.filter((m) => filterKinds.includes(m.kind));
+    if (matched.length > 0) {
+      const allowedRecipes = new Set(matched.flatMap((m) => m.recipes));
+      validRecipes = validRecipes.filter((r) => allowedRecipes.has(r.id));
+      // 1.3.8 多配方：具名环境命中任一绑定配方（recipeIds ∪ recipeId ∪
+      // id/vmName 同名回落）即保留。
+      environments = environments.filter((e) => {
+        const bound = new Set<string>([
+          ...(e.recipeIds ?? []),
+          ...(e.recipeId ? [e.recipeId] : []),
+          e.id,
+          ...(e.vmName ? [e.vmName] : []),
+        ]);
+        return validRecipes.some((r) => bound.has(r.id));
+      });
     }
   }
 
@@ -236,6 +280,31 @@ export function buildSecurityCapabilitiesSection(
   const lines: string[] = [];
 
   lines.push(`当前环境：${describeSelection(data)}`);
+
+  // 1.3.7 场景 3：能力集合现场推导结果（配方绑定域 ∪ 工具探测域）——
+  // 模型需要知道这台环境里实际能用什么。工具清单 = 集合内各域配方的工具
+  // 并集（去重）；在场证据标注沿用 toolCheck 漂移口径（声明了但环境里没有）。
+  if (capability) {
+    const capManifests = (options.manifests ?? (domainManifestsCache ??= loadDomainManifests()))
+      .filter((m) => capability.domains.includes(m.kind));
+    const capRecipeIds = new Set(capManifests.flatMap((m) => m.recipes));
+    const capTools = [
+      ...new Set(
+        data.recipes.filter((r) => r.valid && capRecipeIds.has(r.id)).flatMap((r) => r.tools),
+      ),
+    ];
+    const derivedNote = capability.derivedAt ? `，探测于 ${capability.derivedAt}` : '';
+    lines.push(
+      `当前环境能力集合（现场推导：配方绑定 ∪ 工具探测${derivedNote}）：${capability.domains.join(' · ')}`,
+    );
+    if (capTools.length > 0) {
+      const missing = (capability.entry.toolCheck?.missing ?? []).filter((t) => capTools.includes(t));
+      lines.push(
+        `可用工具（能力集合内配方并集）：${capTools.join('、')}` +
+          (missing.length > 0 ? `（声明了但环境里没有：${missing.join('、')}）` : ''),
+      );
+    }
+  }
 
   if (availableEngines.length > 0) {
     const items = availableEngines.map(
@@ -277,14 +346,25 @@ export function buildSecurityCapabilitiesSection(
       const label = entry.name && entry.name !== entry.id && !entry.name.startsWith(entry.id)
         ? `${entry.id}（${entry.name}）`
         : entry.id;
-      // 配方绑定:entry.recipeId 优先,回落 id/vmName 同名配方(老条目)。
-      const recipe = validRecipes.find(
-        (r) => r.id === entry.recipeId || r.id === entry.id || r.id === entry.vmName,
-      );
-      const binding = recipe
-        ? `（类型 ${recipe.id}：${recipe.tools.length > 0 ? recipe.tools.join('、') : '未声明工具'}）`
+      // 配方绑定：recipeIds（1.3.8 多配方集合）∪ recipeId 优先，回落
+      // id/vmName 同名配方（老条目）。绑定=展示/构建来源，工具并集。
+      const boundRecipeIds = new Set<string>([
+        ...(entry.recipeIds ?? []),
+        ...(entry.recipeId ? [entry.recipeId] : []),
+        entry.id,
+        ...(entry.vmName ? [entry.vmName] : []),
+      ]);
+      const boundRecipes = validRecipes.filter((r) => boundRecipeIds.has(r.id));
+      const binding = boundRecipes.length > 0
+        ? `（类型 ${boundRecipes.map((r) => r.id).join('+')}：${[
+            ...new Set(boundRecipes.flatMap((r) => r.tools)),
+          ].join('、')}）`
         : '（无类型绑定——手动接入/旧条目）';
-      envBlock.push(`- ${label} → ${envTagForEntry(entry)}${binding}`);
+      // 1.3.7 场景 3：条目带现场推导的能力集合时透明展示（推导，非声明）。
+      const capNote = entry.capabilityDomains?.length
+        ? `；能力：${entry.capabilityDomains.join('·')}`
+        : '';
+      envBlock.push(`- ${label} → ${envTagForEntry(entry)}${binding}${capNote}`);
     }
   }
 
@@ -443,6 +523,10 @@ let domainManifestsCache: DomainManifest[] | null = null;
  * 与 buildSecurityCapabilitiesSection 同一规则）→ bundled-domains/domain.json
  * 的 recipes 列表反查域（域清单的 kind 即 research task_kind）。
  *
+ * 1.3.7 场景 3 基线优先：选中环境的条目带现场推导能力集合
+ * （capabilityDomains）时，基线 = 集合首个 research 域（绑定域恒在集合
+ * 首位——探测合并规则保序）；无能力字段（存量环境零迁移）→ 旧 recipeId 链。
+ *
  * 无可靠信号 → undefined（host 现场 / 无配方绑定 / 域清单未覆盖该配方），
  * 调用方降级为全量注入——域过滤是预算优化，不是正确性闸门，宁多勿缺。
  */
@@ -454,10 +538,17 @@ export function resolveSessionResearchDomain(
   if (!sel) return undefined;
   const candidates: string[] = [];
   if (sel.kind === 'recipe') {
+    // 能力集合基线（1.3.7）：实例已登记且推导过能力 → 集合首个 research 域。
+    const entry = findEnvironmentEntry(data?.environments ?? [], sel.instanceId);
+    const capBaseline = entry?.capabilityDomains?.find((d) => isResearchTaskKind(d));
+    if (capBaseline) return capBaseline;
     candidates.push(sel.name);
   } else if (sel.kind === 'env') {
     const entry = findEnvironmentEntry(data?.environments ?? [], sel.id);
     if (!entry) return undefined;
+    // 能力集合基线（1.3.7）：条目带 capabilityDomains → 集合首个 research 域。
+    const capBaseline = entry.capabilityDomains?.find((d) => isResearchTaskKind(d));
+    if (capBaseline) return capBaseline;
     // 配方绑定：recipeId 优先，回落 id/vmName 同名配方（同 capabilities 段）。
     for (const c of [entry.recipeId, entry.id, entry.vmName]) {
       if (c) candidates.push(c);
@@ -527,6 +618,11 @@ export interface ResolveSessionDomainOptions {
  *   - 基线与信号域不同 → 信号足够强（≥3 且 ≥2 倍于基线域命中数）才改判，
  *     否则维持基线（配方默认是锚，零星命中不翻盘）。
  *
+ * 1.3.7 场景 3 裁决空间收窄：选中环境带能力集合（capabilityDomains）时，
+ * 信号统计只算「集合 ∪ 基线」内的域——集合内切换阈值不变，集合外强信号
+ * 不改判（这台环境没推导出的能力，内容信号再强也不切过去）。缺省（无
+ * capabilityDomains，存量环境零迁移）保持现行全域裁决。
+ *
  * 纯函数；manifests 缺省走进程内缓存。
  */
 export function resolveSessionDomain(
@@ -538,12 +634,17 @@ export function resolveSessionDomain(
   const list = manifests ?? (domainManifestsCache ??= loadDomainManifests());
   const baseline = resolveSessionResearchDomain(data, list);
 
+  // 1.3.7 裁决空间：能力集合存在时收窄到 集合 ∪ 基线；缺省 = 全域。
+  const cap = selectedCapabilityDomains(data);
+  const scope = cap ? new Set([...cap.domains, ...(baseline ? [baseline] : [])]) : undefined;
+
   // 每域信号命中数（非法正则跳过——读侧容错，与 validateDomainManifest 同纪律）。
   const recent = messages.slice(-(options.recentMessages ?? DOMAIN_SIGNAL_RECENT_MESSAGES));
   const text = recent.map(domainSignalMessageText).join('\n');
   const counts = new Map<string, number>();
   for (const m of list) {
     if (!isResearchTaskKind(m.kind)) continue;
+    if (scope && !scope.has(m.kind)) continue; // 1.3.7：集合外不参与裁决
     let n = 0;
     for (const rule of m.signals) {
       try {

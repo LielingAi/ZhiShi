@@ -64,6 +64,9 @@ def main():
   ; sqlite-runtime（记忆库引擎，better-sqlite3 内置 Node ABI）
   SetOutPath "$INSTDIR\\sqlite-runtime"
   File /nonfatal /r "{r}\\src-tauri\\resources\\sqlite-runtime\\*.*"
+  ; pty-runtime（attach 交互终端，@lydell/node-pty N-API 预编译件）
+  SetOutPath "$INSTDIR\\pty-runtime"
+  File /nonfatal /r "{r}\\src-tauri\\resources\\pty-runtime\\*.*"
   ; tsx-runtime
   SetOutPath "$INSTDIR\\tsx-runtime"
   File /nonfatal /r "{r}\\src-tauri\\resources\\tsx-runtime\\*.*"
@@ -122,6 +125,7 @@ def main():
   Delete "$INSTDIR\\vcruntime140_1.dll"
   RMDir /r "$INSTDIR\\sharp-runtime"
   RMDir /r "$INSTDIR\\sqlite-runtime"
+  RMDir /r "$INSTDIR\\pty-runtime"
   RMDir /r "$INSTDIR\\tsx-runtime"
   RMDir /r "$INSTDIR\\nodejs"
   RMDir /r "$INSTDIR\\shared"

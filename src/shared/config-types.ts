@@ -1131,7 +1131,8 @@ export type EnvironmentKind = 'ssh' | 'docker' | 'vm';
  *
  *  - `ssh`：必填 host；可选 user / keyPath → `ssh [-i keyPath] [user@]host`
  *  - `docker`：必填 container → `docker exec -it <container> bash`
- *  - `vm`：必填 vmName；可选 address / user / keyPath——有 address 时按 ssh
+ *  - `vm`：必填 vmName（1.3.7「实例即环境」：条目 id 恒 = vmName）；
+ *    可选 address / user / keyPath——有 address 时按 ssh
  *    接入，无 address 时 open 报错指向 guest-exec 通道（P2 B2 `zhishi env exec`）。
  *
  *  凭据规则（D-T4）：只存 keyPath（私钥路径引用），不存密码。 */
@@ -1160,8 +1161,9 @@ export interface EnvironmentEntry {
 
   address?: string;
 
-  /** vm：.vmx 定位锚（D22 直连真实 VM——vmTemplates 条目即环境本身，
-   *  down/rm/ps 靠它把 env id 解析成 vmx；旧派生实例条目无此字段）。 */
+  /** vm：.vmx 定位辅助（vmware 直连 VM 的 down/rm/ps/快照/回滚 解析锚；
+   *  1.3.7「实例即环境」起不再决定 id 语义——id 恒为 VM 实例名 vmName；
+   *  缺省时由 resolveVmxForEntry 回落 vmName→vmTemplates 探测）。 */
 
   vmx?: string;
 
@@ -1196,6 +1198,25 @@ export interface EnvironmentEntry {
    *  缺省回落到 id/vmName 同名配方——正门详情与能力清单段的展示源）。 */
 
   recipeId?: string;
+
+  /** 多配方绑定集合（1.3.8 关联侧）：含主配方（recipeId 恒在集合内，不可
+   *  单独移除）。绑定=展示/构建来源，**不进域裁决**（能力集合=推导唯一真相源，
+   *  见 capabilityDomains）。缺省时等价 [recipeId]。消费面：能力清单段工具
+   *  并集与漂移报告覆盖集合、GUI 环境详情模态的绑定管理。 */
+
+  recipeIds?: string[];
+
+  /** 能力域集合（1.3.7 场景 3，B 方案纯系统推导）：配方绑定域 ∪ 工具探测域
+   *  （环境里实际装了哪些已知工具 → 工具→配方→域反推）。服务端派生字段，
+   *  非用户编辑；探测失败时不写（保 baseline 行为），绝不落空集合。
+   *  消费面：resolveSessionResearchDomain 基线（[0]）+ resolveSessionDomain
+   *  裁决空间收窄（集合外不切）+ 能力清单段工具并集 + GUI 能力徽章。 */
+
+  capabilityDomains?: string[];
+
+  /** capabilityDomains 的推导时间（ISO 时间戳，server 侧探测完成时盖章）。 */
+
+  capabilityDerivedAt?: string;
 
   /** ISO 时间戳，server 侧写入时盖章。 */
 

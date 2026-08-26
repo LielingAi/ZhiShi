@@ -22,6 +22,7 @@ import {
   buildGetVmPs,
   buildGetVmStatePs,
   buildImportVmPs,
+  buildListAllVmsPs,
   buildListVmsPs,
   buildRemoveVmPs,
   buildRestoreSnapshotPs,
@@ -29,6 +30,7 @@ import {
   buildStopVmPs,
   hypervEnvDown,
   hypervEnvPs,
+  hypervEnvPsAll,
   hypervEnvRm,
   hypervEnvUp,
   hypervVmExists,
@@ -130,6 +132,16 @@ describe('command assembly (pure)', () => {
     expect(buildRemoveVmPs('n')).toBe("Remove-VM -Name 'n' -Force");
     expect(buildListVmsPs()).toContain("Get-VM -Name 'zhishi-*'");
     expect(buildListVmsPs()).toContain('ConvertTo-Json');
+  });
+
+  it('B4：ps 脚本带 Running 状态过滤（停止的 VM 不算运行中）', () => {
+    expect(buildListVmsPs()).toContain("Where-Object { $_.State -eq 'Running' }");
+  });
+
+  it('B5：discover 脚本全量枚举（无 zhishi-* 前缀过滤、无状态过滤）', () => {
+    expect(buildListAllVmsPs()).toContain('Get-VM | Select-Object Name, State');
+    expect(buildListAllVmsPs()).not.toContain('zhishi-*');
+    expect(buildListAllVmsPs()).not.toContain('Where-Object');
   });
 });
 
@@ -402,9 +414,54 @@ describe('hypervEnvPs', () => {
     expect(result.instances[0].dir).toBe(join('/x/instances', 'zhishi-pwn-vm-a1b2c3d4'));
   });
 
+  it('B4：ps 走带 Running 过滤的脚本（过滤在 PowerShell 侧做）', async () => {
+    const { exec, calls } = scriptedExec([ok('')]);
+    await hypervEnvPs({ exec, ...WIN32 });
+    expect(calls[0][3]).toContain("Where-Object { $_.State -eq 'Running' }");
+    expect(calls[0][3]).toContain("Get-VM -Name 'zhishi-*'");
+  });
+
   it('Get-VM failure → error (caller tolerates per-engine absence)', async () => {
     const { exec } = scriptedExec([{ exitCode: 1, stdout: '', stderr: '', error: 'spawn powershell ENOENT' }]);
     const result = await hypervEnvPs({ exec, ...WIN32 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('Get-VM 失败');
+  });
+});
+
+describe('hypervEnvPsAll（B5：discover 全量枚举）', () => {
+  it('走无过滤的 Get-VM 脚本，保留全部 VM（含停止、含非 zhishi-* 前缀）', async () => {
+    const json = JSON.stringify([
+      { Name: 'zhishi-pwn-vm-a1b2c3d4', State: 'Running' },
+      { Name: 'zhishi-fuzz-99887766', State: 'Off' },
+      { Name: 'user-win11', State: 'Saved' },
+    ]);
+    const { exec, calls } = scriptedExec([ok(json)]);
+    const result = await hypervEnvPsAll({ exec, instancesRoot: '/x/instances', ...WIN32 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(calls[0][3]).toContain('Get-VM | Select-Object Name, State');
+    expect(calls[0][3]).not.toContain('Where-Object');
+    expect(result.instances.map((i) => i.name)).toEqual([
+      'zhishi-pwn-vm-a1b2c3d4',
+      'zhishi-fuzz-99887766',
+      'user-win11',
+    ]);
+    expect(result.instances[1].status).toBe('off');
+    // 非 zhishi-* 前缀的 VM recipe 为空（不做名字反推）
+    expect(result.instances[2].recipe).toBe('');
+  });
+
+  it('非 Windows 平台 → ok:false 且不发命令（平台门控与 ps 一致）', async () => {
+    const { exec, calls } = scriptedExec([]);
+    const result = await hypervEnvPsAll({ exec, platform: 'linux' });
+    expect(result.ok).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('Get-VM 失败 → error（聚合层降级，不拖垮其它侧）', async () => {
+    const { exec } = scriptedExec([{ exitCode: 1, stdout: '', stderr: '', error: 'spawn powershell ENOENT' }]);
+    const result = await hypervEnvPsAll({ exec, ...WIN32 });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain('Get-VM 失败');
   });

@@ -15,6 +15,7 @@ import {
   emptyEnvSessionsMap,
   envKeyForSelection,
   envSessionLineKey,
+  findEnvKeyForLoopSession,
   getEnvSessionLine,
   loadEnvSessionsMap,
   normalizeWorkspaceKey,
@@ -128,6 +129,22 @@ describe('行变换（纯函数）', () => {
     ]);
     // 无命中 → 原表（引用不变）
     expect(removeEnvSessionsForEnvIdFromMap(cleaned, 'ghost')).toBe(cleaned);
+  });
+
+  it('findEnvKeyForLoopSession（1.3.3 历史面板反查）：命中/无映射/跨 workspace', () => {
+    let map = emptyEnvSessionsMap();
+    map = setEnvSessionLineInMap(map, WS_A, 'env:pwn-vm', 'ls-1', STAMP);
+    map = setEnvSessionLineInMap(map, WS_A, 'host', 'ls-2', STAMP);
+    map = setEnvSessionLineInMap(map, WS_B, 'env:pwn-vm', 'ls-3', STAMP);
+
+    expect(findEnvKeyForLoopSession(map, WS_A, 'ls-1')).toBe('env:pwn-vm');
+    expect(findEnvKeyForLoopSession(map, WS_A, 'ls-2')).toBe('host');
+    // 跨 workspace 隔离:同一 loopSessionId 在别的 workspace 命中的行不算
+    expect(findEnvKeyForLoopSession(map, WS_A, 'ls-3')).toBeNull();
+    expect(findEnvKeyForLoopSession(map, WS_B, 'ls-3')).toBe('env:pwn-vm');
+    expect(findEnvKeyForLoopSession(map, WS_A, 'ghost')).toBeNull();
+    // 反斜杠形态 workspace 殊途同归
+    expect(findEnvKeyForLoopSession(map, 'E:\\work\\target-a', 'ls-1')).toBe('env:pwn-vm');
   });
 });
 

@@ -13,6 +13,7 @@
     "isolatedModules": true,
     "noEmit": true,
     "incremental": true,
+    "jsx": "react-jsx",
     "types": ["node"]
   },
   "include": ["src/**/*", ".claude/skills/**/*.ts"],

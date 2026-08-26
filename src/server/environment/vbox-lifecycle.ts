@@ -14,6 +14,7 @@
  *        （'No value set!' 视为未就绪；取不到不算 up 失败，与 vmware 语义一致）
  *   vboxEnvDown(name) → controlvm <name> acpipowerbutton（soft；失败引导 poweroff）
  *   vboxEnvPs()       → list runningvms，过滤 zhishi- 前缀
+ *   vboxEnvPsAll()    → list vms 全量（discover 用，1.3.8 B5）
  *   vboxEnvRm(name)   → unregistervm <name> --delete（须已停）
  *
  * 结构照 `vm-lifecycle.ts`：VBoxManage 参数组装与输出解析是纯函数；所有
@@ -101,6 +102,11 @@ export function buildAcpiPowerdownArgs(name: string): string[] {
 
 export function buildListRunningArgs(): string[] {
   return ['list', 'runningvms'];
+}
+
+/** discover 全量枚举（1.3.8 B5）：list vms = 全部已注册 VM（含已停止）。 */
+export function buildListVmsArgs(): string[] {
+  return ['list', 'vms'];
 }
 
 /** guest IP 来源：Guest Additions 上报的 guest property（首张网卡 IPv4）。 */
@@ -430,6 +436,34 @@ export async function vboxEnvPs(
       recipe: name.split('-').slice(1, -1).join('-'),
       workspace: '',
     }));
+  return { ok: true, instances };
+}
+
+/**
+ * discover 用的 VirtualBox 全量枚举（1.3.8 B5）：list vms = 全部已注册 VM
+ * （不筛 zhishi-* 前缀、含已停止）。list vms 输出不带状态——status 记
+ * 'unknown'（running 态判定只有 list runningvms 给得出，ps 语义归
+ * vboxEnvPs）。与已登记条目的去重由 GUI 的 matchRegisteredEnv（1.3.7）兜住。
+ */
+export async function vboxEnvPsAll(
+  options: VboxLifecycleOptions = {},
+): Promise<EnvResult<{ instances: VboxInstance[] }>> {
+  const exec = options.exec ?? defaultVBoxExec;
+
+  const result = await exec(['VBoxManage', ...buildListVmsArgs()], VBOX_LIST_TIMEOUT_MS);
+  if (result.exitCode !== 0 || result.error) {
+    return {
+      ok: false,
+      error: `VBoxManage list vms 失败（VirtualBox 不可用？）：\n${outputTailOf(result)}`,
+    };
+  }
+  const instances = parseVBoxRunningVms(result.stdout).map((name) => ({
+    id: name,
+    name,
+    status: 'unknown',
+    recipe: name.startsWith('zhishi-') ? name.split('-').slice(1, -1).join('-') : '',
+    workspace: '',
+  }));
   return { ok: true, instances };
 }
 

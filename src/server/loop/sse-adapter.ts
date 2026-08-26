@@ -1,8 +1,9 @@
 /**
  * M4a — SSE 适配器:LoopEvent → 现有 SSE 事件(纯函数)。
  *
- * TUI/渲染器零改动的关键:事件名与 payload 形状逐字段对齐 SDK 路径
- * (agent-session.ts 的 broadcast 调用点):
+ * 客户端(GUI)零改动的关键:事件名与 payload 形状逐字段对齐 pi loop
+ * 的 turn 语义(SDK 时代的同名事件形状;SDK 已随 D25 删除,agent-session
+ * 不再广播这些事件):
  *
  *   LoopEvent          SSE 事件                     payload
  *   ─────────────────  ───────────────────────────  ──────────────────────────────

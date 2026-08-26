@@ -1,18 +1,33 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "ZhiShi",
-  "version": "1.2.10",
+  "version": "1.4.0",
   "identifier": "com.zhishi.app",
   "build": {
-    "frontendDist": "./placeholder",
-    "beforeBuildCommand": "npm run build:server && npm run build:cli"
+    "frontendDist": "../src/gui/dist",
+    "beforeBuildCommand": "npm run build:gui && npm run build:server && npm run build:cli",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev:gui"
   },
   "app": {
-    "windows": [],
+    "windows": [
+      {
+        "label": "main",
+        "title": "ZhiShi",
+        "width": 1280,
+        "height": 840,
+        "minWidth": 980,
+        "minHeight": 620,
+        "center": true,
+        "resizable": true,
+        "visible": true
+      }
+    ],
     "security": {
       "csp": "default-src 'self' ipc: tauri: asset: http://ipc.localhost; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' ipc: tauri: asset: http://ipc.localhost http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https://ticket.zhishi.help; img-src 'self' data: blob: asset: https://asset.localhost https://ticket.zhishi.help https:; media-src 'self' blob: asset: http://asset.localhost https://asset.localhost;",
       "dangerousDisableAssetCspModification": true
-    }
+    },
+    "withGlobalTauri": true
   },
   "bundle": {
     "active": true,
@@ -35,6 +50,7 @@
       "../src-tauri/resources/server-dist.js": "server-dist.js",
       "../src-tauri/resources/sharp-runtime": "sharp-runtime",
       "../src-tauri/resources/sqlite-runtime": "sqlite-runtime",
+      "../src-tauri/resources/pty-runtime": "pty-runtime",
       "../src-tauri/resources/tsx-runtime": "tsx-runtime",
       "../src-tauri/resources/nodejs": "nodejs",
       "../src/shared": "shared",

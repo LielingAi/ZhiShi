@@ -139,6 +139,120 @@ export function buildDockerExecArgv(container: string, command: string): string[
   return ['docker', 'exec', container, 'bash', '-lc', command];
 }
 
+// ---------------------------------------------------------------------------
+// Pure — 交互终端(pty attach)argv 组装(1.3.3)
+// ---------------------------------------------------------------------------
+
+/** linux 交互 shell 脚本:优先 bash,缺失回退 sh(`[ -x ]` 探测,先探测
+ *  后 exec——探测失败时 stderr 干净,不脏用户终端首屏)。 */
+export const LINUX_INTERACTIVE_SHELL_SCRIPT = '[ -x /bin/bash ] && exec /bin/bash; exec sh';
+
+/**
+ * 交互 shell 选择(OS 家族分派,1.3.3 attach):
+ * - linux → sh 包装的 bash 回退链(容器可能是 alpine 系,没有 bash);
+ * - windows → cmd.exe(所有 Windows 容器/主机都必有;powershell 在
+ *   nanoserver 系容器缺席,不做默认)。
+ * 返回值按通道有两种用法:docker 拆成 argv 元素(`sh -c <script>`),
+ * ssh 作为**单元素**远端命令(远端登录 shell 解释,与 buildSshArgv 同口径)。
+ */
+export function interactiveShellScript(family: 'linux' | 'windows'): string {
+  return family === 'windows' ? 'cmd.exe' : LINUX_INTERACTIVE_SHELL_SCRIPT;
+}
+
+/**
+ * docker 交互终端 argv（不含程序名——调用方以 spec.file 单独传，与
+ * node-pty spawn(file, args) 契约一致）：`exec -it <container> <shell...>`。
+ * `-it` 分配 TTY + 保持 stdin——真终端的先决条件(与 resolveEnvOpenCommand
+ * 的 `docker exec -it ... bash` 同语义,但 shell 带 sh 回退链)。
+ * linux 形态 shell 拆为 argv 元素(sh -c <script>);windows 形态直接 cmd.exe。
+ */
+export function buildPtyDockerExecArgv(container: string, family: 'linux' | 'windows' = 'linux'): string[] {
+  if (family === 'windows') {
+    return ['exec', '-it', container, 'cmd.exe'];
+  }
+  return ['exec', '-it', container, 'sh', '-c', LINUX_INTERACTIVE_SHELL_SCRIPT];
+}
+
+/**
+ * ssh 交互终端 argv（不含程序名——调用方以 spec.file 单独传，与
+ * node-pty spawn(file, args) 契约一致）：与 buildSshArgv 同口径
+ * (BatchMode/accept-new/ConnectTimeout/ControlMaster 平台缺省/keyPath/
+ * port),差别:
+ * - `-tt` 强制远端分配 TTY(缺了远端 shell 不带终端,vim/top 不可用);
+ * - 命令位是交互 shell 脚本(单元素),不是一次性命令。
+ * BatchMode=yes 保持(D-T4:keyPath 认证,禁交互密码提示——attach 若
+ * 密钥未配置会立即失败并回显,不会卡在密码输入)。
+ */
+export function buildPtySshArgv(
+  target: SshTarget,
+  family: 'linux' | 'windows' = 'linux',
+  opts?: { controlMaster?: boolean },
+): string[] {
+  const controlMaster = opts?.controlMaster ?? process.platform !== 'win32';
+  const argv = [
+    '-tt',
+    '-o', 'BatchMode=yes',
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', 'ConnectTimeout=10',
+  ];
+  if (controlMaster) {
+    argv.push(
+      '-o', 'ControlMaster=auto',
+      '-o', `ControlPath=${join(controlSocketDir(), '%r@%h:%p')}`,
+      '-o', `ControlPersist=${CONTROL_PERSIST}`,
+    );
+  }
+  if (target.keyPath) argv.push('-i', target.keyPath);
+  if (target.port) argv.push('-p', String(target.port));
+  argv.push(target.destination, interactiveShellScript(family));
+  return argv;
+}
+
+/** pty.spawn 的宿主二进制 + argv(纯函数,file 是裸命令名——调用方经
+ *  resolveCommand 解析全路径,与 defaultEnvExec 同一口径)。 */
+export interface PtySpawnSpec {
+  file: string;
+  args: string[];
+  /** guest shell 家族(调用方选择 pty 语义/终端名时用)。 */
+  family: 'linux' | 'windows';
+}
+
+/**
+ * EnvironmentEntry → 交互终端 spawn 规格(1.3.3 attach)。
+ * 分派口径与 execInEnvironment 的 resolveExecTarget 完全一致:
+ * - docker → `docker exec -it`(buildPtyDockerExecArgv);
+ * - vm/ssh → `ssh -tt`(buildPtySshArgv);
+ * - guest(断网隔离 VM)→ 明确拒绝:vmrun 客户机通道无 TTY,交互终端
+ *   结构性不存在(与 environment/exec 的 guest 一次性通道不同级)。
+ */
+export function buildPtySpawnSpec(
+  entry: EnvironmentEntry,
+  opts?: { controlMaster?: boolean },
+): EnvResult<{ spec: PtySpawnSpec }> {
+  const resolved = resolveExecTarget(entry);
+  if (!resolved.ok) return resolved;
+
+  const family = osFamilyOf(entry);
+  if (resolved.execTarget.channel === 'guest') {
+    return {
+      ok: false,
+      error:
+        `环境 "${entry.id}" 是断网隔离 VM——guest-exec 通道(vmrun)没有 TTY,` +
+        '交互终端结构性不可用。给 VM 配好网络并补 address 后走 SSH 通道 attach。',
+    };
+  }
+  if (resolved.execTarget.channel === 'docker') {
+    return {
+      ok: true,
+      spec: { file: 'docker', args: buildPtyDockerExecArgv(resolved.execTarget.container, family), family },
+    };
+  }
+  return {
+    ok: true,
+    spec: { file: 'ssh', args: buildPtySshArgv(resolved.execTarget.target, family, opts), family },
+  };
+}
+
 /**
  * EnvironmentEntry → ssh target。
  * - kind ssh：host 必填（registry 校验保证；防御性再查一次）。

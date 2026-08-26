@@ -1151,10 +1151,46 @@ try {
 
     Write-Host "    OK - better-sqlite3 预装完成 (node $bundledNodeVer)" -ForegroundColor Green
 
+    # 1.4.0：node-pty 交互终端运行时（attach 真终端的原生模块）。
+    # @lydell/node-pty 是 N-API 预编译件（ABI 稳定，跨 Node 版本），不像
+    # better-sqlite3（NAN）需要按内置 Node 版本重编——普通 install 即拉
+    # 平台 prebuild（win32-x64 包自动装进 node_modules/@lydell/node-pty*）。
+    # 回落路径对齐 term-pty.ts::loadNodePty 的 `<scriptDir>/pty-runtime/
+    # node_modules/@lydell/node-pty`。
+    Write-Host "  预装 @lydell/node-pty（attach 终端）..." -ForegroundColor Cyan
 
+    $ptyDir = Join-Path $ProjectDir "src-tauri\resources\pty-runtime"
+    if (Test-Path $ptyDir) {
+        Remove-Item -Recurse -Force $ptyDir
+    }
+    New-Item -ItemType Directory -Path $ptyDir -Force | Out-Null
 
-    # 前端 GUI 已删除（无窗口后台宿主形态）——server/bridge/cli bundle 由
-    # tauri build 的 beforeBuildCommand 构建。
+    $ptyPkgJson = @"
+{
+  "name": "pty-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": { "@lydell/node-pty": "^1.2.0-beta.15" }
+}
+"@
+    Set-Content -Path (Join-Path $ptyDir "package.json") -Value $ptyPkgJson -Encoding utf8
+
+    Push-Location $ptyDir
+    $ErrorActionPreference = "Continue"
+    $null = & npm.cmd install --no-audit --no-fund --no-save 2>$null
+    Pop-Location
+    if ($LASTEXITCODE -ne 0) {
+        throw "@lydell/node-pty 预装失败"
+    }
+
+    $ptyNative = Join-Path $ptyDir "node_modules\@lydell\node-pty-win32-x64"
+    if (-not (Test-Path $ptyNative)) {
+        throw "@lydell/node-pty-win32-x64 平台包缺失（prebuild 未拉取）"
+    }
+    Write-Host "    OK - @lydell/node-pty 预装完成" -ForegroundColor Green
+
+    # 前端 GUI（React，frontendDist=src/gui/dist）与 server/cli bundle 由
+    # tauri build 的 beforeBuildCommand 构建；本脚本只管原生运行时预装。
 
     Write-Host "  OK - 服务端构建完成" -ForegroundColor Green
 

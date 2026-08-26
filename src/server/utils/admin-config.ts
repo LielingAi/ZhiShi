@@ -807,6 +807,28 @@ function hasProviderId(provider: Record<string, unknown>): provider is ProviderR
 
 
 
+/**
+ * 按运行链路口径找 kimi 系可用 key（1.3.0 抽出共享——1.2.9 只在显示层
+ * 修过、切换/解析两条路径仍精确匹配）：
+ *   - id 含 kimi/moonshot；
+ *   - 该 id 的 provider 定义非 openai 协议（moonshot preset 是 OpenAI
+ *     端点，不进 kimi-coding 路径；无定义按 anthropic 缺省）。
+ * 与 pi-provider 的 isKimiCodingProvider + resolveLoopModel 语义对齐。
+ */
+export function resolveKimiApiKey(config: AdminAppConfig): { providerId: string; apiKey: string } | null {
+  const keys = (config.providerApiKeys ?? {}) as Record<string, string>;
+  const providers = getAllEffectiveProviders(config);
+  for (const [kid, k] of Object.entries(keys)) {
+    if (!k || !k.trim()) continue;
+    const lid = kid.toLowerCase();
+    if (!lid.includes('kimi') && !lid.includes('moonshot')) continue;
+    const def = providers.find((p) => String(p.id) === kid);
+    const proto = def?.apiProtocol ? String(def.apiProtocol) : 'anthropic';
+    if (proto === 'anthropic') return { providerId: kid, apiKey: k };
+  }
+  return null;
+}
+
 export function getAllEffectiveProviders(config?: AdminAppConfig): ProviderRecord[] {
 
   const c = config ?? loadConfig();

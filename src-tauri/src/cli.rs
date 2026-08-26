@@ -21,19 +21,18 @@ use std::process::{Command, Stdio};
 /// was ignored" to a terminal user — the exact failure mode this whole CLI was
 /// designed to avoid for AI callers.
 const CLI_COMMANDS: &[&str] = &[
-    "mcp", "model", "agent", "runtime", "config", "status", "reload", "version",
+    "mcp", "model", "agent", "config", "status", "reload", "version",
     "skill", "task", "widget",
-    // Issue #194 — `zhishi diagnose runtime <type>` sugar. Without this, the
-    // packaged Tauri binary launches the GUI when invoked with just `diagnose ...`.
-    // `runtime diagnose <type>` still works via the "runtime" entry above.
-    "diagnose",
-    "support",
-    // Panel API / memory / session inbox — added 2026-08-06 audit
-    // (F-05): these existed in zhishi.ts for a long time but were missing here,
-    // so terminal invocation silently launched the GUI. ("browser" was removed
-    // in the W6 subtraction — the embedded browser is gone with the windowless
-    // host. "appcraft" removed in 1.2.3 — AppCraft 桌面自动化整体退役。)
-    "term", "memory", "session",
+    // Env / domain / research / intel / expert / help — added 2026-08-26 audit
+    // (B1): these command groups exist in zhishi.ts TOP_HELP but were missing
+    // here, so `ZhiShi.exe expert list` silently launched the GUI.
+    "env", "domain", "research", "intel", "expert", "help",
+    // Panel API / memory — added 2026-08-06 audit (F-05): these existed in
+    // zhishi.ts for a long time but were missing here, so terminal invocation
+    // silently launched the GUI. ("browser" was removed in the W6 subtraction —
+    // the embedded browser is gone. "appcraft" removed in 1.2.3 — AppCraft
+    // 桌面自动化整体退役。)
+    "term", "memory",
 ];
 
 /// Check if the given args indicate CLI mode.
@@ -127,9 +126,8 @@ pub fn run(args: &[String]) -> i32 {
 /// Windows: <install-dir>/resources/nodejs/node.exe
 /// Linux (AppImage / deb): <install-dir>/resources/nodejs/bin/node
 ///
-/// pub(crate): tui_launcher reuses this to inject the bundled runtime dir into
-/// the spawned terminal's PATH (zhishi.cmd locates node.exe via PATH).
-pub(crate) fn find_node_binary() -> Option<PathBuf> {
+/// Only used by [`run`] to spawn the bundled Node.js on the CLI script.
+fn find_node_binary() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
 
@@ -177,7 +175,7 @@ pub(crate) fn find_node_binary() -> Option<PathBuf> {
 
 /// Find the CLI script at `<data-dir>/bin/zhishi`.
 /// The script is the esbuild bundle of src/cli/, installed by
-/// `tui_launcher::sync_cli_resources` at app startup (the old in-app
+/// `cli_launcher::sync_cli_resources` at app startup (the old in-app
 /// `cmd_sync_cli` sync path was removed in W6; restored in 1.2.3).
 ///
 /// Resolves via `app_dirs::zhishi_data_dir()` so USB portable mode finds the

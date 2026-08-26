@@ -110,7 +110,7 @@ const SIDECAR_MARKER: &str = "--zhishi-sidecar";
 
 // Port file for CLI discovery — written when Global Sidecar starts,
 // read by `cli.rs` to know which port to connect to.
-const PORT_FILE_NAME: &str = "sidecar.port";
+pub const PORT_FILE_NAME: &str = "sidecar.port";
 
 // ===== Crashed Node Tracking =====
 // When a bundled Node.js crashes with STATUS_ACCESS_VIOLATION (0xC0000005) on Windows —
@@ -2021,6 +2021,24 @@ fn node_path_in_resources(resources: &std::path::Path) -> PathBuf {
 }
 
 fn find_node_executable_inner<R: Runtime>(app_handle: &AppHandle<R>) -> Option<PathBuf> {
+    // 1.3.0(dev-only)：debug 构建优先用系统 node。tsx 从源码跑服务端时,
+    // node_modules 的原生模块(better-sqlite3 等)按系统 node 的 ABI 编译,
+    // 而 debug 目录里的 bundled node(24.x) ABI 不同——加载 DB 模块直接
+    // NODE_MODULE_VERSION 失败(系统提示组装降级/turn 卡死)。发布构建不受
+    // 影响:sqlite-runtime 随包按 bundled node 编译。
+    #[cfg(debug_assertions)]
+    {
+        if let Some(paths) = std::env::var_os("PATH") {
+            let exe = if cfg!(windows) { "node.exe" } else { "node" };
+            for dir in std::env::split_paths(&paths) {
+                let candidate = dir.join(exe);
+                if candidate.exists() {
+                    ulog_info!("[sidecar] dev build: using system node {:?}", candidate);
+                    return Some(candidate);
+                }
+            }
+        }
+    }
     // Bundled Node.js lives under resource_dir/nodejs/ (shipped by build_*.sh
     // via scripts/download_nodejs.sh). Unlike the prior Bun externalBin
     // flow, Node.js is a binary + lib directory combo that can't ride
@@ -2405,7 +2423,7 @@ pub fn start_tab_sidecar<R: Runtime>(
     // Apply proxy policy: user proxy / inherit system / protect localhost (pit-of-success)
     proxy_config::apply_to_subprocess(&mut cmd);
 
-    // Inject management API port for Bun→Rust IPC (v0.1.21)
+    // Inject management API port for Node→Rust IPC (v0.1.21)
     let mgmt_port = crate::management_api::get_management_port();
     if mgmt_port > 0 {
         cmd.env("ZHISHI_MANAGEMENT_PORT", mgmt_port.to_string());
@@ -2459,18 +2477,18 @@ pub fn start_tab_sidecar<R: Runtime>(
 
     ulog_info!("[sidecar] Process spawned with pid: {:?}", child.id());
 
-    // 启动线程捕获 stdout → 写入统一日志（确保 Bun 输出在 unified log 可见）
+    // 启动线程捕获 stdout → 写入统一日志（确保 Node 输出在 unified log 可见）
     if let Some(stdout) = child.stdout.take() {
         let tab_id_clone = tab_id.to_string();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
-            let mut bun_logger_active = false;
+            let mut node_logger_active = false;
             for line in reader.lines().map_while(Result::ok) {
-                if !bun_logger_active {
+                if !node_logger_active {
                     if line.contains("[Logger] Unified logging initialized") {
-                        bun_logger_active = true;
+                        node_logger_active = true;
                     }
-                    ulog_info!("[bun-out][{}] {}", tab_id_clone, line);
+                    ulog_info!("[node-out][{}] {}", tab_id_clone, line);
                 }
             }
         });
@@ -2489,11 +2507,11 @@ pub fn start_tab_sidecar<R: Runtime>(
             for line in reader.lines().map_while(Result::ok) {
                 match classify_sidecar_stderr(&line) {
                     SidecarStderrLevel::Info =>
-                        ulog_info!("[bun-err][{}] {}", tab_id_clone, line),
+                        ulog_info!("[node-err][{}] {}", tab_id_clone, line),
                     SidecarStderrLevel::Warn =>
-                        ulog_warn!("[bun-err][{}] {}", tab_id_clone, line),
+                        ulog_warn!("[node-err][{}] {}", tab_id_clone, line),
                     SidecarStderrLevel::Error =>
-                        ulog_error!("[bun-err][{}] {}", tab_id_clone, line),
+                        ulog_error!("[node-err][{}] {}", tab_id_clone, line),
                 }
             }
         });
@@ -3691,8 +3709,8 @@ fn create_new_session_sidecar<R: Runtime>(
         .arg("--agent-dir")
         .arg(workspace_path);
 
-    // Pass session_id to Bun for real sessions (not pending-xxx)
-    // so Bun uses the same UUID as Rust/SDK, enabling resume on crash recovery
+    // Pass session_id to the Node sidecar for real sessions (not pending-xxx)
+    // so Node uses the same UUID as Rust/SDK, enabling resume on crash recovery
     if !session_id.starts_with("pending-") {
         cmd.arg("--session-id").arg(session_id);
     }
@@ -3705,7 +3723,7 @@ fn create_new_session_sidecar<R: Runtime>(
     // Apply proxy policy: user proxy / inherit system / protect localhost (pit-of-success)
     proxy_config::apply_to_subprocess(&mut cmd);
 
-    // Inject management API port for Bun→Rust IPC (v0.1.21)
+    // Inject management API port for Node→Rust IPC (v0.1.21)
     let mgmt_port = crate::management_api::get_management_port();
     if mgmt_port > 0 {
         cmd.env("ZHISHI_MANAGEMENT_PORT", mgmt_port.to_string());
@@ -3806,19 +3824,19 @@ fn create_new_session_sidecar<R: Runtime>(
         let session_id_for_log = session_id_clone.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
-            let mut bun_logger_active = false;
+            let mut node_logger_active = false;
             for line in reader.lines().map_while(Result::ok) {
-                // Once Bun's unified logger is initialized, ALL console.log output is
-                // written directly to the unified log file by Bun's logger interceptor.
-                // Capturing stdout after this point causes 100% duplication ([BUN] + [bun-out]).
-                // Only pre-logger startup lines need to go through bun-out.
-                if !bun_logger_active {
+                // Once the Node sidecar's unified logger is initialized, ALL console.log output is
+                // written directly to the unified log file by its logger interceptor.
+                // Capturing stdout after this point causes 100% duplication (sidecar logger + [node-out]).
+                // Only pre-logger startup lines need to go through [node-out].
+                if !node_logger_active {
                     if line.contains("[Logger] Unified logging initialized") {
-                        bun_logger_active = true;
+                        node_logger_active = true;
                     }
-                    ulog_info!("[bun-out][session:{}] {}", session_id_for_log, line);
+                    ulog_info!("[node-out][session:{}] {}", session_id_for_log, line);
                 }
-                // After logger init: silently drop stdout (Bun logger handles it)
+                // After logger init: silently drop stdout (Node logger handles it)
             }
         });
     }
@@ -3830,11 +3848,11 @@ fn create_new_session_sidecar<R: Runtime>(
             for line in reader.lines().map_while(Result::ok) {
                 match classify_sidecar_stderr(&line) {
                     SidecarStderrLevel::Info =>
-                        ulog_info!("[bun-err][session:{}] {}", session_id_for_log, line),
+                        ulog_info!("[node-err][session:{}] {}", session_id_for_log, line),
                     SidecarStderrLevel::Warn =>
-                        ulog_warn!("[bun-err][session:{}] {}", session_id_for_log, line),
+                        ulog_warn!("[node-err][session:{}] {}", session_id_for_log, line),
                     SidecarStderrLevel::Error =>
-                        ulog_error!("[bun-err][session:{}] {}", session_id_for_log, line),
+                        ulog_error!("[node-err][session:{}] {}", session_id_for_log, line),
                 }
             }
         });

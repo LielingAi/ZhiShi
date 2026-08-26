@@ -26,7 +26,7 @@
  *     后自动接下一条)。stop 两队列同清(逐条 cancelled)。事件名/payload
  *     与 SDK 路径对齐(agent-session 的 queue:* 语义)。
  *   - chat:status(W1):turn 开始(running)/ done(idle)/ stop / reset
- *     时 broadcast,TUI 状态行数据源。
+ *     时 broadcast,GUI 状态行数据源。
  *   - 会话跨重启(M4b):首个用户消息时 createSession(SessionStore)并把
  *     loopSessionId 写入会话元数据;sidecar 重启后 init 时按当前选定环境
  *     的分线映射(1.1.6 #4,env-sessions.json)找回对应 loop session,
@@ -122,6 +122,8 @@ import { collectEnabledSkills } from './skills';
 import { createEnvBgTool, createEnvExecTool, createResearchLogTool, ENV_EXEC_TOOL_NAME, RESEARCH_LOG_TOOL_NAME } from './tools';
 import { createIntelSearchTool, INTEL_SEARCH_TOOL_NAME } from './intel';
 import { createExpertDraftTool, createExpertSearchTool, EXPERT_DRAFT_TOOL_NAME, EXPERT_SEARCH_TOOL_NAME } from './expert';
+import { createDecisionTool, formatDecisionInjectionContent, REQUEST_DECISION_TOOL_NAME, type DecisionMeta } from './decision';
+import { buildLoopWireMessages } from './wire-replay';
 import { ENV_BG_TOOL_NAME, envBgReap } from './bg-exec';
 import { getBgRegistry, initBgRegistry } from './bg-registry';
 import { reapAllBgProcesses } from './bg-reap';
@@ -148,6 +150,13 @@ interface MessageWire {
     mimeType: string;
     isImage?: boolean;
   }[];
+  // ---- 1.3.2 决策块(additive):user 消息带 kind='decision' 时为决策记录,
+  // GUI 渲染琥珀决策块;TUI 走 default 忽略,现有字段形状不变。 ----
+  kind?: 'decision';
+  decisionId?: string;
+  choice?: string;
+  note?: string;
+  expertRefs?: string[];
 }
 
 interface PiQueueItem {
@@ -165,6 +174,12 @@ export interface PiSendInput {
   permissionMode?: string;
   /** W1(design-spec §6.4)— @ 引用数组(additive):[{type:'file',path}|{type:'env',id}|{type:'snapshot',name}|{type:'taskmd'}]。 */
   refs?: unknown;
+  /**
+   * 1.3.2 决策注入(additive):user 消息带决策记录——wire 落 kind:'decision'
+   * 决策块,loop jsonl 落 decision marker(/chat/stream 重放可还原)。
+   * 仅决策 respond 注入路径使用;普通 send/queue 不带。
+   */
+  decision?: DecisionMeta;
 }
 
 export interface PiSendResult {
@@ -182,6 +197,18 @@ export interface PiSendResult {
 
 export function getPiLogLines(): string[] {
   return [];
+}
+
+/** 配置缺失类发送错误(缺 provider 定义/API key)——/chat/send 据此区分 400。 */
+export const PI_NO_PROVIDER_ERROR = '无可用的 provider/model(pi 引擎):缺 provider 定义或 API key';
+
+/**
+ * /chat/send 错误文本 → HTTP 状态码(1.3.10 C2):配置类错误(无可用的
+ * provider/model)是请求方配置问题 → 400;其余保持 429(既有限流语义,
+ * 客户端按 429 退避)。
+ */
+export function chatSendErrorStatus(error: string): number {
+  return error === PI_NO_PROVIDER_ERROR ? 400 : 429;
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +254,40 @@ export function resolveSessionEnvKey(dir: string): string {
   const alt = dir.includes('/') ? dir.replace(/\//g, '\\') : dir.replace(/\\/g, '/');
   if (alt === dir) return envKeyForSelection(HOST_SELECTION);
   return keyFor(alt) ?? envKeyForSelection(HOST_SELECTION);
+}
+
+/**
+ * 当前工作区的环境锚(1.3.2 任务二 #2)——chat:init payload 的 environment
+ * 字段数据源,GUI 重连时免 environment/current 绕行。与 resolveSessionEnv
+ * 同一双形态兜底。host 选定(未锚定)→ null。
+ *   - env 选定 → { kind:'env', id: 条目 id, name: 条目名, type: 环境类型 }
+ *   - recipe 选定 → { kind:'recipe', id: 实例 id, name: 实例 id, type: 配方 id }
+ */
+export function resolveSessionEnvAnchor(dir: string): {
+  kind: 'env' | 'recipe';
+  id: string;
+  name: string;
+  type: string;
+} | null {
+  const store = loadSelectionStore();
+  const pick = (d: string): ReturnType<typeof resolveSessionEnvAnchor> => {
+    const selection = getWorkspaceSelection(store, d);
+    if (selection.kind === 'env') {
+      const entry = findEnvironmentEntry(listEnvironments(loadConfig()), selection.id);
+      return entry
+        ? { kind: 'env', id: entry.id, name: entry.name ?? entry.id, type: entry.kind }
+        : null;
+    }
+    if (selection.kind === 'recipe') {
+      return { kind: 'recipe', id: selection.instanceId, name: selection.instanceId, type: selection.name };
+    }
+    return null;
+  };
+  const primary = pick(dir);
+  if (primary) return primary;
+  const alt = dir.includes('/') ? dir.replace(/\//g, '\\') : dir.replace(/\\/g, '/');
+  if (alt === dir) return null;
+  return pick(alt);
 }
 
 /**
@@ -281,16 +342,26 @@ function resolvePiScenario(): InteractionScenario {
  * 这里是薄包装:把真实依赖(登记表单例 / config 环境解析 / envBgReap /
  * SSE 广播)接进可注入的 reapAllBgProcesses——编排本体在 bg-reap.ts 里
  * 被单测钉死,本函数只剩接线,不另测。
+ *
+ * broadcast 开关:invoke 通道(headless)传 false——回收照做(杀进程/清
+ * 登记不变),但 chat:bg-finished 不广播(契约:headless 不往客户端发
+ * 事件,与 buildTurnStack 的 broadcastEvents=false 同口径)。
  */
-async function reapBgOnLifecyclePoint(reason: 'turn-end' | 'reset'): Promise<void> {
+async function reapBgOnLifecyclePoint(
+  reason: 'turn-end' | 'reset',
+  opts: { broadcast?: boolean } = {},
+): Promise<void> {
   const registry = getBgRegistry();
   if (!registry) return;
   const envList = listEnvironments(loadConfig());
+  const doBroadcast = opts.broadcast ?? true;
   await reapAllBgProcesses({
     registry,
     findEnv: (envId) => findEnvironmentEntry(envList, envId) ?? null,
     reap: (entry, tag, pid) => envBgReap(entry, tag, pid),
-    onFinished: (tag, status) => broadcast('chat:bg-finished', { tag, status }),
+    onFinished: (tag, status) => {
+      if (doBroadcast) broadcast('chat:bg-finished', { tag, status });
+    },
     onWarn: (msg) => console.warn(`[pi-engine] ${msg}`),
     onLog: (msg) => console.log(`[pi-engine] ${msg}(${reason})`),
   });
@@ -391,7 +462,7 @@ class ChatEngine {
     return this.resolveLoopEngine(env, (loadConfig() as { loopEngine?: 'sdk' | 'pi' }).loopEngine) === 'pi';
   }
 
-  /** W1 — TUI 状态行数据源(sse.ts 已注册 'chat:status'):状态变迁时广播。 */
+  /** W1 — GUI 状态行数据源(sse.ts 已注册 'chat:status'):状态变迁时广播。 */
   private broadcastChatStatus(): void {
     broadcast('chat:status', { sessionState: this.busy ? 'running' : 'idle' });
   }
@@ -407,8 +478,21 @@ class ChatEngine {
     initBgRegistry(dir);
   }
 
-  getPiAgentState(): { agentDir: string; sessionState: string; hasInitialPrompt: boolean; loopEngine: string } {
-    return { agentDir: this.agentDir, sessionState: this.busy ? 'running' : 'idle', hasInitialPrompt: this.messages.length > 0, loopEngine: 'pi' };
+  getPiAgentState(): {
+    agentDir: string;
+    sessionState: string;
+    hasInitialPrompt: boolean;
+    loopEngine: string;
+    /** 1.3.2 任务二 #2:环境锚(additive)——GUI 重连免 environment/current 绕行。 */
+    environment: ReturnType<typeof resolveSessionEnvAnchor>;
+  } {
+    return {
+      agentDir: this.agentDir,
+      sessionState: this.busy ? 'running' : 'idle',
+      hasInitialPrompt: this.messages.length > 0,
+      loopEngine: 'pi',
+      environment: resolveSessionEnvAnchor(this.agentDir),
+    };
   }
 
   getPiMessages(): MessageWire[] {
@@ -428,50 +512,12 @@ class ChatEngine {
   // ---------------------------------------------------------------------------
 
   /** loop 消息 → 回放用 MessageWire(user/assistant/tool;thinking 段不重现)。
-   *  工具结果重放为 tool 卡;空结论的 assistant 照发空 content——由 TUI 转
-   *  分隔行兜底(工具在前的说「看上方工具卡」),历史不再悬空。 */
+   *  1.3.3:还原逻辑收敛到 loop/wire-replay.ts::buildLoopWireMessages
+   *  (历史面板 wire 端点 / 引擎恢复 / cold-history 三路径共用同一口径),
+   *  本方法只负责实例续号。 */
   private loopMessagesToWire(loopMessages: AgentMessage[]): MessageWire[] {
-    const wire: MessageWire[] = [];
-    for (const m of loopMessages) {
-      if (m.role === 'user') {
-        const text = typeof m.content === 'string'
-          ? m.content
-          : m.content.filter((c): c is TextContent => c.type === 'text').map((c) => c.text).join('\n');
-        const images = typeof m.content === 'string'
-          ? []
-          : m.content.filter((c): c is ImageContent => c.type === 'image');
-        wire.push({
-          id: String(this.messageSeq++),
-          role: 'user',
-          content: text,
-          timestamp: new Date(m.timestamp || Date.now()).toISOString(),
-          ...(images.length > 0
-            ? { attachments: images.map((img, i) => ({ id: String(i), name: 'image', mimeType: img.mimeType, isImage: true })) }
-            : {}),
-        });
-      } else if (m.role === 'assistant') {
-        const text = m.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
-        // 工具调用前的 thinking 段不重放(紧随的 tool 卡代表这轮动作);
-        // 纯空结论照发空 content,TUI 端转分隔行,冷历史不再漂悬空问题。
-        if (!text && m.content.some((c) => c.type === 'toolCall')) continue;
-        wire.push({
-          id: String(this.messageSeq++),
-          role: 'assistant',
-          content: text,
-          timestamp: new Date(m.timestamp || Date.now()).toISOString(),
-        });
-      } else if (m.role === 'toolResult') {
-        const text = m.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
-        wire.push({
-          id: String(this.messageSeq++),
-          role: 'tool',
-          name: typeof m.toolName === 'string' && m.toolName ? m.toolName : 'tool',
-          ok: m.isError !== true,
-          content: text,
-          timestamp: new Date(m.timestamp || Date.now()).toISOString(),
-        });
-      }
-    }
+    const wire = buildLoopWireMessages(loopMessages, this.messageSeq);
+    this.messageSeq += wire.length;
     return wire;
   }
 
@@ -565,7 +611,7 @@ class ChatEngine {
       ? resolveLoopModelFromEnv(input.providerEnv, input.model ?? '')
       : resolveLoopModel();
     if (!resolution) {
-      return { error: '无可用的 provider/model(pi 引擎):缺 provider 定义或 API key' };
+      return { error: PI_NO_PROVIDER_ERROR };
     }
     this.startPiTurn(input, resolution, grounding, queueId);
     return { queued: false, isInFlight: true, queueId };
@@ -708,6 +754,16 @@ class ChatEngine {
       ...(input.images?.length
         ? { attachments: input.images.map((img, i) => ({ id: String(i), name: img.name, mimeType: img.mimeType, isImage: true })) }
         : {}),
+      // 1.3.2 决策注入:live echo 直接带决策块字段(additive)。
+      ...(input.decision
+        ? {
+            kind: 'decision' as const,
+            decisionId: input.decision.decisionId,
+            choice: input.decision.choice,
+            ...(input.decision.note ? { note: input.decision.note } : {}),
+            ...(input.decision.expertRefs && input.decision.expertRefs.length > 0 ? { expertRefs: input.decision.expertRefs } : {}),
+          }
+        : {}),
     };
     this.messages.push(userMessage);
     broadcast('chat:message-replay', { message: userMessage });
@@ -734,6 +790,8 @@ class ChatEngine {
       // 同 intel_search 无条件注册。
       EXPERT_SEARCH_TOOL_NAME,
       EXPERT_DRAFT_TOOL_NAME,
+      // 1.3.2 决策面板：request_decision 无条件注册（宿主原生，不依赖 env）。
+      REQUEST_DECISION_TOOL_NAME,
     ];
     if (!this.systemInitInfo) {
       this.systemInitInfo = {
@@ -777,6 +835,18 @@ class ChatEngine {
           content: item.input.text.trim(),
           timestamp: new Date().toISOString(),
           queueId: item.queueId,
+          // 1.3.2 决策注入(steering 路径):wire 决策块字段与直发路径同形。
+          ...(item.input.decision
+            ? {
+                kind: 'decision' as const,
+                decisionId: item.input.decision.decisionId,
+                choice: item.input.decision.choice,
+                ...(item.input.decision.note ? { note: item.input.decision.note } : {}),
+                ...(item.input.decision.expertRefs && item.input.decision.expertRefs.length > 0
+                  ? { expertRefs: item.input.decision.expertRefs }
+                  : {}),
+              }
+            : {}),
         };
         this.messages.push(wireMsg);
         broadcast('chat:message-replay', { message: wireMsg });
@@ -785,11 +855,16 @@ class ChatEngine {
       }
       return drained.map((item) => {
         const itemText = item.input.text.trim();
-        return {
+        const base: AgentMessage = {
           role: 'user',
           content: item.grounding ? `${item.grounding}\n\n${itemText}` : itemText,
           timestamp: Date.now(),
-        } as AgentMessage;
+        };
+        // 决策 marker 随消息进 loop 持久化(done.messages → appendLoopMessages),
+        // /chat/stream 重放经 loopMessagesToWire 还原决策块。
+        return item.input.decision
+          ? ({ ...base, decision: item.input.decision } as AgentMessage)
+          : base;
       });
     };
 
@@ -874,16 +949,18 @@ class ChatEngine {
 
   /**
    * turn 执行栈组装:工具集(env_exec/env_bg/delegate_task 仅锚定环境后注册;
-   * research_log/intel/expert 宿主原生常驻;MCP 每 turn 热读)+ boundary
-   * (含幻觉工具记录,供缺口埋点)+ output-guard。runPiTurn(交互 turn,
-   * broadcastEvents=true)与 invokePiSession(B2 cron 独立 invoke 通道,
-   * broadcastEvents=false——headless,不往 TUI 广播 bg/subagent 事件)共用。
+   * research_log/intel/expert/request_decision 宿主原生常驻;MCP 每 turn
+   * 热读)+ boundary(含幻觉工具记录,供缺口埋点)+ output-guard。runPiTurn
+   * (交互 turn,broadcastEvents=true)与 invokePiSession(B2 cron 独立 invoke
+   * 通道,broadcastEvents=false——headless,不往 TUI 广播 bg/subagent 事件)共用。
+   * sessionId = 本 turn 的 loop 线快照(request_decision 的归属/注入路由依据)。
    */
   private buildTurnStack(
     env: EnvironmentEntry | null,
     resolution: LoopModelResolution,
     toolNames: string[],
     broadcastEvents: boolean,
+    sessionId: string,
     // 1.2.7(域补丁):会话域——子代理继承主 agent 的域(派生时刻任务域已定),
     // 可派发清单按 domain.json subagents 收窄;undefined → 全量(宁多勿缺)。
     domain?: ResearchTaskKind,
@@ -901,6 +978,8 @@ class ChatEngine {
       // 1.2.1 专家知识层：决策级检索 + 起草通道，同 intel_search 无条件注册。
       createExpertSearchTool(),
       createExpertDraftTool(),
+      // 1.3.2 决策面板：request_decision 无条件注册；归属线 = 本 turn 快照线。
+      createDecisionTool({ getSessionId: () => sessionId }),
     ];
     if (env) {
       // W1(design-spec §8)— delegate_task 接回生产路径。深度限 1 由 subagent
@@ -1025,7 +1104,7 @@ class ChatEngine {
       : undefined;
     const domain = caps ? resolveSessionDomain(history, caps) : undefined;
     const { tools, beforeToolCall, afterToolCall, blockedToolNames } =
-      this.buildTurnStack(env, resolution, toolNames, true, domain);
+      this.buildTurnStack(env, resolution, toolNames, true, turnSessionId, domain);
     // 1.2.6（C-11）：压缩阈值估算纳入系统提示——提示先于 transform 组装,
     // 字符数经同一 chars/4 启发式折算进阈值（compaction 侧向后兼容）。
     const systemPrompt = await this.assemblePiSystemPrompt(env, scenario, history, { caps, domain });
@@ -1041,6 +1120,11 @@ class ChatEngine {
           { type: 'text', text: promptText },
           ...input.images.map((img): ImageContent => ({ type: 'image', data: img.data, mimeType: img.mimeType })),
         ]
+      : undefined;
+    // 1.3.2 决策注入:决策消息无图片,走 messages 形态带 decision marker
+    // (随 done.messages 进 loop 持久化,重放经 loopMessagesToWire 还原)。
+    const decisionPromptMessage: AgentMessage | undefined = input.decision && !promptContent
+      ? ({ role: 'user', content: promptText, timestamp: Date.now(), decision: input.decision } as AgentMessage)
       : undefined;
 
     let fullText = '';
@@ -1077,9 +1161,11 @@ class ChatEngine {
           )
         : transformContext;
       for await (const event of runLoop({
-        ...(promptContent
-          ? { messages: [{ role: 'user', content: promptContent, timestamp: Date.now() } as AgentMessage] }
-          : { prompt: promptText }),
+        ...(decisionPromptMessage
+          ? { messages: [decisionPromptMessage] }
+          : promptContent
+            ? { messages: [{ role: 'user', content: promptContent, timestamp: Date.now() } as AgentMessage] }
+            : { prompt: promptText }),
         history,
         systemPrompt,
         model: resolution.model,
@@ -1249,6 +1335,41 @@ class ChatEngine {
   }
 
   /**
+   * 1.3.2 决策注入——把人的决定作为 user 消息注入回 loop,复用 steering/
+   * 直发通道的全部既有语义(B3 turn 快照线、B5 queueId 答案归属、B6 补
+   * wire):
+   *   - 归属线 = 当前引擎线(decision.sessionId):走 sendPiChatMessage——
+   *     busy 进 steering(pi 在 turn 间轮询注入,随 done.messages 持久化),
+   *     闲时直发新 turn;wire 决策块 + broadcast 与普通消息同路径;
+   *   - 跨线(决策来自 cron invoke 等 headless 线):走 invokePiSession 独立
+   *     通道注入到那条线(jsonl 持久化,不动引擎单例,不串线)。
+   */
+  async injectDecision(decision: {
+    decisionId: string;
+    sessionId: string;
+    question?: string;
+    choice: string;
+    note?: string;
+    expertRefs?: string[];
+  }): Promise<{ success: boolean; error?: string }> {
+    const meta: DecisionMeta = {
+      decisionId: decision.decisionId,
+      choice: decision.choice,
+      ...(decision.note ? { note: decision.note } : {}),
+      ...(decision.expertRefs && decision.expertRefs.length > 0 ? { expertRefs: decision.expertRefs } : {}),
+    };
+    const text = formatDecisionInjectionContent(decision);
+    if (decision.sessionId !== this.sessionId) {
+      // 跨线:headless 注入到正确的那条线(读其历史、续存回同一条线)。
+      const r = await invokePiSession({ text, decision: meta }, { loopSessionId: decision.sessionId });
+      return { success: !r.error, ...(r.error ? { error: r.error } : {}) };
+    }
+    const result = await this.sendPiChatMessage({ text, decision: meta });
+    if (result.error) return { success: false, error: result.error };
+    return { success: true };
+  }
+
+  /**
    * B2(1.2.6)— cron 独立 invoke 通道:对指定 loop 线跑一次完整 agent turn
    * (读该线历史 → runLoop 带全套工具/边界/审计/压缩 → 新增消息续存回同一
    * 条线),全程不碰引擎单例的 sessionId/messages/steering/queue/busy,不广播
@@ -1281,7 +1402,7 @@ class ChatEngine {
       ? resolveLoopModelFromEnv(input.providerEnv, input.model ?? '')
       : resolveLoopModel();
     if (!resolution) {
-      return { text: '', error: '无可用的 provider/model(pi 引擎):缺 provider 定义或 API key', loopSessionId };
+      return { text: '', error: PI_NO_PROVIDER_ERROR, loopSessionId };
     }
     const env = resolveSessionEnv(this.agentDir);
     const toolNames = [
@@ -1290,6 +1411,7 @@ class ChatEngine {
       INTEL_SEARCH_TOOL_NAME,
       EXPERT_SEARCH_TOOL_NAME,
       EXPERT_DRAFT_TOOL_NAME,
+      REQUEST_DECISION_TOOL_NAME,
     ];
     const history = loadLoopSession(loopSessionId).messages;
     // 1.2.7(域补丁):与交互 turn 同——域判定一次算出,执行栈与系统提示共用。
@@ -1299,7 +1421,7 @@ class ChatEngine {
       : undefined;
     const domain = caps ? resolveSessionDomain(history, caps) : undefined;
     const { tools, beforeToolCall, afterToolCall, blockedToolNames } =
-      this.buildTurnStack(env, resolution, toolNames, false, domain);
+      this.buildTurnStack(env, resolution, toolNames, false, loopSessionId, domain);
     const systemPrompt = await this.assemblePiSystemPrompt(env, scenario, history, { caps, domain });
     const contextWindow = resolution.model.contextWindow || 200_000;
     const transformContext = makeCompactionTransform(
@@ -1325,7 +1447,9 @@ class ChatEngine {
             )
           : transformContext;
         for await (const event of runLoop({
-          prompt: input.text.trim(),
+          ...(input.decision
+            ? { messages: [{ role: 'user', content: input.text.trim(), timestamp: Date.now(), decision: input.decision } as AgentMessage] }
+            : { prompt: input.text.trim() }),
           history,
           systemPrompt,
           model: resolution.model,
@@ -1355,10 +1479,12 @@ class ChatEngine {
           { model: resolution.modelId, providerId: resolution.providerId },
         ).catch((err) => console.warn('[pi-engine] invoke 续存失败:', err));
       }
-      // 与单例 turn 收尾同款的挂点(标题/缺口埋点/bg 回收),目标都是本条线。
-      firePostTurnTitleHook(loopSessionId, resolution.modelId, input.providerEnv);
+      // 与单例 turn 收尾同款的挂点(缺口埋点/bg 回收),目标都是本条线。
+      // 标题钩子对 invoke 线跳过(headless 线无 SessionStore 元数据可标,
+      // 且其 generateAndApplyTitle 尾段会 broadcast chat:session-title-changed
+      // ——invoke 契约零广播);bg 回收照做但不广播(broadcast:false)。
       this.recordGapEvents(failed, blockedToolNames, loopSessionId);
-      void reapBgOnLifecyclePoint('turn-end');
+      void reapBgOnLifecyclePoint('turn-end', { broadcast: false });
       const lastAssistant = [...doneMessages].reverse().find((m) => m.role === 'assistant');
       const text = lastAssistant
         ? lastAssistant.content.filter((c): c is TextContent => c.type === 'text').map((c) => c.text).join('\n')
@@ -1710,7 +1836,7 @@ export async function initPiChatEngine(dir: string): Promise<void> {
   return defaultEngine.initPiChatEngine(dir);
 }
 
-export function getPiAgentState(): { agentDir: string; sessionState: string; hasInitialPrompt: boolean; loopEngine: string } {
+export function getPiAgentState(): ReturnType<ChatEngine['getPiAgentState']> {
   return defaultEngine.getPiAgentState();
 }
 
@@ -1747,6 +1873,18 @@ export async function invokePiSession(
   options: { loopSessionId?: string; scenario?: InteractionScenario; timeoutMs?: number } = {},
 ): Promise<{ text: string; error?: string; loopSessionId: string }> {
   return defaultEngine.invokePiSession(input, options);
+}
+
+/** 1.3.2 决策注入——人的决定以 user 消息注入回 loop(单例线经 steering/直发,跨线经 invoke)。 */
+export function injectPiDecision(decision: {
+  decisionId: string;
+  sessionId: string;
+  question?: string;
+  choice: string;
+  note?: string;
+  expertRefs?: string[];
+}): Promise<{ success: boolean; error?: string }> {
+  return defaultEngine.injectDecision(decision);
 }
 
 /** B2(1.2.6)— 引擎当前线的只读快照(cron「跟随当前线」语义的数据源)。 */

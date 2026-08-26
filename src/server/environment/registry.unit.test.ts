@@ -112,6 +112,26 @@ describe('validateEnvironmentEntry', () => {
     expect(validateEnvironmentEntry({ id: 'x', kind: 'ssh', host: 'h', user: 1 }).ok).toBe(false);
     expect(validateEnvironmentEntry({ id: 'x', kind: 'ssh', host: 'h', keyPath: {} }).ok).toBe(false);
   });
+
+  it('1.3.8 多配方：recipeIds 数组 trim+去重，主配方必须在集合内', () => {
+    const ok = validateEnvironmentEntry({
+      id: 'x',
+      kind: 'ssh',
+      host: 'h',
+      recipeId: 'pwn',
+      recipeIds: ['pwn', ' pwn ', 'pentest'],
+    });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.entry.recipeIds).toEqual(['pwn', 'pentest']);
+    }
+    expect(
+      validateEnvironmentEntry({ id: 'x', kind: 'ssh', host: 'h', recipeId: 'pwn', recipeIds: ['pentest'] }).ok,
+    ).toBe(false);
+    expect(
+      validateEnvironmentEntry({ id: 'x', kind: 'ssh', host: 'h', recipeIds: 'pwn' }).ok,
+    ).toBe(false);
+  });
 });
 
 describe('addEnvironmentEntry / removeEnvironmentEntry / findEnvironmentEntry', () => {

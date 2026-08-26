@@ -123,8 +123,7 @@ impl TerminalManager {
 
 impl TerminalManager {
     /// Create a new terminal instance. Returns `terminal_id`.
-    /// Shared by the Tauri command (renderer split-panel) and the Panel API
-    /// (`/term/open`, which passes an `ai-<uuid>` ID).
+    /// Called by the Panel API (`/term/open`, which passes an `ai-<uuid>` ID).
     /// `command` runs a specific command line (via the platform shell)
     /// instead of the default interactive shell; `None` keeps the default.
     /// `env_tag` is the D14 boundary marker (see TerminalSession.env_tag).
@@ -491,15 +490,15 @@ fn default_shell() -> String {    #[cfg(unix)]
 /// Inject environment variables into the terminal shell process.
 ///
 /// This ensures the terminal has access to:
-/// 1. Bundled Bun and Node.js (same PATH as SDK subprocesses)
+/// 1. Bundled Node.js (same PATH as SDK subprocesses)
 /// 2. Proxy configuration (NO_PROXY protects localhost)
 /// 3. ~/.zhishi/bin (CLI tools)
 fn inject_terminal_env(cmd: &mut CommandBuilder, app: &AppHandle, sidecar_port: Option<u16>) {
     // 1. Build PATH with bundled runtimes
-    //    Priority: bundled bun dir → bundled node dir → ~/.zhishi/bin → system PATH
+    //    Priority: bundled node dir → ~/.zhishi/bin → system PATH
     let mut extra_paths: Vec<String> = Vec::new();
 
-    // Bundled Bun directory
+    // Bundled runtime directories (binaries/ + nodejs/)
     if let Ok(resource_dir) = app.path().resource_dir() {
         // #229 (same bug class): on Windows resource_dir() may carry the `\\?\`
         // extended-length prefix. cmd.exe / PowerShell don't honor `\\?\` entries

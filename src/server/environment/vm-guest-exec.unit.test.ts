@@ -23,6 +23,7 @@ import {
   buildGuestExecArgs,
   classifyGuestExecFailure,
   parseGuestExitCode,
+  resolveVmxForEntry,
   resolveVmxForVmName,
   vmGuestExec,
   GUEST_EXEC_TIMEOUT_MS,
@@ -186,6 +187,35 @@ describe('resolveVmxForVmName（D22 直连：只走 vmTemplates）', () => {
       expect(r.error).toContain('ghost');
       expect(r.error).toContain('env adopt');
     }
+  });
+});
+
+describe('resolveVmxForEntry（1.3.7：down/rm/快照/回滚/guest-exec 的统一解析点）', () => {
+  it('条目自带 vmx 字段优先（定位辅助），不碰 vmTemplates', () => {
+    const entry = makeEntry({ id: 'kali', vmName: 'kali', vmx: 'D:\\vms\\kali.vmx' });
+    expect(resolveVmxForEntry(entry, { templates: TEMPLATES }))
+      .toEqual({ ok: true, vmx: 'D:\\vms\\kali.vmx' });
+  });
+
+  it('无 vmx 字段 → 回落 vmName→vmTemplates 探测', () => {
+    const entry = makeEntry({ id: 'pwn-vm', vmName: 'pwn-vm' });
+    expect(resolveVmxForEntry(entry, { templates: TEMPLATES }))
+      .toEqual({ ok: true, vmx: VMX, templateUser: undefined });
+  });
+
+  it('vmName 缺失时回落 entry.id 探测', () => {
+    const entry = makeEntry({ id: INSTANCE_NAME, vmName: undefined });
+    expect(resolveVmxForEntry(entry, { templates: TEMPLATES }))
+      .toEqual({ ok: true, vmx: VMX, templateUser: undefined });
+  });
+
+  it('非 vm 条目 / 解析不到 → ok:false', () => {
+    const docker = makeEntry({ kind: 'docker', vmName: undefined });
+    const r1 = resolveVmxForEntry(docker, { templates: TEMPLATES });
+    expect(r1.ok).toBe(false);
+    const ghost = makeEntry({ id: 'ghost', vmName: 'ghost' });
+    const r2 = resolveVmxForEntry(ghost, { templates: {} });
+    expect(r2.ok).toBe(false);
   });
 });
 
