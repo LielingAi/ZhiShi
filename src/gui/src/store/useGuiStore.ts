@@ -68,6 +68,17 @@ import {
 } from '../model/input-history';
 import { buildMentionItems, fileCacheKey, fileDirOf, MENTION_DEBOUNCE_MS, parseMentionQuery } from '../model/mention';
 import { planSwitch, sessionKey } from '../model/multi-session';
+import {
+  applyAutoRunEvent,
+  buildAutoRunStartPayload,
+  isAutoRunActive,
+  optimisticAutoRunEntry,
+  parseBudgetLimit,
+  validateAutoRunForm,
+  activeAutoRunOf,
+  type AutoRunEntry,
+  type AutoRunFormView,
+} from '../model/auto-run';
 import { reduceSseEvent } from '../model/reducer';
 import { buildSendBody, classifySendResponse, type Ref } from '../model/send';
 import {
@@ -178,7 +189,9 @@ export type ModalKind =
   | 'promote'
   | 'env-remove'
   | 'env-down'
-  | 'env-detail';
+  | 'env-detail'
+  | 'auto-run-start'
+  | 'auto-run-stop';
 
 /** promote（入专家库）预填：决策块 → 专家条目草稿。 */
 export interface PromotePrefill {
@@ -282,6 +295,11 @@ export interface GuiState {
   /** 当前决策模态展示的 decisionId；null = 全部收起（会话头部待答指示）。 */
   activeDecisionId: string | null;
 
+  // 1.4.1：auto loop（auto-run runner）登记表——活跃 loop 只有一条。
+  autoRun: AutoRunEntry | null;
+  /** 验收包模态收起标志（新 verdict-requested 重置为 false）。 */
+  verdictDismissed: boolean;
+
   // 1.3.2 ③：主题（深色默认；localStorage 持久化）
   theme: ThemeMode;
 
@@ -374,6 +392,17 @@ export interface GuiState {
   respondDecision(decisionId: string, choice: string, note?: string): Promise<void>;
   dismissDecision(decisionId: string): void;
   openDecision(decisionId: string): void;
+  // 1.4.1：auto loop
+  openAutoRunStart(): void;
+  submitAutoRun(input: AutoRunFormView): Promise<void>;
+  requestStopAutoRun(): void;
+  confirmStopAutoRun(): Promise<void>;
+  extendAutoRunBudget(limit: number): Promise<void>;
+  respondAutoRunVerdict(verdict: 'pass' | 'fail' | 'continue'): Promise<void>;
+  dismissVerdict(): void;
+  openVerdict(): void;
+  dismissAutoRunCard(): void;
+  loadAutoRunState(): Promise<void>;
   // 1.3.2 ①：promote（决策块入专家库）
   submitPromote(entry: Record<string, unknown>): Promise<{ ok: boolean; message: string }>;
   // 1.3.2 ③：主题
@@ -467,6 +496,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   decisions: [],
   activeDecisionId: null,
   theme: loadTheme(browserStorage()),
+
+  autoRun: null,
+  verdictDismissed: false,
 
   tools: [],
 
@@ -582,6 +614,27 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
             }
             if (res.bgEvent) patch.bgTasks = applyBgEvent(s.bgTasks, res.bgEvent);
             if (res.subagentEvent) patch.subagents = applySubagentEvent(s.subagents, res.subagentEvent);
+            // 1.4.1：auto loop 登记表（auto-run:* → applyAutoRunEvent 归并）。
+            if (res.autoRun) {
+              const next = applyAutoRunEvent(s.autoRun, res.autoRun);
+              patch.autoRun = next;
+              // 新验收包到达 → 自动弹（收起态重置）。
+              if (res.autoRun.kind === 'verdict' && next?.verdict) {
+                patch.verdictDismissed = false;
+              }
+              // 暂停 / 完成 → toast（暂停点提示 + 完成回报）。
+              if (res.autoRun.kind === 'paused' && next) {
+                patch.toast =
+                  res.autoRun.reason === 'budget'
+                    ? '⏸ auto loop 暂停：预算耗尽——加预算或终止'
+                    : '⏸ auto loop 暂停（空转/反复失败）——继续或终止';
+                patch.toastNonce = s.toastNonce + 1;
+              }
+              if (res.autoRun.kind === 'completed' && next) {
+                patch.toast = '✓ auto loop 完成';
+                patch.toastNonce = s.toastNonce + 1;
+              }
+            }
             // 1.3.3 @ 补全：chat:system-init 广播的工具名清单。
             if (res.tools) patch.tools = res.tools;
             // 1.3.2 ①：决策登记表（init reset → replay upsert → resolved remove）
@@ -611,6 +664,10 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
           if (res.environment !== undefined) {
             applyInitEnvAnchor(get, set, res.environment);
           }
+          // 1.4.1：每次(重)连的 chat:init 前导 → 用 auto-run/list 恢复活跃
+          // loop 快照（SSE 不重放 auto-run 事件族，断线期间的阶段/暂停/验收
+          // 状态只能从 list 端点补回）。
+          if (input.event === 'chat:init') void get().loadAutoRunState();
         }
       } catch (err) {
         if (!ac.signal.aborted) {
@@ -657,6 +714,11 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     const c = client;
     if (!c) {
       state.showToast('未连接 sidecar');
+      return;
+    }
+    // 1.4.1：auto loop 运行期环境锁定（启动即锁定，运行中不可换）。
+    if (isAutoRunActive(state.autoRun)) {
+      state.showToast('auto loop 运行中——环境已锁定（Esc 终止 loop 后再切换）');
       return;
     }
     if (!state.workspace) {
@@ -884,6 +946,11 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     const c = client;
     if (!c) {
       get().showToast('未连接 sidecar');
+      return;
+    }
+    // 1.4.1：auto loop 运行期仅观察——输入区已禁用，这里是兜底闸。
+    if (isAutoRunActive(get().autoRun)) {
+      get().showToast('auto loop 运行中，仅观察');
       return;
     }
     // 1.4.0 补充修复：一切操作都在环境内——未锚定环境（host）不发任何消息。
@@ -1133,6 +1200,213 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   openDecision(decisionId: string) {
     if (hasDecision(get().decisions, decisionId)) {
       set({ activeDecisionId: decisionId });
+    }
+  },
+
+  // ── 1.4.1：auto loop（启动 / 终止 / 加预算 / 验收终审 / 清单恢复） ──
+
+  openAutoRunStart() {
+    if (isAutoRunActive(get().autoRun)) {
+      get().showToast('已有 auto loop 运行中——先观察或 Esc 终止');
+      return;
+    }
+    set({ modal: { kind: 'auto-run-start' } });
+  },
+
+  async submitAutoRun(input: AutoRunFormView) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    const errors = validateAutoRunForm(input, state.envs);
+    if (errors.length > 0) {
+      state.showToast(errors[0].message);
+      return;
+    }
+    const payload = buildAutoRunStartPayload(input);
+    if (!payload) {
+      state.showToast('表单不完整');
+      return;
+    }
+    try {
+      const res = await api.autoRunStart(c, payload);
+      if (!res.success || !res.id) {
+        state.showToast(`启动失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      // 乐观条目（status starting）——观察卡立即出现；SSE auto-run:started
+      // 到达后转正（applyAutoRunEvent 同 id 只翻状态，字段以本地为准）。
+      set({
+        modal: null,
+        autoRun: optimisticAutoRunEntry(res.id, payload),
+        verdictDismissed: false,
+      });
+      state.showToast(`✓ auto loop 已启动：${payload.name}`);
+    } catch (err) {
+      state.showToast(`启动失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  requestStopAutoRun() {
+    if (!get().autoRun) return;
+    set({ modal: { kind: 'auto-run-stop' } });
+  },
+
+  async confirmStopAutoRun() {
+    const c = client;
+    const state = get();
+    const id = state.autoRun?.id;
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    if (!id) return;
+    try {
+      const res = await api.autoRunStop(c, { id });
+      if (!res.success) {
+        state.showToast(`终止失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      // 服务端无 'stopped' 事件（事件族只有 completed）——本地就地翻停，
+      // 观察卡显示「已终止」，下次 chat:init 用 list 对账。
+      set((s) => ({
+        modal: null,
+        autoRun:
+          s.autoRun && s.autoRun.id === id
+            ? { ...s.autoRun, status: 'stopped', updatedAt: Date.now() }
+            : s.autoRun,
+      }));
+      state.showToast('⏹ auto loop 已终止——会话回到普通模式');
+    } catch (err) {
+      state.showToast(`终止失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  async extendAutoRunBudget(limit: number) {
+    const c = client;
+    const state = get();
+    const id = state.autoRun?.id;
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    if (!id || parseBudgetLimit(String(limit)) === null) {
+      state.showToast('预算须为正整数');
+      return;
+    }
+    try {
+      const res = await api.autoRunBudget(c, { id, limit });
+      if (!res.success) {
+        state.showToast(`加预算失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      // 服务端加完预算自动续跑——本地同步翻 running + 清暂停点。
+      set((s) =>
+        s.autoRun && s.autoRun.id === id
+          ? {
+              autoRun: {
+                ...s.autoRun,
+                budget: { ...s.autoRun.budget, limit },
+                status: 'running',
+                paused: undefined,
+                updatedAt: Date.now(),
+              },
+            }
+          : {},
+      );
+      state.showToast('✓ 预算已加——loop 继续');
+    } catch (err) {
+      state.showToast(`加预算失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  async respondAutoRunVerdict(verdict: 'pass' | 'fail' | 'continue') {
+    const c = client;
+    const state = get();
+    const id = state.autoRun?.id;
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    if (!id) return;
+    try {
+      const res = await api.autoRunVerdict(c, { id, verdict });
+      if (!res.success) {
+        state.showToast(`提交失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      if (verdict === 'continue') {
+        // 继续跑（验收包「继续」或 stall/repeated-failures 暂停点「继续」）。
+        set((s) =>
+          s.autoRun && s.autoRun.id === id
+            ? {
+                autoRun: {
+                  ...s.autoRun,
+                  status: 'running',
+                  paused: undefined,
+                  verdict: undefined,
+                  updatedAt: Date.now(),
+                },
+                verdictDismissed: true,
+              }
+            : {},
+        );
+        state.showToast('▶ 继续跑');
+        return;
+      }
+      // 终审 pass/fail：本地就地定稿（服务端 completed 事件到达时幂等复写）。
+      set((s) =>
+        s.autoRun && s.autoRun.id === id
+          ? {
+              autoRun: {
+                ...s.autoRun,
+                status: verdict === 'pass' ? 'completed' : 'stopped',
+                updatedAt: Date.now(),
+              },
+              verdictDismissed: true,
+            }
+          : {},
+      );
+      state.showToast(verdict === 'pass' ? '✓ 验收通过——auto loop 完成' : '⏹ 验收不通过——loop 已终止');
+    } catch (err) {
+      state.showToast(`提交失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  dismissVerdict() {
+    // Esc 语义：收起不作答——loop 保持 awaiting-verdict，观察卡「待终审」
+    // 指示可点开重答（与 decision 模态同族口径）。
+    set({ verdictDismissed: true });
+  },
+
+  openVerdict() {
+    set({ verdictDismissed: false });
+  },
+
+  dismissAutoRunCard() {
+    // completed/stopped 后的观察卡关闭（活跃 loop 无此入口——只能 Esc 终止）。
+    set({ autoRun: null, verdictDismissed: false });
+  },
+
+  async loadAutoRunState() {
+    const c = client;
+    if (!c) return;
+    try {
+      const raw = await api.autoRunList(c);
+      const restored = activeAutoRunOf(raw);
+      const cur = get().autoRun;
+      // 同 id 且本地更新 → 不覆盖（list 快照落后于在飞 SSE 事件）。
+      if (restored && cur && restored.id === cur.id && cur.updatedAt > restored.updatedAt) {
+        return;
+      }
+      set({
+        autoRun: restored,
+        verdictDismissed: restored?.verdict ? false : get().verdictDismissed,
+      });
+    } catch {
+      // 静默——恢复失败保持本地状态（list 端点未接线时不阻塞会话）。
     }
   },
 
@@ -1731,9 +2005,13 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       queueOpen: s.queueOpen,
       boundaryOpen: s.boundaryAsks.length > 0,
       decisionOpen: s.decisions.length > 0 && s.activeDecisionId !== null,
+      // 1.4.1：验收包模态（autoRun.verdict 存在且未收起）。
+      verdictOpen: s.autoRun?.verdict !== undefined && !s.verdictDismissed,
       modalOpen: s.modal !== null,
       drawerOpen: s.drawer !== null,
       pageOpen: s.page !== 'chat',
+      // 1.4.1：auto loop 活跃 → Esc 弹终止确认（在 busy 中断之前截胡）。
+      autoRunActive: isAutoRunActive(s.autoRun),
       busy: currentSession(s).phase === 'running',
     });
     switch (action.type) {
@@ -1756,6 +2034,11 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         set({ activeDecisionId: null });
         break;
       }
+      case 'dismiss-verdict':
+        // 1.4.1：验收包收起不作答——loop 保持 awaiting-verdict，观察卡
+        // 「待终审」可重开。
+        set({ verdictDismissed: true });
+        break;
       case 'close-modal':
         // G-02（1.3.10）：boot 构建进行中 Esc 不关模态（与 ✕ disabled 对齐）
         // ——不做 abort（bootEnv 无 AbortController，environment/up 继续跑），
@@ -1773,6 +2056,11 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         break;
       case 'close-page':
         set({ page: 'chat' });
+        break;
+      case 'confirm-stop-auto-run':
+        // 1.4.1：auto loop 活跃时 Esc = 弹「终止 auto loop？」确认（二次确认
+        // 防误触；确认模态打开后 Esc 走 modal 层 = 取消）。
+        get().requestStopAutoRun();
         break;
       case 'interrupt':
         void get().stopTurn();

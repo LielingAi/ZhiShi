@@ -32,6 +32,13 @@ export type InteractionScenario =
   | { type: 'desktop' }
   | { type: 'cron'; taskId: string; intervalMinutes: number; aiCanExit: boolean }
   /**
+   * 1.4.1 — auto loop agent 场景(cron 同族的 headless 通道)。与 cron 的
+   * 差异:循环是 runner 逐轮自动发起的(不是心跳定时唤醒),且研究纪律里有
+   * 「暂停点才提请人」(request_decision)——cron 模板的「不要向用户提问等
+   * 回复」与本设计直接冲突,故独立成族而不是复用 cron 场景对象。
+   */
+  | { type: 'auto-run'; runId: string }
+  /**
    * 安全研究员版 P1 S1 — `zhishi agent` CLI 会话场景。注入五段安全语境
    * （kernel / capabilities / native-code / research-log / research-memory，
    * 见 system-prompt-security.ts）。
@@ -75,6 +82,10 @@ const TMPL_CHANNEL_DESKTOP = `<zhishi-interaction-channel>
 
 const TMPL_CHANNEL_CRON = `<zhishi-interaction-channel>
 本会话由定时任务触发(headless,没有实时对话方)——你的最终输出会记入任务运行日志,用户事后查看;不要向用户提问等回复,按任务目标自主推进到底。
+</zhishi-interaction-channel>`;
+
+const TMPL_CHANNEL_AUTO_RUN = `<zhishi-interaction-channel>
+本会话由 auto loop 自动驱动(headless,没有实时对话方)——每轮结束系统会自动发起下一轮,不需要你逐轮请求继续;过程与结论记录在会话存档里,研究员事后回看,也会在暂停点/验收点介入。
 </zhishi-interaction-channel>`;
 
 const TMPL_CHANNEL_SECURITY = `<zhishi-interaction-channel>
@@ -219,9 +230,10 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
     runtimeName: getRuntimeDisplayName(options?.runtime),
   }));
 
-  // L2: Interaction channel (按场景分述——cron 是 headless 触发，没有实时对话方)
+  // L2: Interaction channel (按场景分述——cron/auto-run 是 headless 触发，没有实时对话方)
   parts.push(
     scenario.type === 'cron' ? TMPL_CHANNEL_CRON
+    : scenario.type === 'auto-run' ? TMPL_CHANNEL_AUTO_RUN
     : scenario.type === 'security' ? TMPL_CHANNEL_SECURITY
     : TMPL_CHANNEL_DESKTOP,
   );

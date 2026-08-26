@@ -123,6 +123,7 @@ import { createEnvBgTool, createEnvExecTool, createResearchLogTool, ENV_EXEC_TOO
 import { createIntelSearchTool, INTEL_SEARCH_TOOL_NAME } from './intel';
 import { createExpertDraftTool, createExpertSearchTool, EXPERT_DRAFT_TOOL_NAME, EXPERT_SEARCH_TOOL_NAME } from './expert';
 import { createDecisionTool, formatDecisionInjectionContent, REQUEST_DECISION_TOOL_NAME, type DecisionMeta } from './decision';
+import { createDeclareCompletionTool, DECLARE_COMPLETION_TOOL_NAME } from './declare-completion';
 import { buildLoopWireMessages } from './wire-replay';
 import { ENV_BG_TOOL_NAME, envBgReap } from './bg-exec';
 import { getBgRegistry, initBgRegistry } from './bg-registry';
@@ -792,6 +793,9 @@ class ChatEngine {
       EXPERT_DRAFT_TOOL_NAME,
       // 1.3.2 决策面板：request_decision 无条件注册（宿主原生，不依赖 env）。
       REQUEST_DECISION_TOOL_NAME,
+      // 1.4.1 达成宣布：declare_completion 无条件注册（auto loop 验收信号；
+      // 交互 turn 无 runner 消费，注册为全场景同一工具集，声明按线分桶不串）。
+      DECLARE_COMPLETION_TOOL_NAME,
     ];
     if (!this.systemInitInfo) {
       this.systemInitInfo = {
@@ -980,6 +984,9 @@ class ChatEngine {
       createExpertDraftTool(),
       // 1.3.2 决策面板：request_decision 无条件注册；归属线 = 本 turn 快照线。
       createDecisionTool({ getSessionId: () => sessionId }),
+      // 1.4.1 达成宣布：declare_completion 无条件注册；归属线 = 本 turn 快照线
+      // （auto-run runner 按 loopSessionId 取走声明，交互线声明无人消费即无害）。
+      createDeclareCompletionTool({ getSessionId: () => sessionId }),
     ];
     if (env) {
       // W1(design-spec §8)— delegate_task 接回生产路径。深度限 1 由 subagent
@@ -1412,6 +1419,7 @@ class ChatEngine {
       EXPERT_SEARCH_TOOL_NAME,
       EXPERT_DRAFT_TOOL_NAME,
       REQUEST_DECISION_TOOL_NAME,
+      DECLARE_COMPLETION_TOOL_NAME,
     ];
     const history = loadLoopSession(loopSessionId).messages;
     // 1.2.7(域补丁):与交互 turn 同——域判定一次算出,执行栈与系统提示共用。

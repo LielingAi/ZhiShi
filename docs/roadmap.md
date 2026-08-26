@@ -5,17 +5,19 @@
 
 ---
 
-## 1.4.1 —— auto loop agent 立项（进行中）
+## 1.4.1 —— auto loop agent（已完成）
 
 设计依据：`docs/design/auto-loop-design.md`（2026-08-26 定稿，用户拍板全部细节）。**目标式 + 研究阶段进度锚**：研究员给目标，agent 自主跑完整研究周期，人在暂停点介入。同版决策：**/bg 转后台砍掉**（auto loop + env_bg 全覆盖其价值）。
 
-- [ ] **启动表单**（GUI 模态，决策面板同族样式）：任务名 / 环境（启动即锁定）/ 目标 / 预算三选一（轮次/token/时间，默认保守）/ 验收条件自由文本多条（必填 ≥1，启动即锁定）/ 开局快照（默认开）/ 完成报告（默认开）。
-- [ ] **auto-run runner**（服务端）：表单落盘（auto-run 记录可追溯）→ 复用 invoke 通道（独立 loop 线，不污染主会话）→ 每轮结束自动发起下一轮 → 暂停点挂起等响应 → 达成/终止收尾；研究阶段进度锚（1.2.7 阶段框架升级为进度状态机，阶段边界拍肩膀回报）。
-- [ ] **暂停点两层**：模型主动（越界 boundary-ask / 分歧 request_decision，已有机制接上）+ harness 被动新增（空转检测连续 6 轮无新增有效研究记录且阶段未推进 → 提请；同类工具连续 3 次 isError → 提请；预算耗尽 checkpoint + 提请续命）。
-- [ ] **运行期交互**：运行中不可输入（steering 关闭）、不可切环境（环境锁定）；Esc = 终止 loop（会话保留回普通模式）；暂停点复用决策面板。
-- [ ] **达成与验收**：验收包 = 条件 × 证据（E#N 研究记录引用）+ 模型陈述；人终审（通过 / 不通过 / 继续跑）；达成后自动出报告。
-- [ ] **SSE 事件族**：auto-run:started / phase-changed / turn-completed / paused / budget-warning / completed / verdict-requested——注册表 + crosscheck 双向对账（1.3.10 纪律）。
-- [ ] **GUI 观察界面**：运行中卡片（阶段/轮次/预算余量/最近结论行/Esc 提示）+ 验收包模态。
+- [x] **启动表单**（GUI 模态，决策面板同族样式）：任务名 / 环境（启动即锁定）/ 目标 / 预算三选一（轮次/token/时间，默认保守）/ 验收条件自由文本多条（必填 ≥1，启动即锁定）/ 开局快照（默认开）/ 完成报告（默认开）。
+- [x] **auto-run runner**（服务端）：表单落盘（auto-run 记录可追溯）→ 复用 invoke 通道（独立 loop 线，不污染主会话）→ 每轮结束自动发起下一轮 → 暂停点挂起等响应 → 达成/终止收尾；研究阶段进度锚（1.2.7 阶段框架升级为进度状态机，阶段边界拍肩膀回报）。
+- [x] **暂停点两层**：模型主动（越界 boundary-ask / 分歧 request_decision，已有机制接上）+ harness 被动新增（空转检测连续 6 轮无新增有效研究记录且阶段未推进 → 提请；同类工具连续 3 次 isError → 提请；预算耗尽 checkpoint + 提请续命）。
+- [x] **运行期交互**：运行中不可输入（steering 关闭）、不可切环境（环境锁定）；Esc = 终止 loop（会话保留回普通模式）；暂停点复用决策面板。
+- [x] **达成与验收**：验收包 = 条件 × 证据（E#N 研究记录引用）+ 模型陈述；人终审（通过 / 不通过 / 继续跑）；达成后自动出报告。
+- [x] **SSE 事件族**：auto-run:started / phase-changed / turn-completed / paused / budget-warning / completed / verdict-requested——注册表 + crosscheck 双向对账（1.3.10 纪律）。
+- [x] **GUI 观察界面**：运行中卡片（阶段/轮次/预算余量/最近结论行/Esc 提示）+ 验收包模态。
+
+> 实际落地（2026-08-26）：服务端——`loop/auto-run.ts`（runner 1387 行：AutoRunRecord 存储 withFileLock+tmp+rename、循环复用 invokePiSession（新增 `{type:'auto-run'}` 交互场景，headless 同族）、暂停点判定纯函数（空转=连续 6 轮无新增有效研究记录且阶段未推进，阶段复用 1.2.7 segmentContext 末段相位；反复失败=同类工具 isError 连击≥3；预算=轮次/time/tokens 三档，tokens 用 estimateMessageTokens 启发式）、暂停恢复混合机制（stop/budget/verdict 事件驱动 wake；决策注入走轮询 pendingDecisions+decision marker，上限 10min 兜底）、预算耗尽 checkpoint（快照 best-effort）→ 提请续命（auto-run/budget，仅 paused+budget 态））+ `declare_completion` 工具（达成声明注册表按 loop 线分桶 take 即消费）+ 5 端点（start/stop/budget/verdict/list，start 校验 env 存在+criteria≥1+limit>0，同 workspace 单活跃 run；verdict 仅 awaiting-verdict 态，pass=自动出报告复用 exportReport，fail/continue=注回线续跑）+ SSE 7 事件（crosscheck 双向对账过）。GUI——启动表单（任务名/环境**锁定当前环境不可选**（走查追加拍板）/目标/预算三选一/验收条件多条）+ 观察卡（阶段/轮次/预算余量进度条/最近结论行/Esc 提示；budget 暂停内嵌续命输入；stall/反复失败提示决策面板作答）+ 运行期锁定（输入区禁用/切环境 toast 拦截/Esc 二次确认终止）+ 验收包模态（条件×证据预检+三按钮）+ reducer 7 事件归约 + Esc 链 verdict/autoRunActive 层。新增 69 单测（server 30 + gui 39）；全量 177 文件 2308 测试绿 + typecheck + eslint + 双构建绿；实机走查通过（用户确认）。交叉收口：GUI 路由对齐 admin 通道（adminPost auto-run/*）、stall/反复失败恢复走 harness 提请的决策面板（verdict continue 仅限 awaiting-verdict）、表单快照/报告开关移除（服务端无条件执行）、vmware rm 测试改不存在的 vmx 路径去环境依赖。
 
 > 不做（本版）：范围边界（后置）、/bg 转后台（已砍）、引擎多实例（2.0 前置，另行立项）、god file 拆分（记录在案）。
 > 验收：全量测试 + 实机走查（dogfood 一个真实目标跑通：启动表单 → 阶段推进 → 暂停点 → 验收终审）。

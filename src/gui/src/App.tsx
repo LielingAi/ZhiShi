@@ -11,6 +11,7 @@ import { useSse } from './hooks/useSse';
 import { useEsc } from './hooks/useEsc';
 import { useGuiStore } from './store/useGuiStore';
 import { hostAnchorLabel } from './model/access-gate';
+import { isAutoRunActive } from './model/auto-run';
 import { EnvSidebar } from './components/EnvSidebar';
 import { Stream } from './components/Stream';
 import { Drawer } from './components/Drawer';
@@ -20,6 +21,8 @@ import { Overlay } from './components/Overlay';
 import { Modal } from './components/Modal';
 import { BoundaryModal } from './components/BoundaryModal';
 import { DecisionModal } from './components/DecisionModal';
+import { AutoRunCard } from './components/AutoRunCard';
+import { AutoRunVerdictModal } from './components/AutoRunVerdictModal';
 import { TasksPanel } from './components/TasksPanel';
 import { QueuePanel } from './components/QueuePanel';
 import { SettingsPage } from './components/SettingsPage';
@@ -36,6 +39,8 @@ function Toolbar(): React.JSX.Element {
   const activeDecisionId = useGuiStore((s) => s.activeDecisionId);
   const openDecision = useGuiStore((s) => s.openDecision);
   const openHistoryPanel = useGuiStore((s) => s.openHistoryPanel);
+  const autoRunActive = useGuiStore((s) => isAutoRunActive(s.autoRun));
+  const openAutoRunStart = useGuiStore((s) => s.openAutoRunStart);
 
   // 1.3.2 ①：会话头部 pending 指示（决策模态收起后仍可点开重答）。
   const firstDecision = decisions[0] ?? null;
@@ -53,6 +58,20 @@ function Toolbar(): React.JSX.Element {
         onClick={() => void openHistoryPanel()}
       >
         ▤ 历史
+      </button>
+      <button
+        className="btn small"
+        disabled={autoRunActive || !envKey}
+        title={
+          autoRunActive
+            ? 'auto loop 运行中——先观察或 Esc 终止'
+            : !envKey
+              ? '先选择环境——一切操作都在环境内'
+              : '启动 auto loop（目标式研究循环：侦察→分析→构造→执行→评估）'
+        }
+        onClick={openAutoRunStart}
+      >
+        ⚡ auto loop
       </button>
       {pendingDecision && firstDecision && (
         <button
@@ -104,6 +123,7 @@ export function App(): React.JSX.Element {
               <Stream />
               <Drawer />
             </div>
+            <AutoRunCard />
             <div className="bottom-area">
               <StatusBar />
               <InputArea />
@@ -116,6 +136,7 @@ export function App(): React.JSX.Element {
       <QueuePanel />
       <BoundaryModal />
       <DecisionModal />
+      <AutoRunVerdictModal />
       <Modal />
       <Toast />
     </div>

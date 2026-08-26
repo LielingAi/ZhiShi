@@ -49,6 +49,7 @@ import type {
 } from './blocks';
 import { summarizeSignal } from './blocks';
 import type { BgEvent, SubagentEvent } from './tasks';
+import { budgetKindOf, pauseReasonOf, parseVerdictRequest, type AutoRunDelta } from './auto-run';
 
 // ---------------------------------------------------------------------------
 // Payload narrowers（wire 是 unknown：pi 引擎裸字符串 / 对象 / null 都有）
@@ -266,6 +267,11 @@ export interface ReduceResult {
    * 绕行（旧路径保留兜底）。
    */
   environment?: InitEnvAnchor | null;
+  /**
+   * 1.4.1：auto loop 登记表增量（auto-run:* 事件族）。store 顶层 autoRun
+   * 消费，归并逻辑在 model/auto-run.ts::applyAutoRunEvent。
+   */
+  autoRun?: AutoRunDelta;
 }
 
 export function reduceSseEvent(session: SessionState, input: SseInput): ReduceResult {
@@ -770,6 +776,97 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
         session,
         subagentEvent: { kind: 'tool-use', taskId, name: str(p.name) ?? 'tool' },
       };
+    }
+
+    // ── 1.4.1：auto loop（auto-run:* → store 顶层 autoRun 登记表增量） ──
+    case 'auto-run:started': {
+      const id = str(p.id);
+      if (!id) return { session };
+      return {
+        session,
+        autoRun: {
+          kind: 'started',
+          id,
+          name: str(p.name) ?? '',
+          envKey: str(p.envKey) ?? '',
+          goal: str(p.goal) ?? '',
+          budget: {
+            kind: budgetKindOf(rec(p.budget).kind),
+            limit: num(rec(p.budget).limit) ?? 0,
+          },
+          criteria: Array.isArray(p.criteria)
+            ? p.criteria.filter((x): x is string => typeof x === 'string')
+            : [],
+        },
+      };
+    }
+
+    case 'auto-run:phase-changed': {
+      const id = str(p.id);
+      const phase = str(p.phase);
+      if (!id || !phase) return { session };
+      return { session, autoRun: { kind: 'phase', id, phase } };
+    }
+
+    case 'auto-run:turn-completed': {
+      const id = str(p.id);
+      if (!id) return { session };
+      const turnCount = num(p.turnCount);
+      const used = num(p.used);
+      const conclusion = str(p.conclusion) ?? str(p.summary);
+      return {
+        session,
+        autoRun: {
+          kind: 'turn',
+          id,
+          ...(turnCount !== undefined ? { turnCount } : {}),
+          ...(used !== undefined ? { used } : {}),
+          ...(conclusion ? { conclusion } : {}),
+        },
+      };
+    }
+
+    case 'auto-run:paused': {
+      const id = str(p.id);
+      const reason = pauseReasonOf(p.reason);
+      if (!id || !reason) return { session };
+      const summary = str(p.summary);
+      return {
+        session,
+        autoRun: { kind: 'paused', id, reason, ...(summary ? { summary } : {}) },
+      };
+    }
+
+    case 'auto-run:budget-warning': {
+      const id = str(p.id);
+      if (!id) return { session };
+      const used = num(p.used);
+      const limit = num(p.limit);
+      return {
+        session,
+        autoRun: {
+          kind: 'budget',
+          id,
+          ...(used !== undefined ? { used } : {}),
+          ...(limit !== undefined ? { limit } : {}),
+        },
+      };
+    }
+
+    case 'auto-run:completed': {
+      const id = str(p.id);
+      if (!id) return { session };
+      const summary = str(p.summary);
+      return {
+        session,
+        autoRun: { kind: 'completed', id, ...(summary ? { summary } : {}) },
+      };
+    }
+
+    case 'auto-run:verdict-requested': {
+      const id = str(p.id);
+      if (!id) return { session };
+      return { session, autoRun: { kind: 'verdict', id, verdict: parseVerdictRequest(p) } };
     }
 
     // chat:tool-result-start / chat:tool-result-delta（服务端只发

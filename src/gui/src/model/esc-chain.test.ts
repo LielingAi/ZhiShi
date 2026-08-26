@@ -1,6 +1,7 @@
 /**
- * Esc 链优先级单测（1.3.1 ②③④ + 1.3.2 ① 扩展）：一次弹一层，顺序
- * overlay > tasks > queue > boundary > decision > modal > drawer > page > busy 中断 > none。
+ * Esc 链优先级单测（1.3.1 ②③④ + 1.3.2 ① + 1.4.1 扩展）：一次弹一层，顺序
+ * overlay > tasks > queue > boundary > decision > verdict > modal > drawer >
+ * page > autoRun 终止确认 > busy 中断 > none。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -87,5 +88,43 @@ describe('escAction', () => {
   it('面板存在时 busy 不触发中断（一层一层弹）', () => {
     expect(escAction({ ...base, overlayOpen: true, busy: true })).toEqual({ type: 'close-overlay' });
     expect(escAction({ ...base, drawerOpen: true, busy: true })).toEqual({ type: 'close-drawer' });
+  });
+
+  // ── 1.4.1：auto loop 层 ────────────────────────────────────────────
+
+  it('verdict 模态进链：decision 之后、modal 之前（收起不作答）', () => {
+    expect(escAction({ ...base, decisionOpen: true, verdictOpen: true })).toEqual({
+      type: 'close-decision',
+    });
+    expect(escAction({ ...base, verdictOpen: true, modalOpen: true })).toEqual({
+      type: 'dismiss-verdict',
+    });
+    expect(escAction({ ...base, verdictOpen: true, busy: true })).toEqual({
+      type: 'dismiss-verdict',
+    });
+  });
+
+  it('auto loop 活跃：无更高层时弹终止确认（busy 不抢层）', () => {
+    expect(escAction({ ...base, autoRunActive: true, busy: true })).toEqual({
+      type: 'confirm-stop-auto-run',
+    });
+    expect(escAction({ ...base, autoRunActive: true })).toEqual({
+      type: 'confirm-stop-auto-run',
+    });
+  });
+
+  it('auto loop 活跃但更高层开着：一层一层弹，不直达终止确认', () => {
+    expect(escAction({ ...base, autoRunActive: true, verdictOpen: true })).toEqual({
+      type: 'dismiss-verdict',
+    });
+    expect(escAction({ ...base, autoRunActive: true, modalOpen: true })).toEqual({
+      type: 'close-modal',
+    });
+    expect(escAction({ ...base, autoRunActive: true, drawerOpen: true })).toEqual({
+      type: 'close-drawer',
+    });
+    expect(escAction({ ...base, autoRunActive: true, pageOpen: true })).toEqual({
+      type: 'close-page',
+    });
   });
 });

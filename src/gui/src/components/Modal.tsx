@@ -27,6 +27,7 @@ import { bootStages } from '../model/envs';
 import { envRemovePlan } from '../model/env-remove';
 import { envDownPlan } from '../model/env-down';
 import { addRecipeBinding, boundRecipeIds, removeRecipeBinding } from '../model/env-recipes';
+import { AutoRunModal } from './AutoRunModals';
 import {
   recipeLifecycleNote,
   recipesForSource,
@@ -999,5 +1000,8 @@ export function Modal(): React.JSX.Element | null {
       return <EnvDownModal />;
     case 'env-detail':
       return <EnvDetailModal />;
+    case 'auto-run-start':
+    case 'auto-run-stop':
+      return <AutoRunModal />;
   }
 }
