@@ -404,6 +404,12 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'environment/extract') return await api.handleEnvironmentExtract(payload as Parameters<typeof api.handleEnvironmentExtract>[0]);
   // 1.2.0 研究交付——一键出报告（组装 → 敏感扫描 → 一次批准 → 回收 → 填肉 → 落盘）
   if (route === 'report/export') return await api.handleReportExport(payload as Parameters<typeof api.handleReportExport>[0]);
+  // 1.4.1 auto loop agent（design auto-loop-design.md；runner 在 loop/auto-run.ts）
+  if (route === 'auto-run/start') return await api.handleAutoRunStart(payload as Record<string, unknown>);
+  if (route === 'auto-run/stop') return api.handleAutoRunStop(payload as Parameters<typeof api.handleAutoRunStop>[0]);
+  if (route === 'auto-run/budget') return api.handleAutoRunBudget(payload as Parameters<typeof api.handleAutoRunBudget>[0]);
+  if (route === 'auto-run/verdict') return api.handleAutoRunVerdict(payload as Parameters<typeof api.handleAutoRunVerdict>[0]);
+  if (route === 'auto-run/list') return await api.handleAutoRunList(payload as Parameters<typeof api.handleAutoRunList>[0]);
 // Environment selection（安全研究员版 P1 T4，D17 首屏选定的持久化）
   if (route === 'environment/select') return await api.handleEnvironmentSelect(payload as Parameters<typeof api.handleEnvironmentSelect>[0]);
   if (route === 'environment/current') return api.handleEnvironmentCurrent(payload as Parameters<typeof api.handleEnvironmentCurrent>[0]);

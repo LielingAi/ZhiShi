@@ -120,6 +120,15 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   // env_bg 生命周期(P2 Phase 2)— 长驻进程在状态行的存在感 + 退出插行。
   'chat:bg-started': 'critical',
   'chat:bg-finished': 'critical',
+  // 1.4.1 auto loop agent(design auto-loop-design.md §7)— 运行卡/暂停点/
+  // 验收包的结构级事件,绝不丢。payload 见 loop/auto-run.ts 的 broadcast。
+  'auto-run:started': 'critical',
+  'auto-run:phase-changed': 'critical',
+  'auto-run:turn-completed': 'critical',
+  'auto-run:paused': 'critical',
+  'auto-run:budget-warning': 'critical',
+  'auto-run:completed': 'critical',
+  'auto-run:verdict-requested': 'critical',
   'config:changed': 'critical',
   'queue:added': 'critical',
   'queue:cancelled': 'critical',

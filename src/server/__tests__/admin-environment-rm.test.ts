@@ -145,7 +145,9 @@ describe('handleEnvironmentRm — 既有守卫不受新分支影响', () => {
       id: 'vmware-fuzz.vmx',
       kind: 'vm',
       vmName: 'fuzz.vmx',
-      vmx: 'd:\\vmiso\\ubuntu\\fuzz.vmx',
+      // 用不存在的 vmx 路径——宿主机上若有真实 VM 在跑，vmEnvPs 命中会导致
+      // rm 按「运行中拒绝」分支返回（测试环境依赖）；不存在的路径稳定走摘登记。
+      vmx: 'd:\\vmiso\\ubuntu\\zhishi-test-nonexistent.vmx',
       createdAt: '2026-08-25T00:00:00Z',
     };
     seedEntries([LEGACY]);
@@ -257,7 +259,8 @@ describe('handleEnvironmentRm — B2：已登记 hyperv/vbox 条目回落实体�
       id: 'fuzz',
       kind: 'vm',
       vmName: 'fuzz',
-      vmx: 'd:\\vmiso\\ubuntu\\fuzz.vmx',
+      // 同上：不存在的 vmx 路径，避免宿主真实 VM 干扰测试（运行中拒绝分支）。
+      vmx: 'd:\\vmiso\\ubuntu\\zhishi-test-nonexistent.vmx',
       createdAt: '2026-08-25T00:00:00Z',
     };
     seedEntries([VMWARE_ENTRY]);

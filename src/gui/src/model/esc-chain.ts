@@ -9,8 +9,15 @@
  *   ＞ queue 面板（/queue）＞ boundary 模态（1.3.1 ②：Esc = 收起模态不作答，
  *   ask 保持 pending，重连 replay 会重新弹出）＞ decision 模态（1.3.2 ①：
  *   Esc = 收起不作答，decision 保持 pending 并缩为会话头部待答指示）
- *   ＞ 模态（新建环境/SSH/adopt/构建/promote）＞ drawer（工具输出抽屉）
- *   ＞ 页面（设置/attach）＞ 无面板且 busy → 中断 turn
+ *   ＞ verdict 模态（1.4.1：验收包收起不作答，观察卡「待终审」可重开）
+ *   ＞ 模态（新建环境/SSH/adopt/构建/promote/auto-run 终止确认）＞ drawer
+ *   （工具输出抽屉）＞ 页面（设置/attach）＞ auto loop 活跃 → 弹终止确认
+ *   ＞ 无面板且 busy → 中断 turn
+ *
+ * 1.4.1：auto loop 活跃时 Esc 语义切换——不再「中断 turn」（loop 在独立线
+ * 上，中断主会话没有意义），改为弹「终止 auto loop？」确认模态（store 打开
+ * modal kind 'auto-run-stop'；确认模态打开后 Esc 走 modal 层=取消）。
+ * 验收包模态与 decision 同语义：收起不作答，loop 保持 awaiting-verdict。
  *
  * 逻辑抽成纯函数便于单测；副作用（关面板 / POST /chat/stop）由 store 执行。
  */
@@ -26,10 +33,15 @@ export interface EscUiState {
   boundaryOpen: boolean;
   /** 决策模态打开（1.3.2 ①：activeDecisionId 非空）。 */
   decisionOpen: boolean;
+  /** 1.4.1：验收包模态打开（autoRun.verdict 存在且未收起）。 */
+  verdictOpen?: boolean;
   modalOpen: boolean;
   drawerOpen: boolean;
   /** 设置页或 attach 视图接管主区。 */
   pageOpen: boolean;
+  /** 1.4.1：auto loop 活跃（starting/running/paused/awaiting-verdict）——
+   *  Esc 弹终止确认而非中断 turn。 */
+  autoRunActive?: boolean;
   /** 引擎 turn 运行中（phase === 'running'）。 */
   busy: boolean;
 }
@@ -40,9 +52,11 @@ export type EscAction =
   | { type: 'close-queue' }
   | { type: 'close-boundary' }
   | { type: 'close-decision' }
+  | { type: 'dismiss-verdict' }
   | { type: 'close-modal' }
   | { type: 'close-drawer' }
   | { type: 'close-page' }
+  | { type: 'confirm-stop-auto-run' }
   | { type: 'interrupt' }
   | { type: 'none' };
 
@@ -53,9 +67,11 @@ export function escAction(s: EscUiState): EscAction {
   if (s.queueOpen) return { type: 'close-queue' };
   if (s.boundaryOpen) return { type: 'close-boundary' };
   if (s.decisionOpen) return { type: 'close-decision' };
+  if (s.verdictOpen) return { type: 'dismiss-verdict' };
   if (s.modalOpen) return { type: 'close-modal' };
   if (s.drawerOpen) return { type: 'close-drawer' };
   if (s.pageOpen) return { type: 'close-page' };
+  if (s.autoRunActive) return { type: 'confirm-stop-auto-run' };
   if (s.busy) return { type: 'interrupt' };
   return { type: 'none' };
 }

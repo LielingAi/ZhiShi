@@ -53,6 +53,14 @@ import {
   type CapabilityExecFn,
 } from './environment/capability-derive';
 import { requestBoundaryAsk } from './loop/boundary-ask';
+// 1.4.1 auto loop agent(design docs/design/auto-loop-design.md)。
+import {
+  listAutoRuns,
+  renewAutoRunBudget,
+  resolveAutoRunVerdict,
+  startAutoRun,
+  stopAutoRun,
+} from './loop/auto-run';
 import { detectOsFamilyFromVmx } from './environment/os-family';
 import {
   loadDomainManifests,
@@ -3409,6 +3417,50 @@ export async function handleReportExport(payload: {
     },
   );
   return result;
+}
+// ===== 1.4.1 auto loop agent（design docs/design/auto-loop-design.md）=====
+// runner 本体在 loop/auto-run.ts（纯函数+注入依赖）；这里只做薄校验与调用。
+/** `auto-run/start` — 校验失败返回 4xx 可读错误（routeAdminApi 统一映射）。 */
+export async function handleAutoRunStart(payload: Record<string, unknown>): Promise<AdminResponse> {
+  const workspace = typeof payload.workspace === 'string' && payload.workspace.trim()
+    ? payload.workspace.trim()
+    : (getPiAgentState().agentDir || process.cwd());
+  const result = await startAutoRun(payload, workspace);
+  if (!result.success) return { success: false, error: result.error };
+  return { success: true, data: { id: result.data.id } };
+}
+/** `auto-run/stop` — Esc 语义终止循环。 */
+export function handleAutoRunStop(payload: { id?: unknown }): AdminResponse {
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!id) return { success: false, error: 'Missing required argument: <id>' };
+  const result = stopAutoRun(id);
+  return result.success ? { success: true, data: result.data } : { success: false, error: result.error };
+}
+/** `auto-run/budget` — 预算续命（仅 paused+reason=budget；新上限 > 已耗）。 */
+export function handleAutoRunBudget(payload: { id?: unknown; limit?: unknown }): AdminResponse {
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!id) return { success: false, error: 'Missing required argument: <id>' };
+  const result = renewAutoRunBudget(id, payload.limit);
+  return result.success ? { success: true, data: result.data } : { success: false, error: result.error };
+}
+/** `auto-run/verdict` — 验收终审：pass 出报告 / fail|continue 注回线续跑。 */
+export function handleAutoRunVerdict(payload: { id?: unknown; verdict?: unknown; note?: unknown }): AdminResponse {
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!id) return { success: false, error: 'Missing required argument: <id>' };
+  const result = resolveAutoRunVerdict(
+    id,
+    payload.verdict,
+    typeof payload.note === 'string' ? payload.note : undefined,
+  );
+  return result.success ? { success: true, data: result.data } : { success: false, error: result.error };
+}
+/** `auto-run/list` — 记录列表（时间倒序；可选 workspace 过滤）。 */
+export async function handleAutoRunList(payload: { workspace?: unknown }): Promise<AdminResponse> {
+  const workspace = typeof payload.workspace === 'string' && payload.workspace.trim()
+    ? payload.workspace.trim()
+    : undefined;
+  const records = await listAutoRuns(workspace);
+  return { success: true, data: { records } };
 }
 /** `environment/rm` — 拆除环境（P2 B4 / B3 多驱动 + D22）。vmware 直连
  * 语义：rm = 只摘登记（removeEnvironmentEntry），**绝不删用户 VM 文件**——

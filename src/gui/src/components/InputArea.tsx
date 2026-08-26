@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
 
 import { selectCurrentSession, useGuiStore } from '../store/useGuiStore';
+import { isAutoRunActive } from '../model/auto-run';
 
 export function InputArea(): React.JSX.Element {
   const [value, setValue] = useState('');
@@ -32,6 +33,9 @@ export function InputArea(): React.JSX.Element {
   const envLabel = useGuiStore((s) => (s.currentEnvKey ?? '宿主'));
   // 1.4.0 补充修复：未锚定环境（host）时禁发——一切操作都在环境内。
   const hostMode = useGuiStore((s) => s.currentEnvKey === null);
+  // 1.4.1：auto loop 运行期锁定——输入区禁用（steering 关闭，仅观察）。
+  const autoRunActive = useGuiStore((s) => isAutoRunActive(s.autoRun));
+  const locked = hostMode || autoRunActive;
 
   // 历史 overlay 选中 → 回填输入框。
   useEffect(() => {
@@ -106,22 +110,30 @@ export function InputArea(): React.JSX.Element {
           ))}
         </div>
       )}
-      <div className={`input-box${hostMode ? ' host' : ''}`} onClick={() => { if (!hostMode) taRef.current?.focus(); }}>
+      <div className={`input-box${hostMode ? ' host' : ''}${autoRunActive && !hostMode ? ' lock' : ''}`} onClick={() => { if (!locked) taRef.current?.focus(); }}>
         <textarea
           ref={taRef}
           rows={1}
-          disabled={hostMode}
-          placeholder={hostMode
-            ? '先选择环境——研究只发生在环境内（左侧环境侧栏选择或新建）'
-            : `向 ${envLabel} 提问…（/ 命令 · @ 引用 · ${busy ? 'Enter 纠偏' : 'Enter 发送'}）`}
+          disabled={locked}
+          placeholder={autoRunActive
+            ? 'auto loop 运行中，仅观察'
+            : hostMode
+              ? '先选择环境——研究只发生在环境内（左侧环境侧栏选择或新建）'
+              : `向 ${envLabel} 提问…（/ 命令 · @ 引用 · ${busy ? 'Enter 纠偏' : 'Enter 发送'}）`}
           value={value}
           onChange={(e) => onInput(e.target.value)}
           onKeyDown={onKeyDown}
         />
         <button
           className="send-btn"
-          disabled={hostMode}
-          title={hostMode ? '先选择环境' : busy ? '发送纠偏（turn 运行中，进 steering 队列）' : '发送'}
+          disabled={locked}
+          title={autoRunActive
+            ? 'auto loop 运行中，仅观察'
+            : hostMode
+              ? '先选择环境'
+              : busy
+                ? '发送纠偏（turn 运行中，进 steering 队列）'
+                : '发送'}
           onClick={doSend}
         >
           {busy ? '↳' : '↑'}

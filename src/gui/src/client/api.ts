@@ -807,3 +807,65 @@ export function mcpReload(
     {},
   );
 }
+
+// ---------------------------------------------------------------------------
+// 1.4.1 新增：auto loop（auto-run runner——启动/终止/加预算/验收终审/清单）
+// ---------------------------------------------------------------------------
+
+export interface AutoRunBudgetInput {
+  kind: 'turns' | 'tokens' | 'time';
+  limit: number;
+}
+
+export interface AutoRunStartInput {
+  name: string;
+  envKey: string;
+  goal: string;
+  budget: AutoRunBudgetInput;
+  criteria: string[];
+}
+
+/**
+ * POST /chat/auto-run/start → { success, id?, error? }。
+ * id 兼容顶层或 data.id 两种回包（服务端契约「→ {id}」为准，两处都读）。
+ */
+export function autoRunStart(
+  client: GuiSidecarClient,
+  input: AutoRunStartInput,
+): Promise<{ success: boolean; id?: string; error?: string }> {
+  return client
+    .adminPost<{ success: boolean; id?: string; data?: { id?: string }; error?: string }>(
+      'auto-run/start',
+      input,
+    )
+    .then((r) => ({ success: r.success, id: r.id ?? r.data?.id, error: r.error }));
+}
+
+/** POST auto-run/stop { id }（Esc 终止确认 → 终止 loop，会话保留回普通模式）。 */
+export function autoRunStop(
+  client: GuiSidecarClient,
+  input: { id: string },
+): Promise<{ success: boolean; error?: string }> {
+  return client.adminPost<{ success: boolean; error?: string }>('auto-run/stop', input);
+}
+
+/** POST auto-run/budget { id, limit }（预算耗尽暂停点 → 加预算 + 续命）。 */
+export function autoRunBudget(
+  client: GuiSidecarClient,
+  input: { id: string; limit: number },
+): Promise<{ success: boolean; error?: string }> {
+  return client.adminPost<{ success: boolean; error?: string }>('auto-run/budget', input);
+}
+
+/** POST auto-run/verdict { id, verdict }（验收终审三按钮；仅 awaiting-verdict 态）。 */
+export function autoRunVerdict(
+  client: GuiSidecarClient,
+  input: { id: string; verdict: 'pass' | 'fail' | 'continue' },
+): Promise<{ success: boolean; error?: string }> {
+  return client.adminPost<{ success: boolean; error?: string }>('auto-run/verdict', input);
+}
+
+/** POST auto-run/list → 原始 JSON（形状归一在 model/auto-run::parseAutoRunList）。 */
+export function autoRunList(client: GuiSidecarClient): Promise<unknown> {
+  return client.adminPost<unknown>('auto-run/list', {});
+}
