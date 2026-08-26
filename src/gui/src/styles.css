@@ -58,7 +58,7 @@ kbd {
 
 /* ===== 桌面壳 ===== */
 .shell {
-  display: flex; height: 100vh; max-width: 1400px; margin: 0 auto;
+  display: flex; height: 100vh; width: 100%;
   border-left: 1px solid var(--border-soft); border-right: 1px solid var(--border-soft);
 }
 
@@ -121,9 +121,17 @@ kbd {
 .eb-item .eb-menu-item.danger { color: var(--red); }
 .eb-item .eb-menu-item.danger:hover { background: rgba(229,83,75,.12); }
 .envbar .eb-foot {
-  margin-top: auto; padding: 10px 8px; border-top: 1px solid var(--border-soft);
+  flex-shrink: 0; padding: 10px 8px; border-top: 1px solid var(--border-soft);
   display: flex; flex-direction: column; gap: 6px;
 }
+/* 1.4.1 修复：环境多时列表滚动、底部入口（新建/设置）恒可见 */
+.envbar .eb-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+/* 1.4.1 修复：登记按钮字号对齐行内元素（不再过大） */
+.eb-item .eb-register {
+  font-size: 10.5px; color: var(--muted); padding: 1px 7px;
+  border: 1px solid var(--border-soft); border-radius: 4px;
+}
+.eb-item .eb-register:hover { color: var(--cyan); border-color: rgba(0,212,255,.4); }
 .envbar .eb-foot .btn { text-align: left; }
 .envbar .eb-empty { padding: 10px 14px; font-size: 11.5px; color: var(--faint); }
 
@@ -616,20 +624,24 @@ mark.h-search { background: rgba(232,163,61,.3); color: var(--text); border-radi
   font-size: 13.5px; color: var(--text); font-weight: 600; margin-bottom: 10px;
   white-space: pre-wrap; word-break: break-word;
 }
-.dc-options { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
+.dc-options { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+/* 1.4.1 卡片化：选项=卡片按钮，点击即拍板 */
 .dc-option {
-  display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; border-radius: 6px;
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px;
   border: 1px solid var(--border-soft); background: var(--bg-deep); cursor: pointer;
-  transition: all .1s; user-select: none;
+  transition: all .1s; user-select: none; text-align: left; width: 100%;
+  font-family: inherit;
 }
-.dc-option:hover { border-color: rgba(232,163,61,.4); }
-.dc-option.sel { border-color: var(--amber); background: rgba(232,163,61,.1); }
+.dc-option:hover { border-color: var(--amber); background: rgba(232,163,61,.08); }
+.dc-option:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
 .dc-hotkey {
   flex-shrink: 0; font-family: var(--mono); font-size: 10.5px; color: var(--amber);
   border: 1px solid rgba(232,163,61,.45); border-radius: 3px; padding: 0 5px; min-width: 18px;
   text-align: center;
 }
-.dc-opt-text { font-size: 12.5px; color: var(--text-dim); word-break: break-word; }
+.dc-opt-text { font-size: 12.5px; color: var(--text); word-break: break-word; }
+/* 1.4.1：自定义应答折叠入口（输入降级为次要通道） */
+.dc-custom-toggle { align-self: flex-start; margin: 4px 0 8px; color: var(--muted); }
 .dc-experts { margin-top: 4px; }
 .dc-section-label {
   font-size: 10.5px; color: var(--faint); letter-spacing: .4px; text-transform: uppercase;

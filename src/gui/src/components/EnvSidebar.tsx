@@ -113,7 +113,9 @@ export function EnvSidebar(): React.JSX.Element {
           ⟳
         </button>
       </div>
-      {groups.map((g) => (
+      {/* 1.4.1 修复：环境多时列表滚动、底部入口（新建/设置）恒可见 */}
+      <div className="eb-scroll">
+        {groups.map((g) => (
         <div className="eb-group" key={g.label}>
           <div className="ebg-label">{g.label}</div>
           {g.items.map((it) => {
@@ -245,7 +247,7 @@ export function EnvSidebar(): React.JSX.Element {
                 )}
                 {it.group === 'unreg' && !it.registeredAs && (
                   <button
-                    className="btn small eb-start"
+                    className="btn small eb-register"
                     title={`登记 ${it.label}（environment/add，运行中则切入）`}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -263,6 +265,7 @@ export function EnvSidebar(): React.JSX.Element {
       {groups.length === 0 && (
         <div className="eb-empty">连接 sidecar 后加载环境列表…</div>
       )}
+      </div>
       <div className="eb-foot">
         <button className="btn" onClick={openNewEnv}>＋ 新建环境</button>
         <button className="btn" onClick={() => setPage('settings')}>⚙ 设置</button>
