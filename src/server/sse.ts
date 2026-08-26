@@ -69,10 +69,6 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   // Streaming deltas — coalescible (replace same-key tail under pressure).
   'chat:message-chunk': 'coalescible',
   'chat:thinking-chunk': 'coalescible',
-  'chat:tool-input-delta': 'coalescible',
-  'chat:tool-result-delta': 'coalescible',
-  'chat:subagent-tool-input-delta': 'coalescible',
-  'chat:subagent-tool-result-delta': 'coalescible',
   // PRD 0.2.32 — context-usage indicator snapshot. A latest-wins value
   // (renderer only does setContextUsage(latest)) broadcast at Codex sub-turn
   // frequency; under backpressure superseded snapshots MUST collapse to the
@@ -86,40 +82,29 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   // Logs / telemetry — droppable.
   'chat:log': 'droppable',
   'chat:logs': 'droppable',
-  'chat:debug-message': 'droppable',
   // Critical — never drop or coalesce. Includes block-boundary / start
   // markers, completion / error events, status updates, queue lifecycle,
-  // and renderer-driven request/response gates. The SDK emits these in
-  // tight bursts at turn start (system_init → status → thinking-start →
-  // content-block-stop → tool-use-start → …); coalescing any of them
-  // would corrupt the renderer's structural state machine.
+  // and client-driven request/response gates. These fire in tight bursts
+  // at turn start (system-init → status → thinking-start → tool-use-start
+  // → …); coalescing any of them would corrupt the client's structural
+  // state machine.
   'chat:system-init': 'critical',
-  'chat:system-status': 'critical',
   'chat:status': 'critical',
   'chat:init': 'critical',
-  'chat:api-retry': 'critical',
-  'chat:attachments-filtered': 'critical',
-  'chat:attachments-fallback': 'critical',
   'chat:thinking-start': 'critical',
   // 1.2.8(H1):thinking 块收尾(loop 路径)——结构级边界,与 thinking-start 同级。
   'chat:thinking-complete': 'critical',
-  'chat:content-block-stop': 'critical',
-  'chat:message-sdk-uuid': 'critical',
   'chat:message-replay': 'critical',
   'chat:message-stopped': 'critical',
   'chat:message-complete': 'critical',
   'chat:message-error': 'critical',
-  'chat:agent-error': 'critical',
   'chat:tool-use-start': 'critical',
-  'chat:tool-result-start': 'critical',
   'chat:tool-result-complete': 'critical',
-  'chat:server-tool-use-start': 'critical',
   'chat:subagent-tool-use': 'critical',
-  'chat:subagent-tool-result-start': 'critical',
   'chat:subagent-tool-result-complete': 'critical',
   // W1(design-spec §8 拍肩膀)— delegate_task 子任务生命周期:started 带
   // {taskId, description},finished 带 {taskId, summary, status}(结论摘要,
-  // 不带过程)。TUI 后台静态段 + 结论插行的数据源。
+  // 不带过程)。GUI 后台静态段 + 结论插行的数据源。
   'chat:subagent-started': 'critical',
   'chat:subagent-finished': 'critical',
   // W1(design-spec §6.1 纠偏档)— 运行中发送进 pi steering 队列;added
@@ -135,23 +120,19 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   // env_bg 生命周期(P2 Phase 2)— 长驻进程在状态行的存在感 + 退出插行。
   'chat:bg-started': 'critical',
   'chat:bg-finished': 'critical',
-  'chat:permission-mode-changed': 'critical',
-  'chat:task-notification': 'critical',
-  'chat:task-started': 'critical',
-  'permission:request': 'critical',
-  'ask-user-question:request': 'critical',
-  'ask-user-question:expired': 'critical',
-  'exit-plan-mode:request': 'critical',
-  'exit-plan-mode:expired': 'critical',
-  'enter-plan-mode:request': 'critical',
-  'enter-plan-mode:expired': 'critical',
-  // ('cron:task-exit-requested' removed — emitter retired with exit_cron_task in v0.2.11)
-  'mcp:oauth-expired': 'critical',
   'config:changed': 'critical',
   'queue:added': 'critical',
-  'queue:started': 'critical',
   'queue:cancelled': 'critical',
+  // ('cron:task-exit-requested' removed — emitter retired with exit_cron_task in v0.2.11)
   // ('appcraft:sediment-proposal' removed — AppCraft 已随 1.2.3 退役移除)
+  // (1.3.10 A2:零产生点的孤儿事件条目已删——delta 系(tool-input/tool-result/
+  //  subagent-tool-{input,result})、SDK 残留(debug-message/system-status/api-retry/
+  //  attachments-{filtered,fallback}/content-block-stop/message-sdk-uuid/agent-error/
+  //  server-tool-use-start/tool-result-start/subagent-tool-result-start)、
+  //  交互体系残留(permission:request/ask-user-question/*/(exit|enter)-plan-mode/*、
+  //  task-notification/task-started/permission-mode-changed/mcp:oauth-expired/
+  //  queue:started);发射点全集与注册表的双向对账由
+  //  sse-whitelist-crosscheck.unit.test.ts 钉死)
   'chat:session-title-changed': 'critical',
 });
 
@@ -397,38 +378,9 @@ function recordStreamingLog(event: string, data: unknown): void {
   }
 }
 
-function flushStreamingLogsForBoundary(event: string, data: unknown): void {
-  if (event === 'chat:content-block-stop' && data && typeof data === 'object') {
-    const { type, index, toolId } = data as { type?: unknown; index?: unknown; toolId?: unknown };
-    const hasIndex = typeof index === 'number' || typeof index === 'string';
-    const hasToolId = typeof toolId === 'string' && toolId;
-    if (hasToolId) {
-      flushStreamingLogAggregatesBy(
-        (key, aggregate) =>
-          (aggregate.event === 'chat:tool-input-delta' || aggregate.event === 'chat:subagent-tool-input-delta') &&
-          (key.includes(`tool:${toolId}`) || (hasIndex && key.includes(`index:${index}`))),
-        event
-      );
-    }
-    if ((type === 'thinking' || (!hasToolId && hasIndex)) && hasIndex) {
-      flushStreamingLogAggregate(`chat:thinking-chunk|index:${index}`, event);
-    }
-    return;
-  }
-
-  if ((event === 'chat:tool-result-complete' || event === 'chat:subagent-tool-result-complete') && data && typeof data === 'object') {
-    const { toolUseId } = data as { toolUseId?: unknown };
-    if (typeof toolUseId === 'string' && toolUseId) {
-      flushStreamingLogAggregatesBy(
-        (key, aggregate) =>
-          (aggregate.event === 'chat:tool-result-delta' || aggregate.event === 'chat:subagent-tool-result-delta') &&
-          key.includes(`tool:${toolUseId}`),
-        event
-      );
-    }
-    return;
-  }
-
+function flushStreamingLogsForBoundary(event: string): void {
+  // 块/工具边界事件(chat:content-block-stop / chat:tool-result-complete)已随
+  // SDK 删除不再发射(1.3.10 A2 清表),这里只留 message 级收尾的全量 flush。
   if (event === 'chat:message-complete' || event === 'chat:message-error' || event === 'chat:message-stopped') {
     flushStreamingLogAggregatesBy(() => true, event);
   }
@@ -491,13 +443,9 @@ function heartbeatChunk(): Uint8Array {
 // These events fire per-token/per-delta and produce thousands of lines with little diagnostic value.
 const AGGREGATED_EVENTS = new Set([
   'chat:message-chunk', 'chat:thinking-chunk',
-  'chat:tool-input-delta', 'chat:tool-result-delta',
-  'chat:subagent-tool-input-delta', 'chat:subagent-tool-result-delta',
 ]);
 
-const SILENT_EVENTS = new Set([
-  'chat:content-block-stop', 'chat:message-sdk-uuid', 'chat:log',
-]);
+const SILENT_EVENTS = new Set(['chat:log']);
 
 // Time-window coalescing for high-frequency streaming deltas.
 //
@@ -517,8 +465,7 @@ const SILENT_EVENTS = new Set([
 //
 // Only `chat:message-chunk` is coalesced. `chat:thinking-chunk` carries
 // `{index, delta}` payloads where different index values can't legally merge,
-// and its frequency is lower to begin with; tool-input-delta is also low
-// frequency and flows through already. Keeping the rule narrow avoids
+// and its frequency is lower to begin with. Keeping the rule narrow avoids
 // semantic surprises.
 const CHUNK_COALESCE_MS = 40;
 const chunkBuffers = new Map<string, { merged: string; timer: ReturnType<typeof setTimeout> }>();
@@ -556,7 +503,7 @@ function broadcastImmediate(event: string, data: unknown): void {
   if (AGGREGATED_EVENTS.has(event)) {
     recordStreamingLog(event, data);
   } else {
-    flushStreamingLogsForBoundary(event, data);
+    flushStreamingLogsForBoundary(event);
   }
   if (!SILENT_EVENTS.has(event) && !AGGREGATED_EVENTS.has(event)) {
     console.log(`[sse] ${event} -> ${summarizePayload(event, data)}`);

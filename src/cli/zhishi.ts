@@ -1878,8 +1878,18 @@ function buildRoute(group: string, action: string, rest: string[]): string {
     return 'task/delete';
   }
   // `zhishi env engines` — admin routes live under environment/* (P1 E1).
+  // 1.3.10 审计 #2：`env remove` 是历史别名——唯一删除语义在 `environment/rm`
+  // （旧 `environment/remove` 弱实现死路由已删除）。
+  if (group === 'env' && action === 'remove') {
+    return 'environment/rm';
+  }
   if (group === 'env') {
     return `environment/${action}`;
+  }
+  // `zhishi help` 任意形态 → 服务端精确 `help` 路由（无 help/<sub> 分派；
+  // `--help`/`-h` 旗标由 is_cli_mode 在 Rust 侧覆盖）。
+  if (group === 'help') {
+    return 'help';
   }
   return `${group}/${action}`;
 }

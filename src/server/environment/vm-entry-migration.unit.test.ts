@@ -7,11 +7,11 @@
  * 临时目录的端到端 round-trip（config + 两个引用文件同步改名、幂等
  * 二次运行零改动、坏文件不炸）。
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminAppConfig } from '../utils/admin-config';
 import type { EnvironmentEntry } from '../../shared/config-types';
@@ -29,8 +29,10 @@ import {
 } from './selection';
 import {
   applyVmEntryRenames,
+  loadVmMigrationPending,
   runLegacyVmEntryMigration,
   scanLegacyVmTemplateEntries,
+  serializeVmMigrationPending,
 } from './vm-entry-migration';
 
 function vmEntry(overrides: Partial<EnvironmentEntry>): EnvironmentEntry {
@@ -163,6 +165,7 @@ describe('runLegacyVmEntryMigration（临时文件端到端）', () => {
   let configPath: string;
   let sessionsPath: string;
   let selectionPath: string;
+  let pendingPath: string;
   let logs: string[];
   let warns: string[];
 
@@ -171,6 +174,7 @@ describe('runLegacyVmEntryMigration（临时文件端到端）', () => {
     configPath = join(dir, 'config.json');
     sessionsPath = join(dir, 'env-sessions.json');
     selectionPath = join(dir, 'env-selection.json');
+    pendingPath = join(dir, 'env-migration-pending.json');
     logs = [];
     warns = [];
   });
@@ -183,6 +187,7 @@ describe('runLegacyVmEntryMigration（临时文件端到端）', () => {
     configPath,
     envSessionsPath: sessionsPath,
     envSelectionPath: selectionPath,
+    pendingPath,
     log: (m: string) => logs.push(m),
     warn: (m: string) => warns.push(m),
   });
@@ -263,5 +268,148 @@ describe('runLegacyVmEntryMigration（临时文件端到端）', () => {
     // 损坏文件按空 map 处理（loadEnvSessionsMap 容错），改名后只含新键
     const sessions = loadEnvSessionsMap(sessionsPath);
     expect(sessions.lines['E:/w::env:pwn-vm']).toBeUndefined();
+  });
+});
+
+describe('pending 自愈日志（1.3.10 #1：引用改名失败/中断不永久悬空）', () => {
+  let dir: string;
+  let configPath: string;
+  let sessionsPath: string;
+  let selectionPath: string;
+  let pendingPath: string;
+  let logs: string[];
+  let warns: string[];
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'vm-migration-pending-'));
+    configPath = join(dir, 'config.json');
+    sessionsPath = join(dir, 'env-sessions.json');
+    selectionPath = join(dir, 'env-selection.json');
+    pendingPath = join(dir, 'env-migration-pending.json');
+    logs = [];
+    warns = [];
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const opts = () => ({
+    configPath,
+    envSessionsPath: sessionsPath,
+    envSelectionPath: selectionPath,
+    pendingPath,
+    log: (m: string) => logs.push(m),
+    warn: (m: string) => warns.push(m),
+  });
+
+  /** 上次进程死在「config 已改名、引用未改」窗口的现场：config 已迁移，
+   *  引用仍指旧 id，pending 记着那条改名。 */
+  function seedInterrupted(): void {
+    writeFileSync(
+      configPath,
+      JSON.stringify({ environments: [{ ...LEGACY, id: 'kali', vmName: 'kali' }] }),
+      'utf-8',
+    );
+    writeFileSync(
+      sessionsPath,
+      serializeEnvSessionsMap({
+        version: 1,
+        lines: { 'E:/w::env:pwn-vm': { loopSessionId: 'l1', updatedAt: 't' } },
+      }),
+      'utf-8',
+    );
+    writeFileSync(
+      selectionPath,
+      serializeSelectionStore({
+        version: 1,
+        workspaces: { 'E:/w': { selection: { kind: 'env', id: 'pwn-vm' }, selectedAt: 't' } },
+      }),
+      'utf-8',
+    );
+    writeFileSync(pendingPath, serializeVmMigrationPending([{ oldId: 'pwn-vm', newId: 'kali' }]), 'utf-8');
+  }
+
+  /** 标准 legacy 现场：config 是旧口径条目，两个引用文件都指旧 id。 */
+  function seedLegacy(): void {
+    writeFileSync(configPath, JSON.stringify({ environments: [LEGACY] }), 'utf-8');
+    writeFileSync(
+      sessionsPath,
+      serializeEnvSessionsMap({
+        version: 1,
+        lines: { 'E:/w::env:pwn-vm': { loopSessionId: 'l1', updatedAt: 't' } },
+      }),
+      'utf-8',
+    );
+    writeFileSync(
+      selectionPath,
+      serializeSelectionStore({
+        version: 1,
+        workspaces: { 'E:/w': { selection: { kind: 'env', id: 'pwn-vm' }, selectedAt: 't' } },
+      }),
+      'utf-8',
+    );
+  }
+
+  it('重放：启动时先重放 pending 把引用改到位（config 不再重复迁移），pending 消化删除', async () => {
+    seedInterrupted();
+    const result = await runLegacyVmEntryMigration(opts());
+    expect(result.migrated).toEqual([]); // config 已无 legacy 条目
+    const sessions = loadEnvSessionsMap(sessionsPath);
+    expect(sessions.lines['E:/w::env:kali']?.loopSessionId).toBe('l1');
+    expect(sessions.lines['E:/w::env:pwn-vm']).toBeUndefined();
+    const selection = loadSelectionStore(selectionPath);
+    expect(selection.workspaces['E:/w'].selection).toEqual({ kind: 'env', id: 'kali' });
+    expect(existsSync(pendingPath)).toBe(false); // 全部消化 → pending 删除
+  });
+
+  it('引用改名失败 → 条目仍迁移、失败条目留 pending；下次启动重放愈合', async () => {
+    seedLegacy();
+    // 首轮：renameSelection 失败（模拟锁冲突/IO 失败）。
+    const failingSelection = vi.fn(async () => {
+      throw new Error('selection 锁冲突');
+    });
+    const r1 = await runLegacyVmEntryMigration({ ...opts(), renameSelection: failingSelection });
+    expect(r1.migrated).toEqual([{ oldId: 'pwn-vm', newId: 'kali' }]);
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    expect(config.environments[0].id).toBe('kali');
+    const sessions = loadEnvSessionsMap(sessionsPath);
+    expect(sessions.lines['E:/w::env:kali']?.loopSessionId).toBe('l1');
+    const selection1 = loadSelectionStore(selectionPath);
+    expect(selection1.workspaces['E:/w'].selection).toEqual({ kind: 'env', id: 'pwn-vm' }); // 未改
+    expect(warns.some((w) => w.includes('env-selection.json 改名'))).toBe(true);
+    // pending 留存 → 下次启动不扫 legacy 也能续跑（旧实现这里就永久悬空了）。
+    expect(loadVmMigrationPending(pendingPath)).toEqual([{ oldId: 'pwn-vm', newId: 'kali' }]);
+
+    // 次轮：通道恢复，重放 pending 补上 selection 改名并消化 pending。
+    const r2 = await runLegacyVmEntryMigration(opts());
+    expect(r2.migrated).toEqual([]);
+    const selection2 = loadSelectionStore(selectionPath);
+    expect(selection2.workspaces['E:/w'].selection).toEqual({ kind: 'env', id: 'kali' });
+    expect(existsSync(pendingPath)).toBe(false);
+  });
+
+  it('锁冲突：pending 落盘失败仅告警，config 与引用改名本轮照常完成', async () => {
+    seedLegacy();
+    // 占住 pending 的锁（新鲜锁目录不会被 stale 回收）→ 写 pending 抛 FileBusyError。
+    mkdirSync(`${pendingPath}.lock`);
+    const result = await runLegacyVmEntryMigration(opts());
+    expect(result.migrated).toEqual([{ oldId: 'pwn-vm', newId: 'kali' }]);
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    expect(config.environments[0].id).toBe('kali');
+    const sessions = loadEnvSessionsMap(sessionsPath);
+    expect(sessions.lines['E:/w::env:kali']?.loopSessionId).toBe('l1');
+    const selection = loadSelectionStore(selectionPath);
+    expect(selection.workspaces['E:/w'].selection).toEqual({ kind: 'env', id: 'kali' });
+    expect(warns.some((w) => w.includes('pending 落盘失败'))).toBe(true);
+  }, 15_000);
+
+  it('pending 损坏 → 按空重放（不炸启动），后续扫描照常迁移', async () => {
+    writeFileSync(pendingPath, '{ broken', 'utf-8');
+    seedLegacy();
+    const result = await runLegacyVmEntryMigration(opts());
+    expect(result.migrated).toEqual([{ oldId: 'pwn-vm', newId: 'kali' }]);
+    const sessions = loadEnvSessionsMap(sessionsPath);
+    expect(sessions.lines['E:/w::env:kali']?.loopSessionId).toBe('l1');
   });
 });

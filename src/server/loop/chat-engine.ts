@@ -26,7 +26,7 @@
  *     后自动接下一条)。stop 两队列同清(逐条 cancelled)。事件名/payload
  *     与 SDK 路径对齐(agent-session 的 queue:* 语义)。
  *   - chat:status(W1):turn 开始(running)/ done(idle)/ stop / reset
- *     时 broadcast,TUI 状态行数据源。
+ *     时 broadcast,GUI 状态行数据源。
  *   - 会话跨重启(M4b):首个用户消息时 createSession(SessionStore)并把
  *     loopSessionId 写入会话元数据;sidecar 重启后 init 时按当前选定环境
  *     的分线映射(1.1.6 #4,env-sessions.json)找回对应 loop session,
@@ -199,6 +199,18 @@ export function getPiLogLines(): string[] {
   return [];
 }
 
+/** 配置缺失类发送错误(缺 provider 定义/API key)——/chat/send 据此区分 400。 */
+export const PI_NO_PROVIDER_ERROR = '无可用的 provider/model(pi 引擎):缺 provider 定义或 API key';
+
+/**
+ * /chat/send 错误文本 → HTTP 状态码(1.3.10 C2):配置类错误(无可用的
+ * provider/model)是请求方配置问题 → 400;其余保持 429(既有限流语义,
+ * 客户端按 429 退避)。
+ */
+export function chatSendErrorStatus(error: string): number {
+  return error === PI_NO_PROVIDER_ERROR ? 400 : 429;
+}
+
 // ---------------------------------------------------------------------------
 // Env anchoring(工作区环境选定 → 环境条目)
 // ---------------------------------------------------------------------------
@@ -330,16 +342,26 @@ function resolvePiScenario(): InteractionScenario {
  * 这里是薄包装:把真实依赖(登记表单例 / config 环境解析 / envBgReap /
  * SSE 广播)接进可注入的 reapAllBgProcesses——编排本体在 bg-reap.ts 里
  * 被单测钉死,本函数只剩接线,不另测。
+ *
+ * broadcast 开关:invoke 通道(headless)传 false——回收照做(杀进程/清
+ * 登记不变),但 chat:bg-finished 不广播(契约:headless 不往客户端发
+ * 事件,与 buildTurnStack 的 broadcastEvents=false 同口径)。
  */
-async function reapBgOnLifecyclePoint(reason: 'turn-end' | 'reset'): Promise<void> {
+async function reapBgOnLifecyclePoint(
+  reason: 'turn-end' | 'reset',
+  opts: { broadcast?: boolean } = {},
+): Promise<void> {
   const registry = getBgRegistry();
   if (!registry) return;
   const envList = listEnvironments(loadConfig());
+  const doBroadcast = opts.broadcast ?? true;
   await reapAllBgProcesses({
     registry,
     findEnv: (envId) => findEnvironmentEntry(envList, envId) ?? null,
     reap: (entry, tag, pid) => envBgReap(entry, tag, pid),
-    onFinished: (tag, status) => broadcast('chat:bg-finished', { tag, status }),
+    onFinished: (tag, status) => {
+      if (doBroadcast) broadcast('chat:bg-finished', { tag, status });
+    },
     onWarn: (msg) => console.warn(`[pi-engine] ${msg}`),
     onLog: (msg) => console.log(`[pi-engine] ${msg}(${reason})`),
   });
@@ -440,7 +462,7 @@ class ChatEngine {
     return this.resolveLoopEngine(env, (loadConfig() as { loopEngine?: 'sdk' | 'pi' }).loopEngine) === 'pi';
   }
 
-  /** W1 — TUI 状态行数据源(sse.ts 已注册 'chat:status'):状态变迁时广播。 */
+  /** W1 — GUI 状态行数据源(sse.ts 已注册 'chat:status'):状态变迁时广播。 */
   private broadcastChatStatus(): void {
     broadcast('chat:status', { sessionState: this.busy ? 'running' : 'idle' });
   }
@@ -589,7 +611,7 @@ class ChatEngine {
       ? resolveLoopModelFromEnv(input.providerEnv, input.model ?? '')
       : resolveLoopModel();
     if (!resolution) {
-      return { error: '无可用的 provider/model(pi 引擎):缺 provider 定义或 API key' };
+      return { error: PI_NO_PROVIDER_ERROR };
     }
     this.startPiTurn(input, resolution, grounding, queueId);
     return { queued: false, isInFlight: true, queueId };
@@ -1380,7 +1402,7 @@ class ChatEngine {
       ? resolveLoopModelFromEnv(input.providerEnv, input.model ?? '')
       : resolveLoopModel();
     if (!resolution) {
-      return { text: '', error: '无可用的 provider/model(pi 引擎):缺 provider 定义或 API key', loopSessionId };
+      return { text: '', error: PI_NO_PROVIDER_ERROR, loopSessionId };
     }
     const env = resolveSessionEnv(this.agentDir);
     const toolNames = [
@@ -1457,10 +1479,12 @@ class ChatEngine {
           { model: resolution.modelId, providerId: resolution.providerId },
         ).catch((err) => console.warn('[pi-engine] invoke 续存失败:', err));
       }
-      // 与单例 turn 收尾同款的挂点(标题/缺口埋点/bg 回收),目标都是本条线。
-      firePostTurnTitleHook(loopSessionId, resolution.modelId, input.providerEnv);
+      // 与单例 turn 收尾同款的挂点(缺口埋点/bg 回收),目标都是本条线。
+      // 标题钩子对 invoke 线跳过(headless 线无 SessionStore 元数据可标,
+      // 且其 generateAndApplyTitle 尾段会 broadcast chat:session-title-changed
+      // ——invoke 契约零广播);bg 回收照做但不广播(broadcast:false)。
       this.recordGapEvents(failed, blockedToolNames, loopSessionId);
-      void reapBgOnLifecyclePoint('turn-end');
+      void reapBgOnLifecyclePoint('turn-end', { broadcast: false });
       const lastAssistant = [...doneMessages].reverse().find((m) => m.role === 'assistant');
       const text = lastAssistant
         ? lastAssistant.content.filter((c): c is TextContent => c.type === 'text').map((c) => c.text).join('\n')

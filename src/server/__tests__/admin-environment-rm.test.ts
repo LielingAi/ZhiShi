@@ -279,3 +279,14 @@ describe('handleEnvironmentRm — B2：已登记 hyperv/vbox 条目回落实体�
     expect(readEnvIds()).toEqual([]);
   });
 });
+
+describe('删除语义唯一（1.3.10 #2：environment/remove 死路由已删）', () => {
+  it('admin-api 不再导出 handleEnvironmentRemove——摘登记/实体删除只有 rm 一条语义', async () => {
+    // 死路由（弱实现、无运行中拒绝）已删；任何回潮都会让这条红灯亮起。
+    const mod = (await import('../admin-api')) as unknown as Record<string, unknown>;
+    expect(mod.handleEnvironmentRemove).toBeUndefined();
+    // 唯一删除语义 = handleEnvironmentRm（含 ssh 只摘登记 / docker 运行中拒绝 /
+    // hyperv+vbox 实体删除回落）。
+    expect(typeof handleEnvironmentRm).toBe('function');
+  });
+});

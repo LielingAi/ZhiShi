@@ -97,6 +97,20 @@ vi.mock('./boundary', () => ({ makeBoundaryHook: () => async () => undefined }))
 vi.mock('./output-guard', () => ({ makeOutputGuardHook: () => async () => undefined }));
 vi.mock('./compaction', () => ({ makeCompactionTransform: () => async (m: unknown) => m }));
 
+// A1(1.3.10):invoke 零广播回归——bg 回收走可注入 mock(bg-exec 的
+// envBgReap + bg-registry 的内存登记表),不碰真盘/真 SSH;默认空登记表,
+// 需要回收路径的测试再往里塞条目。
+const envBgReapMock = vi.fn(async (..._args: unknown[]) => ({ ok: true, outcome: 'reaped' }));
+vi.mock('./bg-exec', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./bg-exec')>();
+  return { ...orig, envBgReap: (...args: unknown[]) => envBgReapMock(...args) };
+});
+const bgRegistryListMock = vi.fn(() => [] as { tag: string; pid: number; envId: string }[]);
+vi.mock('./bg-registry', () => ({
+  initBgRegistry: () => ({}),
+  getBgRegistry: () => ({ list: () => bgRegistryListMock(), remove: () => {} }),
+}));
+
 // 1.2.7(§三)域接线断言:skills 采集走真实实现,spy 记录入参(domain)。
 const collectEnabledSkillsSpy = vi.fn();
 vi.mock('./skills', async (importOriginal) => {
@@ -140,6 +154,7 @@ vi.mock('./refs', () => ({
 
 import {
   cancelPiQueueItem,
+  chatSendErrorStatus,
   ensureMetaLoopLine,
   envSwitchBlocker,
   forcePiQueueItem,
@@ -153,6 +168,7 @@ import {
   injectPiDecision,
   invokePiSession,
   isPiEngine,
+  PI_NO_PROVIDER_ERROR,
   queuePiChatMessage,
   resetPiChat,
   resolveLoopEngine,
@@ -165,6 +181,8 @@ import {
   switchEnvSession,
   switchPiSession,
 } from './chat-engine';
+// A1:标题钩子槽(真实现,单测里手动装 spy——invoke 线必须不触发)。
+import { setPostTurnTitleHook } from '../turn-hooks';
 // B10(1.2.6)回归:配置面会话标识的真实读取口(chat-engine 不经 mock 写它)。
 import { getSessionId } from '../agent-session';
 
@@ -221,6 +239,7 @@ function gateFirstTurn() {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  bgRegistryListMock.mockReturnValue([]);
   envSessionsData.clear();
   resetPiChat();
   resolveLoopModelMock.mockReturnValue(RESOLUTION);
@@ -266,6 +285,14 @@ describe('引擎开关(M4c 硬切:恒 pi,sdk 请求告警回落)', () => {
 
   it('getPiAgentState 携带 loopEngine=pi(TUI 状态区)', () => {
     expect(getPiAgentState().loopEngine).toBe('pi');
+  });
+});
+
+describe('chatSendErrorStatus(/chat/send 错误分类,C2)', () => {
+  it('配置缺失 → 400;其余保持 429 限流语义', () => {
+    expect(chatSendErrorStatus(PI_NO_PROVIDER_ERROR)).toBe(400);
+    expect(chatSendErrorStatus('Message must have text or images.')).toBe(429);
+    expect(chatSendErrorStatus('等待 turn 完成超时(600000ms)')).toBe(429);
   });
 });
 
@@ -733,7 +760,7 @@ describe('系统提示组装(buildSystemPromptAppend 接入)', () => {
   });
 });
 
-describe('chat:status broadcast(W1,TUI 状态行数据源)', () => {
+describe('chat:status broadcast(W1,GUI 状态行数据源)', () => {
   it('turn 开始 running → done idle(首尾各一次)', async () => {
     await sendPiChatMessage({ text: 'hi' });
     await waitTurnSettled();
@@ -1108,6 +1135,39 @@ describe('1.2.6 批次B 回归(B2 cron invoke 通道 / B4 force 单起点 / B5 s
       const ref = getPiCurrentSessionRef();
       expect(ref.sessionMetaId).toBe('meta-new');
       expect(appendLoopMessagesMock.mock.calls[0][0]).toBe(ref.loopSessionId);
+    });
+
+    it('invoke 通道零广播:标题钩子跳过、bg 回收静默(A1 回归)', async () => {
+      // 契约:headless 不广播——firePostTurnTitleHook(generateAndApplyTitle
+      // 尾段 broadcast chat:session-title-changed)对 invoke 线跳过;
+      // reapBgOnLifecyclePoint(broadcast:false)照常杀进程/清登记,但不广播
+      // chat:bg-finished。
+      const titleSpy = vi.fn();
+      setPostTurnTitleHook(titleSpy);
+      try {
+        configEnvironments.mockReturnValue([VM_ENTRY]);
+        bgRegistryListMock.mockReturnValue([{ tag: 'bg-1', pid: 42, envId: 'pwn-vm' }]);
+        broadcastMock.mockClear();
+        const r = await invokePiSession(
+          { text: 'cron 任务', providerEnv: { apiKey: 'k' } },
+          { loopSessionId: 'ls-silent' },
+        );
+        expect(r.error).toBeUndefined();
+        expect(r.loopSessionId).toBe('ls-silent');
+        // 标题钩子零触发。
+        expect(titleSpy).not.toHaveBeenCalled();
+        // bg 回收照做(杀 + 清登记)——等 fire-and-forget 回收链走完。
+        await vi.waitFor(() => {
+          expect(envBgReapMock).toHaveBeenCalledWith(
+            expect.objectContaining({ id: 'pwn-vm' }), 'bg-1', 42,
+          );
+        });
+        await new Promise((res) => setTimeout(res, 0));
+        // 全程零广播(含 bg-finished / session-title-changed)。
+        expect(broadcastMock).not.toHaveBeenCalled();
+      } finally {
+        setPostTurnTitleHook(() => {});
+      }
     });
   });
 

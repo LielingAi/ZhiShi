@@ -92,6 +92,7 @@ import {
 } from '../model/slash-routes';
 import { parseExpertImport } from '../model/expert-import';
 import { pickModelPickerProviders } from '../model/model-picker';
+import { mergeSidebarSnapshot } from '../model/sidebar';
 import * as api from '../client/api';
 import type {
   AgentEntity,
@@ -425,6 +426,8 @@ let agentsCache: AgentEntity[] | null = null;
 const filesCache = new Map<string, WorkspaceFileEntry[]>();
 /** @ 补全异步富化代次（关闭/换查询后过期结果丢弃）。 */
 let mentionGen = 0;
+/** 侧栏刷新代次（1.3.10：并发 refreshSidebar 旧轮快照后写防护，照 mentionGen）。 */
+let sidebarGen = 0;
 /** 1.3.4：@ 补全富化防抖计时器（新查询替换旧的待发请求）。 */
 let mentionTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -625,6 +628,10 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   async refreshSidebar() {
     const c = client;
     if (!c) return;
+    // 1.3.10：代次治理（照 enrichMention 的 mentionGen 模式）——触发面 7 处
+    // 并发调用时，旧轮快照后写会覆盖新轮快照；本轮令牌过期即整体丢弃
+    // （归并判定在 model/sidebar.ts 的 mergeSidebarSnapshot）。
+    const token = ++sidebarGen;
     const [envs, running, discover, recipes, domains] = await Promise.allSettled([
       api.fetchEnvironmentList(c),
       api.fetchEnvironmentPs(c),
@@ -632,14 +639,15 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       api.fetchEnvironmentRecipes(c),
       api.fetchDomainList(c),
     ]);
-    set((s) => ({
-      envs: envs.status === 'fulfilled' ? envs.value : s.envs,
-      running: running.status === 'fulfilled' ? running.value : s.running,
-      discoveredDocker: discover.status === 'fulfilled' ? discover.value.docker : s.discoveredDocker,
-      discoveredVm: discover.status === 'fulfilled' ? discover.value.vm : s.discoveredVm,
-      recipes: recipes.status === 'fulfilled' ? recipes.value : s.recipes,
-      domains: domains.status === 'fulfilled' ? domains.value : s.domains,
-    }));
+    const merged = mergeSidebarSnapshot(token, sidebarGen, get(), {
+      envs: envs.status === 'fulfilled' ? envs.value : undefined,
+      running: running.status === 'fulfilled' ? running.value : undefined,
+      discover: discover.status === 'fulfilled' ? discover.value : undefined,
+      recipes: recipes.status === 'fulfilled' ? recipes.value : undefined,
+      domains: domains.status === 'fulfilled' ? domains.value : undefined,
+    });
+    if (!merged) return; // 已有更新的刷新轮——过期快照丢弃
+    set({ ...merged });
   },
 
   // ── 环境切换（1.3.2 ③ A 形态：换激活指针，不丢任何线的本地状态） ──
@@ -987,25 +995,12 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       return;
     }
     if (kind === 'model') {
-      const curModel = currentSession(s).model;
-      const items: OverlayItem[] = [];
       // 1.3.6：只显示「已配 key 且未禁用」的 provider 模型（显示=可运行），
       // 当前生效模型即使异常也保留显示——过滤口径在 model/model-picker.ts。
-      for (const p of pickModelPickerProviders(s.models, curModel)) {
-        for (const m of p.models) {
-          items.push({
-            name: m.model,
-            detail: `${p.id} · ${
-              m.contextLength ? `${Math.round(m.contextLength / 1000)}K ctx` : 'ctx 未知'
-            }`,
-            tag: p.id,
-            cur: curModel !== undefined && m.model === curModel,
-            providerId: p.id,
-            model: m.model,
-          });
-        }
-      }
-      set({ overlay: { kind, title: '选择模型', items, sel: 0 } });
+      // 1.3.10：打开即重拉 model/list（设置页配 key 后 hasApiKey 已变，旧
+      // 缓存会漏掉新可用模型）——先出当前快照，拉回后 loadModels 原地刷新。
+      set({ overlay: { kind, title: '选择模型', items: modelOverlayItems(s), sel: 0 } });
+      void loadModels(get, set);
     }
   },
 
@@ -1757,7 +1752,16 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         break;
       }
       case 'close-modal':
-        set({ modal: null });
+        // G-02（1.3.10）：boot 构建进行中 Esc 不关模态（与 ✕ disabled 对齐）
+        // ——不做 abort（bootEnv 无 AbortController，environment/up 继续跑），
+        // 完成后 BootModal 自显结果；toast 提示构建仍在进行。
+        if (get().modal?.kind === 'boot' && get().boot?.status === 'running') {
+          get().showToast('构建进行中');
+          break;
+        }
+        // G-05（1.3.10）：复用 closeModal——modal 与 wizard 一并清（原分支只
+        // 清 modal，与 closeModal 语义分裂）。
+        get().closeModal();
         break;
       case 'close-drawer':
         set({ drawer: null });
@@ -1946,6 +1950,27 @@ async function restoreEnvSelection(
   }
 }
 
+/** 模型切换 overlay 条目（1.3.6 过滤口径；1.3.10 抽公共供打开与刷新复用）。 */
+function modelOverlayItems(s: GuiState): OverlayItem[] {
+  const curModel = currentSession(s).model;
+  const items: OverlayItem[] = [];
+  for (const p of pickModelPickerProviders(s.models, curModel)) {
+    for (const m of p.models) {
+      items.push({
+        name: m.model,
+        detail: `${p.id} · ${
+          m.contextLength ? `${Math.round(m.contextLength / 1000)}K ctx` : 'ctx 未知'
+        }`,
+        tag: p.id,
+        cur: curModel !== undefined && m.model === curModel,
+        providerId: p.id,
+        model: m.model,
+      });
+    }
+  }
+  return items;
+}
+
 async function loadModels(
   get: () => GuiState,
   set: (partial: Partial<GuiState>) => void,
@@ -1954,7 +1979,16 @@ async function loadModels(
   if (!c) return;
   try {
     const { providers, current } = await api.fetchModelList(c);
-    if (get().models.length === 0) set({ models: providers });
+    // 1.3.10：每次拉取都覆盖 models（1.3.6 起只初始化一次——设置页配 key
+    // 后 hasApiKey 变化，模型 overlay 过滤不刷新；现在打开即重拉保证
+    // 「显示=可运行」契约）。
+    set({ models: providers });
+    // 模型 overlay 仍开着 → 原地刷新条目（新配 key 的模型立即可见）。
+    const ov = get().overlay;
+    if (ov?.kind === 'model') {
+      const items = modelOverlayItems(get());
+      set({ overlay: { ...ov, items, sel: Math.min(ov.sel, Math.max(items.length - 1, 0)) } });
+    }
     // 1.3.0 修正：新会话在首个 turn 前不会有 chat:system-init——状态栏
     // 模型名用 model/list 的 current 兜底（1.2.9 服务端字段）。
     if (current?.modelId) {

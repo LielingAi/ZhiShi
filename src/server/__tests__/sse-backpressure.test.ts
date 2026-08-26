@@ -76,7 +76,7 @@ describe('SSE backpressure — coalescible events', () => {
     const reader = response.body!.getReader();
 
     for (let i = 0; i < 2000; i++) {
-      client.send('chat:tool-input-delta', { idx: i, delta: 'x' });
+      client.send('chat:thinking-chunk', { index: i, delta: 'x' });
     }
     client.close();
 
@@ -86,7 +86,7 @@ describe('SSE backpressure — coalescible events', () => {
     // but we DO assert: the total delivered is strictly less than 2000
     // (proving coalesce/drop happened) and at least 1 (proving forward
     // progress when downstream eventually drained on close).
-    const delivered = countEvent(raw, 'chat:tool-input-delta');
+    const delivered = countEvent(raw, 'chat:thinking-chunk');
     expect(delivered).toBeGreaterThan(0);
     expect(delivered).toBeLessThanOrEqual(2000);
   });
@@ -278,14 +278,14 @@ describe('OpenAI bridge — pull-driven backpressure', () => {
 describe('SSE event priority registration', () => {
   it('classifies streaming deltas as coalescible', () => {
     expect(SSE_EVENT_PRIORITIES['chat:message-chunk']).toBe('coalescible');
-    expect(SSE_EVENT_PRIORITIES['chat:tool-result-delta']).toBe('coalescible');
+    expect(SSE_EVENT_PRIORITIES['chat:thinking-chunk']).toBe('coalescible');
   });
 
   it('classifies error / completion / init events as critical', () => {
     expect(SSE_EVENT_PRIORITIES['chat:message-error']).toBe('critical');
     expect(SSE_EVENT_PRIORITIES['chat:message-complete']).toBe('critical');
     expect(SSE_EVENT_PRIORITIES['chat:system-init']).toBe('critical');
-    expect(SSE_EVENT_PRIORITIES['permission:request']).toBe('critical');
+    expect(SSE_EVENT_PRIORITIES['chat:decision-request']).toBe('critical');
   });
 
   it('classifies logs/telemetry as droppable', () => {

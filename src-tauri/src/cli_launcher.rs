@@ -1,8 +1,9 @@
 //! CLI install mirror (1.2.3 恢复,1.3.9 从 tui_launcher 拆分——TUI 退役后
 //! 保留的唯一职责)。
 //!
-//! 1.3.9 TUI 退役：原 tui_launcher 的三入口「弹 TUI 终端」职责删除,三入口
-//! (启动/二次实例/托盘)改聚焦 GUI 主窗口(见 lib.rs/tray.rs)。本模块只保留
+//! 1.3.9 TUI 退役：原 tui_launcher 的三入口「弹 TUI 终端」职责删除,各入口
+//! (启动/二次实例/托盘/macOS Dock Reopen)改聚焦 GUI 主窗口(见 lib.rs/tray.rs)。
+//! 本模块只保留
 //! [`sync_cli_resources`]——镜像 `resources/cli/` 进 `<data-dir>/bin/`,让
 //! `zhishi` 命令在新机器上存在(CLI 子命令与 `zhishi term` 链路独立存活)。
 
@@ -20,13 +21,13 @@ use crate::{ulog_error, ulog_info, ulog_warn};
 /// `zhishi.js` installs as the extensionless `zhishi`: on Unix the file IS
 /// the `zhishi` command (shebang `#!/usr/bin/env node`). `package.json`
 /// (`{"type":"module"}`) must sit next to it so Node treats the extensionless
-/// file as ESM (1.2.3 #5 switched the bundle to ESM). On Windows the
-/// `zhishi.cmd` entry is **generated** (bundled node path baked, see
-/// cli_cmd_content) rather than copied — 1.2.10 puts bin on the user PATH,
-/// so the wrapper cannot rely on finding node via PATH.
+/// file as ESM (1.2.3 #5 switched the bundle to ESM).
+///
+/// Windows `zhishi.cmd` is NOT mirrored from resources — it is **generated**
+/// below (bundled node path baked, see cli_cmd_content) because 1.2.10 puts
+/// bin on the user PATH, so the wrapper cannot rely on finding node via PATH.
 const CLI_FILES: &[(&str, &str)] = &[
     ("zhishi.js", "zhishi"),
-    ("zhishi.cmd", "zhishi.cmd"),
     ("package.json", "package.json"),
 ];
 
@@ -76,27 +77,10 @@ pub fn sync_cli_resources<R: Runtime>(app: &AppHandle<R>) {
     }
     for (src_name, dst_name) in CLI_FILES {
         let dst = bin_dir.join(dst_name);
-        // zhishi.cmd 走生成式（烘焙 bundled node 绝对路径,1.2.10 zhishi 入
-        // PATH——不读源文件;内容与 NSIS install-cli.ps1 的安装时产物逐字节
-        // 一致,content-compare 不 churn）。
-        #[cfg(windows)]
-        let content: Option<Vec<u8>> = if *dst_name == "zhishi.cmd" {
-            Some(cli_cmd_content(&resource_dir).into_bytes())
-        } else {
-            None
-        };
-        #[cfg(not(windows))]
-        let content: Option<Vec<u8>> = None;
-        let content = match content {
-            Some(c) => c,
-            None => {
-                let src = src_dir.join(src_name);
-                let Ok(content) = std::fs::read(&src) else {
-                    ulog_warn!("[cli-launcher] {:?} unreadable, skipped", src);
-                    continue;
-                };
-                content
-            }
+        let src = src_dir.join(src_name);
+        let Ok(content) = std::fs::read(&src) else {
+            ulog_warn!("[cli-launcher] {:?} unreadable, skipped", src);
+            continue;
         };
         // Content-compare skip: rewriting a ~1.4 MB bundle on every launch
         // would churn Defender scans for nothing.
@@ -115,6 +99,21 @@ pub fn sync_cli_resources<R: Runtime>(app: &AppHandle<R>) {
         if *dst_name == "zhishi" {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    // zhishi.cmd 走生成式（烘焙 bundled node 绝对路径,1.2.10 zhishi 入
+    // PATH——不读源文件;内容与 NSIS install-cli.ps1 的安装时产物逐字节
+    // 一致,content-compare 不 churn）。
+    #[cfg(windows)]
+    {
+        let cmd_dst = bin_dir.join("zhishi.cmd");
+        let content = cli_cmd_content(&resource_dir).into_bytes();
+        if !std::fs::read(&cmd_dst).map(|old| old == content).unwrap_or(false) {
+            match std::fs::write(&cmd_dst, &content) {
+                Ok(()) => ulog_info!("[cli-launcher] installed CLI file {:?}", cmd_dst),
+                Err(e) => ulog_error!("[cli-launcher] failed to write {:?}: {}", cmd_dst, e),
+            }
         }
     }
 }

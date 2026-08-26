@@ -17,7 +17,7 @@
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   __setDiscoverSourcesForTests,
@@ -25,9 +25,16 @@ import {
   __setPsTcpProbeForTests,
   handleEnvironmentDiscover,
   handleEnvironmentDown,
+  handleEnvironmentEngines,
   handleEnvironmentPs,
 } from '../admin-api';
 import type { EnvironmentEntry } from '../../shared/config-types';
+
+// C3(1.3.10):handleEnvironmentEngines 失败路径注入——detect 走假通道,可抛错。
+const detectEnginesMock = vi.fn(async (..._args: unknown[]) => ({}));
+vi.mock('../environment/engine-detect-cache', () => ({
+  detectEnvironmentEnginesCached: (...args: unknown[]) => detectEnginesMock(...args),
+}));
 
 let scratch: string;
 let prevHome: string | undefined;
@@ -47,6 +54,7 @@ interface PsRow {
   driver?: string;
   status?: string;
   address?: string;
+  vmx?: string;
 }
 
 async function psRows(): Promise<PsRow[]> {
@@ -95,6 +103,8 @@ beforeEach(() => {
   process.env.HOME = scratch;
   process.env.USERPROFILE = scratch;
   __setPsTcpProbeForTests(() => Promise.resolve(false));
+  detectEnginesMock.mockReset();
+  detectEnginesMock.mockResolvedValue({});
 });
 
 afterEach(() => {
@@ -280,5 +290,84 @@ describe('handleEnvironmentDiscover — B5 全量枚举', () => {
     const data = r.data as { docker: unknown[]; vm: Array<{ driver: string; name: string }> };
     expect(data.docker).toEqual([]);
     expect(data.vm).toEqual([{ driver: 'vbox', id: 'user-kali', name: 'user-kali', state: 'unknown' }]);
+  });
+});
+
+describe('C3(1.3.10) — 失败路径补 recoveryHint', () => {
+  it('handleEnvironmentPs 全源失败 → error + recoveryHint(zhishi env engines)', async () => {
+    seedEntries([]);
+    __setPsSourcesForTests({
+      dockerPs: () => Promise.resolve({ ok: false as const, error: 'docker 不可用' }),
+      vmPs: () => Promise.resolve({ ok: false as const, error: 'vmrun 不可用' }),
+      hypervPs: () => Promise.resolve({ ok: false as const, error: 'Hyper-V 不可用' }),
+      vboxPs: () => Promise.resolve({ ok: false as const, error: 'VirtualBox 不可用' }),
+    });
+    const r = await handleEnvironmentPs();
+    expect(r.success).toBe(false);
+    expect(r.error).toContain('docker 不可用');
+    expect(r.recoveryHint).toEqual({
+      recoveryCommand: 'zhishi env engines',
+      message: 'See which engines are available.',
+    });
+  });
+
+  it('handleEnvironmentEngines 探测抛错 → error + recoveryHint(--fresh 重探)', async () => {
+    detectEnginesMock.mockRejectedValue(new Error('probe boom'));
+    const r = await handleEnvironmentEngines({});
+    expect(r.success).toBe(false);
+    expect(r.error).toContain('probe boom');
+    expect(r.recoveryHint).toEqual({
+      recoveryCommand: 'zhishi env engines --fresh',
+      message: 'Bypass the 30s detect cache and re-probe.',
+    });
+  });
+});
+
+describe('handleEnvironmentPs — 1.3.10 #3 vmware 匹配走 resolveVmxForEntry', () => {
+  it('无 vmx 字段、vmName 经 vmTemplates 解析出 vmx 的条目 → 运行中命中（含解析出的 vmx）', async () => {
+    const entry: EnvironmentEntry = {
+      id: 'fuzz',
+      kind: 'vm',
+      vmName: 'fuzz',
+      recipeId: 'pwn-vm',
+      createdAt: '2026-08-25T00:00:00Z',
+    };
+    writeFileSync(
+      join(scratch, '.zhishi', 'config.json'),
+      JSON.stringify({
+        environments: [entry],
+        vmTemplates: { 'pwn-vm': { vmx: 'd:\\vmiso\\ubuntu\\fuzz.vmx' } },
+      }),
+      'utf-8',
+    );
+    fakePsSources({ vmxes: ['d:\\vmiso\\ubuntu\\fuzz.vmx'] });
+    const rows = await psRows();
+    expect(rows.find((r) => r.id === 'fuzz')).toMatchObject({
+      id: 'fuzz',
+      driver: 'vm',
+      status: 'running',
+      vmx: 'd:\\vmiso\\ubuntu\\fuzz.vmx',
+    });
+  });
+
+  it('vmName 解析不到 vmx（vmTemplates 无命中）→ 不算运行中（旧实现同样不列，语义不回归）', async () => {
+    seedEntries([{ id: 'ghost', kind: 'vm', vmName: 'ghost', createdAt: 'x' } as EnvironmentEntry]);
+    fakePsSources({ vmxes: ['d:\\vmiso\\ubuntu\\other.vmx'] });
+    const rows = await psRows();
+    expect(rows.find((r) => r.id === 'ghost')).toBeUndefined();
+  });
+
+  it('条目自带 vmx 且 vmrun 运行中 → 照旧命中（resolveVmxForEntry 的 vmx 优先序）', async () => {
+    const entry: EnvironmentEntry = {
+      id: 'kali',
+      kind: 'vm',
+      vmName: 'kali',
+      vmx: 'C:\\VMs\\kali\\kali.vmx',
+      createdAt: '2026-08-25T00:00:00Z',
+    };
+    seedEntries([entry]);
+    fakePsSources({ vmxes: ['c:/vms/kali/kali.vmx'] }); // 大小写/斜杠漂移也归一命中
+    const rows = await psRows();
+    expect(rows.find((r) => r.id === 'kali')?.status).toBe('running');
   });
 });

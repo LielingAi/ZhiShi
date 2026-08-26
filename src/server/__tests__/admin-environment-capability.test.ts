@@ -23,6 +23,9 @@ import {
   handleEnvironmentCapabilityRefresh,
   runEnvProbeWithCapabilities,
 } from '../admin-api';
+import { probeEnvironmentCapabilities } from '../environment/capability-derive';
+import { loadDomainManifests } from '../domains/manifest';
+import { defaultRecipesRoot, scanRecipes } from '../environment/recipes';
 import type { EnvironmentEntry } from '../../shared/config-types';
 
 let scratch: string;
@@ -175,5 +178,44 @@ describe('handleEnvironmentCapabilityRefresh — 重推 + 回写', () => {
     const r = await handleEnvironmentCapabilityRefresh({ id: 'ghost' });
     expect(r.success).toBe(false);
     expect(r.error).toContain('未找到环境');
+  });
+});
+
+describe('1.3.10 #4 — 空探测面两实现对齐（绑定域恒在）', () => {
+  it('空 surface 两实现都出 bound-only，且不发探测命令', async () => {
+    // 清空配方 → 探测面为空。
+    rmSync(join(scratch, '.zhishi', 'environments'), { recursive: true, force: true });
+    let execCalled = 0;
+    __setCapabilityExecForTests(() => {
+      execCalled += 1;
+      return Promise.resolve({ ok: true, stdout: '' });
+    });
+
+    const runProbe = await runEnvProbeWithCapabilities(PWN_ENTRY, []);
+    const fromProbe = await probeEnvironmentCapabilities(PWN_ENTRY, {
+      recipes: scanRecipes(defaultRecipesRoot()),
+      manifests: loadDomainManifests(),
+      exec: () => Promise.resolve({ ok: true, stdout: '' }),
+    });
+
+    expect(execCalled).toBe(0); // 空探测面不发探测命令
+    expect(runProbe.capabilityDomains).toEqual(['binary']); // 绑定域 pwn→binary 恒在
+    expect(runProbe.capabilityDerivedAt).toBeTruthy();
+    expect(fromProbe).toBeDefined();
+    expect(fromProbe!.capabilityDomains).toEqual(runProbe.capabilityDomains);
+    expect(fromProbe!.capabilityDerivedAt).toBeTruthy();
+  });
+
+  it('无绑定域的条目空 surface → 两实现都不写能力字段（{} / undefined）', async () => {
+    rmSync(join(scratch, '.zhishi', 'environments'), { recursive: true, force: true });
+    const bare: EnvironmentEntry = { id: 'bare', kind: 'docker', container: 'bare', createdAt: '' };
+    const runProbe = await runEnvProbeWithCapabilities(bare, []);
+    expect(runProbe).toEqual({});
+    const fromProbe = await probeEnvironmentCapabilities(bare, {
+      recipes: scanRecipes(defaultRecipesRoot()),
+      manifests: loadDomainManifests(),
+      exec: () => Promise.resolve({ ok: true, stdout: '' }),
+    });
+    expect(fromProbe).toBeUndefined();
   });
 });

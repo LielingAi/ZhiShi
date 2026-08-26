@@ -1,12 +1,16 @@
 /**
- * SSE 事件名对账（2026-08-06 审计 F-01 的防复发机制）。
+ * SSE 事件名对账（2026-08-06 审计 F-01 的防复发机制；1.3.10 A2 补双向）。
  *
  * F-01 的教训：`appcraft:sediment-proposal` 后端在 broadcast、前端有 handler，
  * 但 SseConnection 白名单漏注册 → 事件被静默丢弃，功能死亡且无任何报错，
  * 纯模块单测根本测不到链路。本测试把注册表漂移变成 CI 红灯：
  *
- *   后端 broadcast('<event>', …) 字面量全集
- *     ⊆ src/server/sse.ts 的 SSE_EVENT_PRIORITIES
+ *   ① 后端 broadcast('<event>', …) 字面量全集（含 broadcastFn / client.send
+ *     与 mapLoopEventToSse 的 SseOut 字面量——chat-engine 的
+ *     broadcast(sse.event, …) 变量名路径）
+ *        ⊆ src/server/sse.ts 的 SSE_EVENT_PRIORITIES
+ *   ② SSE_EVENT_PRIORITIES ⊆ ①（双向对账：注册表不允许零产生点的
+ *      死条目——1.3.10 A2 清掉 SDK/交互体系残留孤儿事件）
  *
  * 历史三方对账中的 `src/renderer/api/SseConnection.ts` 白名单一腿随 renderer
  * GUI 一并删除（CLI 形态暂无事件白名单；若后续 CLI 引入白名单，应在此恢复
@@ -37,14 +41,20 @@ function collectSources(dir: string): string[] {
   return out;
 }
 
-/** All `broadcast('event-name'` / `emitSse('event-name'` literals across the sidecar. */
+/** All `broadcast('event-name'` / `emitSse('event-name'` / `send('event-name'` /
+ *  `broadcastFn('event-name'` literals across the sidecar (non-test sources).
+ *  Variable-name paths are folded in separately: chat-engine broadcasts
+ *  `sse.event` produced by mapLoopEventToSse, so the SseOut literals in
+ *  sse-adapter.ts are emitters too. */
 function backendEmittedEvents(): Set<string> {
   const events = new Set<string>();
-  const pattern = /\b(?:broadcast|emitSse|send)\(\s*'([a-z][a-z0-9:-]+)'/g;
+  const pattern = /\b(?:broadcast|emitSse|send|broadcastFn)\(\s*'([a-z][a-z0-9:-]+)'/g;
   for (const file of collectSources(SERVER_DIR)) {
     const text = readFileSync(file, 'utf-8');
     for (const m of text.matchAll(pattern)) events.add(m[1]);
   }
+  const adapterText = readFileSync(join(SERVER_DIR, 'loop', 'sse-adapter.ts'), 'utf-8');
+  for (const m of adapterText.matchAll(/event:\s*'([a-z][a-z0-9:-]+)'/g)) events.add(m[1]);
   return events;
 }
 
@@ -69,5 +79,10 @@ describe('SSE event-name cross-check (audit F-01 regression guard)', () => {
   it('every backend-emitted event has an explicit SSE priority (no fail-closed warn noise)', () => {
     const missing = [...emitted].filter((e) => !priorities.has(e));
     expect(missing).toEqual([]);
+  });
+
+  it('every registered priority has a live emitter (1.3.10 A2:死注册表双向对账)', () => {
+    const orphans = [...priorities].filter((e) => !emitted.has(e));
+    expect(orphans).toEqual([]);
   });
 });

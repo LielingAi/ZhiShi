@@ -46,7 +46,7 @@ pub fn is_cli_mode(args: &[String]) -> bool {
     cli::is_cli_mode(args)
 }
 
-/// Run in CLI mode — forward args to the Bun CLI script and return exit code.
+/// Run in CLI mode — forward args to the Node.js CLI script and return exit code.
 pub fn run_cli(args: &[String]) -> i32 {
     cli::run(args)
 }
@@ -124,7 +124,7 @@ pub fn run() {
     let task_state: task::ManagedTaskStore =
         Arc::new(task::TaskStore::new(data_dir.clone()));
     // Expose the same Arc via a OnceLock singleton so the Rust Management API
-    // (used by Bun CLI bridge → /api/admin/task/*) can read/write tasks without
+    // (used by Node CLI bridge → /api/admin/task/*) can read/write tasks without
     // access to Tauri `State`. It points at the same inner store.
     task::set_task_store(task_state.clone());
 
@@ -241,8 +241,8 @@ pub fn run() {
             });
 
             // Seed system skills + environment recipes at startup. The renderer
-            // used to invoke these via IPC; with the GUI deleted (CLI+agent form)
-            // nothing else triggers them — run the version gates here.
+            // can no longer trigger these (the invoke surface exposes only
+            // get_sidecar_port), so the version gates run here.
             {
                 let seed_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -272,12 +272,7 @@ pub fn run() {
                 let (mut provider, mut mcp, mut agents, mut channels, mut cron, mut proxy) =
                     ("?".to_string(), 0u32, 0u32, 0u32, 0u32, false);
                 if let Some(ref dir) = data_dir {
-                    if let Ok(c) = std::fs::read_to_string(dir.join("config.json"))
-                        .ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).ok_or(()) {
-                        // won't reach — see below
-                        let _ = c;
-                    }
-                    // Simpler: parse as Value directly. strip_bom tolerates a
+                    // Parse as Value directly. strip_bom tolerates a
                     // Windows-editor-prepended UTF-8 BOM (issue #170 #6) so the
                     // boot log reflects real config values instead of "?".
                     if let Ok(cfg) = std::fs::read_to_string(dir.join("config.json"))
@@ -335,7 +330,7 @@ pub fn run() {
             // Inject Sidecar state into management API
             management_api::set_sidecar_state(sidecar_state_for_management);
 
-            // Start management API (internal HTTP server for Bun→Rust IPC)
+            // Start management API (internal HTTP server for Node→Rust IPC)
             tauri::async_runtime::spawn(async move {
                 match management_api::start_management_api().await {
                     Ok(port) => ulog_info!("[App] Management API started on port {}", port),
@@ -484,12 +479,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
                 ulog_info!("[App] Dock icon clicked (Reopen), showing main window");
-                use tauri::Manager;
-                if let Some(window) = _app_handle.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
-                }
+                crate::tray::show_main_window(_app_handle);
             }
             _ => {}
         }

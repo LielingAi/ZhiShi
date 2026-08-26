@@ -19,6 +19,7 @@ import type React from 'react';
 
 import { open } from '@tauri-apps/plugin-dialog';
 
+import { GUI_VERSION } from '../../../shared/constants';
 import { getSettingsClient, useGuiStore } from '../store/useGuiStore';
 import * as api from '../client/api';
 import type { ExpertDraft, ExpertSummary, ModelProvider, ResearchEventRow, SkillEntity } from '../client/api';
@@ -992,7 +993,7 @@ export function SettingsPage(): React.JSX.Element {
               <div className="sg-title">zhishi · 执失</div>
               <div className="set-row">
                 <div><div className="sr-label">版本</div></div>
-                <div className="sr-control"><span className="sr-status">v1.3.1 GUI</span></div>
+                <div className="sr-control"><span className="sr-status">v{GUI_VERSION} GUI</span></div>
               </div>
               <div className="set-row">
                 <div><div className="sr-label">数据目录</div></div>

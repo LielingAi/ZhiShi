@@ -5,13 +5,15 @@
 
 ---
 
-## 1.3.10 —— 全局代码质量审计（进行中）
+## 1.3.10 —— 全局代码质量审计（已完成）
 
 用户定调（2026-08-26）：发版（1.4.0）前的全局代码质量审计。方法论同 1.2.8 TUI 普查 / 1.3.8 环境普查：代码级证据 + 实机驱动，产出台账分级（真 bug / 技术债 / 低危 / 记录在案），确认的逐条修复带回归测试。
 
-- [ ] **审计四域**：①服务端（src/server/——god file 状态、chat-engine 模块级单例、文件 IO 纪律 withFileLock、错误处理/降级一致性、死代码、SSE 契约完整性）；②GUI（src/gui/——store 状态卫生、reducer 对 SSE 事件族覆盖、组件/样式死代码、异常兜底）；③CLI（src/cli/——TUI 退役后的剩余面：expert/intel/term 子命令、死代码）；④Rust（src-tauri/——tui_launcher 退役后的残留、panel_api/terminal/cli_launcher 边界、三入口一致性）+ 共享类型（src/shared/）。
-- [ ] **台账与定性**：逐条带证据（文件+行号）+ 复现路径 + 严重度排序；真 bug 修，技术债分级（本版可修的低风险债 vs 记录在案的大重构——god file 拆分等绞杀式随做随拆，不在审计版强行执行）。
-- [ ] **修复 + 回归**：确认的 bug/低风险债修复，带单测；全量测试 + typecheck + eslint + 构建 + cargo check。
+- [x] **审计四域**：①服务端（src/server/——god file 状态、chat-engine 模块级单例、文件 IO 纪律 withFileLock、错误处理/降级一致性、死代码、SSE 契约完整性）；②GUI（src/gui/——store 状态卫生、reducer 对 SSE 事件族覆盖、组件/样式死代码、异常兜底）；③CLI（src/cli/——TUI 退役后的剩余面：expert/intel/term 子命令、死代码）；④Rust（src-tauri/——tui_launcher 退役后的残留、panel_api/terminal/cli_launcher 边界、三入口一致性）+ 共享类型（src/shared/）。
+- [x] **台账与定性**：逐条带证据（文件+行号）+ 复现路径 + 严重度排序；真 bug 修，技术债分级（本版可修的低风险债 vs 记录在案的大重构——god file 拆分等绞杀式随做随拆，不在审计版强行执行）。
+- [x] **修复 + 回归**：确认的 bug/低风险债修复，带单测；全量测试 + typecheck + eslint + 构建 + cargo check。
+
+> 实际落地（2026-08-26）：四路审计 60+ 条台账，修 22 项。服务端 10：A1 invoke 通道越权广播（标题钩子/bg-finished 改静默，单测钉死「invoke 零广播」）；A2 SSE 孤儿事件清表 27 条 + crosscheck 双向对账（broadcast 变量名路径纳入扫描）；C1 过期注释（exit_cron_task/agent-session/TUI 措辞）；C2 /chat/send 状态码按错误类别区分（配置缺失 400/其余 429）；C3 两处 recoveryHint 补齐；#1 迁移引用改名失败持久化 pending 自愈（锁冲突场景单测）；#2 删 environment/remove 死路由双语义（CLI env remove 别名改指 rm）；#3 ps vmware 收敛 resolveVmxForEntry；#4 capability 双实现空 surface 等价钉死；#6 memory search 类型守卫。GUI 7：G-01 模型 overlay 打开重拉（「显示=可运行」契约修复）；G-02 BootModal Esc 拦截（文案与行为对齐）；G-03 删 4 死函数；G-04 reducer 死分支；G-05 esc/closeModal 语义统一；G-06 refreshSidebar 代次治理（过期快照丢弃）；G-09 版本常量。CLI+Rust 9：B1 CLI_COMMANDS 补 6 组（env/domain/research/intel/expert/help——`ZhiShi.exe expert list` 不再静默吞）；B2 删 4 死条目；T5 lib.rs 死代码；L1-L4 注释口径（tui_launcher 引用/tray 矛盾/Bun→Node/失实注释）；L6 macOS Reopen 复用；T3 zhishi.cmd 死拷贝链删除。另：四文件双倍行距归一化（-11.4K 行噪音，独立 commit）+ CLI help 路由/env remove 别名（活体验证）。红线核验：SSE 注册表双向对账强化（L400）、withFileLock 纪律、修 bug 必带回归测试、depcruise 边界干净（顺带消除旧 no-orphans 警告），无违规。链路活体：environment/list、capability-refresh 回写（binary，按现场推导）、model/list current、sessions、queue/status、domain/list、health/ready 全通。全量 173 文件 2225 测试绿 + typecheck + eslint + build:cli/server/gui + cargo check 绿。**记录在案**（另行立项）：god file 拆分、原子写 helper 迁移、zhishi.ts 主体单测、双终端栈合并评估、SSE 对账专项（G-13/G-14/G-21 等漏面）。
 
 > 不做（维持）：编译发版（1.4.0 发版版做）、大规模重构（god file 拆分/引擎单例解耦——审计记录，重构另行立项）、/bg 转后台（单独立版）、新功能。
 > 验收：全量测试 + 实机走查。

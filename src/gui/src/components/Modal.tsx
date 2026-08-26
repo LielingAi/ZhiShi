@@ -86,7 +86,9 @@ function BootModalInner({ recipeId }: { recipeId: string }): React.JSX.Element {
             </div>
           ))}
           {failed && boot?.error && <div className="m-error">✗ {boot.error}</div>}
-          <div className="m-hint">Esc 取消 · 失败即停，绝不半进</div>
+          {/* G-02（1.3.10）：构建进行中 Esc 已拦截（store.esc 不动模态）、✕
+              disabled——构建在服务端继续，关闭 GUI 窗口也不中断。 */}
+          {running && <div className="m-hint">构建进行中，关闭窗口不影响构建</div>}
           {(done || failed) && (
             <div className="m-actions">
               <button

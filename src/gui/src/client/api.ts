@@ -6,7 +6,6 @@
  *                   → { success, queued?, queueId?, isInFlight?, steering? }
  *   - /chat/stop    POST {} → { success, alreadyStopped? }
  *   - /chat/model   POST { model, providerId } → { success, providerId, model }
- *   - /api/session-state GET → { sessionState }
  *   - /api/admin/environment/list     → { success, data: { environments } }
  *   - /api/admin/environment/ps       → { success, data: { instances } }
  *   - /api/admin/environment/discover → { success, data: { docker, vm } }
@@ -248,18 +247,12 @@ export function setModel(
   return client.postJson<{ success: boolean; error?: string }>('/chat/model', { model, providerId });
 }
 
-export function getSessionState(
-  client: GuiSidecarClient,
-): Promise<{ sessionState?: string }> {
-  return client.getJson<{ sessionState?: string }>('/api/session-state');
-}
-
 export function resetChat(client: GuiSidecarClient): Promise<{ success: boolean; error?: string }> {
   return client.postJson<{ success: boolean; error?: string }>('/chat/reset', {});
 }
 
 // ---------------------------------------------------------------------------
-// 1.3.1 新增：环境生命周期（准入闸启动 / 快照 / 回滚 / 提取 / 认领）
+// 1.3.1 新增：环境生命周期（准入闸启动 / 认领）
 // ---------------------------------------------------------------------------
 
 export interface EnvUpInput {
@@ -294,27 +287,6 @@ export function environmentAdopt(
   input: { recipe: string; vmx: string; user?: string; keyPath?: string; password?: string },
 ): Promise<{ success: boolean; error?: string }> {
   return client.adminPost('environment/adopt', input);
-}
-
-export function environmentSnapshot(
-  client: GuiSidecarClient,
-  input: { id: string; name?: string },
-): Promise<{ success: boolean; error?: string; data?: { snapshot?: string } }> {
-  return client.adminPost('environment/snapshot', input);
-}
-
-export function environmentRollback(
-  client: GuiSidecarClient,
-  input: { id: string; snapshot: string },
-): Promise<{ success: boolean; error?: string }> {
-  return client.adminPost('environment/rollback', input);
-}
-
-export function environmentExtract(
-  client: GuiSidecarClient,
-  input: { id: string; guestPath: string; workspace?: string },
-): Promise<{ success: boolean; error?: string; data?: { savedTo?: string } }> {
-  return client.adminPost('environment/extract', input);
 }
 
 /** 1.3.7 场景 3：能力集合重推 + 回写（侧栏「刷新」按钮）。 */

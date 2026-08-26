@@ -2,6 +2,14 @@
  * Session ID management for Session-Centric Sidecar architecture
  * New sessions start with a "pending-{tabId}" ID until the backend creates the real session
  */
+
+/**
+ * GUI 产品版本线（设置页「关于」展示，替代组件内硬编码——1.3.10）。
+ * 与 package.json / src-tauri 的发版版本号（1.2.x 线）是两条线：这里是
+ * 面向用户的功能线（对齐 docs/roadmap.md 的版本里程碑）。
+ */
+export const GUI_VERSION = '1.3.10';
+
 export const PENDING_SESSION_PREFIX = 'pending-';
 
 /** Check if a sessionId is a pending (placeholder) session */

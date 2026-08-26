@@ -38,7 +38,7 @@
 
 import { build } from 'esbuild';
 
-import { copyFile, readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir } from 'node:fs/promises';
 
 import { dirname } from 'node:path';
 
@@ -188,41 +188,31 @@ const TARGETS = {
 
     banner: { js: CLI_SHEBANG_BANNER + '\n' + ESM_INTEROP_BANNER },
 
-    /** Post-build: drop the Windows launcher next to the bundle. Rust's
+    /** Post-build: write `package.json` with {"type":"module"} next to the
 
-     *  `cmd_sync_cli` reads `resources/cli/zhishi.js` AND `zhishi.cmd`,
+     *  bundle: the bundle is ESM (1.2.3, issue #5 — was CJS + type:commonjs;
 
-     *  so both have to be present in every release artifact regardless of
+     *  CJS has no import.meta, which made getScriptDir() fall back to cwd)
 
-     *  the host OS doing the build. Doing the copy here means a single
+     *  but named .js, and the repo root package.json is type:module — the
 
-     *  `npm run build:cli` invocation produces a complete CLI deliverable —
+     *  marker pins the module type regardless of the parent package.json
 
-     *  no follow-up shell step in mac/linux/windows builders.
+     *  scope.
 
      *
 
-     *  Also writes `package.json` with {"type":"module"}: the bundle is ESM
+     *  Windows `zhishi.cmd` is NOT copied here (1.3.10 audit T3): it is
 
-     *  (1.2.3, issue #5 — was CJS + type:commonjs; CJS has no import.meta,
+     *  generated with the bundled node path baked in — by
 
-     *  which made getScriptDir() fall back to cwd) but named .js, and the
+     *  `cli_launcher::cli_cmd_content` at app runtime and by NSIS
 
-     *  repo root package.json is type:module — the marker pins the module
-
-     *  type regardless of the parent package.json scope.
+     *  install-cli.ps1 at install time.
 
      */
 
     postBuild: async () => {
-
-      const src = 'src/cli/zhishi.cmd';
-
-      const dst = 'src-tauri/resources/cli/zhishi.cmd';
-
-      await copyFile(src, dst);
-
-      console.log(`  ↳ copied ${src} → ${dst}`);
 
       const { writeFile } = await import('node:fs/promises');
 

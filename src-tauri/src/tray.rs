@@ -54,8 +54,8 @@ pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::er
     #[cfg(not(target_os = "macos"))]
     let tray_icon = app.default_window_icon().unwrap().clone();
 
-    // Build the tray icon. Left click opens an agent TUI terminal (the
-    // windowless host's primary action); the menu stays on right click.
+    // Build the tray icon. Left click focuses the GUI main window (1.3.9 —
+    // replaces the retired TUI terminal); the menu stays on right click.
     let tray_builder = TrayIconBuilder::new()
         .icon(tray_icon)
         .menu(&menu)
@@ -81,7 +81,7 @@ pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::er
             }
         })
         .on_tray_icon_event(|tray, event| {
-            // Left-click release → open TUI. (Gated on Up so a press that
+            // Left-click release → focus the GUI main window. (Gated on Up so a press that
             // turns into a right-click menu gesture doesn't double-fire.)
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
@@ -104,8 +104,8 @@ pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> Result<(), Box<dyn std::er
 
 /// Show the main window (and focus it).
 ///
-/// 1.3.9 TUI 退役:三入口(启动/二次实例/托盘)统一走这里——GUI 主窗口是唯一
-/// 交互面。若主窗口不存在(极端时序)静默降级为无操作。
+/// 1.3.9 TUI 退役:启动/二次实例/托盘/macOS Dock Reopen 各入口统一走这里
+/// ——GUI 主窗口是唯一交互面。若主窗口不存在(极端时序)静默降级为无操作。
 pub fn show_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();

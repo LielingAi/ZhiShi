@@ -502,22 +502,6 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
       };
     }
 
-    case 'chat:tool-result-start':
-    case 'chat:tool-result-delta': {
-      const id = str(p.toolUseId) ?? str(p.id) ?? '';
-      const d = findToolDetail(session, id);
-      if (!d) return { session };
-      const delta = str(p.delta) ?? '';
-      return {
-        session: updateTurn(session, turnOf(session, id), (blk) => ({
-          ...blk,
-          details: blk.details.map((x) =>
-            x.kind === 'tool' && x.id === id ? { ...x, output: x.output + delta } : x,
-          ),
-        })),
-      };
-    }
-
     case 'chat:tool-result-complete': {
       const id = str(p.toolUseId) ?? str(p.id) ?? '';
       const d = findToolDetail(session, id);
@@ -788,8 +772,10 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
       };
     }
 
-    // chat:subagent-tool-result-complete / chat:logs：不消费（工具结果只累
-    // 工具数，见 chat:subagent-tool-use；日志行 GUI 不渲染）。
+    // chat:tool-result-start / chat:tool-result-delta（服务端只发
+    // tool-result-complete，增量分支 1.3.10 已删）/ chat:subagent-tool-result-complete
+    // / chat:logs：不消费（工具结果只累工具数，见 chat:subagent-tool-use；日志行
+    // GUI 不渲染）。
     default:
       return { session };
   }

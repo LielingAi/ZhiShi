@@ -1,6 +1,6 @@
-// Internal Management API for Bun Sidecar → Rust IPC
+// Internal Management API for Node Sidecar → Rust IPC
 // Provides HTTP endpoints on localhost for task scheduling
-// Only accessible from 127.0.0.1 (Bun Sidecar processes)
+// Only accessible from 127.0.0.1 (Node Sidecar processes)
 
 use axum::{
     extract::{DefaultBodyLimit, Query},
@@ -91,7 +91,7 @@ pub async fn start_management_api() -> Result<u16, String> {
 // Task Center handlers (v0.1.69)
 // ========================================================================
 //
-// These endpoints are called by the Bun Admin API (admin-api.ts), which in
+// These endpoints are called by the Node Admin API (admin-api.ts), which in
 // turn is called by the `zhishi task` CLI. The CLI is the **entry point of
 // trust inference** for `actor` / `source` (PRD §10.2.1 caller-inference table):
 //
@@ -100,7 +100,7 @@ pub async fn start_management_api() -> Result<u16, String> {
 //   `actor=user, source=cli`
 //
 // That inference happens in the CLI script itself (knows its own env) and is
-// forwarded to the Bun Admin API, which forwards here. We take the caller's
+// forwarded to the Node Admin API, which forwards here. We take the caller's
 // word for actor/source: the CLI process running inside an SDK subprocess is
 // inside a trust boundary already (the whole host is the user's machine).
 // For UI transitions the Tauri command layer stamps `user/ui` authoritatively
