@@ -1004,3 +1004,11 @@ mark.h-search { background: rgba(232,163,61,.3); color: var(--text); border-radi
 .hva-row { padding: 4px 0 2px; border-bottom: 1px dashed var(--panel-3); display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
 .hva-row:last-child { border-bottom: none; }
 .hva-anchor { font-size: 10px; color: var(--muted); flex-basis: 100%; margin-top: 2px; }
+
+/* ── 1.4.6 auto loop 左屏观察模式 ─────────────────────── */
+.ars-stream { display: flex; flex-direction: column; }
+.ars-banner {
+  position: sticky; top: 0; z-index: 2;
+  padding: 6px 10px; font-size: 11px; color: var(--muted);
+  background: var(--bg); border-bottom: 1px solid var(--panel-3);
+}

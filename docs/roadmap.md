@@ -5,18 +5,20 @@
 
 ---
 
-## 1.4.6 —— Harness 复杂任务优化（进行中）
+## 1.4.6 —— Harness 复杂任务优化（已完成）
 
 **缘起（2026-08-27 实证立项，证据两份全链路）**：①golang 轨迹取证（mta7eilu，508 消息真实复杂任务）——三环台账：相位体系失真（recon 全程 0 段、「验证」泛词顶成 evaluation ×4、construction 0 段，根因 = 相位信号是渗透口味关键词表）；思路供给有但全靠流内临时组织（编号混淆 msg 354 实证：research_log #2 被 #6 推翻但推翻关系无机械链接）。②cJSON 三轮 dogfood（auto loop + deepseek）——档案实证：第 1 轮完整链（Q#1→H#1→V#→C#），第 3 轮退化为**只写 3 条结论、零证据实体零引用**（轨迹实证：3 次 research_archive 全 op=finding、refs 全空）；证伪两轮一致记成 finding 文本（falsify/correct 零调用）；预算计数 off-by-one（声明轮不计 spent，显示 0/40）；声明被预检拒后 verdictPackage 残留出幽灵终审弹窗。另当场修复 6 项已发功能 UX bug（已提交 44ce8a0：终审恢复链路/records 键/档案接线/服务端归一化/历史档案查看/auto-run 合成行）。
 
-- [ ] **相位体系修复**（golang 取证 P0）：相位信号词表缺白盒/二进制/AI 安全侦察信号 + 「验证」泛词污染 evaluation。修法评审三选一：换/扩词表（各域信号并入 domain.json？）/ 档案实体流推相位（实体类型 → 相位）/ 相位整体降级为展示用途（不进 stall 判定与压缩权重）。
-- [ ] **档案举证强度**（cJSON 实证 P0）：「结论必须有证据支撑（挂 V# 引用）」从教学变成约束——修法评审：工具层校验（op=finding 强制 refs 挂已存在 V#，无证据实体先写 evidence）/ declare_completion 时 harness 预检查档案完整性（结论无证据引用 → 打回补充，与验收包预检同族）/ 教学强化（证伪必须走 falsify/correct 的明确纪律）。
-- [ ] **预算计数 off-by-one 修复**（实证）：达成声明的那一轮计入 spent（turns=1 显示 0/40 的错示）。
-- [ ] **幽灵 verdictPackage 修复**（实证）：声明被预检拒掉时清 verdictPackage（或恢复时按 status 校验——非 awaiting-verdict 不出弹窗）。
-- [ ] **research_log ↔ 档案双通道关系**（golang msg 354 实证：#2 撞车 + 推翻关系无机械链接）：评审——档案编号（C#/V#）与 research_log 编号（#N）的统一/分工口径。
-- [ ] **环境坑防护**：standalone 起 sidecar 必须用 bundled node（sqlite ABI 137/127 实证）——启动脚本/文档写明 + 探测告警（better-sqlite3 加载失败时启动日志显式报错）。
-- [ ] **auto-run 左屏过程**（评审项）：「左过程右成果」分屏语义在 auto-run 下左屏空——run 活跃时左屏渲染 run 的线（只读观察模式）是否做、怎么做。
+- [x] **相位体系修复**（golang 取证 P0）：相位信号词表缺白盒/二进制/AI 安全侦察信号 + 「验证」泛词污染 evaluation。修法评审三选一：换/扩词表（各域信号并入 domain.json？）/ 档案实体流推相位（实体类型 → 相位）/ 相位整体降级为展示用途（不进 stall 判定与压缩权重）。
+- [x] **档案举证强度**（cJSON 实证 P0）：「结论必须有证据支撑（挂 V# 引用）」从教学变成约束——修法评审：工具层校验（op=finding 强制 refs 挂已存在 V#，无证据实体先写 evidence）/ declare_completion 时 harness 预检查档案完整性（结论无证据引用 → 打回补充，与验收包预检同族）/ 教学强化（证伪必须走 falsify/correct 的明确纪律）。
+- [x] **预算计数 off-by-one 修复**（实证）：达成声明的那一轮计入 spent（turns=1 显示 0/40 的错示）。
+- [x] **幽灵 verdictPackage 修复**（实证）：声明被预检拒掉时清 verdictPackage（或恢复时按 status 校验——非 awaiting-verdict 不出弹窗）。
+- [x] **research_log ↔ 档案双通道关系**（golang msg 354 实证：#2 撞车 + 推翻关系无机械链接）：评审——档案编号（C#/V#）与 research_log 编号（#N）的统一/分工口径。
+- [x] **环境坑防护**：standalone 起 sidecar 必须用 bundled node（sqlite ABI 137/127 实证）——启动脚本/文档写明 + 探测告警（better-sqlite3 加载失败时启动日志显式报错）。
+- [x] **auto-run 左屏过程**（评审项）：「左过程右成果」分屏语义在 auto-run 下左屏空——run 活跃时左屏渲染 run 的线（只读观察模式）是否做、怎么做。
 
+> 实际落地（2026-08-28）：①相位体系——`PHASE_SIGNALS` 扩域（recon +攻击面/侦察/梳理/盘点/情报/CVE-\d+/toolchain/工具链/下载/安装；analysis +源码/静态分析/codegen/lowering/ssa/类型检查/汇编；construction +harness/seed/构造/驱动；execution +复现/崩溃/crash/asan；evaluation 去裸「验证」留复测/回归/验收/评估/结论）——**评审选项取「换/扩词表」**：档案实体流推相位被否（档案纪律自身尚不稳定，项②证据）、相位降级被否（stall 相位信号是双信号之一）。golang 重放验证：recon 正确出现（原 evaluation×4 全纠），相位流 recon→analysis→construction→execution 合理。②档案举证强度——**工具层硬约束**：op=finding 强制 refs 挂至少一个已存在 V# 证据实体（无 refs/挂不存在 V#/挂 H# 均拒绝，错误文本引导先 op=evidence 再下结论；约束在工具层，addFinding 模块层保持宽松——admin/迁移合法写入不受影响）+ 证伪教学强化（工具描述与 kernel 纪律 ③ 改「证伪/纠错必须走 falsify/correct，不要把证伪写进 finding 文本冒充成立」）。评审选项取「工具层校验」。③预算 off-by-one——预算消耗改在声明分支前更新（步骤 6 重算幂等不受影响；回归测试：声明轮 spent=1）。④幽灵 verdictPackage——终审作答即清 verdictPackage（declaration 陈述保留作历史；回归测试：pass 后记录与落盘均无 package）。⑤E#N 口径——research_log 返回文本改 E#N（promote 命令仍数字 #）、declare-completion/auto-run 描述、kernel 研究记录教学段统一 E#N（与档案实体 H#/V#/C#/Q# 区分）。⑥环境坑——`probeSqliteAvailable()` 启动探测（deferred init 首个 phase 前），better-sqlite3 ABI 不匹配时启动日志显式报错并指明用内置 Node；CLAUDE.md 开发命令补「编译产物直跑必须用内置 node」。⑦左屏观察——`AutoRunStream` 组件：auto loop 活跃时左屏渲染 run 的 wire transcript（5s 轮询只读回放，轨迹按轮次落盘，观察粒度=已完成轮次），顶置「观察模式」横幅，底部吸附；run 结束回落交互 Stream。新增 6 回归单测（预算/幽灵包/举证强度×3/合成行已计）+ 既有测试按新契约更新（finding 先挂证据）；全量 179 文件 2357 测试绿 + typecheck + eslint + 双构建绿。
+>
 > 不做（本版）：引擎多实例（已砍）、澄清提问（已砍）、档案图化（后续候选）、跨会话档案（蒸馏弧职责）、历史 run 续跑（载回按钮路径，后置）。
 > 挂账沿用：研究档案问题（Q#）纠正语义裁决（1.4.5 挂账）。
 > 验收：全量测试 + dogfood 复测（cJSON 同任务重跑——档案应出完整链（假设/证据/结论带 V# 引用）、证伪走 falsify/correct、相位 recon 出现且不误判、预算计数正确、无幽灵弹窗）。

@@ -272,7 +272,7 @@ export function buildFirstTurnText(goal: string, criteria: string[]): string {
     '',
     '研究纪律:',
     '1. 关键进展/结案都用 research_log 留痕(拿到 flag、确认根因、fuzz 出崩溃、卡住、研判完成都要记)——这是验收证据的来源;',
-    '2. 确认全部验收条件已达成且每条都有研究记录证据支撑时,调用 declare_completion 宣布达成(statement 写清哪条条件被哪条证据支撑,evidenceRefs 挂 research_log 返回的事件编号 #N),然后停下等研究员终审;',
+    '2. 确认全部验收条件已达成且每条都有研究记录证据支撑时,调用 declare_completion 宣布达成(statement 写清哪条条件被哪条证据支撑,evidenceRefs 挂 research_log 返回的事件编号 E#N),然后停下等研究员终审;',
     '3. 方向分歧/关键取舍无把握、且 expert_search 无基准时,用 request_decision 提请人拍板,提请后停等决定注入;平时自主推进,不逐轮请示;',
     '4. 越界动作(写宿主/用本机凭据/改网络策略/销毁环境)会被边界拦截,如实遵守拦截提示;',
   ].join('\n');
@@ -875,6 +875,15 @@ export async function runAutoRunLoop(
 
     const messages = deps.loadMessages(loopSessionId);
 
+    // 1.4.6 修复：预算消耗在声明分支前更新——达成声明的那一轮也计入 spent
+    // （此前声明轮直接进 awaiting-verdict、跳过下方预算段,spent 永远少 1;
+    //  下方步骤 6 的重算幂等,普通轮次不受影响）。
+    record.budget.spent = computeBudgetSpent(record.budget, {
+      turns: turn,
+      tokens: estimateLoopTokens(messages),
+      elapsedMs: deps.now() - startedAtMs,
+    });
+
     // ---- 2. 达成信号(declare_completion)→ awaiting-verdict ----
     const declaration = takeCompletionDeclaration(loopSessionId);
     if (declaration) {
@@ -903,6 +912,10 @@ export async function runAutoRunLoop(
       const alive = await wait(() => ctl.__getVerdict().verdict !== null);
       if (!alive) break;
       const decision = ctl.__getVerdict();
+      // 1.4.6 修复：终审作答即清 verdictPackage——残留会让恢复路径反复弹
+      // 已作答的终审窗(幽灵弹窗,实机实证:作答后第二次点开报「仅 awaiting-
+      // verdict 态可终审」)。declaration 陈述保留作历史。
+      record.verdictPackage = undefined;
       if (decision.verdict === 'pass') {
         record.status = 'completed';
         record.pauseReason = undefined;

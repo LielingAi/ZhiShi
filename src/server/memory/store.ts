@@ -205,6 +205,22 @@ function loadSqlite(): SqliteFactory {
 
 const dbCache = new Map<string, SqliteDatabase>();
 
+/**
+ * 启动探测（1.4.6 环境坑防护）：better-sqlite3 可加载性检查——ABI 不匹配
+ * （如用系统 node 而非 bundled node 起 sidecar,cJSON dogfood 第 2 轮实证:
+ * 137/127 不匹配导致 research_log 全挂）时在启动期显式暴露,不再等第一次
+ * research_log/情报查询调用才暴雷。同一 .node 构建,本探测覆盖 memory /
+ * expert / intel 三库的加载前提。
+ */
+export function probeSqliteAvailable(): { ok: boolean; error?: string } {
+  try {
+    loadSqlite();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 function openDb(baseDir: string): SqliteDatabase {
   const cached = dbCache.get(baseDir);
   if (cached) return cached;

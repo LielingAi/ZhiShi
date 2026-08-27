@@ -535,3 +535,53 @@ describe('verdictRequestOfRecord（1.4.6 dogfood 实证：list 归一化）', ()
     expect(verdictRequestOfRecord({ verdictPackage: { statement: 'x', evidenceRefs: [], hitCount: 0, missCount: 0, criteriaPrecheck: [{ text: '  ', status: 'evidence' as const }] } } as never)).toBeUndefined();
   });
 });
+
+describe('1.4.6 修复:预算 off-by-one + 幽灵 verdictPackage', () => {
+  it('达成声明的那一轮也计入 budget.spent(声明轮不再漏算)', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps({
+      resolveEvent: (id) => (id === 1 ? makeEvent(1) : null),
+      invoke: async () => {
+        declareCompletion(record.loopSessionId, '全部达成,证据 #1', [1]);
+        return { text: 'done', loopSessionId: record.loopSessionId };
+      },
+      exportReport: async () => ({ ok: true, reportDir: '/out' }),
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.sent.some((s) => s.event === 'auto-run:verdict-requested'));
+    // 声明轮(turn=1)在 verdict 前就已计入 spent——旧实现这里 spent=0。
+    expect(record.budget.spent).toBe(1);
+    expect(ctl.resolveVerdict('pass').ok).toBe(true);
+    await done;
+    await loop;
+    expect(record.budget.spent).toBe(1);
+  });
+
+  it('终审作答即清 verdictPackage(恢复路径不再弹已作答的终审窗)', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps({
+      resolveEvent: (id) => (id === 1 ? makeEvent(1) : null),
+      invoke: async () => {
+        declareCompletion(record.loopSessionId, '全部达成,证据 #1', [1]);
+        return { text: 'done', loopSessionId: record.loopSessionId };
+      },
+      exportReport: async () => ({ ok: true, reportDir: '/out' }),
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.sent.some((s) => s.event === 'auto-run:verdict-requested'));
+    expect(record.verdictPackage).toBeDefined();
+    expect(ctl.resolveVerdict('pass').ok).toBe(true);
+    await done;
+    await loop;
+    expect(record.verdictPackage).toBeUndefined();
+    // 落盘的持久化记录里也不再有 verdictPackage。
+    const lastSaved = fake.saved.at(-1)!;
+    expect(lastSaved.verdictPackage).toBeUndefined();
+    // declaration 陈述保留作历史。
+    expect(record.declaration?.statement).toContain('全部达成');
+  });
+});

@@ -272,11 +272,15 @@ export const MAX_SEGMENT_MESSAGES = 12;
  * (信号共存视为工作已推进)。
  */
 const PHASE_SIGNALS: ReadonlyArray<{ phase: Exclude<ResearchPhase, 'anchor'>; patterns: RegExp[] }> = [
-  { phase: 'recon', patterns: [/\bnmap\b/i, /\bmasscan\b/i, /扫描/, /枚举/, /\bgarak\b/i, /子域名/, /指纹/] },
-  { phase: 'analysis', patterns: [/\bgrep\b/i, /审计/, /反汇编/, /\breadelf\b/i, /\bida\b/i, /数据流/, /污点/] },
-  { phase: 'construction', patterns: [/\bexp\b/i, /\bpoc\b/i, /\bpayload\b/i, /脚本/] },
-  { phase: 'execution', patterns: [/\bexploit\b/i, /\bshell\b/i, /会话/, /fuzz/i] },
-  { phase: 'evaluation', patterns: [/验证/, /复测/, /\bflag\b/i, /flag\{[^}]*\}/i, /结论/] },
+  // 1.4.6 相位体系修复（golang 取证 P0）：词表原是渗透口味——白盒/二进制
+  // 研究的侦察活动（装工具链/枚举源码/CVE 情报/攻击面梳理）一个匹配不上，
+  // recon 全程 0 段；同时「验证」泛词把环境准备/下载校验顶成 evaluation×4。
+  // 扩域信号 + evaluation 去掉裸「验证」（复测/回归/验收/评估/结论保留）。
+  { phase: 'recon', patterns: [/\bnmap\b/i, /\bmasscan\b/i, /扫描/, /枚举/, /\bgarak\b/i, /子域名/, /指纹/, /攻击面/, /侦察/, /梳理/, /盘点/, /情报/, /\bCVE-\d+/i, /toolchain/i, /工具链/, /下载/, /安装/] },
+  { phase: 'analysis', patterns: [/\bgrep\b/i, /审计/, /反汇编/, /\breadelf\b/i, /\bida\b/i, /数据流/, /污点/, /源码/, /静态分析/, /codegen/i, /lowering/i, /\bssa\b/i, /类型检查/, /汇编/] },
+  { phase: 'construction', patterns: [/\bexp\b/i, /\bpoc\b/i, /\bpayload\b/i, /脚本/, /harness/i, /seed/i, /构造/, /驱动/] },
+  { phase: 'execution', patterns: [/\bexploit\b/i, /\bshell\b/i, /会话/, /fuzz/i, /复现/, /崩溃/, /\bcrash\b/i, /\basan\b/i] },
+  { phase: 'evaluation', patterns: [/复测/, /回归/, /验收/, /评估/, /\bflag\b/i, /flag\{[^}]*\}/i, /结论/] },
 ];
 
 /**

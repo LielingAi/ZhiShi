@@ -4,7 +4,7 @@
  * 定位:auto loop 的「达成宣布」通道(design §6 判定权在 harness、
  * 陈述权在模型)。模型自认达成目标时调用 declare_completion:
  *   - statement:一句达成陈述(哪几条验收条件已满足、怎么满足的);
- *   - evidenceRefs:支撑陈述的研究记录引用(research_log 返回的 #N 事件 id,
+ *   - evidenceRefs:支撑陈述的研究记录引用(research_log 返回的 E#N 事件 id,
  *     即 research_events 行 id——与决策块 expertRefs 同「引用而非断言」
  *     风格)。
  *
@@ -77,10 +77,10 @@ export function clearCompletionDeclarations(): void {
 
 const declareCompletionParameters = Type.Object({
   statement: Type.String({
-    description: '达成陈述:一句/几句话说清已达成哪些验收条件、靠哪些证据支撑(引用证据时用 #N 指研究事件编号)',
+    description: '达成陈述:一句/几句话说清已达成哪些验收条件、靠哪些证据支撑(引用证据时用 E#N 指研究事件编号——E#N 是研究事件专属口径,别与档案实体(H#/V#/C#/Q#)或其他编号混用)',
   }),
   evidenceRefs: Type.Optional(Type.Array(Type.Number({
-    description: 'research_log 返回的研究事件编号(#N 的 N)',
+    description: 'research_log 返回的研究事件编号(E#N 的 N)',
     minimum: 1,
   }), { description: '支撑达成陈述的研究记录引用(research_events 事件 id 数组)' })),
 });

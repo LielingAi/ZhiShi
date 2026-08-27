@@ -3630,6 +3630,20 @@ return new Response('Not Found', { status: 404 });
       currentInitPhase = 'cleanup';
       setDeferredInitPhase(currentInitPhase);
       initPhaseStarted = nowMs();
+      // 1.4.6 环境坑防护：better-sqlite3 ABI 启动探测——系统 node 起 sidecar
+      // 时（137/127 不匹配）research_log/记忆库/情报库全挂,启动即显式报错,
+      // 不再等第一次调用才暴雷（cJSON dogfood 第 2 轮实证）。
+      {
+        const { probeSqliteAvailable } = await import('./memory/store');
+        const probe = probeSqliteAvailable();
+        if (!probe.ok) {
+          console.error(
+            `[boot] better-sqlite3 不可用：${probe.error} —— research_log / 记忆库 / 情报库调用将全部报错。` +
+              '请用内置 Node 启动 sidecar（src-tauri/resources/nodejs/node.exe 或安装版 nodejs/node.exe——' +
+              'sqlite-runtime 预编译按内置 Node ABI 构建，系统 Node 与其不匹配）。',
+          );
+        }
+      }
       // Unified retention sweep (#121) — replaces v0.2.7's split between
       // cleanupOldLogs (per-session) + cleanupOldUnifiedLogs (unified). One
       // policy module covers age cutoff, byte budget, and the recent-data

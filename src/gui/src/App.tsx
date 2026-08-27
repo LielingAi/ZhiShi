@@ -30,6 +30,7 @@ import { SettingsPage } from './components/SettingsPage';
 import { AttachView } from './components/AttachView';
 import { HistoryPanel } from './components/HistoryPanel';
 import { ResearchPanel } from './components/ResearchPanel';
+import { AutoRunStream } from './components/AutoRunStream';
 import { Toast } from './components/Toast';
 
 /** 1.4.4 分屏阈值：≥1280px 真分屏（6/4 可拖可互换），以下退单屏 + 抽屉。 */
@@ -58,6 +59,9 @@ function MainArea({ wide }: { wide: boolean }): React.JSX.Element {
   const drawerOpen = useGuiStore((s) => s.archiveDrawerOpen);
   const setRatio = useGuiStore((s) => s.setArchivePaneRatio);
   const setDrawerOpen = useGuiStore((s) => s.setArchiveDrawerOpen);
+  // 1.4.6 左屏过程观察：auto loop 活跃时左屏渲染 run 的线（只读轮询回放）——
+  // 「左过程右成果」分屏语义在 auto-run 下成立（实机实证：此前左屏空）。
+  const autoRunActive = useGuiStore((s) => isAutoRunActive(s.autoRun));
   const drag = useRef<{ startX: number; startRatio: number } | null>(null);
 
   const onDividerDown = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -88,7 +92,7 @@ function MainArea({ wide }: { wide: boolean }): React.JSX.Element {
     return (
       <>
         <div className="stream-wrap">
-          <Stream />
+          {autoRunActive ? <AutoRunStream /> : <Stream />}
           <Drawer />
         </div>
         {drawerOpen && (
@@ -108,7 +112,7 @@ function MainArea({ wide }: { wide: boolean }): React.JSX.Element {
 
   const stream = (
     <div className="stream-wrap" style={{ flexBasis: `${ratio * 100}%` }}>
-      <Stream />
+      {autoRunActive ? <AutoRunStream /> : <Stream />}
       <Drawer />
     </div>
   );
