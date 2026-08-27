@@ -811,8 +811,10 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
     case 'auto-run:turn-completed': {
       const id = str(p.id);
       if (!id) return { session };
-      const turnCount = num(p.turnCount);
-      const used = num(p.used);
+      // 1.4.6 走查实证：server 发 turn/budget.spent，GUI 曾读 turnCount/used
+      // ——观察卡轮次与预算从来就没对过（live 与恢复路径同错）。
+      const turnCount = num(p.turnCount) ?? num(p.turn);
+      const used = num(p.used) ?? num(rec(p.budget).spent);
       const conclusion = str(p.conclusion) ?? str(p.summary);
       return {
         session,
@@ -840,8 +842,9 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
     case 'auto-run:budget-warning': {
       const id = str(p.id);
       if (!id) return { session };
-      const used = num(p.used);
-      const limit = num(p.limit);
+      // 1.4.6：server 发 budget{kind,limit,spent}——同 turn-completed 的字段口径。
+      const used = num(p.used) ?? num(rec(p.budget).spent);
+      const limit = num(p.limit) ?? num(rec(p.budget).limit);
       return {
         session,
         autoRun: {

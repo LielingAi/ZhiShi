@@ -401,7 +401,7 @@ const archiveParameters = Type.Object({
     description: '实体引用,逗号分隔(op 新增类可选):假设/问题挂派生依据,证据挂由哪个假设驱动,结论挂证据(V#N)——正反推论的机械锚',
   })),
   anchor: Type.Optional(Type.String({
-    description: '来源标注(op 新增类可选):这条实体的证据在流的哪里(如「第 3 轮 env_exec 输出」「源码第 42 行」)',
+    description: '来源标注(op 新增类可选):这条实体的证据在流的哪里——用「env_exec #N / 命令名 / 文件:行号」形态(如「env_exec #6 build_verify 重跑」「src/cJSON.c:261」),不要用「轮」(与 auto loop 轮次撞车,实机实证编号误导)',
   })),
   id: Type.Optional(Type.String({ description: '目标实体 id(op=falsify/resolve/correct 必填,如 H#1/V#1/C#1/Q#1)' })),
   reason: Type.Optional(Type.String({ description: '原因(op=falsify/correct 必填):错在哪、为什么' })),

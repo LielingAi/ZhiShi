@@ -286,3 +286,26 @@ describe('reduceSseEvent — 状态事件', () => {
     expect(after).toBe(before);
   });
 });
+
+describe('auto-run:turn-completed — server 真实形状（1.4.6 走查实证）', () => {
+  it('server 发 turn/budget.spent → turnCount/used 正确映射（字段名不再错位）', () => {
+    const started = reduceSseEvent(emptySession(), {
+      event: 'auto-run:started',
+      payload: { id: 'run-1', name: 'n', envKey: 'pwn-vm', goal: 'g', budget: { kind: 'turns', limit: 40 }, criteria: ['c'] },
+    }).autoRun;
+    expect(started).toBeDefined();
+    const res = reduceSseEvent(emptySession(), {
+      event: 'auto-run:turn-completed',
+      payload: { id: 'run-1', turn: 1, phase: 'recon', budget: { kind: 'turns', limit: 40, spent: 1 }, status: 'running' },
+    });
+    expect(res.autoRun).toMatchObject({ kind: 'turn', id: 'run-1', turnCount: 1, used: 1 });
+  });
+
+  it('auto-run:budget-warning 同口径（budget.spent/limit 映射）', () => {
+    const res = reduceSseEvent(emptySession(), {
+      event: 'auto-run:budget-warning',
+      payload: { id: 'run-1', budget: { kind: 'turns', limit: 40, spent: 34 } },
+    });
+    expect(res.autoRun).toMatchObject({ kind: 'budget', id: 'run-1', used: 34, limit: 40 });
+  });
+});

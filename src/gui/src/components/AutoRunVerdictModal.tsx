@@ -23,7 +23,9 @@ export function AutoRunVerdictModal(): React.JSX.Element | null {
   const [busy, setBusy] = useState(false);
 
   const verdict = autoRun?.verdict;
-  if (!verdict || verdictDismissed) return null;
+  // 1.4.6 走查实证：弹窗只在 awaiting-verdict 态出——sidecar 重启后内存
+  // runner 消亡的孤儿记录（verdictPackage 残留盘上）不再弹「答不了」的窗。
+  if (!verdict || verdictDismissed || autoRun?.status !== 'awaiting-verdict') return null;
 
   const respond = (v: 'pass' | 'fail' | 'continue') => {
     setBusy(true);

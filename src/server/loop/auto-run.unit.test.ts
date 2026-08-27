@@ -34,6 +34,7 @@ import {
   loadAutoRunRecord,
   parseAutoRunRecord,
   recoverOrphanedAutoRuns,
+  resolveAutoRunVerdict,
   runAutoRunLoop,
   saveAutoRunRecord,
   serializeAutoRunRecord,
@@ -212,6 +213,11 @@ describe('buildFirstTurnText / buildNextTurnText', () => {
     expect(text).toContain('research_log');
     expect(text).toContain('declare_completion');
     expect(text).toContain('request_decision');
+    // 1.4.6 走查实证：档案纪律教学须进 auto-run 驱动文本(security kernel
+    // 不注入 auto-run 场景,驱动文本是唯一的纪律通道——缺它档案采用率随采样漂移)。
+    expect(text).toContain('research_archive');
+    expect(text).toContain('V# 证据实体');
+    expect(text).toContain('falsify/correct');
   });
 
   it('后续轮含上一轮结果截断;verdictNote 前置', () => {
@@ -220,6 +226,7 @@ describe('buildFirstTurnText / buildNextTurnText', () => {
     expect(text).toContain('继续推进目标');
     expect(text).toContain('终审不通过');
     expect(text).toContain('…(截断)');
+    expect(text).toContain('research_archive');
     expect(text.length).toBeLessThan(400);
   });
 });
@@ -583,5 +590,57 @@ describe('1.4.6 修复:预算 off-by-one + 幽灵 verdictPackage', () => {
     expect(lastSaved.verdictPackage).toBeUndefined();
     // declaration 陈述保留作历史。
     expect(record.declaration?.statement).toContain('全部达成');
+  });
+});
+
+describe('resolveAutoRunVerdict — 孤儿记录兜底（1.4.6 走查实证）', () => {
+  let dir3: string;
+  beforeEach(() => {
+    dir3 = mkdtempSync(join(tmpdir(), 'zhishi-ar-orphan-'));
+  });
+  afterEach(() => {
+    rmSync(dir3, { recursive: true, force: true });
+  });
+
+  async function seedOrphan(status: AutoRunRecord['status']) {
+    const record = makeRecord();
+    record.status = status;
+    record.verdictPackage = buildVerdictPackage({
+      id: record.id,
+      criteria: record.criteria,
+      declaration: { statement: 's', evidenceRefs: [] },
+      resolveEvent: () => null,
+    });
+    await saveAutoRunRecord(record, { dir: dir3 });
+    return record;
+  }
+
+  it('孤儿 awaiting-verdict + pass → completed + verdictPackage 清除(落盘生效)', async () => {
+    const record = await seedOrphan('awaiting-verdict');
+    const r = await resolveAutoRunVerdict(record.id, 'pass', undefined, { dir: dir3 });
+    expect(r.success).toBe(true);
+    const saved = loadAutoRunRecord(record.id, { dir: dir3 })!;
+    expect(saved.status).toBe('completed');
+    expect(saved.verdictPackage).toBeUndefined();
+  });
+
+  it('孤儿 + fail → stopped;continue → 明确报错不可续跑;非 awaiting-verdict → 无需终审', async () => {
+    const a = await seedOrphan('awaiting-verdict');
+    expect((await resolveAutoRunVerdict(a.id, 'fail', undefined, { dir: dir3 })).success).toBe(true);
+    expect(loadAutoRunRecord(a.id, { dir: dir3 })!.status).toBe('stopped');
+
+    const b = await seedOrphan('awaiting-verdict');
+    const rc = await resolveAutoRunVerdict(b.id, 'continue', undefined, { dir: dir3 });
+    expect(rc.success).toBe(false);
+    if (!rc.success) expect(rc.error).toContain('无法续跑');
+
+    const c = await seedOrphan('completed');
+    const rd = await resolveAutoRunVerdict(c.id, 'pass', undefined, { dir: dir3 });
+    expect(rd.success).toBe(false);
+    if (!rd.success) expect(rd.error).toContain('无需终审');
+
+    const rg = await resolveAutoRunVerdict('ghost-run', 'pass', undefined, { dir: dir3 });
+    expect(rg.success).toBe(false);
+    if (!rg.success) expect(rg.error).toContain('不存在');
   });
 });

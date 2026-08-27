@@ -275,6 +275,7 @@ export function buildFirstTurnText(goal: string, criteria: string[]): string {
     '2. 确认全部验收条件已达成且每条都有研究记录证据支撑时,调用 declare_completion 宣布达成(statement 写清哪条条件被哪条证据支撑,evidenceRefs 挂 research_log 返回的事件编号 E#N),然后停下等研究员终审;',
     '3. 方向分歧/关键取舍无把握、且 expert_search 无基准时,用 request_decision 提请人拍板,提请后停等决定注入;平时自主推进,不逐轮请示;',
     '4. 越界动作(写宿主/用本机凭据/改网络策略/销毁环境)会被边界拦截,如实遵守拦截提示;',
+    '5. 研究档案(research_archive 工具)是你的显式研究状态,随研究持续更新、每轮注回你的上下文——基于它继续,不从历史脑补:假设驱动实验(evidence 挂假设引用);结论必须有证据支撑(finding 的 refs 必须挂已存在的 V# 证据实体,缺证据会被工具拒绝——先 op=evidence 再下结论);证伪/纠错走 falsify/correct,不要把证伪写进 finding 文本冒充成立;目标不清立 question;anchor 标注用「env_exec #N / 命令名 / 文件:行号」,不要用「轮」(与 auto loop 轮次撞车)。',
   ].join('\n');
 }
 
@@ -293,7 +294,7 @@ export function buildNextTurnText(goal: string, previousText: string, options: N
     `【auto loop 继续】继续推进目标:${goal}`,
     options.verdictNote ? `人终审反馈:${options.verdictNote}` : '',
     `上一轮结果(截断):${clipped || '(无输出)'}`,
-    '继续自主推进;关键进展用 research_log 留痕;全部验收条件达成且有证据时调用 declare_completion;无把握的取舍用 request_decision。',
+    '继续自主推进;关键进展用 research_log 留痕;研究档案(research_archive)持续更新——结论挂 V# 证据引用、证伪走 falsify/correct;全部验收条件达成且有证据时调用 declare_completion;无把握的取舍用 request_decision。',
   ].filter((line) => line.length > 0).join('\n');
 }
 
@@ -1395,13 +1396,45 @@ export function renewAutoRunBudget(id: string, limit: unknown): AutoRunApiResult
   return { success: true, data: { id } };
 }
 
-export function resolveAutoRunVerdict(
+/**
+ * 孤儿记录的终审兜底（1.4.6 走查实证）：sidecar 重启后内存 runner 消亡,
+ * 盘上 awaiting-verdict 记录变成「弹得出但永远答不了」的终审——按盘上
+ * 记录直接结算:pass → completed / fail → stopped(均清 verdictPackage,
+ * declaration 陈述留史;自动出报告跳过,提示手动 /export);continue → 明确
+ * 报错(孤儿不可续跑)。
+ */
+async function resolveOrphanedVerdict(
   id: string,
   verdict: unknown,
   note?: string,
-): AutoRunApiResult<{ id: string }> {
+  options: AutoRunStoreOptions = {},
+): Promise<AutoRunApiResult<{ id: string }>> {
+  const record = loadAutoRunRecord(id, options);
+  if (!record) return { success: false, error: `auto run "${id}" 不存在` };
+  if (record.status !== 'awaiting-verdict') {
+    return { success: false, error: `run "${id}" 已处于 ${record.status} 态,无需终审` };
+  }
+  if (verdict === 'continue') {
+    return { success: false, error: 'run 已随 sidecar 重启终止,无法续跑——请重新发起;已有成果可手动 /export 导出报告' };
+  }
+  if (verdict !== 'pass' && verdict !== 'fail') {
+    return { success: false, error: `verdict 必须是 pass / fail / continue(收到 "${String(verdict)}")` };
+  }
+  record.status = verdict === 'pass' ? 'completed' : 'stopped';
+  record.verdictPackage = undefined;
+  record.updatedAt = new Date().toISOString();
+  await saveAutoRunRecord(record, options);
+  return { success: true, data: { id } };
+}
+
+export async function resolveAutoRunVerdict(
+  id: string,
+  verdict: unknown,
+  note?: string,
+  options: AutoRunStoreOptions = {},
+): Promise<AutoRunApiResult<{ id: string }>> {
   const active = activeRuns.get(id);
-  if (!active) return { success: false, error: `auto run "${id}" 不存在(或已随 sidecar 重启终止)` };
+  if (!active) return resolveOrphanedVerdict(id, verdict, note, options);
   const r = active.ctl.resolveVerdict(
     verdict === 'pass' || verdict === 'fail' || verdict === 'continue' ? verdict : String(verdict) as VerdictChoice,
     note,

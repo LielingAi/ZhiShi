@@ -3488,11 +3488,12 @@ export function handleAutoRunBudget(payload: { id?: unknown; limit?: unknown }):
   const result = renewAutoRunBudget(id, payload.limit);
   return result.success ? { success: true, data: result.data } : { success: false, error: result.error };
 }
-/** `auto-run/verdict` — 验收终审：pass 出报告 / fail|continue 注回线续跑。 */
-export function handleAutoRunVerdict(payload: { id?: unknown; verdict?: unknown; note?: unknown }): AdminResponse {
+/** `auto-run/verdict` — 验收终审：pass 出报告 / fail|continue 注回线续跑。
+ *  1.4.6：孤儿记录（sidecar 重启后内存 runner 消亡）走盘上兜底结算。 */
+export async function handleAutoRunVerdict(payload: { id?: unknown; verdict?: unknown; note?: unknown }): Promise<AdminResponse> {
   const id = typeof payload.id === 'string' ? payload.id.trim() : '';
   if (!id) return { success: false, error: 'Missing required argument: <id>' };
-  const result = resolveAutoRunVerdict(
+  const result = await resolveAutoRunVerdict(
     id,
     payload.verdict,
     typeof payload.note === 'string' ? payload.note : undefined,

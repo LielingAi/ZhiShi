@@ -496,3 +496,14 @@ describe('parseAutoRunList — 服务端真实形状（1.4.6 dogfood 实证）',
     expect(activeAutoRunOf({ success: true, data: { records: [{ id: 'ar-1', status: 'awaiting-verdict' }] } })?.id).toBe('ar-1');
   });
 });
+
+describe('autoRunEntryOf — 预算恢复（1.4.6 走查实证）', () => {
+  it('记录存 budget.spent → entry.used 恢复正确（不再恒 0）', () => {
+    const entry = autoRunEntryOf({
+      id: 'run-1', status: 'awaiting-verdict',
+      budget: { kind: 'turns', limit: 40, spent: 1 },
+    });
+    expect(entry?.used).toBe(1);
+    expect(entry?.budget).toEqual({ kind: 'turns', limit: 40 });
+  });
+});
