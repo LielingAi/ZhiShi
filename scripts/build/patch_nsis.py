@@ -79,6 +79,12 @@ def main():
   ; bundled-skills
   SetOutPath "$INSTDIR\\bundled-skills"
   File /nonfatal /r "{r}\\bundled-skills\\*.*"
+  ; bundled-domains（域清单——1.4.3 域模型归位，sidecar/CLI 从安装根解析）
+  SetOutPath "$INSTDIR\\bundled-domains"
+  File /nonfatal /r "{r}\\bundled-domains\\*.*"
+  ; bundled-expert（内置专家知识播种源；未随包分发时 seed 走全零分支）
+  SetOutPath "$INSTDIR\\bundled-expert"
+  File /nonfatal /r "{r}\\bundled-expert\\*.*"
   ; cli
   SetOutPath "$INSTDIR\\cli"
   File /nonfatal /r "{r}\\src-tauri\\resources\\cli\\*.*"
@@ -130,6 +136,8 @@ def main():
   RMDir /r "$INSTDIR\\nodejs"
   RMDir /r "$INSTDIR\\shared"
   RMDir /r "$INSTDIR\\bundled-skills"
+  RMDir /r "$INSTDIR\\bundled-domains"
+  RMDir /r "$INSTDIR\\bundled-expert"
   RMDir /r "$INSTDIR\\cli"
   RMDir "$INSTDIR\\en.lproj"
   RMDir "$INSTDIR\\zh-Hans.lproj"'''

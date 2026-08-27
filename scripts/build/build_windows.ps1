@@ -1393,6 +1393,8 @@ try {
                 @{ Src = "bundled-skills"; Dst = "bundled-skills"; Dir = $true },
                 @{ Src = "bundled-environments"; Dst = "bundled-environments"; Dir = $true },
                 @{ Src = "bundled-agents"; Dst = "bundled-agents"; Dir = $true },
+                @{ Src = "bundled-domains"; Dst = "bundled-domains"; Dir = $true },
+                @{ Src = "bundled-expert"; Dst = "bundled-expert"; Dir = $true },
                 @{ Src = "src-tauri\resources\cli"; Dst = "cli"; Dir = $true },
                 @{ Src = "src-tauri\infoplist\en.lproj"; Dst = "en.lproj"; Dir = $true },
                 @{ Src = "src-tauri\infoplist\zh-Hans.lproj"; Dst = "zh-Hans.lproj"; Dir = $true }
