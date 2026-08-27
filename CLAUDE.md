@@ -464,7 +464,10 @@ npm install                       # 依赖安装（v0.2.0+ 统一 npm）
 
 npm start                         # 别名 npm run server（sidecar 直接启动需 --agent-dir，见下；原 npm run dev / dev:web / build:web 已随 GUI 删除）
 
-node --import tsx/esm src/server/index.ts --agent-dir <dir>   # sidecar（--agent-dir 必填）
+node --import tsx/esm src/server/index.ts --agent-dir <dir>   # sidecar（--agent-dir 必填；dev 态可用系统 node——tsx loader）
+
+# 编译产物直跑（server-dist.js）必须用内置 node——sqlite-runtime 预编译按内置 ABI 构建，系统 node 会 ABI 不匹配导致 research_log/记忆库全挂（1.4.6 实证；启动探测会显式报错）
+src-tauri/resources/nodejs/node.exe src-tauri/resources/server-dist.js --agent-dir <dir> --port <port>
 
 node --import tsx/esm src/cli/zhishi.ts agent                  # 1.3.9 起 TUI 退役：打印引导（交互会话请用 GUI 主窗口）；`agent <subcommand>` 管理子代理
 

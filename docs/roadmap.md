@@ -1,7 +1,29 @@
 # Roadmap
 
-> 版本任务池。1.0.0 = 安全研究员版定型；1.1.x = 能力补齐 + 引擎深化（已完成）；1.2.x = 研究交付 + 校准协作主线 + 做深不做广（已完成）；1.3.x = GUI 主线（会话/决策/历史 + 环境业务逻辑 + TUI 退役 + 质量审计，已完成，1.4.0 发版）；**当前线：1.4.x（GUI 正式版后——auto loop agent 已落地（1.4.1，设计 `docs/design/auto-loop-design.md`）；1.4.3 域模型归位已发版；1.4.4 研究档案已发版；1.4.5 质量审计（代码质量 + 文档/roadmap 歧义点）进行中。记录在案：god file 拆分、引擎单例残余耦合（纯技术债，无 2.0 绑定——「引擎多实例」已随 2.0 范围砍单，2026-08-27 决策）、Harness 复杂任务优化（待立项讨论）、研究档案问题纠正语义裁决（挂账，见 1.4.5）。已砍：/bg 转后台（2026-08-26 决策——auto loop + env_bg 全覆盖其价值）、决策面板澄清提问（2026-08-27 决策——澄清是输入不是决策，普通对话打字即交互、auto loop 自主含义不允许向人要信息）、引擎多实例（2026-08-27 决策——与 TUI 多线同屏、跨机协同调度一起，2.0 范围砍单））**。
+> 版本任务池。1.0.0 = 安全研究员版定型；1.1.x = 能力补齐 + 引擎深化（已完成）；1.2.x = 研究交付 + 校准协作主线 + 做深不做广（已完成）；1.3.x = GUI 主线（会话/决策/历史 + 环境业务逻辑 + TUI 退役 + 质量审计，已完成，1.4.0 发版）；**当前线：1.4.x（GUI 正式版后——auto loop agent 已落地（1.4.1，设计 `docs/design/auto-loop-design.md`）；1.4.3 域模型归位已发版；1.4.4 研究档案已发版；1.4.5 质量审计已发版；1.4.6 Harness 复杂任务优化（golang 取证 + cJSON 三轮 dogfood 实证立项）进行中。记录在案：god file 拆分、引擎单例残余耦合（纯技术债，无 2.0 绑定——「引擎多实例」已随 2.0 范围砍单，2026-08-27 决策）、研究档案问题纠正语义裁决（挂账，见 1.4.5）。已砍：/bg 转后台（2026-08-26 决策——auto loop + env_bg 全覆盖其价值）、决策面板澄清提问（2026-08-27 决策——澄清是输入不是决策，普通对话打字即交互、auto loop 自主含义不允许向人要信息）、引擎多实例（2026-08-27 决策——与 TUI 多线同屏、跨机协同调度一起，2.0 范围砍单））**。
 > 状态约定：`[ ]` 未开始 · `[~]` 进行中 · `[x]` 已完成。任务细节不写在这里——细节进对应设计文档。
+
+---
+
+## 1.4.6 —— Harness 复杂任务优化（已完成）
+
+**缘起（2026-08-27 实证立项，证据两份全链路）**：①golang 轨迹取证（mta7eilu，508 消息真实复杂任务）——三环台账：相位体系失真（recon 全程 0 段、「验证」泛词顶成 evaluation ×4、construction 0 段，根因 = 相位信号是渗透口味关键词表）；思路供给有但全靠流内临时组织（编号混淆 msg 354 实证：research_log #2 被 #6 推翻但推翻关系无机械链接）。②cJSON 三轮 dogfood（auto loop + deepseek）——档案实证：第 1 轮完整链（Q#1→H#1→V#→C#），第 3 轮退化为**只写 3 条结论、零证据实体零引用**（轨迹实证：3 次 research_archive 全 op=finding、refs 全空）；证伪两轮一致记成 finding 文本（falsify/correct 零调用）；预算计数 off-by-one（声明轮不计 spent，显示 0/40）；声明被预检拒后 verdictPackage 残留出幽灵终审弹窗。另当场修复 6 项已发功能 UX bug（已提交 44ce8a0：终审恢复链路/records 键/档案接线/服务端归一化/历史档案查看/auto-run 合成行）。
+
+- [x] **相位体系修复**（golang 取证 P0）：相位信号词表缺白盒/二进制/AI 安全侦察信号 + 「验证」泛词污染 evaluation。修法评审三选一：换/扩词表（各域信号并入 domain.json？）/ 档案实体流推相位（实体类型 → 相位）/ 相位整体降级为展示用途（不进 stall 判定与压缩权重）。
+- [x] **档案举证强度**（cJSON 实证 P0）：「结论必须有证据支撑（挂 V# 引用）」从教学变成约束——修法评审：工具层校验（op=finding 强制 refs 挂已存在 V#，无证据实体先写 evidence）/ declare_completion 时 harness 预检查档案完整性（结论无证据引用 → 打回补充，与验收包预检同族）/ 教学强化（证伪必须走 falsify/correct 的明确纪律）。
+- [x] **预算计数 off-by-one 修复**（实证）：达成声明的那一轮计入 spent（turns=1 显示 0/40 的错示）。
+- [x] **幽灵 verdictPackage 修复**（实证）：声明被预检拒掉时清 verdictPackage（或恢复时按 status 校验——非 awaiting-verdict 不出弹窗）。
+- [x] **research_log ↔ 档案双通道关系**（golang msg 354 实证：#2 撞车 + 推翻关系无机械链接）：评审——档案编号（C#/V#）与 research_log 编号（#N）的统一/分工口径。
+- [x] **环境坑防护**：standalone 起 sidecar 必须用 bundled node（sqlite ABI 137/127 实证）——启动脚本/文档写明 + 探测告警（better-sqlite3 加载失败时启动日志显式报错）。
+- [x] **auto-run 左屏过程**（评审项）：「左过程右成果」分屏语义在 auto-run 下左屏空——run 活跃时左屏渲染 run 的线（只读观察模式）是否做、怎么做。
+
+> 实际落地（2026-08-28）：①相位体系——`PHASE_SIGNALS` 扩域（recon +攻击面/侦察/梳理/盘点/情报/CVE-\d+/toolchain/工具链/下载/安装；analysis +源码/静态分析/codegen/lowering/ssa/类型检查/汇编；construction +harness/seed/构造/驱动；execution +复现/崩溃/crash/asan；evaluation 去裸「验证」留复测/回归/验收/评估/结论）——**评审选项取「换/扩词表」**：档案实体流推相位被否（档案纪律自身尚不稳定，项②证据）、相位降级被否（stall 相位信号是双信号之一）。golang 重放验证：recon 正确出现（原 evaluation×4 全纠），相位流 recon→analysis→construction→execution 合理。②档案举证强度——**工具层硬约束**：op=finding 强制 refs 挂至少一个已存在 V# 证据实体（无 refs/挂不存在 V#/挂 H# 均拒绝，错误文本引导先 op=evidence 再下结论；约束在工具层，addFinding 模块层保持宽松——admin/迁移合法写入不受影响）+ 证伪教学强化（工具描述与 kernel 纪律 ③ 改「证伪/纠错必须走 falsify/correct，不要把证伪写进 finding 文本冒充成立」）。评审选项取「工具层校验」。③预算 off-by-one——预算消耗改在声明分支前更新（步骤 6 重算幂等不受影响；回归测试：声明轮 spent=1）。④幽灵 verdictPackage——终审作答即清 verdictPackage（declaration 陈述保留作历史；回归测试：pass 后记录与落盘均无 package）。⑤E#N 口径——research_log 返回文本改 E#N（promote 命令仍数字 #）、declare-completion/auto-run 描述、kernel 研究记录教学段统一 E#N（与档案实体 H#/V#/C#/Q# 区分）。⑥环境坑——`probeSqliteAvailable()` 启动探测（deferred init 首个 phase 前），better-sqlite3 ABI 不匹配时启动日志显式报错并指明用内置 Node；CLAUDE.md 开发命令补「编译产物直跑必须用内置 node」。⑦左屏观察——`AutoRunStream` 组件：auto loop 活跃时左屏渲染 run 的 wire transcript（5s 轮询只读回放，轨迹按轮次落盘，观察粒度=已完成轮次），顶置「观察模式」横幅，底部吸附；run 结束回落交互 Stream。新增 6 回归单测（预算/幽灵包/举证强度×3/合成行已计）+ 既有测试按新契约更新（finding 先挂证据）；全量 179 文件 2357 测试绿 + typecheck + eslint + 双构建绿。
+>
+> **走查增量修复（实机走查抓出，2026-08-28 实机四轮验证）**：⑧档案纪律对 auto-run 不可见（security kernel 不注入 auto-run 场景——第 4 轮模型 0 次调用 research_archive，纪律采用率随采样漂移）→ 档案纪律补进 auto-run 驱动文本（首轮纪律第 5 条 + 后续轮提醒；第 5 轮实证档案出完整链 Q#1→H#1→V#1-4→C#1-3 全带引用）。⑨观察卡字段错位（server 发 `turn`/`budget.spent`，GUI 读 `turnCount`/`used`——轮次与预算从来就没对过，live SSE 与 list 恢复同错）→ reducer 两处 + autoRunEntryOf 三处兼容映射（回归测试钉死；走查实机显示 1/40 ✓）。⑩锚点语义撞车（模型把工作步骤编号当「轮」，与 auto loop 轮次不一致）→ anchor 规范统一为「env_exec #N / 命令名 / 文件:行号」（工具参数/kernel/驱动文本三处教学，禁用「轮」）。⑪孤儿 awaiting-verdict 记录（sidecar 重启后内存 runner 消亡，盘上记录弹得出但永远答不了——用户实机被卡死）→ GUI 弹窗只在 awaiting-verdict 态出 + `resolveAutoRunVerdict` 盘上兜底结算（pass→completed / fail→stopped 清 package；continue 明确报错不可续跑；4 回归测试）。走查实证：预算 1/40 ✓、档案完整链 ✓、终审弹窗正常 ✓。全量 179 文件 2362 测试绿。
+>
+> 不做（本版）：引擎多实例（已砍）、澄清提问（已砍）、档案图化（后续候选）、跨会话档案（蒸馏弧职责）、历史 run 续跑（载回按钮路径，后置）。
+> 挂账沿用：研究档案问题（Q#）纠正语义裁决（1.4.5 挂账）。
+> 验收：全量测试 + dogfood 复测（cJSON 同任务重跑——档案应出完整链（假设/证据/结论带 V# 引用）、证伪走 falsify/correct、相位 recon 出现且不误判、预算计数正确、无幽灵弹窗）。
 
 ---
 

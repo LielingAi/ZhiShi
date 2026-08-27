@@ -37,6 +37,8 @@ import {
   addQuestion,
   correctEntity,
   falsifyHypothesis,
+  loadArchive,
+  parseEntityRefs,
   resolveQuestion,
   type BroadcastFn,
   type FindingType,
@@ -347,12 +349,14 @@ export function createResearchLogTool(
       }, options.baseDir);
       // 1.2.2 promote 常态化:结案(success/stuck)留痕成功后在返回文本里带晋升
       // 提示——harness 原生、零时序猜测;fail 不带(失败教训走蒸馏弧,不是专家知识)。
+      // 1.4.6 E#N 口径:研究事件引用写作 E#N(与档案实体 H#/V#/C#/Q# 区分——
+      // golang 取证 msg 354 实证裸 #N 编号混淆)。
       const promoteHint =
         event.outcome === 'fail'
           ? ''
           : `。这条经验若可复用,提示研究员可用 \`zhishi expert promote #${event.id}\` 晋升为专家知识(人审后生效)`;
       return {
-        content: [{ type: 'text', text: `研究事件已记录(#${event.id} ${event.taskKind}/${event.outcome})${promoteHint}` }],
+        content: [{ type: 'text', text: `研究事件已记录(E#${event.id} ${event.taskKind}/${event.outcome})${promoteHint}` }],
         details: { eventId: event.id },
       };
     },
@@ -397,7 +401,7 @@ const archiveParameters = Type.Object({
     description: '实体引用,逗号分隔(op 新增类可选):假设/问题挂派生依据,证据挂由哪个假设驱动,结论挂证据(V#N)——正反推论的机械锚',
   })),
   anchor: Type.Optional(Type.String({
-    description: '来源标注(op 新增类可选):这条实体的证据在流的哪里(如「第 3 轮 env_exec 输出」「源码第 42 行」)',
+    description: '来源标注(op 新增类可选):这条实体的证据在流的哪里——用「env_exec #N / 命令名 / 文件:行号」形态(如「env_exec #6 build_verify 重跑」「src/cJSON.c:261」),不要用「轮」(与 auto loop 轮次撞车,实机实证编号误导)',
   })),
   id: Type.Optional(Type.String({ description: '目标实体 id(op=falsify/resolve/correct 必填,如 H#1/V#1/C#1/Q#1)' })),
   reason: Type.Optional(Type.String({ description: '原因(op=falsify/correct 必填):错在哪、为什么' })),
@@ -439,8 +443,8 @@ export function createArchiveTool(
     description:
       '研究档案是本会话的显式研究状态(假设/证据/结论/未决问题),随研究持续更新,每轮注回你的上下文。纪律:'
       + '①假设驱动实验,立假设后去做实验,evidence 挂假设引用;'
-      + '②结论必须有证据支撑,finding 用 refs 挂 V# 引用——没有证据不下结论;'
-      + '③证伪同样留痕:实验推翻假设/发现结论错了,用 falsify/correct 纠正(排除的路也是成果,防止反复重访死路);'
+      + '②结论必须有证据支撑——finding 的 refs 必须挂已存在的 V# 证据实体(先 op=evidence 记证据再下结论,缺证据会被拒绝);'
+      + '③证伪/纠错必须走 falsify/correct 操作留痕——实验推翻假设用 falsify,结论/证据错了用 correct;**不要把证伪写进 finding 文本里冒充成立**(排除的路也是成果,防止反复重访死路);'
       + '④目标不清/缺前提时立 question(未决问题),不要空转猜方向;'
       + '⑤每条实体一两句话,全文在对话流里,anchor 标注它在流的哪。',
     parameters: archiveParameters,
@@ -467,13 +471,34 @@ export function createArchiveTool(
         }
         case 'finding': {
           if (!params.text?.trim()) throw new Error('research_archive: finding 需要 text');
+          // 1.4.6 举证强度（cJSON dogfood 实证 P0）：结论必须有证据支撑——
+          // refs 必须挂至少一个已存在的 V# 证据实体。模型第 3 轮退化为
+          // 只写结论零证据引用,举证链结构断裂;约束放在工具层（addFinding
+          // 模块层保持宽松,admin/迁移等合法写入不受影响）。
+          const refs = parseEntityRefs(params.refs);
+          if (refs.length === 0) {
+            throw new Error(
+              'research_archive: 结论必须有证据支撑——refs 请挂 V# 证据引用。'
+              + '先 op=evidence 记录证据（实验观察/工具输出/数据流证明/用户陈述都算证据，可挂假设引用），再 finding refs 挂它。',
+            );
+          }
+          const current = loadArchive(sid, { dir: options.dir });
+          const evidenceIds = new Set(
+            current.entities.filter((e) => e.kind === 'evidence').map((e) => e.id),
+          );
+          if (!refs.some((r) => evidenceIds.has(r))) {
+            throw new Error(
+              `research_archive: refs 中没有已存在的证据实体（${refs.join('、')}）——`
+              + '先 op=evidence 记录证据，再 finding refs 挂 V# 引用。',
+            );
+          }
           const snap = await addFinding(
             sid,
             { text: params.text, findingType: params.findingType as FindingType | undefined, ...base },
             common(),
           );
           const e = snap.entities.at(-1)!;
-          return { content: [{ type: 'text', text: `研究档案已更新:${e.id} 结论已立${e.links.length > 0 ? `,证据 ${e.links.join(' ')}` : '（未挂证据——结论需要证据支撑,尽快补）'}` }], details: { entityId: e.id } };
+          return { content: [{ type: 'text', text: `研究档案已更新:${e.id} 结论已立,证据 ${e.links.join(' ')}` }], details: { entityId: e.id } };
         }
         case 'question': {
           if (!params.text?.trim()) throw new Error('research_archive: question 需要 text');

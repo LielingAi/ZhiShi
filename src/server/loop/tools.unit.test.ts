@@ -419,8 +419,48 @@ describe('createArchiveTool（1.4.4 research_archive）', () => {
 
   it('人纠正过的实体,模型 correct 被拒(权威序)', async () => {
     const tool = makeTool();
-    await tool.execute('t1', { op: 'finding', text: '结论一' });
+    await tool.execute('t0', { op: 'evidence', text: '实验观察:崩溃复现' });
+    await tool.execute('t1', { op: 'finding', text: '结论一', refs: 'V#1' });
     await correctEntity('s-1', { id: 'C#1', by: 'human', reason: '人已终审' }, { dir });
     await expect(tool.execute('t2', { op: 'correct', id: 'C#1', reason: '想翻案' })).rejects.toThrow(/人纠正/);
+  });
+});
+
+describe('createArchiveTool — 1.4.6 举证强度（finding 强制证据引用）', () => {
+  let dir2: string;
+  beforeEach(() => {
+    dir2 = mkdtempSync(join(tmpdir(), 'zhishi-archive-tool-strict-'));
+  });
+  afterEach(() => {
+    rmSync(dir2, { recursive: true, force: true });
+  });
+
+  function makeStrictTool() {
+    return createArchiveTool({
+      getSessionId: () => 's-strict',
+      getAnchor: () => ({}),
+      dir: dir2,
+    });
+  }
+
+  it('finding 无 refs → 拒绝(引导先记证据)', async () => {
+    const tool = makeStrictTool();
+    await expect(tool.execute('t1', { op: 'finding', text: '没证据的结论' })).rejects.toThrow(/证据支撑/);
+  });
+
+  it('finding refs 挂不存在的 V# → 拒绝(证据实体须已存在)', async () => {
+    const tool = makeStrictTool();
+    await expect(tool.execute('t1', { op: 'finding', text: '结论', refs: 'V#99' })).rejects.toThrow(/证据实体/);
+    // 挂 H#(假设)而非 V#(证据)同样拒绝。
+    await tool.execute('t0', { op: 'hypothesis', text: '假设一' });
+    await expect(tool.execute('t1', { op: 'finding', text: '结论', refs: 'H#1' })).rejects.toThrow(/证据实体/);
+  });
+
+  it('先 op=evidence 再 finding refs 挂 V# → 通过(举证链正确形态)', async () => {
+    const tool = makeStrictTool();
+    await tool.execute('t1', { op: 'evidence', text: 'SIGSEGV at 0x41414141' });
+    const ok = await tool.execute('t2', { op: 'finding', text: '栈溢出可控制 RIP', refs: 'V#1' });
+    expect(ok.details?.entityId).toBe('C#1');
+    expect((ok.content[0] as { text: string }).text).toContain('证据 V#1');
   });
 });

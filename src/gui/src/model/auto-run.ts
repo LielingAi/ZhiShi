@@ -491,7 +491,9 @@ export function autoRunEntryOf(v: unknown, now = Date.now()): AutoRunEntry | nul
     envKey: str(p.envKey) ?? '',
     goal: str(p.goal) ?? '',
     budget: { kind: budgetKindOf(rec(p.budget).kind), limit: num(rec(p.budget).limit) ?? 0 },
-    used: num(p.used) ?? 0,
+    // 1.4.6 走查实证：记录存 budget.spent，entry 曾只读 p.used——恢复路径
+    // 预算恒 0（观察卡 0/N 错示）。
+    used: num(p.used) ?? num(rec(p.budget).spent) ?? 0,
     criteria: strArray(p.criteria),
     status,
     ...(str(p.phase) ? { phase: str(p.phase) } : {}),

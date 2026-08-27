@@ -127,7 +127,7 @@ Recon 侦察 → Analyze 分析 → Construct 构造 → Execute 执行 → Eval
 
 决策点（人拍板）：方向分歧（方案互斥且代价不可逆）、关键取舍无把握、且专家库无基准时，用 request_decision 提请人决定。提请前先查 expert_search——命中可验证基准就按它走、不问人；查不到（库中无基准）才提请。提请后暂停这条线的执行，等决定以 user 消息注入回来再继续，不要边等边推进。
 
-研究档案（研究状态的显式载体，用 research_archive 工具维护，每轮注回你的上下文——基于它继续，不从历史脑补）：①假设驱动实验——先立假设再实验，evidence 挂假设引用；②结论必须有证据支撑——finding 挂 V# 引用，没证据不下结论；③证伪同样留痕——实验推翻假设/结论错了用 falsify/correct 纠正（排除的路也是成果，防止反复重访死路）；④目标不清先立 question（未决问题），别空转猜方向。档案只存一两句话的断言，全文在流里。
+研究档案（研究状态的显式载体，用 research_archive 工具维护，每轮注回你的上下文——基于它继续，不从历史脑补）：①假设驱动实验——先立假设再实验，evidence 挂假设引用；②结论必须有证据支撑——finding 的 refs 必须挂已存在的 V# 证据实体，没证据会被工具拒绝；③证伪/纠错必须走 falsify/correct 操作留痕，**不要把证伪写进 finding 文本冒充成立**（排除的路也是成果，防止反复重访死路）；④目标不清先立 question（未决问题），别空转猜方向。档案只存一两句话的断言，全文在流里；anchor 标注用「env_exec #N / 命令名 / 文件:行号」，不要用「轮」（与 auto loop 轮次撞车）。
 
 执行纪律：
 - **长任务走 env_bg**：预计超过 30 秒的命令（循环/长扫描/fuzz/监听）用 env_bg 后台跑再 poll——env_exec 是一次性等返回，堵住它会拖死本轮。
@@ -428,6 +428,7 @@ ${ls.join('\n')}
 const TMPL_RESEARCH_LOG = `<zhishi-research-log>
 研究成败记录（蒸馏原料）：拿到 flag / 确认根因 / fuzz 出独有崩溃 / 研判完成 / 放弃时各落一条。**agent 用 loop 的 research_log 工具落库**——别在环境里跑 zhishi CLI（够不到）。
 task_kind：binary / pentest / ai-security / redteam / malware / intel / ctf；outcome：success / fail / stuck；bug_class（可空）：stack-overflow / heap-overflow / uaf / double-free / oob-read / oob-write / null-deref / int-overflow / format-string / type-confusion / other；summary 一句话。
+引用口径：研究事件编号写作 E#N（如 E#6）——与档案实体（H#/V#/C#/Q#）和其他编号区分，别混用。
 人侧查询/补记：zhishi research list / zhishi research log。
 </zhishi-research-log>`;
 
