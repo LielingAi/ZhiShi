@@ -1209,8 +1209,11 @@ export interface EnvironmentEntry {
   /** 能力域集合（1.3.7 场景 3，B 方案纯系统推导）：配方绑定域 ∪ 工具探测域
    *  （环境里实际装了哪些已知工具 → 工具→配方→域反推）。服务端派生字段，
    *  非用户编辑；探测失败时不写（保 baseline 行为），绝不落空集合。
-   *  消费面：resolveSessionResearchDomain 基线（[0]）+ resolveSessionDomain
-   *  裁决空间收窄（集合外不切）+ 能力清单段工具并集 + GUI 能力徽章。 */
+   *
+   *  1.4.3 概念归位：本字段是**工具面标签**（这台环境能干什么），不是研究域
+   *  裁决依据——研究域只由任务内容判定（resolveSessionDomain 内容信号）。
+   *  消费面：能力清单段工具并集展示（filterKinds）+ resolveSessionResearchDomain
+   *  弱先验基线（[0]）+ GUI 能力徽章；不参与裁决空间收窄（集合外不切已移除）。 */
 
   capabilityDomains?: string[];
 

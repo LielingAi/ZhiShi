@@ -23,7 +23,9 @@ import { getScriptDir } from './script-dir';
 // Schema
 // ---------------------------------------------------------------------------
 
-/** 域级信号规则(signal-extract 数据化):输出命中 re → 折叠卡摘要给 label。 */
+/** 域级信号规则：正则 + 展示标签。1.4.3 起分主辅——
+ *  signals = 内容特征（研究在做什么，域裁决主信号）；
+ *  auxSignals = 产物指纹（研究产出的标志物，不参与域裁决）。 */
 export interface DomainSignalRule {
   /** 正则(字符串形态,loader 编译;非法正则在校验时报)。 */
   re: string;
@@ -43,8 +45,12 @@ export interface DomainManifest {
   skills: string[];
   /** 引用 bundled-agents 的 subagent 名。 */
   subagents: string[];
-  /** 域级信号规则(喂 signal-extract)。 */
+  /** 域级内容信号（1.4.3 重定义）：任务性质词/方法特征/工具使用模式——
+   *  研究内容的特征，resolveSessionDomain 的域裁决主信号。 */
   signals: DomainSignalRule[];
+  /** 域级产物指纹（1.4.3 降级为辅助证据）：崩溃信号/会话已开/garak 输出
+   *  形态等产物标志物——不参与域裁决，保留供能力清单摘要/未来展示用。 */
+  auxSignals?: DomainSignalRule[];
   /** 就绪验收清单(domain check 的展示面,人工读)。 */
   acceptance: string[];
 }
@@ -87,6 +93,7 @@ export function loadDomainManifest(dir: string): DomainManifest | null {
       skills: Array.isArray(raw.skills) ? raw.skills : [],
       subagents: Array.isArray(raw.subagents) ? raw.subagents : [],
       signals: Array.isArray(raw.signals) ? raw.signals : [],
+      auxSignals: Array.isArray(raw.auxSignals) ? raw.auxSignals : [],
       acceptance: Array.isArray(raw.acceptance) ? raw.acceptance : [],
     };
   } catch {
@@ -150,6 +157,13 @@ export function validateDomainManifest(m: DomainManifest, ctx: DomainCheckContex
       new RegExp(sig.re, 'i');
     } catch {
       issues.push({ level: 'error', message: `信号规则正则非法:${sig.re}` });
+    }
+  }
+  for (const sig of m.auxSignals ?? []) {
+    try {
+      new RegExp(sig.re, 'i');
+    } catch {
+      issues.push({ level: 'error', message: `辅助信号规则正则非法:${sig.re}` });
     }
   }
   if (m.acceptance.length === 0) {

@@ -240,14 +240,12 @@ export function buildSecurityCapabilitiesSection(
   let validRecipes = data.recipes.filter((r) => r.valid);
   let environments = data.environments;
 
-  // 域收窄（1.2.7）：命中清单 → 配方只留该域清单引用的，具名环境只留绑定了
-  // 这些配方的（绑定规则同 envBlock：recipeId 优先，回落 id/vmName 同名配方）。
-  // 域未命中清单 → 不动（全量，宁多勿缺）。
-  // 1.3.7 场景 3：当前现场有能力集合（现场推导落盘）时，收窄空间从单个
-  // resolved 域放宽到整个能力集合——一个环境承载多个能力，集合内各域的
-  // 配方与工具都该让模型看得见。
+  // 1.4.3 归位：能力清单段 = 环境工具面，只按环境推导的能力集合收窄
+  // （配方绑定域 ∪ 工具探测域）——**不再按 resolved 研究域收窄**（研究域
+  // 只决定 skills/子代理/研究记忆注入，不决定环境有什么工具）。无能力集合
+  // 时不动（全量，宁多勿缺——1.2.7 红线 #5）。
   const capability = selectedCapabilityDomains(data);
-  const filterKinds = capability?.domains ?? (options.domain ? [options.domain] : undefined);
+  const filterKinds = capability?.domains;
   if (filterKinds) {
     const all = options.manifests ?? (domainManifestsCache ??= loadDomainManifests());
     const matched = all.filter((m) => filterKinds.includes(m.kind));
@@ -608,20 +606,20 @@ export interface ResolveSessionDomainOptions {
 }
 
 /**
- * 会话域推导（1.2.7 域边界）：基线 = resolveSessionResearchDomain（配方
- * 默认），内容信号动态修正——扫描最近 N 条消息文本，对每域统计其
- * domain.json signals 正则命中数；某域命中 ≥2 且严格多于其他所有域 →
- * 强信号域。裁决：
+ * 会话域推导（1.2.7 域边界；1.4.3 归位：域=研究类型，只由任务内容判定）
+ * 基线 = resolveSessionResearchDomain（配方→域弱先验，候选非裁决空间），
+ * 内容信号动态修正——扫描最近 N 条消息文本，对每域统计其 domain.json
+ * **signals（内容特征：任务性质词/方法特征/工具使用模式）**正则命中数；
+ * 某域命中 ≥2 且严格多于其他所有域 → 强信号域。裁决：
  *
- *   - 无强信号 / 信号打平 / 无命中 → 维持基线（undefined = 全量，宁多勿缺）；
+ *   - 无强信号 / 信号打平 / 无命中 → 维持基线（undefined = 全量，宁多勿缺——
+ *     1.2.7 红线 #5：域过滤是预算优化，不是正确性闸门）；
  *   - 无基线（host 现场）且信号强 → 采用信号域；
  *   - 基线与信号域不同 → 信号足够强（≥3 且 ≥2 倍于基线域命中数）才改判，
  *     否则维持基线（配方默认是锚，零星命中不翻盘）。
  *
- * 1.3.7 场景 3 裁决空间收窄：选中环境带能力集合（capabilityDomains）时，
- * 信号统计只算「集合 ∪ 基线」内的域——集合内切换阈值不变，集合外强信号
- * 不改判（这台环境没推导出的能力，内容信号再强也不切过去）。缺省（无
- * capabilityDomains，存量环境零迁移）保持现行全域裁决。
+ * 1.4.3：移除 1.3.7「集合外不切」硬闸——环境工具面（capabilityDomains）
+ * 只约束能力清单展示，不约束研究域裁决；auxSignals（产物指纹）不参与裁决。
  *
  * 纯函数；manifests 缺省走进程内缓存。
  */
@@ -634,17 +632,12 @@ export function resolveSessionDomain(
   const list = manifests ?? (domainManifestsCache ??= loadDomainManifests());
   const baseline = resolveSessionResearchDomain(data, list);
 
-  // 1.3.7 裁决空间：能力集合存在时收窄到 集合 ∪ 基线；缺省 = 全域。
-  const cap = selectedCapabilityDomains(data);
-  const scope = cap ? new Set([...cap.domains, ...(baseline ? [baseline] : [])]) : undefined;
-
-  // 每域信号命中数（非法正则跳过——读侧容错，与 validateDomainManifest 同纪律）。
+  // 每域内容信号命中数（非法正则跳过——读侧容错，与 validateDomainManifest 同纪律）。
   const recent = messages.slice(-(options.recentMessages ?? DOMAIN_SIGNAL_RECENT_MESSAGES));
   const text = recent.map(domainSignalMessageText).join('\n');
   const counts = new Map<string, number>();
   for (const m of list) {
     if (!isResearchTaskKind(m.kind)) continue;
-    if (scope && !scope.has(m.kind)) continue; // 1.3.7：集合外不参与裁决
     let n = 0;
     for (const rule of m.signals) {
       try {

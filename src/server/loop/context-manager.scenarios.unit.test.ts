@@ -59,7 +59,7 @@ const pentestShellTurn = (id: string) =>
 const whiteboxTurn = (id: string) =>
   envExecTurn(id, 'opengrep scan .', '12 findings\nseverity: error\nCWE-89 sql-injection at login.php:42');
 const binaryCrashTurn = (id: string) =>
-  envExecTurn(id, './vuln $(python -c "print(600*\'A\')")', 'Program received signal SIGSEGV at 0x41414141\ncore dumped');
+  envExecTurn(id, './vuln $(python -c "print(600*\'A\')")', 'Program received signal SIGSEGV at 0x41414141\ncore dumped\n栈溢出: 返回地址被 0x41414141 覆盖');
 const binaryAnalysisTurn = (id: string) =>
   envExecTurn(id, 'gdb -batch -ex bt ./core', '#0 0x41414141 in ?? ()\n数据流分析: 偏移 520');
 const fillerTurn = (id: string, chars = 2000) =>
