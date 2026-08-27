@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-08-27
+
+> **域模型归位**：环境/配方/域三层解耦——域=研究知识维度（skills/子代理/研究记忆注入），只由任务内容判定。修复 dogfood 根因：golang 白盒审计会话域判定全程锁死 binary，whitebox-audit 方法论从未注入。
+
+### 修复
+- 移除 1.3.7「集合外不切」硬闸——域过滤回归「预算优化」而非「正确性闸门」（1.2.7 红线 #5 恢复）
+- 域信号重定义：`signals`=内容特征（任务性质/方法/工具使用模式），产物指纹（SIGSEGV/session opened/garak 输出形态）降级为 `auxSignals`，不参与裁决
+- binary「exp」信号加词边界（`exploit|exp(?![a-z])`，消除 expect/export 类误命中）
+- `capabilityDomains` 语义归位「工具面标签」：只做能力清单展示，不再收窄研究域裁决（字段名保留，免迁移）
+- 无域信号降级全量注入（宁多勿缺）安全阀恢复；`validateDomainManifest` 校验 auxSignals 正则
+
+### 验证
+- golang 会话（mta7eilu）重跑 recent=20/10/5 全判 whitebox（根因场景纠正）
+- 1.2.7 六场景 + 极端场景回归、域切换单测更新；全量 177 文件 2308 测试绿
+
 ## [1.4.2] - 2026-08-26
 
 > 实机反馈修复四项：登记按钮字号、侧栏底部入口恒可见、决策面板选项卡片化（单击即拍板）、窗口自适应。
