@@ -7,7 +7,7 @@
   </picture>
 </p>
 
-**v1.4.5 · 安全研究领域的 agent harness：环境融合、原生工具、原生代码、研究档案。**
+**v1.4.6 · 安全研究领域的 agent harness：环境融合、原生工具、原生代码、研究档案。**
 
 [![Version](https://img.shields.io/github/v/tag/LielingAi/ZhiShi)](https://github.com/LielingAi/ZhiShi/tags)
 [![License](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](LICENSE)
@@ -98,8 +98,9 @@ ZhiShi 是给安全研究员的工作台：二进制利用、渗透测试、白�
 - 块化会话流（输入=块首、结论聚合亮顶、thought/工具卡折叠、抽屉详情）+ 运行中输入即纠偏
 - 环境准入闸（已停止不可进入，先启动）+ 三态判定统一
 - 决策面板（模型方向分歧提请人拍板 + 专家依据区 + 决策块落流可追溯）
-- **研究档案分屏看板**（左流右档案 6/4 可拖可互换——假设/证据/结论/未决问题随研究实时生长，行内纠正，档案锚↔流双向互跳；小窗退单屏 + 抽屉徽章）
-- **auto loop agent**（目标式研究循环：启动表单锁定目标/预算/验收条件，运行期只观察，暂停点介入，验收包人终审，达成自动出报告）
+- **研究档案分屏看板**（左流右档案 6/4 可拖可互换——假设/证据/结论/未决问题随研究实时生长，行内纠正，档案锚↔流双向互跳；小窗退单屏 + 抽屉徽章；结论必须有证据支撑——finding 强制挂 V# 证据引用，证伪走 falsify/correct 留痕）
+- **auto loop agent**（目标式研究循环：启动表单锁定目标/预算/验收条件，运行期只观察，暂停点介入，验收包人终审，达成自动出报告；**左屏过程观察模式**——run 活跃时左屏实时回放 run 的轨迹）
+- **历史档案查看**（▤ 历史面板：auto-run 记录 ⚡ 合成行并入；回看页「研究档案」只读区——上档案下轨迹）
 - 历史面板（会话分组/搜索/只读回看/载回续跑）+ 会话管理（重命名/置顶/归档/删除）
 - attach 真终端（xterm + WS pty：docker exec -it / ssh -tt）+ 一次性命令执行双模式
 - `/` 命令面板、`@` 补全（环境/文件/子代理/工具）、`Ctrl+R` 历史、Esc 链、深浅主题
@@ -230,17 +231,17 @@ flowchart LR
 
 | 项 | 状态 |
 |---|---|
-| 单元测试 | 2300+ 全绿；`tsc --noEmit` / `eslint` 零错 / depcruise 架构边界强制 |
+| 单元测试 | 2360+ 全绿；`tsc --noEmit` / `eslint` 零错 / depcruise 架构边界强制 |
 | 活体回归 | `npm run smoke` 一键（真端点 + 真 VM，m1-m4 全链路）；产物级 smoke（打包产物跑关键路径） |
 | 活体 dogfood | ret2win 全程打通；1.1.8 三域实战验证（whitebox 埋雷审计全中 / pentest 全链拿 flag / ai-security 注入探针全拒），详见 `docs/design/` |
-| GUI 全链路真机 | 选环境 / 流式 / 中断 / 回退 / 快照回滚 / attach 终端 / 决策面板 / 历史面板 / 越界模态 / 后台任务全部通过（1.3.0-1.3.8 实机走查）；auto loop（1.4.1）与研究档案分屏看板（1.4.4）实机走查通过 |
+| GUI 全链路真机 | 选环境 / 流式 / 中断 / 回退 / 快照回滚 / attach 终端 / 决策面板 / 历史面板 / 越界模态 / 后台任务全部通过（1.3.0-1.3.8 实机走查）；auto loop（1.4.1）与研究档案分屏看板（1.4.4）实机走查通过；Harness 复杂任务优化（1.4.6）cJSON 四轮 dogfood 实证 |
 | 域内容件 | 四域齐备（binary / pentest / whitebox / ai-security）并经实战验证 |
 
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
-| `docs/roadmap.md` | 版本任务池（当前线：1.4.x——1.4.4 研究档案已发版） |
+| `docs/roadmap.md` | 版本任务池（当前线：1.4.x——1.4.6 Harness 复杂任务优化已发版） |
 | `docs/user-guide.md` | 使用指南（安装、选环境、配模型、GUI 操作、常见问题） |
 | `docs/expert-import-guide.md` | 专家知识导入指南（命令/字段规范/JSON+YAML 格式，附可导入的 `expert-import.demo.yaml`） |
 | `docs/design/` | 各版本设计与分析稿（1.1.6–1.2.7、distill-eval、1.3.4 TUI 退役评估） |
