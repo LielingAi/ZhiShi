@@ -1455,12 +1455,14 @@ describe('1.2.7 域边界接线(§三:配方默认 + 内容信号动态修正 �
     expect(arg.domain).toBe('binary');
   });
 
-  it('内容信号强改判:binary 基线 + pentest 信号 ≥3 → pentest 域', async () => {
-    // pentest signals:"session N opened";binary 基线无命中 → 3 ≥ 3 且 ≥2×0 → 改判。
+  it('内容信号强改判:binary 基线 + pentest 内容信号 ≥3 → pentest 域', async () => {
+    // pentest 内容信号:nmap/sqlmap/webshell/拿 shell 共 4 命中(1.4.3 起
+    // 「session N opened」是产物指纹 auxSignals,不参与裁决);binary 基线
+    // 无命中 → 4 ≥ 3 且 ≥2×0 → 改判。
     loadLoopSessionMock.mockReturnValue({
       messages: [
         userMsg('q1'),
-        assistantMsg('session 1 opened\nsession 2 opened\nsession 3 opened'),
+        assistantMsg('nmap 扫描目标\nsqlmap 注入探测\nwebshell 拿 shell'),
       ],
       meta: null,
     });

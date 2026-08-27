@@ -628,7 +628,7 @@ describe('buildSecurityCapabilitiesSection — 截断顺序（1.2.6）', () => {
 
 // ===== 1.2.7 域边界：能力清单分域收窄 =====
 
-describe('buildSecurityCapabilitiesSection — 域收窄（1.2.7）', () => {
+describe('buildSecurityCapabilitiesSection — 能力清单段（1.4.3 归位：工具面不按研究域收窄）', () => {
   const CAPS_MANIFESTS: DomainManifest[] = [
     { kind: 'binary', name: '二进制', recipes: ['pwn', 'fuzz'], skills: [], subagents: [], signals: [], acceptance: [] },
     { kind: 'pentest', name: '渗透', recipes: ['pentest'], skills: [], subagents: [], signals: [], acceptance: [] },
@@ -643,20 +643,17 @@ describe('buildSecurityCapabilitiesSection — 域收窄（1.2.7）', () => {
     environments: [PWN_ENV, PENTEST_ENV, MANUAL_ENV],
   });
 
-  it('域命中清单 → 只列该域 recipes ∪ 绑定了这些配方的具名环境', () => {
+  it('1.4.3：传研究域不再收窄能力清单（研究域只管 skills/子代理/记忆注入，工具面按环境）', () => {
     const section = buildSecurityCapabilitiesSection(fullData(), { domain: 'binary', manifests: CAPS_MANIFESTS });
-    // 域内配方保留，域外配方整行消失
+    // 全部配方与具名环境保留（与全量一致——工具面不因研究域收窄）
     expect(section).toContain('- pwn（docker）：pwndbg');
     expect(section).toContain('- fuzz（docker）：afl++');
-    expect(section).not.toContain('- pentest（docker）');
-    expect(section).not.toContain('- dev（docker）');
-    // 绑定域内配方的具名环境保留；绑定域外配方 / 无类型绑定的被收窄掉
-    expect(section).toContain('- pwn-box → docker:zhishi-pwn-a3f2');
-    expect(section).not.toContain('- pt-box →');
-    expect(section).not.toContain('- manual-box →');
-    // 现场行与引擎行不受收窄影响
+    expect(section).toContain('- pentest（docker）：nmap');
+    expect(section).toContain('- dev（docker）：clang');
+    expect(section).toContain('- pwn-box →');
+    expect(section).toContain('- pt-box →');
+    expect(section).toContain('- manual-box →');
     expect(section).toContain('当前环境：');
-    expect(section).toContain('Docker（容器环境）');
   });
 
   it('无域（不传/空 options）→ 与现状逐字节一致（全量）', () => {
@@ -757,16 +754,17 @@ describe('resolveSessionDomain（1.2.7 配方默认 + 信号动态修正）', ()
     expect(resolveSessionDomain(messages, data(), SIGNAL_MANIFESTS)).toBe('pentest');
   });
 
-  it('manifests 缺省走真实 bundled-domains：binary 信号命中 → binary', () => {
-    const messages = [msg('Program received signal SIGSEGV'), msg('core dumped')];
+  it('manifests 缺省走真实 bundled-domains：内容信号命中 → binary', () => {
+    // 1.4.3：内容特征（ROP/pwntools/checksec）命中 → binary；产物指纹 SIGSEGV 在 auxSignals 不计。
+    const messages = [msg('ROP 链构造'), msg('pwntools 写 exp'), msg('checksec 看保护')];
     expect(resolveSessionDomain(messages, data())).toBe('binary');
   });
 });
 
-// ===== 1.2.7 接线：securityResearchDomain 同时收窄 capabilities 段 =====
+// ===== 1.2.7 接线：securityResearchDomain 透传（1.4.3：能力清单不按研究域收窄） =====
 
-describe('buildSystemPromptAppend — securityResearchDomain 透传能力清单（1.2.7）', () => {
-  it('传域时 capabilities 段只列该域配方（真实 bundled-domains 清单）', () => {
+describe('buildSystemPromptAppend — securityResearchDomain 透传（1.4.3 归位）', () => {
+  it('1.4.3：传研究域不再收窄能力清单段（工具面按环境，研究域只管注入面）', () => {
     const prompt = buildSystemPromptAppend({ type: 'security' }, {
       securityCapabilities: data({
         engines: enginesReport(['docker']),
@@ -776,7 +774,7 @@ describe('buildSystemPromptAppend — securityResearchDomain 透传能力清单�
     });
     expect(prompt).toContain('<zhishi-capabilities>');
     expect(prompt).toContain('- pwn（docker）：pwndbg');
-    expect(prompt).not.toContain('- pentest（docker）：nmap');
+    expect(prompt).toContain('- pentest（docker）：nmap');
   });
 
   it('不传域 → capabilities 段全量（现状语义不变）', () => {
@@ -836,66 +834,65 @@ describe('resolveSessionResearchDomain — 能力集合基线优先（1.3.7 场�
   });
 });
 
-describe('resolveSessionDomain — 裁决空间收窄（1.3.7 场景 3）', () => {
+describe('resolveSessionDomain — 1.4.3 归位：域只由任务内容判定，移除集合外硬闸', () => {
+  // 1.4.3：signals 重定义为内容特征（任务性质/方法/工具），产物指纹进 auxSignals 不参与裁决。
   const SIGNAL_MANIFESTS: DomainManifest[] = [
     {
       kind: 'binary', name: '二进制', recipes: ['pwn', 'fuzz'], skills: [], subagents: [],
-      signals: [{ re: 'SIGSEGV', label: '崩溃信号' }, { re: 'core dumped', label: 'core dump' }],
+      signals: [{ re: 'ROP|pwntools|checksec', label: '利用方法' }],
+      auxSignals: [{ re: 'SIGSEGV', label: '崩溃信号' }],
       acceptance: [],
     },
     {
       kind: 'pentest', name: '渗透', recipes: ['pentest'], skills: [], subagents: [],
-      signals: [{ re: 'session \\d+ opened', label: '会话已开' }, { re: '\\[\\+\\]', label: '成功标记' }],
+      signals: [{ re: 'nmap|sqlmap|拿 shell', label: '渗透方法' }],
+      auxSignals: [{ re: 'session \\d+ opened', label: '会话已开' }],
       acceptance: [],
     },
     {
-      kind: 'intel', name: '情报', recipes: ['intel-box'], skills: [], subagents: [],
-      signals: [{ re: 'CVE-\\d+-\\d+', label: 'CVE 命中' }],
+      kind: 'whitebox', name: '白盒审计', recipes: ['code-audit'], skills: [], subagents: [],
+      signals: [{ re: '审计|opengrep|数据流', label: '审计方法' }],
       acceptance: [],
     },
   ];
   const msg = (content: unknown) => ({ content });
-  // 多能力环境：集合 = [binary, pentest]（intel 在集合外）。
-  const MULTI_ENV: EnvironmentEntry = {
+  // 环境工具面 = [binary]（pwn 配方绑定），但研究内容可判到工具面之外。
+  const BINARY_ENV: EnvironmentEntry = {
     id: 'pwn-box', kind: 'docker', container: 'c', recipeId: 'pwn',
-    capabilityDomains: ['binary', 'pentest'], createdAt: '',
+    capabilityDomains: ['binary'], createdAt: '',
   };
-  const multiData = () => data({ environments: [MULTI_ENV], selection: { kind: 'env', id: 'pwn-box' } });
+  const binaryData = () => data({ environments: [BINARY_ENV], selection: { kind: 'env', id: 'pwn-box' } });
 
-  it('集合内切换：pentest 强信号（≥3 且 ≥2 倍）→ 改判 pentest（集合内阈值不变）', () => {
+  it('内容信号强 → 改判（配方基线 binary → 白盒审计内容 → whitebox）', () => {
     const messages = [
-      msg('SIGSEGV'),               // binary ×1
-      msg('session 1 opened'),      // pentest ×3
-      msg('session 2 opened'),
-      msg('[+] shell'),
+      msg('开始审计这份源码'), msg('用 opengrep 扫一遍'), msg('沿着数据流追这条污点'),
     ];
-    expect(resolveSessionDomain(messages, multiData(), SIGNAL_MANIFESTS)).toBe('pentest');
+    expect(resolveSessionDomain(messages, binaryData(), SIGNAL_MANIFESTS)).toBe('whitebox');
   });
 
-  it('集合外不切：intel 强信号再强也不改判（这台环境没推导出 intel 能力）', () => {
+  it('1.4.3：移除集合外硬闸——工具面 [binary] 之外的内容信号照常改判', () => {
     const messages = [
-      msg('CVE-2026-1111'), msg('CVE-2026-2222'), msg('CVE-2026-3333'), msg('CVE-2026-4444'),
+      msg('审计入口文件'), msg('opengrep 告警分级'), msg('数据流分析确认注入点'),
     ];
-    // 无收窄的对照语义下这会改判 intel；收窄后维持基线 binary。
-    expect(resolveSessionDomain(messages, multiData(), SIGNAL_MANIFESTS)).toBe('binary');
+    // 1.3.7 语义下这会锁死 binary；1.4.3 恢复「域过滤是预算优化不是正确性闸门」。
+    expect(resolveSessionDomain(messages, binaryData(), SIGNAL_MANIFESTS)).toBe('whitebox');
   });
 
-  it('缺省回落：条目无 capabilityDomains → 全域裁决（集合外强信号照常改判）', () => {
-    const legacy: EnvironmentEntry = { id: 'pwn-box', kind: 'docker', container: 'c', recipeId: 'pwn', createdAt: '' };
-    const d = data({ environments: [legacy], selection: { kind: 'env', id: 'pwn-box' } });
+  it('产物指纹（auxSignals）不参与裁决：纯 SIGSEGV 不把域拉向 binary', () => {
     const messages = [
-      msg('CVE-2026-1111'), msg('CVE-2026-2222'), msg('CVE-2026-3333'),
+      msg('Program received signal SIGSEGV'), msg('SIGSEGV at 0x41414141'), msg('core dumped'),
     ];
-    expect(resolveSessionDomain(messages, d, SIGNAL_MANIFESTS)).toBe('intel');
+    // auxSignals 不计数 → 无内容信号 → 维持基线 binary（配方弱先验）。
+    expect(resolveSessionDomain(messages, binaryData(), SIGNAL_MANIFESTS)).toBe('binary');
   });
 
-  it('集合内弱信号不翻盘：pentest 命中 <3 → 维持基线 binary', () => {
-    const messages = [msg('session 1 opened'), msg('[+] shell'), msg('SIGSEGV')];
-    expect(resolveSessionDomain(messages, multiData(), SIGNAL_MANIFESTS)).toBe('binary');
+  it('弱信号不翻盘：零星内容命中 <3 → 维持基线', () => {
+    const messages = [msg('nmap 扫一下'), msg('ROPgadget 找 gadget')];
+    expect(resolveSessionDomain(messages, binaryData(), SIGNAL_MANIFESTS)).toBe('binary');
   });
 
-  it('无基线场景不受影响：host 现场无能力集合 → 全域信号裁决', () => {
-    const messages = [msg('session 1 opened'), msg('[+] 拿到 shell')];
+  it('无基线场景：host 现场内容信号裁决', () => {
+    const messages = [msg('sqlmap 打一下'), msg('拿 shell 后提权')];
     expect(resolveSessionDomain(messages, data(), SIGNAL_MANIFESTS)).toBe('pentest');
   });
 });

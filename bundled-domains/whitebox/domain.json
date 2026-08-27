@@ -5,10 +5,12 @@
   "skills": ["whitebox-audit"],
   "subagents": ["vuln-hunter", "hypothesis-tester", "critic"],
   "signals": [
-    { "re": "(\\d+)\\s+findings?", "label": "审计发现", "appendMatch": true },
-    { "re": "severity\\s*[=:]\\s*(error|warning)", "label": "严重告警", "appendMatch": true },
-    { "re": "CWE-\\d+", "label": "CWE 命中", "appendMatch": true }
+    { "re": "审计|audit|源码级|漏洞挖掘|白盒", "label": "任务性质" },
+    { "re": "数据流|污点|taint|攻击面|输入面|入口文件|漏洞类型分布|告警分级", "label": "审计方法" },
+    { "re": "opengrep|joern|semgrep|codeql|bandit|severity|findings?|CWE-\\d+", "label": "审计工具与产出" },
+    { "re": "编译器|compiler|lowering|误编译|miscompil|codegen|类型检查器|type checker", "label": "编译器/源码深研" }
   ],
+  "auxSignals": [],
   "acceptance": [
     "对已知 CVE 的开源项目:审计→定位→复现,全程 research_log(kind=whitebox) 留痕",
     "opengrep 基线扫描→告警分级→数据流手工追→CWE 映射 全链路走通"
