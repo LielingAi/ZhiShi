@@ -63,6 +63,7 @@ import type { InteractionScenario } from '../system-prompt';
 import { broadcast } from '../sse';
 import { invokePiSession, getPiAgentState } from './chat-engine';
 import { appendLoopMessages, loadLoopSession, newLoopSessionId } from './session';
+import { loadArchive } from './archive';
 import { getResearchEventById, listResearchEvents } from '../memory/store';
 import { findEnvironmentEntry, listEnvironments } from '../environment/registry';
 import { loadConfig } from '../utils/admin-config';
@@ -1211,6 +1212,8 @@ async function exportRunReport(
         listResearchEvents({ limit: 1000 }).filter((e) => workspacePathsEqual(e.workspace, ws)),
       findLoopSessionId: () => record.loopSessionId,
       loadTranscript: (loopSessionId) => buildLoopTranscript(loopSessionId),
+      // 1.4.4 研究档案交付投影：auto-run 线同样从档案派生成果章节。
+      loadArchive: (loopSessionId) => loadArchive(loopSessionId),
       requestApproval: (objects) => requestBoundaryAsk({
         kind: 'host-write',
         objects,

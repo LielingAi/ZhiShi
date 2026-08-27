@@ -119,7 +119,8 @@ import {
 import { mapLoopEventToSse, toolResultText, type SseOut } from './sse-adapter';
 import { createDelegateTaskTool, DELEGATE_TASK_TOOL_NAME } from './subagent';
 import { collectEnabledSkills } from './skills';
-import { createEnvBgTool, createEnvExecTool, createResearchLogTool, ENV_EXEC_TOOL_NAME, RESEARCH_LOG_TOOL_NAME } from './tools';
+import { createEnvBgTool, createEnvExecTool, createResearchLogTool, createArchiveTool, ENV_EXEC_TOOL_NAME, RESEARCH_LOG_TOOL_NAME, RESEARCH_ARCHIVE_TOOL_NAME } from './tools';
+import { loadArchive, type ArchiveSnapshot } from './archive';
 import { createIntelSearchTool, INTEL_SEARCH_TOOL_NAME } from './intel';
 import { createExpertDraftTool, createExpertSearchTool, EXPERT_DRAFT_TOOL_NAME, EXPERT_SEARCH_TOOL_NAME } from './expert';
 import { createDecisionTool, formatDecisionInjectionContent, REQUEST_DECISION_TOOL_NAME, type DecisionMeta } from './decision';
@@ -417,6 +418,9 @@ class ChatEngine {
   private messages: MessageWire[] = [];
   private messageSeq = 0;
   private streamingAssistantId: string | null = null;
+  /** 1.4.4 研究档案来源锚：当前轮 user 消息 id（交互线在 startPiTurn 写入；
+   *  headless invoke 线在起跑前置 undefined——档案实体锚不到线时锚点留空）。 */
+  private currentTurnUserMessageId: string | undefined;
   private systemInitInfo: SystemInitInfo | null = null;
   private busy = false;
   private currentAbort: AbortController | null = null;
@@ -502,6 +506,11 @@ class ChatEngine {
 
   getPiStreamingAssistantId(): string | null {
     return this.streamingAssistantId;
+  }
+
+  /** 1.4.4 研究档案：当前 loop 线 id（档案归属/查询按线走；未初始化 → ''）。 */
+  getPiSessionId(): string {
+    return this.sessionId;
   }
 
   getPiSystemInitInfo(): SystemInitInfo | null {
@@ -686,6 +695,9 @@ class ChatEngine {
     // 只有一个事实源——buildTurnStack 的子代理分域与系统提示分域必须同值);
     // 缺省本函数自算(向后兼容)。
     precomputed?: { caps?: SecurityCapabilitiesData; domain?: ResearchTaskKind },
+    // 1.4.4(研究档案):本 turn 的 loop 线——档案按线装载并注入实时状态段
+    // (模型在显式研究状态上继续,不从历史脑补)。缺省读 this.sessionId。
+    archiveSessionId?: string,
   ): Promise<string> {
     const base = buildBaseSystemPrompt(env);
     try {
@@ -701,6 +713,18 @@ class ChatEngine {
       const domain = precomputed
         ? precomputed.domain
         : caps ? resolveSessionDomain(historyMessages, caps) : undefined;
+      // 1.4.4 研究档案：security/auto-run 场景注入实时状态段；档案缺失/空 →
+      // 零注入。读侧容错（IO 失败按空档案，不阻塞会话）。
+      const archiveSession = archiveSessionId ?? this.sessionId;
+      let researchArchive: ArchiveSnapshot | undefined;
+      if (scenario.type === 'security' || scenario.type === 'auto-run') {
+        try {
+          const loaded = loadArchive(archiveSession);
+          researchArchive = loaded.entities.length > 0 ? loaded : undefined;
+        } catch (err) {
+          console.warn('[pi-engine] 研究档案装载失败,按零注入:', err instanceof Error ? err.message : String(err));
+        }
+      }
       const append = buildSystemPromptAppend(scenario, {
         runtime: 'builtin',
         distilledMemory: loadDistilledMemoryForPrompt(),
@@ -710,6 +734,7 @@ class ChatEngine {
           ? collectResearchMemory()
           : undefined,
         securityResearchDomain: domain,
+        researchArchive,
         // 1.2.6 批次 C：pi 无宿主 shell——CLI 附录只保留不依赖 shell 的段
         // （cron + aiCanExit 时的 [CRON_TASK_COMPLETE] 自退标记），task CRUD /
         // memory search / panel 等依赖 zhishi CLI 的段不注入（cliHostShell:false）。
@@ -768,6 +793,8 @@ class ChatEngine {
     };
     this.messages.push(userMessage);
     broadcast('chat:message-replay', { message: userMessage });
+    // 1.4.4 研究档案：本轮的来源锚（档案实体 anchorMessageId 指向这里）。
+    this.currentTurnUserMessageId = userMessage.id;
 
     // 会话跨重启绑定(fire-and-forget,不阻塞 turn)。
     void this.ensureSessionBound(text).then(() => {
@@ -977,6 +1004,14 @@ class ChatEngine {
     const tools: AgentTool[] = [
       ...(env ? [createEnvExecTool(env)] : []),
       createResearchLogTool(this.agentDir),
+      // 1.4.4 研究档案：显式研究状态的写通道（宿主原生，无条件注册——
+      // 档案归属本 turn 快照线；来源锚取当前轮 user 消息 id，headless 线
+      // undefined）。广播恒开：auto-run 线也要推 archive:changed 给 GUI。
+      createArchiveTool({
+        getSessionId: () => sessionId,
+        getAnchor: () => ({ messageId: this.currentTurnUserMessageId }),
+        broadcastFn: broadcast,
+      }),
       // 1.1.2 情报横切：宿主侧情报检索，无条件注册（不依赖 env）。
       createIntelSearchTool(),
       // 1.2.1 专家知识层：决策级检索 + 起草通道，同 intel_search 无条件注册。
@@ -1114,7 +1149,7 @@ class ChatEngine {
       this.buildTurnStack(env, resolution, toolNames, true, turnSessionId, domain);
     // 1.2.6（C-11）：压缩阈值估算纳入系统提示——提示先于 transform 组装,
     // 字符数经同一 chars/4 启发式折算进阈值（compaction 侧向后兼容）。
-    const systemPrompt = await this.assemblePiSystemPrompt(env, scenario, history, { caps, domain });
+    const systemPrompt = await this.assemblePiSystemPrompt(env, scenario, history, { caps, domain }, turnSessionId);
     const contextWindow = resolution.model.contextWindow || 200_000;
     const transformContext = makeCompactionTransform(
       { contextWindow, systemPromptChars: systemPrompt.length },
@@ -1415,6 +1450,7 @@ class ChatEngine {
     const toolNames = [
       ...(env ? [ENV_EXEC_TOOL_NAME, ENV_BG_TOOL_NAME, DELEGATE_TASK_TOOL_NAME] : []),
       RESEARCH_LOG_TOOL_NAME,
+      RESEARCH_ARCHIVE_TOOL_NAME,
       INTEL_SEARCH_TOOL_NAME,
       EXPERT_SEARCH_TOOL_NAME,
       EXPERT_DRAFT_TOOL_NAME,
@@ -1422,6 +1458,8 @@ class ChatEngine {
       DECLARE_COMPLETION_TOOL_NAME,
     ];
     const history = loadLoopSession(loopSessionId).messages;
+    // 1.4.4 研究档案来源锚：headless 线无 wire user 消息——锚点置空。
+    this.currentTurnUserMessageId = undefined;
     // 1.2.7(域补丁):与交互 turn 同——域判定一次算出,执行栈与系统提示共用。
     const scenario = options.scenario ?? resolvePiScenario();
     const caps = scenario.type === 'security'
@@ -1430,7 +1468,7 @@ class ChatEngine {
     const domain = caps ? resolveSessionDomain(history, caps) : undefined;
     const { tools, beforeToolCall, afterToolCall, blockedToolNames } =
       this.buildTurnStack(env, resolution, toolNames, false, loopSessionId, domain);
-    const systemPrompt = await this.assemblePiSystemPrompt(env, scenario, history, { caps, domain });
+    const systemPrompt = await this.assemblePiSystemPrompt(env, scenario, history, { caps, domain }, loopSessionId);
     const contextWindow = resolution.model.contextWindow || 200_000;
     const transformContext = makeCompactionTransform(
       { contextWindow, systemPromptChars: systemPrompt.length },
@@ -1846,6 +1884,11 @@ export async function initPiChatEngine(dir: string): Promise<void> {
 
 export function getPiAgentState(): ReturnType<ChatEngine['getPiAgentState']> {
   return defaultEngine.getPiAgentState();
+}
+
+/** 1.4.4 研究档案：当前 pi 会话线 id（未初始化 → ''）。 */
+export function getPiSessionId(): string {
+  return defaultEngine.getPiSessionId();
 }
 
 export function getPiMessages(): MessageWire[] {

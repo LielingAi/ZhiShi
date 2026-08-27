@@ -17,6 +17,7 @@
 
 import type { GuiSidecarClient } from './sse-client';
 import type { Ref } from '../model/send';
+import type { ArchiveSnapshot } from '../model/archive';
 
 // ---------------------------------------------------------------------------
 // 形状（与 server 侧契约一致的最小声明）
@@ -868,4 +869,33 @@ export function autoRunVerdict(
 /** POST auto-run/list → 原始 JSON（形状归一在 model/auto-run::parseAutoRunList）。 */
 export function autoRunList(client: GuiSidecarClient): Promise<unknown> {
   return client.adminPost<unknown>('auto-run/list', {});
+}
+
+// ---------------------------------------------------------------------------
+// 1.4.4 研究档案（archive/list 查询 / archive/correct 人纠正）
+// ---------------------------------------------------------------------------
+
+/** POST archive/list（缺省当前会话线；auto-run 面板按 loopSessionId 显式传）。 */
+export function fetchArchiveList(
+  client: GuiSidecarClient,
+  input: { sessionId?: string } = {},
+): Promise<{ ok: boolean; error?: string; archive: ArchiveSnapshot | null }> {
+  return client
+    .adminPost<{ success: boolean; error?: string; data?: { archive?: ArchiveSnapshot } }>('archive/list', input)
+    .then((r) => {
+      if (!r.success) return { ok: false, error: r.error ?? 'archive/list 失败', archive: null };
+      return { ok: true, archive: r.data?.archive ?? null };
+    })
+    .catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err), archive: null }));
+}
+
+/** POST archive/correct { id, reason }（行内纠正；服务端广播 archive:changed）。 */
+export function postArchiveCorrect(
+  client: GuiSidecarClient,
+  input: { id: string; reason: string },
+): Promise<{ ok: boolean; error?: string }> {
+  return client
+    .adminPost<{ success: boolean; error?: string }>('archive/correct', input)
+    .then((r) => ({ ok: r.success, error: r.error }))
+    .catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
 }

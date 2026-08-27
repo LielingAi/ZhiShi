@@ -25,6 +25,7 @@ import {
   type SecurityCapabilitiesData,
 } from './system-prompt-security';
 import { buildSkillsSection, type SkillPack } from './loop/skills';
+import { renderArchiveForInjection, type ArchiveSnapshot } from './loop/archive';
 
 // ===== Scenario types =====
 
@@ -220,6 +221,13 @@ export interface SystemPromptOptions {
    * 必然：研究环境边界下模型读不到宿主文件，惰性索引不成立。
    */
   skills?: SkillPack[];
+  /**
+   * 1.4.4 — 研究档案实时状态段（security / auto-run 场景消费）。调用方
+   * 按本 turn 的 loop 线装载（loadArchive，读侧容错）；undefined/空档案 =
+   * 零注入。硬顶 ARCHIVE_INJECT_MAX_CHARS（renderArchiveForInjection）——
+   * 实时状态只给「知道在哪、还缺什么」，全文在 GUI 研究面板。
+   */
+  researchArchive?: ArchiveSnapshot;
 }
 
 export function buildSystemPromptAppend(scenario: InteractionScenario, options?: SystemPromptOptions): string {
@@ -282,6 +290,13 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
       { domain: options?.securityResearchDomain },
     );
     if (researchMemorySection) parts.push(researchMemorySection);
+  }
+
+  // L3: 研究档案实时状态段（1.4.4，security / auto-run）——模型在显式研究
+  // 状态上继续工作，不从历史脑补。零注入语义 + 硬顶（renderArchiveForInjection）。
+  if (scenario.type === 'security' || scenario.type === 'auto-run') {
+    const archiveSection = renderArchiveForInjection(options?.researchArchive);
+    if (archiveSection) parts.push(archiveSection);
   }
 
   // L3: skills(提示词级能力包)——harness 的扩展面,全场景注入,零注入语义。

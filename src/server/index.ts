@@ -393,6 +393,9 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   // 域包清单层(P2 多域抽象层)
   if (route === 'domain/list') return api.handleDomainList();
   if (route === 'domain/check') return await api.handleDomainCheck(payload as Parameters<typeof api.handleDomainCheck>[0]);
+  // 1.4.4 研究档案（GUI 研究面板：查询/人纠正）
+  if (route === 'archive/list') return api.handleArchiveList(payload as Parameters<typeof api.handleArchiveList>[0]);
+  if (route === 'archive/correct') return await api.handleArchiveCorrect(payload as Parameters<typeof api.handleArchiveCorrect>[0]);
   if (route === 'environment/adopt') return await api.handleEnvironmentAdopt(payload as Parameters<typeof api.handleEnvironmentAdopt>[0]);
   if (route === 'environment/install') return await api.handleEnvironmentInstall(payload as Parameters<typeof api.handleEnvironmentInstall>[0]);
   if (route === 'environment/build') return await api.handleEnvironmentBuild(payload as Parameters<typeof api.handleEnvironmentBuild>[0]);

@@ -30,6 +30,17 @@ import {
   type ResearchOutcome,
   type ResearchTaskKind,
 } from '../memory/store';
+import {
+  addEvidence,
+  addFinding,
+  addHypothesis,
+  addQuestion,
+  correctEntity,
+  falsifyHypothesis,
+  resolveQuestion,
+  type BroadcastFn,
+  type FindingType,
+} from './archive';
 
 export const ENV_EXEC_TOOL_NAME = 'env_exec';
 
@@ -344,6 +355,152 @@ export function createResearchLogTool(
         content: [{ type: 'text', text: `研究事件已记录(#${event.id} ${event.taskKind}/${event.outcome})${promoteHint}` }],
         details: { eventId: event.id },
       };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// research_archive — 研究档案（1.4.4：显式研究状态的写通道）
+// ---------------------------------------------------------------------------
+
+/**
+ * 研究档案是「研究 = 过程 + 成果」的落地载体：假设/证据/结论/未决问题
+ * 四类实体 + 证伪/纠正/解决操作。档案随研究持续更新，每轮注回模型上下文
+ * （模型在显式状态上继续工作，不从历史脑补）；GUI 研究面板与它同源，
+ * 人可读、可纠正（纠正是一等操作：人 > 专家知识 > 模型自证伪）。
+ *
+ * 与 research_log 分工：research_log 是**成败信号**（蒸馏弧原料，契约
+ * 不动）；research_archive 是**研究状态**（全程账本，报告派生源）。
+ * 两者并存不混——结案时两者都该有。
+ */
+export const RESEARCH_ARCHIVE_TOOL_NAME = 'research_archive';
+
+export const ARCHIVE_FINDING_TYPES: FindingType[] = ['bug_class', 'primitive', 'constraint', 'fact'];
+
+const archiveParameters = Type.Object({
+  op: Type.String({
+    enum: ['hypothesis', 'evidence', 'finding', 'question', 'falsify', 'resolve', 'correct'],
+    description:
+      '操作:hypothesis 立假设(可验证的断言) / evidence 记证据(实验观察到的结果) / '
+      + 'finding 立结论(证据支撑的断言,挂 V# 引用) / question 立未决问题(还缺什么) / '
+      + 'falsify 证伪自己的假设(必须,排除的路也是成果) / resolve 未决问题已解决 / '
+      + 'correct 纠正自己的结论或证据(错了就改,留痕)',
+  }),
+  text: Type.Optional(Type.String({
+    description: '实体正文(op=hypothesis/evidence/finding/question 必填;一句话说清,全文在流里)',
+  })),
+  findingType: Type.Optional(Type.String({
+    enum: ARCHIVE_FINDING_TYPES,
+    description: `结论类型(op=finding 可选):${ARCHIVE_FINDING_TYPES.join(' / ')}`,
+  })),
+  refs: Type.Optional(Type.String({
+    description: '实体引用,逗号分隔(op 新增类可选):假设/问题挂派生依据,证据挂由哪个假设驱动,结论挂证据(V#N)——正反推论的机械锚',
+  })),
+  anchor: Type.Optional(Type.String({
+    description: '来源标注(op 新增类可选):这条实体的证据在流的哪里(如「第 3 轮 env_exec 输出」「源码第 42 行」)',
+  })),
+  id: Type.Optional(Type.String({ description: '目标实体 id(op=falsify/resolve/correct 必填,如 H#1/V#1/C#1/Q#1)' })),
+  reason: Type.Optional(Type.String({ description: '原因(op=falsify/correct 必填):错在哪、为什么' })),
+  note: Type.Optional(Type.String({ description: '补充说明(op=resolve 可选):问题被什么解决了' })),
+});
+
+export type ArchiveToolParams = Static<typeof archiveParameters>;
+
+export interface ArchiveToolDetails {
+  entityId?: string;
+}
+
+export interface CreateArchiveToolOptions {
+  /** 当前 loop 线(turn 快照线)——档案归属依据。 */
+  getSessionId?: () => string;
+  /** 当前轮 user 消息 id(来源锚,交互线才有;headless 线 undefined)。 */
+  getAnchor?: () => { messageId?: string };
+  /** 数据目录(测试注入临时目录)。 */
+  dir?: string;
+  /** 事件扇出(缺省不广播;生产由 engine 注入 sse.broadcast)。 */
+  broadcastFn?: BroadcastFn;
+}
+
+/** 构造 research_archive 工具(harness 原生能力,无条件注册)。 */
+export function createArchiveTool(
+  options: CreateArchiveToolOptions = {},
+): AgentTool<typeof archiveParameters, ArchiveToolDetails> {
+  const getSessionId = options.getSessionId ?? (() => '');
+  const getAnchor = options.getAnchor ?? ((): { messageId?: string } => ({}));
+  const session = (): string => {
+    const id = getSessionId();
+    if (!id) throw new Error('research_archive: 会话未锚定(无 loop 线)');
+    return id;
+  };
+  const common = () => ({ dir: options.dir, broadcastFn: options.broadcastFn });
+  return {
+    name: RESEARCH_ARCHIVE_TOOL_NAME,
+    label: '更新研究档案',
+    description:
+      '研究档案是本会话的显式研究状态(假设/证据/结论/未决问题),随研究持续更新,每轮注回你的上下文。纪律:'
+      + '①假设驱动实验,立假设后去做实验,evidence 挂假设引用;'
+      + '②结论必须有证据支撑,finding 用 refs 挂 V# 引用——没有证据不下结论;'
+      + '③证伪同样留痕:实验推翻假设/发现结论错了,用 falsify/correct 纠正(排除的路也是成果,防止反复重访死路);'
+      + '④目标不清/缺前提时立 question(未决问题),不要空转猜方向;'
+      + '⑤每条实体一两句话,全文在对话流里,anchor 标注它在流的哪。',
+    parameters: archiveParameters,
+    execute: async (_toolCallId, params): Promise<AgentToolResult<ArchiveToolDetails>> => {
+      const sid = session();
+      const { messageId } = getAnchor();
+      const base = {
+        ...(messageId ? { anchorMessageId: messageId } : {}),
+        ...(params.anchor?.trim() ? { anchorLabel: params.anchor.trim() } : {}),
+        ...(params.refs?.trim() ? { refs: params.refs.trim() } : {}),
+      };
+      switch (params.op) {
+        case 'hypothesis': {
+          if (!params.text?.trim()) throw new Error('research_archive: hypothesis 需要 text');
+          const snap = await addHypothesis(sid, { text: params.text, ...base }, common());
+          const e = snap.entities.at(-1)!;
+          return { content: [{ type: 'text', text: `研究档案已更新:${e.id} 假设已立(待验证)${e.links.length > 0 ? `,依据 ${e.links.join(' ')}` : ''}` }], details: { entityId: e.id } };
+        }
+        case 'evidence': {
+          if (!params.text?.trim()) throw new Error('research_archive: evidence 需要 text');
+          const snap = await addEvidence(sid, { text: params.text, ...base }, common());
+          const e = snap.entities.at(-1)!;
+          return { content: [{ type: 'text', text: `研究档案已更新:${e.id} 证据已记${e.links.length > 0 ? `(由 ${e.links.join(' ')} 驱动)` : ''}` }], details: { entityId: e.id } };
+        }
+        case 'finding': {
+          if (!params.text?.trim()) throw new Error('research_archive: finding 需要 text');
+          const snap = await addFinding(
+            sid,
+            { text: params.text, findingType: params.findingType as FindingType | undefined, ...base },
+            common(),
+          );
+          const e = snap.entities.at(-1)!;
+          return { content: [{ type: 'text', text: `研究档案已更新:${e.id} 结论已立${e.links.length > 0 ? `,证据 ${e.links.join(' ')}` : '（未挂证据——结论需要证据支撑,尽快补）'}` }], details: { entityId: e.id } };
+        }
+        case 'question': {
+          if (!params.text?.trim()) throw new Error('research_archive: question 需要 text');
+          const snap = await addQuestion(sid, { text: params.text, ...base }, common());
+          const e = snap.entities.at(-1)!;
+          return { content: [{ type: 'text', text: `研究档案已更新:${e.id} 未决问题已立——先解决它再推进,不要空转` }], details: { entityId: e.id } };
+        }
+        case 'falsify': {
+          if (!params.id) throw new Error('research_archive: falsify 需要 id(H#N)');
+          if (!params.reason?.trim()) throw new Error('research_archive: falsify 需要 reason(错在哪、为什么)');
+          await falsifyHypothesis(sid, params.id, params.reason, common());
+          return { content: [{ type: 'text', text: `研究档案已更新:${params.id} 已证伪(${params.reason.slice(0, 80)})——排除的路也是成果,已留痕` }], details: { entityId: params.id } };
+        }
+        case 'resolve': {
+          if (!params.id) throw new Error('research_archive: resolve 需要 id(Q#N)');
+          await resolveQuestion(sid, { id: params.id, note: params.note }, common());
+          return { content: [{ type: 'text', text: `研究档案已更新:${params.id} 已解决${params.note ? `(${params.note.slice(0, 80)})` : ''}` }], details: { entityId: params.id } };
+        }
+        case 'correct': {
+          if (!params.id) throw new Error('research_archive: correct 需要 id(C#N/V#N)');
+          if (!params.reason?.trim()) throw new Error('research_archive: correct 需要 reason(错在哪、为什么)');
+          await correctEntity(sid, { id: params.id, by: 'model', reason: params.reason }, common());
+          return { content: [{ type: 'text', text: `研究档案已更新:${params.id} 已纠正(${params.reason.slice(0, 80)})——引用它的条目已标记待复核` }], details: { entityId: params.id } };
+        }
+        default:
+          throw new Error(`research_archive: 未知操作 ${params.op}`);
+      }
     },
   };
 }

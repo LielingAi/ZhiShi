@@ -7,7 +7,7 @@
  *   细节区：thinking 行 + 工具卡行（流式时自动展开，定格后折叠为徽标行）
  */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type React from 'react';
 
 import { buildBadgeSummary, type ThinkingDetail, type TurnBlock } from '../model/blocks';
@@ -112,6 +112,21 @@ export function TurnView({ turn }: { turn: TurnBlock }): React.JSX.Element {
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
   const expanded = userExpanded ?? turn.status === 'running';
 
+  // 1.4.4 研究档案：本块产生的档案实体（anchorMessageId 落在本块 srvIds）
+  // ——流内「→V3」归档标记，点一下在档案里定位（反推论的交互落实）。
+  const archive = useGuiStore((s) => s.archive);
+  const setHighlight = useGuiStore((s) => s.setArchiveHighlight);
+  const setDrawerOpen = useGuiStore((s) => s.setArchiveDrawerOpen);
+  const anchors = useMemo(
+    () =>
+      archive
+        ? archive.entities.filter(
+            (e) => e.anchorMessageId && turn.srvIds.includes(e.anchorMessageId),
+          )
+        : [],
+    [archive, turn.srvIds],
+  );
+
   const hasConclusion = turn.conclusion.length > 0;
   const emptyReply = turn.status === 'complete' && !hasConclusion;
 
@@ -128,6 +143,25 @@ export function TurnView({ turn }: { turn: TurnBlock }): React.JSX.Element {
             {turn.userText || (turn.steering ? '（纠偏）' : '（系统）')}
           </div>
           {turn.steering && <span className="steer-badge" title="运行中发送，已进纠偏队列">纠偏</span>}
+        </div>
+      )}
+
+      {/* 1.4.4 归档标记：本块产出的档案实体（点一下在档案中定位）。 */}
+      {anchors.length > 0 && (
+        <div className="arc-turn-badges">
+          {anchors.map((e) => (
+            <span
+              key={e.id}
+              className="arc-turn-badge"
+              title={`${e.text}（点击在档案中定位）`}
+              onClick={() => {
+                setHighlight(e.id);
+                setDrawerOpen(true);
+              }}
+            >
+              → {e.id}
+            </span>
+          ))}
         </div>
       )}
 

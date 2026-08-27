@@ -79,6 +79,10 @@ import {
   type AutoRunEntry,
   type AutoRunFormView,
 } from '../model/auto-run';
+import {
+  applyArchiveChanged as applyArchiveChangedPayload,
+  type ArchiveSnapshot,
+} from '../model/archive';
 import { reduceSseEvent } from '../model/reducer';
 import { buildSendBody, classifySendResponse, type Ref } from '../model/send';
 import {
@@ -300,6 +304,21 @@ export interface GuiState {
   /** 验收包模态收起标志（新 verdict-requested 重置为 false）。 */
   verdictDismissed: boolean;
 
+  // 1.4.4 研究档案（分屏看板数据面）。单槽设计：同一时刻只有一条活跃线
+  // 在写档案（交互线或 auto-run 线——auto-run 运行中交互被锁,互斥成立）,
+  // archive:changed 整包覆盖即正确;chat:init 重连用 archive/list 重锚。
+  archive: ArchiveSnapshot | null;
+  /** 看板高亮实体（流内「→V3」徽章点进来的定位;null = 无高亮）。 */
+  archiveHighlightId: string | null;
+  /** 跳流目标：档案锚 → 流内 user 消息 id（Stream 消费后即清）。 */
+  archiveJumpTarget: { messageId: string; nonce: number } | null;
+  /** 分屏比例（流宽占比,默认 0.6;拖动更新 + localStorage 持久化）。 */
+  archivePaneRatio: number;
+  /** 左右互换（档案在左、流在右）。 */
+  archiveSwapped: boolean;
+  /** 小窗抽屉开关（≥1280px 分屏恒在,无抽屉语义）。 */
+  archiveDrawerOpen: boolean;
+
   // 1.3.2 ③：主题（深色默认；localStorage 持久化）
   theme: ThemeMode;
 
@@ -403,6 +422,15 @@ export interface GuiState {
   openVerdict(): void;
   dismissAutoRunCard(): void;
   loadAutoRunState(): Promise<void>;
+  // 1.4.4 研究档案（分屏看板）
+  applyArchiveChanged(payload: unknown): void;
+  loadArchive(sessionId?: string): Promise<void>;
+  correctArchiveEntity(id: string, reason: string): Promise<void>;
+  setArchiveHighlight(id: string | null): void;
+  jumpToArchiveAnchor(messageId: string): void;
+  setArchivePaneRatio(ratio: number): void;
+  toggleArchiveSwap(): void;
+  setArchiveDrawerOpen(open: boolean): void;
   // 1.3.2 ①：promote（决策块入专家库）
   submitPromote(entry: Record<string, unknown>): Promise<{ ok: boolean; message: string }>;
   // 1.3.2 ③：主题
@@ -468,6 +496,16 @@ function browserStorage(): Pick<Storage, 'getItem' | 'setItem'> | undefined {
   }
 }
 
+// 1.4.4 研究档案分屏偏好（比例/左右互换;localStorage 持久化,记住用户习惯）。
+const ARCHIVE_RATIO_KEY = 'zhishi.gui.archiveRatio';
+const ARCHIVE_SWAP_KEY = 'zhishi.gui.archiveSwapped';
+
+function readArchiveRatio(): number {
+  const raw = browserStorage()?.getItem(ARCHIVE_RATIO_KEY);
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0.3 && n <= 0.85 ? n : 0.6;
+}
+
 function currentSession(s: GuiState): SessionState {
   return s.sessions[s.currentEnvKey ?? 'host'] ?? emptySession();
 }
@@ -499,6 +537,14 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
 
   autoRun: null,
   verdictDismissed: false,
+
+  // 1.4.4 研究档案（分屏看板）
+  archive: null,
+  archiveHighlightId: null,
+  archiveJumpTarget: null,
+  archivePaneRatio: readArchiveRatio(),
+  archiveSwapped: browserStorage()?.getItem(ARCHIVE_SWAP_KEY) === '1',
+  archiveDrawerOpen: false,
 
   tools: [],
 
@@ -668,6 +714,18 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
           // loop 快照（SSE 不重放 auto-run 事件族，断线期间的阶段/暂停/验收
           // 状态只能从 list 端点补回）。
           if (input.event === 'chat:init') void get().loadAutoRunState();
+          // 1.4.4 研究档案：chat:init 重锚当前线的档案（SSE 不重放 archive
+          // 事件——断线期间的变更由 archive/list 补回）。
+          if (input.event === 'chat:init') void get().loadArchive();
+          // 1.4.4 研究档案：archive:changed 整包快照（单槽设计——同一时刻
+          // 只有一条活跃线写档案,直接覆盖;高亮指针若被纠正清空则复位）。
+          if (input.event === 'archive:changed') {
+            get().applyArchiveChanged(input.payload);
+            const snap = get().archive;
+            if (snap && get().archiveHighlightId && !snap.entities.some((e) => e.id === get().archiveHighlightId)) {
+              set({ archiveHighlightId: null });
+            }
+          }
         }
       } catch (err) {
         if (!ac.signal.aborted) {
@@ -1408,6 +1466,71 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     } catch {
       // 静默——恢复失败保持本地状态（list 端点未接线时不阻塞会话）。
     }
+  },
+
+  // ── 1.4.4 研究档案（分屏看板） ─────────────────────────────────────
+
+  /** archive:changed 整包快照（SSE 事件;单槽设计——活跃线互斥,整包覆盖正确）。 */
+  applyArchiveChanged(payload: unknown) {
+    set({ archive: applyArchiveChangedPayload(payload) });
+  },
+
+  /** archive/list 重锚（chat:init 重连/切环境后;auto-run 面板按 run 线显式传）。 */
+  async loadArchive(sessionId?: string) {
+    const c = client;
+    if (!c) return;
+    try {
+      const res = await api.fetchArchiveList(c, sessionId ? { sessionId } : {});
+      if (res.ok && res.archive) set({ archive: res.archive });
+      else if (res.ok) set({ archive: null });
+      // 失败静默——档案缺失不阻塞会话（零注入语义同侧）。
+    } catch {
+      /* 静默 */
+    }
+  },
+
+  /** 行内纠正（人 > 专家知识 > 模型自证伪;服务端广播 archive:changed 回来）。 */
+  async correctArchiveEntity(id: string, reason: string) {
+    const c = client;
+    if (!c) return;
+    const res = await api.postArchiveCorrect(c, { id, reason });
+    if (!res.ok) {
+      set({ toast: res.error ?? '纠正失败', toastNonce: get().toastNonce + 1 });
+      return;
+    }
+    set({
+      archiveHighlightId: null,
+      toast: `已纠正 ${id}——下游已标待复核`,
+      toastNonce: get().toastNonce + 1,
+    });
+  },
+
+  setArchiveHighlight(id: string | null) {
+    set({ archiveHighlightId: id });
+  },
+
+  /** 档案锚 → 流跳转（Stream 消费 archiveJumpTarget 后即清）。 */
+  jumpToArchiveAnchor(messageId: string) {
+    set({
+      archiveJumpTarget: { messageId, nonce: (get().archiveJumpTarget?.nonce ?? 0) + 1 },
+      archiveDrawerOpen: true, // 小窗抽屉形态：跳流时档案侧保持可用
+    });
+  },
+
+  setArchivePaneRatio(ratio: number) {
+    const clamped = Math.min(0.85, Math.max(0.3, ratio));
+    set({ archivePaneRatio: clamped });
+    browserStorage()?.setItem(ARCHIVE_RATIO_KEY, String(clamped));
+  },
+
+  toggleArchiveSwap() {
+    const next = !get().archiveSwapped;
+    set({ archiveSwapped: next });
+    browserStorage()?.setItem(ARCHIVE_SWAP_KEY, next ? '1' : '0');
+  },
+
+  setArchiveDrawerOpen(open: boolean) {
+    set({ archiveDrawerOpen: open });
   },
 
   // ── 1.3.2 ①：promote（决策块 → expert/add 入专家库） ─────────────

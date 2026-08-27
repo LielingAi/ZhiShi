@@ -20,6 +20,7 @@
 import { join } from 'node:path';
 
 import type { EnvironmentEntry } from '../../shared/config-types';
+import type { ArchiveSnapshot } from '../loop/archive';
 import type { EnvExec } from '../loop/env-exec';
 import type { LoopTranscript } from '../loop/transcript';
 import type { ResearchEvent } from '../memory/store';
@@ -56,6 +57,11 @@ export interface ExportReportDeps {
   /** 当前环境线的 loopSessionId（env-sessions 映射；无映射 → undefined）。 */
   findLoopSessionId(workspace: string): string | undefined;
   loadTranscript(loopSessionId: string): LoopTranscript | null;
+  /**
+   * 1.4.4 研究档案装载（按 loop 线；缺省 undefined = 不注入档案投影，
+   * 报告零变化——向后兼容）。读侧容错：IO 失败按 undefined 降级。
+   */
+  loadArchive?: (loopSessionId: string) => ArchiveSnapshot | undefined;
   /** 一次边界批准（host-write）；objects 已列全，拒绝/超时 → false。 */
   requestApproval(objects: string[]): Promise<boolean>;
   /** 一次性叙述 loop（无工具、独立 session）；不可用/失败 → { error }。 */
@@ -117,6 +123,16 @@ export async function exportReport(
     return { success: false, error: NO_RECORDS_ERROR };
   }
 
+  // 1.4.4 研究档案交付投影：按 loop 线装载（读侧容错，失败按无档案降级）。
+  let archive: ArchiveSnapshot | undefined;
+  if (loopSessionId && deps.loadArchive) {
+    try {
+      archive = deps.loadArchive(loopSessionId);
+    } catch (err) {
+      console.warn('[report] 研究档案装载失败,报告按无档案投影:', err instanceof Error ? err.message : String(err));
+    }
+  }
+
   let skeleton = buildReportSkeleton({
     workspace: input.workspace,
     envId: input.env.envId,
@@ -124,6 +140,7 @@ export async function exportReport(
     transcript,
     now: now(),
     ...(deps.lookupExpertEntry ? { lookupExpertEntry: deps.lookupExpertEntry } : {}),
+    ...(archive && archive.entities.length > 0 ? { archive } : {}),
   });
   skeleton = truncateSkeleton(skeleton);
 

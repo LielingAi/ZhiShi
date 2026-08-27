@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import type { ArchiveSnapshot } from '../loop/archive';
 import type { LoopTranscript } from '../loop/transcript';
 import type { ResearchEvent } from '../memory/store';
 import {
@@ -127,6 +128,29 @@ describe('buildReportSkeleton', () => {
     const noBug = [ev({ id: 1, ts: 100, taskKind: 'pentest', outcome: 'fail', summary: '没打下来' })];
     const s2 = buildReportSkeleton({ workspace: WS, envId: 'host', events: noBug, transcript: tr, now: NOW });
     expect(s2.sections.find((sec) => sec.key === 'fix')!.facts[0]).toContain('未记录 bug_class');
+  });
+
+  it('1.4.4 研究档案投影:结论带证据锚 + 证伪独立成节;无档案零变化', () => {
+    const archive: ArchiveSnapshot = {
+      sessionId: 's-1',
+      updatedAt: 't',
+      entities: [
+        { id: 'V#1', kind: 'evidence', text: 'SIGSEGV at 0x41414141', status: 'valid', links: ['H#1'], createdAt: 't', updatedAt: 't' },
+        { id: 'C#1', kind: 'finding', text: '栈溢出可控制 RIP', status: 'corrected', links: ['V#1'], findingType: 'primitive', createdAt: 't', updatedAt: 't' },
+      ],
+      corrections: [{ id: 'R#1', targetId: 'C#1', by: 'model', reason: '远程入口截断 64 字节', createdAt: 't' }],
+    };
+    const s = buildReportSkeleton({ workspace: WS, envId: 'pwn-vm', events, transcript: tr, now: NOW, archive });
+    expect(s.archiveMarkdown).toContain('## 研究结论');
+    expect(s.archiveMarkdown).toContain('—— 证据：V#1');
+    expect(s.archiveMarkdown).toContain('## 证伪与纠正');
+    const md = renderReportMarkdown(s);
+    expect(md).toContain('## 研究结论');
+    expect(md).toContain('（已纠正）');
+    // 无档案 → archiveMarkdown 不存在,报告零变化。
+    const bare = buildReportSkeleton({ workspace: WS, envId: 'pwn-vm', events, transcript: tr, now: NOW });
+    expect(bare.archiveMarkdown).toBeUndefined();
+    expect(renderReportMarkdown(bare)).not.toContain('## 研究结论');
   });
 });
 
