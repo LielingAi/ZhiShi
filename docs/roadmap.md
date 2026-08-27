@@ -22,14 +22,22 @@
 
 ---
 
-## 1.4.5 —— 质量审计：代码质量 + 文档/roadmap 歧义点（进行中）
+## 1.4.5 —— 质量审计：代码质量 + 文档/roadmap 歧义点（已完成）
 
 **缘起（2026-08-27 用户拍板）**：1.4.1-1.4.4 连续四个版本的增量（auto loop、域归位、研究档案）之后，按 1.3.10 审计方法过一版：代码级证据 + 实机驱动，产出台账分级（真 bug / 技术债 / 低危 / 记录在案），确认的逐条修复带回归测试；文档与 roadmap 的歧义点（过期口径、自相矛盾、失实描述）逐条修正。审计重点：1.4.4 新增代码（archive 全链 + GUI 分屏）+ 1.4.3 域归位 + 文档层。
 
-- [ ] **代码质量审计（服务端）**：1.4.4 新增面（archive.ts 实体/纠正/编号/渲染、research_archive 工具、注入段、admin 端点、报告投影）+ 1.4.3 域归位（resolveSessionDomain/能力清单）——逐条带证据（文件+行号）+ 严重度。
-- [ ] **代码质量审计（GUI）**：研究档案全链（model/archive、store 档案 slice、分屏布局、ResearchPanel、Stream 锚跳、TurnView 徽章、api 封装）——状态卫生、闭包陈旧、空态/异常兜底、死代码。
-- [ ] **文档歧义点普查**：docs/roadmap.md（当前线口径/落地记录/不做记录一致性）、docs/user-guide.md（1.4.x 新功能覆盖：auto loop/研究档案/分屏）、CLAUDE.md（命令与红线失实）、README（口径一致性）、docs/spec/design-spec.md 等历史稿的标注完整性。
-- [ ] **修复 + 回归**：确认的真 bug 修复带单测；文档歧义逐条改准；全量测试 + typecheck + eslint + 构建。
+- [x] **代码质量审计（服务端）**：1.4.4 新增面（archive.ts 实体/纠正/编号/渲染、research_archive 工具、注入段、admin 端点、报告投影）+ 1.4.3 域归位（resolveSessionDomain/能力清单）——逐条带证据（文件+行号）+ 严重度。
+- [x] **代码质量审计（GUI）**：研究档案全链（model/archive、store 档案 slice、分屏布局、ResearchPanel、Stream 锚跳、TurnView 徽章、api 封装）——状态卫生、闭包陈旧、空态/异常兜底、死代码。
+- [x] **文档歧义点普查**：docs/roadmap.md（当前线口径/落地记录/不做记录一致性）、docs/user-guide.md（1.4.x 新功能覆盖：auto loop/研究档案/分屏）、CLAUDE.md（命令与红线失实）、README（口径一致性）、docs/spec/design-spec.md 等历史稿的标注完整性。
+- [x] **修复 + 回归**：确认的真 bug 修复带单测；文档歧义逐条改准；全量测试 + typecheck + eslint + 构建。
+
+> 实际落地（2026-08-27）。**台账·真 bug（修，带回归测试）**：①`archive.ts::mutateArchive` 编号计数器混扫——R# 纠正条目污染 H#/V#/C#/Q# 起始序数（id 不冲突但无意义跳号，例：H#1 + R#2 后新假设变 H#3）→ 实体四类与纠正分扫（回归测试：R#1/R#2 后新假设恰为 H#2）；②`CORRECTED_STATUS` 缺 question 映射——人纠正未决问题时状态不翻转（保持 open，面板同时出现「打开」+「人纠正」徽章自相矛盾）→ 补 `question: 'abandoned'`（回归测试：人纠正 Q#1 → abandoned）；③交互 turn 的 `toolNames` 清单漏 `research_archive`（invoke 线有、交互线无，两线不一致）→ 补。
+> **台账·低危（修）**：④admin `archive/correct` 空 id/空 reason 的错误文案（落进「实体  不存在」丑消息）→ 前置校验；⑤GUI `EMPTY_ARCHIVE` / `ENTITY_KIND_LABEL` 死导出删除。
+> **台账·记录在案（不修）**：resolveQuestion 的 note 混入 links 字段（渲染侧均过滤，设计异味）；切环境瞬间档案单槽短暂展示旧线档案（chat:init 重锚即自愈）；rewind/fork 后 anchorMessageId 失效 → 跳流 no-op（不炸）；报告骨架截断预算不计 archiveMarkdown（实体量级极大时可超 48K，记录在案）；interactive/invoke 并发时锚点字段竞争（auto-run 锁输入实践不可达，anchorLabel 兜底）。
+> **文档歧义修正**：user-guide 工具口径自相矛盾（目录写「四个工具」、标题写「七个工具」、表格 7 行）→ 统一「十个工具」并补 research_archive/request_decision/declare_completion；补「研究档案分屏看板 / auto loop 观察卡」读屏条目 + 「auto loop（1.4.1）」「研究档案（1.4.4）」两节 + 报告从档案派生说明。**CLAUDE.md 大修**（TUI 时代口径全面失实，AGENTS.md 的主开发文档指向它）：产品形态「无窗口/全屏 TUI」→「GUI 主窗口 + CLI」；桌面宿主行 GUI 窗口化 + tui_launcher 已删；后端/运行时 Node v24→≥22、「多实例 Sidecar」→单例；项目布局补 src/gui 行 + frontendDist 指向 src/gui/dist + index.ts 7.7k→3.8k；文档索引 TUI 规范改注退役；模型/MCP 的 TUI 命令行改 GUI 设置页；TUI 正门/鼠标捕获随删；tauri:dev 描述修正；转型节加追记；求助/反馈的 Claude Code 链接改本仓 issues。
+> **验证**：新增 2 回归单测；全量 179 文件 2345 测试绿 + typecheck + eslint + 双构建绿。
+
+> 不做（本版）：记录在案的五条低危（不强行处理）、CLAUDE.md 的 L1 红线总表重写（红线仍有效，本次只修失实描述）。
 
 > 验收：全量测试 + 台账闭环（每条有定性：修复 / 记录在案）。
 > 方法纪律：与 1.3.10 同——修 bug 必带回归测试；带证据（文件+行号）；记录在案的另行立项，不在审计版强做。

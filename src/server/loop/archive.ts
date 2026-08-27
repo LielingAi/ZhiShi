@@ -200,12 +200,18 @@ async function mutateArchive(
       corrections: existing.corrections,
     };
     // counters 不随实体区走——从现有 id 反推最大序数（缺失文件时零起步）。
-    const maxSeq = (prefix: string): number => {
+    // 实体四类与纠正各扫各的（1.4.5 修：混扫会让 R# 污染 H#/V#/C#/Q# 的
+    // 起始序数——id 不冲突但无意义跳号）。
+    const maxEntitySeq = (prefix: string): number => {
       let m = 0;
       for (const e of existing.entities) {
         const hit = new RegExp(`^${prefix}#(\\d+)$`).exec(e.id);
         if (hit) m = Math.max(m, Number(hit[1]));
       }
+      return m;
+    };
+    const maxCorrectionSeq = (): number => {
+      let m = 0;
       for (const c of existing.corrections) {
         const hit = /^R#(\d+)$/.exec(c.id);
         if (hit) m = Math.max(m, Number(hit[1]));
@@ -213,11 +219,11 @@ async function mutateArchive(
       return m;
     };
     draft.meta.counters = {
-      H: maxSeq('H'),
-      V: maxSeq('V'),
-      C: maxSeq('C'),
-      Q: maxSeq('Q'),
-      R: maxSeq('R'),
+      H: maxEntitySeq('H'),
+      V: maxEntitySeq('V'),
+      C: maxEntitySeq('C'),
+      Q: maxEntitySeq('Q'),
+      R: maxCorrectionSeq(),
     };
     next = fn(draft);
     const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
@@ -242,11 +248,12 @@ function nextCorrectionId(counters: Record<string, number>): string {
   return `R#${counters.R}`;
 }
 
-/** 实体被纠正时的状态翻转表（问题有独立 resolve 路径，不走纠正）。 */
+/** 实体被纠正时的状态翻转表（问题的推进走 resolve；人纠正问题 = 放弃）。 */
 const CORRECTED_STATUS: Partial<Record<ArchiveEntityKind, string>> = {
   hypothesis: 'falsified',
   evidence: 'overturned',
   finding: 'corrected',
+  question: 'abandoned',
 };
 
 /** 解析逗号分隔的实体 id 列表（"Q#1,C#2" → ["Q#1","C#2"]；非法 token 抛错）。 */

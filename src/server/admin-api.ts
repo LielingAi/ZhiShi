@@ -2103,10 +2103,14 @@ export async function handleArchiveCorrect(payload: {
     ? payload.sessionId.trim()
     : getPiSessionId();
   if (!sessionId) return { success: false, error: 'archive/correct: 会话未锚定（先开/接会话）' };
+  const id = String(payload?.id ?? '').trim();
+  if (!id) return { success: false, error: 'archive/correct: 需要 id（目标实体，如 C#1）' };
+  const reason = String(payload?.reason ?? '').trim();
+  if (!reason) return { success: false, error: 'archive/correct: 需要 reason（错在哪、为什么）' };
   try {
     const archive = await correctEntity(
       sessionId,
-      { id: String(payload?.id ?? '').trim(), by: 'human', reason: String(payload?.reason ?? '') },
+      { id, by: 'human', reason },
       { broadcastFn: broadcast },
     );
     return { success: true, data: { archive } };

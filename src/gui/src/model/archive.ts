@@ -45,8 +45,6 @@ export interface ArchiveSnapshot {
   updatedAt: string;
 }
 
-export const EMPTY_ARCHIVE: ArchiveSnapshot = { sessionId: '', entities: [], corrections: [], updatedAt: '' };
-
 // ---------------------------------------------------------------------------
 // 事件归约（archive:changed → 整包快照）
 // ---------------------------------------------------------------------------
@@ -158,14 +156,6 @@ export const ENTITY_STATUS_LABEL: Record<string, string> = {
   open: '打开',
   resolved: '已解决',
   abandoned: '放弃',
-};
-
-/** 实体 id 前缀 → 中文类名（保留给未来分组头/徽章用；当前面板以 id 前缀表意）。 */
-export const ENTITY_KIND_LABEL: Record<ArchiveEntityKind, string> = {
-  hypothesis: '假设',
-  evidence: '证据',
-  finding: '结论',
-  question: '问题',
 };
 
 /** 结论类型 → 中文标签。 */

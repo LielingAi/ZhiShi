@@ -812,6 +812,8 @@ class ChatEngine {
     const toolNames = [
       ...(env ? [ENV_EXEC_TOOL_NAME, ENV_BG_TOOL_NAME, DELEGATE_TASK_TOOL_NAME] : []),
       RESEARCH_LOG_TOOL_NAME,
+      // 1.4.4 研究档案：harness 原生写通道，无条件注册（与 invoke 线一致）。
+      RESEARCH_ARCHIVE_TOOL_NAME,
       // intel_search 同 research_log：宿主侧 harness 原生能力，无条件注册。
       INTEL_SEARCH_TOOL_NAME,
       // 1.2.1 专家知识层：expert_search（决策级检索）/ expert_draft（起草待人审），
