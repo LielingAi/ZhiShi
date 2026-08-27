@@ -18,6 +18,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.6] - 2026-08-28
+
+> **Harness 复杂任务优化**：相位体系修复、档案举证强度（结论必须有证据支撑）、auto loop 实证修复族（预算计数、幽灵终审、孤儿终审、观察卡字段、左屏过程观察）。golang 轨迹取证 + cJSON 四轮 dogfood 实证驱动。
+
+### 修复
+- 相位体系：信号词表扩域（白盒/二进制侦察与执行信号），evaluation 去裸「验证」——recon 在真实研究流中正确出现（golang 取证：此前全程 0 段、环境准备误判 evaluation×4）
+- 档案举证强度：`research_archive` 的 finding 强制挂已存在 V# 证据实体（无证据拒绝 + 引导先记证据）；证伪/纠错必须走 falsify/correct（不许折进 finding 文本冒充成立）；档案纪律补进 auto-run 驱动文本（security kernel 不注入 auto-run 场景，纪律采用率曾随采样漂移）
+- auto loop：预算计数 off-by-one（声明轮计入 spent）；观察卡字段错位（turn/budget.spent vs turnCount/used）；锚点语义统一（env_exec #N / 命令名 / 文件:行号，不再用「轮」）
+- 幽灵终审两族：verdict 作答即清 verdictPackage（不再反复弹已作答窗）；孤儿 awaiting-verdict 记录盘上兜底结算（sidecar 重启后 pass/fail 可终审，弹窗只在 awaiting-verdict 态出）
+- research_log 引用口径统一 E#N（与档案实体 H#/V#/C#/Q# 区分，消编号混淆）
+- sqlite ABI 启动探测（系统 node 起 sidecar 时 research_log 全挂——启动即显式报错并指明内置 Node）
+
+### 新增
+- auto loop 左屏过程观察模式：run 活跃时左屏渲染 run 的轨迹（5s 轮询只读回放，「左过程右成果」分屏语义在 auto-run 下成立）
+- 历史回看研究档案只读区（上档案下轨迹）+ auto-run 记录合成行进历史清单
+
 ## [1.4.5] - 2026-08-27
 
 > **质量审计**：代码质量 + 文档/roadmap 歧义点普查（1.3.10 方法复用）。
