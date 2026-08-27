@@ -7,7 +7,7 @@
   </picture>
 </p>
 
-**v1.4.0 · 安全研究领域的 agent harness：环境融合、原生工具、原生代码。**
+**v1.4.4 · 安全研究领域的 agent harness：环境融合、原生工具、原生代码、研究档案。**
 
 [![Version](https://img.shields.io/github/v/tag/LielingAi/ZhiShi)](https://github.com/LielingAi/ZhiShi/tags)
 [![License](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](LICENSE)
@@ -98,6 +98,8 @@ ZhiShi 是给安全研究员的工作台：二进制利用、渗透测试、白�
 - 块化会话流（输入=块首、结论聚合亮顶、thought/工具卡折叠、抽屉详情）+ 运行中输入即纠偏
 - 环境准入闸（已停止不可进入，先启动）+ 三态判定统一
 - 决策面板（模型方向分歧提请人拍板 + 专家依据区 + 决策块落流可追溯）
+- **研究档案分屏看板**（左流右档案 6/4 可拖可互换——假设/证据/结论/未决问题随研究实时生长，行内纠正，档案锚↔流双向互跳；小窗退单屏 + 抽屉徽章）
+- **auto loop agent**（目标式研究循环：启动表单锁定目标/预算/验收条件，运行期只观察，暂停点介入，验收包人终审，达成自动出报告）
 - 历史面板（会话分组/搜索/只读回看/载回续跑）+ 会话管理（重命名/置顶/归档/删除）
 - attach 真终端（xterm + WS pty：docker exec -it / ssh -tt）+ 一次性命令执行双模式
 - `/` 命令面板、`@` 补全（环境/文件/子代理/工具）、`Ctrl+R` 历史、Esc 链、深浅主题
@@ -109,16 +111,18 @@ ZhiShi 是给安全研究员的工作台：二进制利用、渗透测试、白�
 
 | 面 | 内容 |
 |---|---|
-| 工具 | `env_exec`（一次性）· `env_bg`（后台长驻：start/poll/log/kill/list）· `delegate_task`（子任务，按名派发专用 agent）· `research_log`（研究留痕） |
+| 工具 | `env_exec`（一次性）· `env_bg`（后台长驻：start/poll/log/kill/list）· `delegate_task`（子任务，按名派发专用 agent）· `research_log`（研究留痕）· `research_archive`（研究档案：假设/证据/结论/未决问题 + 证伪/纠正）· `request_decision`（方向分歧提请人拍板）· `declare_completion`（auto loop 达成声明） |
 | 边界 | 规则硬闸（工具白名单 / 环境就绪 / 凭据不泄进环境）+ 输出净化 + 越界问人通道 |
 | 上下文 | 安全定制压缩：死路（非零 exit）与突破口（flag/CVE）永不裁 |
 | 记忆闭环 | research_events → 按研究域蒸馏（经验不跨域，置信度 0.xx 分级）→ 逐 turn 反喂系统提示 |
+| 研究档案 | 研究 = 过程 + 成果：实体三要素（来源锚 + 状态 + 链接）全程举证、可推论/反推论/可纠正；每轮注回模型上下文；报告从同一档案派生（成果章节带证据锚、证伪与纠正独立成节） |
+| auto loop | 目标式研究循环：预算三选一（轮次/token/时间）、暂停点两层（模型提请 + harness 空转/反复失败检测）、验收包（条件 × 证据）人终审、达成自动出报告 |
 | 认知内核 | 第一性原理五层认知（深度理解 → 对抗共情 → 溯因推理 → 认识论谦卑 → 远距类比）+ 置信度校准锚点（< 0.60 不报告）+ 硬排除清单 |
 | 专家知识 | `expert.db`——权威知识层（思路/技术/SOP，人审定才进库）：卡住了 LLM 无把握时的最后落脚点，`expert_search` 检索；留痕可挂 `expert_refs` 追溯「决策依据 E#N」；现成 JSON/YAML 直接 `zhishi expert import` 批量入库（见导入指南） |
 | 研究报告 | `/export` 一键出报告目录（report.md + evidence/ PoC 本体）：骨架事实钉死 + LLM 填肉、按域模板、敏感项清单知情、显式脱敏可选 |
 | 能力包 | skills 提示词注入（binary-exploit / vuln-triage / native-code-loop / range-ops / pentest / whitebox-audit / ai-security + 用户库 `~/.zhishi/skills/`） |
 | 子代理 | bundled-agents：fuzz-runner / crash-triager / vuln-hunter / hypothesis-tester / critic；`/tasks` 面板看工作现场与完整 transcript |
-| 域包 | `bundled-domains/<域>/domain.json` —— 环境类型 / skill / 子代理 / 信号 / 验收一键声明，`zhishi domain check` 就绪自检 |
+| 域包 | `bundled-domains/<域>/domain.json` —— 域 = 研究知识维度（skills / 子代理 / 研究记忆注入），只由任务内容判定（配方默认 + 内容信号动态修正）；`zhishi domain check` 就绪自检 |
 | 模型 | 8 家内置供应商端点（kimi / deepseek / openai / moonshot / 通义 / 智谱 / 硅基流动…），`zhishi model set-key <id> <key>` 后自动拉模型列表，GUI 状态栏切换（只显示已配置供应商） |
 
 ## 快速开始
@@ -209,7 +213,7 @@ flowchart LR
     L -->|env_exec / env_bg| E1[Docker 环境]
     L -->|env_exec / env_bg| E2[VM 环境<br/>VMware / Hyper-V / VirtualBox]
     L -->|env_exec / env_bg| E3[SSH 靶机]
-    L --> DB[(research_events<br/>记忆蒸馏)]
+    L --> DB[(research_events<br/>记忆蒸馏 + 研究档案)]
     S --> CFG[(config.json · env-selection.json · loop-sessions)]
 ```
 
@@ -226,17 +230,17 @@ flowchart LR
 
 | 项 | 状态 |
 |---|---|
-| 单元测试 | 1900+ 全绿；`tsc --noEmit` / `eslint` 零错 / depcruise 架构边界强制 |
+| 单元测试 | 2300+ 全绿；`tsc --noEmit` / `eslint` 零错 / depcruise 架构边界强制 |
 | 活体回归 | `npm run smoke` 一键（真端点 + 真 VM，m1-m4 全链路）；产物级 smoke（打包产物跑关键路径） |
 | 活体 dogfood | ret2win 全程打通；1.1.8 三域实战验证（whitebox 埋雷审计全中 / pentest 全链拿 flag / ai-security 注入探针全拒），详见 `docs/design/` |
-| GUI 全链路真机 | 选环境 / 流式 / 中断 / 回退 / 快照回滚 / attach 终端 / 决策面板 / 历史面板 / 越界模态 / 后台任务全部通过（1.3.0-1.3.8 实机走查） |
+| GUI 全链路真机 | 选环境 / 流式 / 中断 / 回退 / 快照回滚 / attach 终端 / 决策面板 / 历史面板 / 越界模态 / 后台任务全部通过（1.3.0-1.3.8 实机走查）；auto loop（1.4.1）与研究档案分屏看板（1.4.4）实机走查通过 |
 | 域内容件 | 四域齐备（binary / pentest / whitebox / ai-security）并经实战验证 |
 
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
-| `docs/roadmap.md` | 版本任务池（当前线：1.3.x GUI 主线——1.3.9 TUI 退役执行） |
+| `docs/roadmap.md` | 版本任务池（当前线：1.4.x——1.4.4 研究档案已发版） |
 | `docs/user-guide.md` | 使用指南（安装、选环境、配模型、GUI 操作、常见问题） |
 | `docs/expert-import-guide.md` | 专家知识导入指南（命令/字段规范/JSON+YAML 格式，附可导入的 `expert-import.demo.yaml`） |
 | `docs/design/` | 各版本设计与分析稿（1.1.6–1.2.7、distill-eval、1.3.4 TUI 退役评估） |
