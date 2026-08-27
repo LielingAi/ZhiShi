@@ -1,6 +1,6 @@
 # Roadmap
 
-> 版本任务池。1.0.0 = 安全研究员版定型；1.1.x = 能力补齐 + 引擎深化（已完成）；1.2.x = 研究交付 + 校准协作主线 + 做深不做广（已完成）；1.3.x = GUI 主线（会话/决策/历史 + 环境业务逻辑 + TUI 退役 + 质量审计，已完成，1.4.0 发版）；**当前线：1.4.x（GUI 正式版后——auto loop agent 已落地（1.4.1，设计 `docs/design/auto-loop-design.md`）；1.4.3 域模型归位已发版；1.4.4 研究档案已发版；1.4.5 质量审计（代码质量 + 文档/roadmap 歧义点）进行中。记录在案：引擎多实例 2.0 前置、god file 拆分。已砍：/bg 转后台（2026-08-26 决策——auto loop + env_bg 全覆盖其价值）、决策面板澄清提问（2026-08-27 决策——澄清是输入不是决策，普通对话打字即交互、auto loop 自主含义不允许向人要信息））**。
+> 版本任务池。1.0.0 = 安全研究员版定型；1.1.x = 能力补齐 + 引擎深化（已完成）；1.2.x = 研究交付 + 校准协作主线 + 做深不做广（已完成）；1.3.x = GUI 主线（会话/决策/历史 + 环境业务逻辑 + TUI 退役 + 质量审计，已完成，1.4.0 发版）；**当前线：1.4.x（GUI 正式版后——auto loop agent 已落地（1.4.1，设计 `docs/design/auto-loop-design.md`）；1.4.3 域模型归位已发版；1.4.4 研究档案已发版；1.4.5 质量审计（代码质量 + 文档/roadmap 歧义点）进行中。记录在案：god file 拆分、引擎单例残余耦合（纯技术债，无 2.0 绑定——「引擎多实例」已随 2.0 范围砍单，2026-08-27 决策）、Harness 复杂任务优化（待立项讨论）、研究档案问题纠正语义裁决（挂账，见 1.4.5）。已砍：/bg 转后台（2026-08-26 决策——auto loop + env_bg 全覆盖其价值）、决策面板澄清提问（2026-08-27 决策——澄清是输入不是决策，普通对话打字即交互、auto loop 自主含义不允许向人要信息）、引擎多实例（2026-08-27 决策——与 TUI 多线同屏、跨机协同调度一起，2.0 范围砍单））**。
 > 状态约定：`[ ]` 未开始 · `[~]` 进行中 · `[x]` 已完成。任务细节不写在这里——细节进对应设计文档。
 
 ---
@@ -93,7 +93,7 @@
 
 > 实际落地（2026-08-26）：服务端——`loop/auto-run.ts`（runner 1387 行：AutoRunRecord 存储 withFileLock+tmp+rename、循环复用 invokePiSession（新增 `{type:'auto-run'}` 交互场景，headless 同族）、暂停点判定纯函数（空转=连续 6 轮无新增有效研究记录且阶段未推进，阶段复用 1.2.7 segmentContext 末段相位；反复失败=同类工具 isError 连击≥3；预算=轮次/time/tokens 三档，tokens 用 estimateMessageTokens 启发式）、暂停恢复混合机制（stop/budget/verdict 事件驱动 wake；决策注入走轮询 pendingDecisions+decision marker，上限 10min 兜底）、预算耗尽 checkpoint（快照 best-effort）→ 提请续命（auto-run/budget，仅 paused+budget 态））+ `declare_completion` 工具（达成声明注册表按 loop 线分桶 take 即消费）+ 5 端点（start/stop/budget/verdict/list，start 校验 env 存在+criteria≥1+limit>0，同 workspace 单活跃 run；verdict 仅 awaiting-verdict 态，pass=自动出报告复用 exportReport，fail/continue=注回线续跑）+ SSE 7 事件（crosscheck 双向对账过）。GUI——启动表单（任务名/环境**锁定当前环境不可选**（走查追加拍板）/目标/预算三选一/验收条件多条）+ 观察卡（阶段/轮次/预算余量进度条/最近结论行/Esc 提示；budget 暂停内嵌续命输入；stall/反复失败提示决策面板作答）+ 运行期锁定（输入区禁用/切环境 toast 拦截/Esc 二次确认终止）+ 验收包模态（条件×证据预检+三按钮）+ reducer 7 事件归约 + Esc 链 verdict/autoRunActive 层。新增 69 单测（server 30 + gui 39）；全量 177 文件 2308 测试绿 + typecheck + eslint + 双构建绿；实机走查通过（用户确认）。交叉收口：GUI 路由对齐 admin 通道（adminPost auto-run/*）、stall/反复失败恢复走 harness 提请的决策面板（verdict continue 仅限 awaiting-verdict）、表单快照/报告开关移除（服务端无条件执行）、vmware rm 测试改不存在的 vmx 路径去环境依赖。
 
-> 不做（本版）：范围边界（后置）、/bg 转后台（已砍）、引擎多实例（2.0 前置，另行立项）、god file 拆分（记录在案）。
+> 不做（本版）：范围边界（后置）、/bg 转后台（已砍）、引擎单例残余耦合（纯技术债，无 2.0 绑定——「引擎多实例」2026-08-27 随 2.0 范围砍单，另行立项）、god file 拆分（记录在案）。
 > 验收：全量测试 + 实机走查（dogfood 一个真实目标跑通：启动表单 → 阶段推进 → 暂停点 → 验收终审）。
 
 ---
