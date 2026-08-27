@@ -57,6 +57,8 @@
       "../bundled-skills": "bundled-skills",
       "../bundled-environments": "bundled-environments",
       "../bundled-agents": "bundled-agents",
+      "../bundled-domains": "bundled-domains",
+      "../bundled-expert": "bundled-expert",
       "../src-tauri/resources/cli": "cli",
       "../src-tauri/nsis/install-cli.ps1": "nsis/install-cli.ps1",
       "../src-tauri/nsis/uninstall-cli.ps1": "nsis/uninstall-cli.ps1",
