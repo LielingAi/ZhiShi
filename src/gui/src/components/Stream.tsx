@@ -34,6 +34,8 @@ function ItemView({ item }: { item: StreamItem }): React.JSX.Element {
 
 export function Stream(): React.JSX.Element {
   const items = useGuiStore((s) => selectCurrentSession(s).items);
+  // 1.4.4 研究档案：档案锚 → 流跳转（一次性信号,按 nonce 消费）。
+  const jumpTarget = useGuiStore((s) => s.archiveJumpTarget);
   const parentRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
 
@@ -44,6 +46,18 @@ export function Stream(): React.JSX.Element {
     overscan: 8,
     getItemKey: (i) => items[i].id,
   });
+
+  // 档案锚跳流：找包含目标 user 消息 id 的 turn，滚到块首。
+  useEffect(() => {
+    if (!jumpTarget) return;
+    const idx = items.findIndex(
+      (i) => i.kind === 'turn' && i.srvIds.includes(jumpTarget.messageId),
+    );
+    if (idx >= 0) {
+      stickRef.current = false;
+      virtualizer.scrollToIndex(idx, { align: 'start' });
+    }
+  }, [jumpTarget?.nonce]);
 
   const prevCount = useRef(items.length);
   useEffect(() => {

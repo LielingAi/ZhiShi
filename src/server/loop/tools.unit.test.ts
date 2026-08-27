@@ -5,7 +5,7 @@
  * 执行，不是宿主机」、execute 经注入 exec 走 env-exec 通道、结果文本格式、
  * 环境未就绪时 execute 按契约 throw（pi loop 转成 isError tool result）。
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,11 +14,13 @@ import type { EnvironmentEntry } from '../../shared/config-types';
 import type { EnvExec } from './env-exec';
 import {
   createEnvBgTool,
+  createArchiveTool,
   createEnvExecTool,
   createResearchLogTool,
   formatEnvExecResult,
   ENV_EXEC_TOOL_NAME,
 } from './tools';
+import { correctEntity, loadArchive } from './archive';
 import { listResearchEvents, resetMemoryStoreForTest } from '../memory/store';
 import { insertEntry, openExpertStore, resetExpertStoreForTest } from '../expert/store';
 import type { ValidatedExpertEntry } from '../expert/validate';
@@ -353,5 +355,72 @@ describe('createResearchLogTool', () => {
       resetMemoryStoreForTest();
       rmSync(baseDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('createArchiveTool（1.4.4 research_archive）', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'zhishi-archive-tool-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function makeTool(broadcastFn = vi.fn()) {
+    return createArchiveTool({
+      getSessionId: () => 's-1',
+      getAnchor: () => ({ messageId: '42' }),
+      dir,
+      broadcastFn,
+    });
+  }
+
+  it('全操作链路:立假设→记证据→立结论→证伪→纠正→广播 archive:changed', async () => {
+    const fn = vi.fn();
+    const tool = makeTool(fn);
+    const h = await tool.execute('t1', { op: 'hypothesis', text: '输入长度无校验', refs: 'Q#1' });
+    expect(h.details?.entityId).toBe('H#1');
+    const v = await tool.execute('t2', { op: 'evidence', text: 'SIGSEGV 崩溃', refs: 'H#1', anchor: '第 2 轮 env_exec' });
+    expect(v.details?.entityId).toBe('V#1');
+    const c = await tool.execute('t3', { op: 'finding', text: '栈溢出可控制 RIP', findingType: 'primitive', refs: 'V#1' });
+    expect(c.details?.entityId).toBe('C#1');
+    await tool.execute('t4', { op: 'falsify', id: 'H#1', reason: '远程不可达' });
+    await tool.execute('t5', { op: 'correct', id: 'C#1', reason: '读错了' });
+
+    const snap = loadArchive('s-1', { dir });
+    expect(snap.entities.map((e) => e.id)).toEqual(['H#1', 'V#1', 'C#1']);
+    expect(snap.entities[0].status).toBe('falsified');
+    expect(snap.entities[1].anchorMessageId).toBe('42'); // 来源锚 = turn 快照
+    expect(snap.entities[1].anchorLabel).toBe('第 2 轮 env_exec');
+    expect(snap.entities[2].status).toBe('corrected');
+    expect(snap.corrections.map((c) => c.id)).toEqual(['R#1', 'R#2']);
+    expect(fn).toHaveBeenCalledTimes(5);
+    expect((fn.mock.calls[0] as [string, unknown])[0]).toBe('archive:changed');
+  });
+
+  it('question/resolve:未决问题立→解决(open→resolved)', async () => {
+    const tool = makeTool();
+    await tool.execute('t1', { op: 'question', text: '远程入口限制是什么' });
+    await tool.execute('t2', { op: 'resolve', id: 'Q#1', note: '源码第 42 行确认' });
+    const snap = loadArchive('s-1', { dir });
+    expect(snap.entities[0].status).toBe('resolved');
+    expect(snap.entities[0].links).toContain('note:源码第 42 行确认');
+  });
+
+  it('参数校验:缺 text/id/reason 抛错,错误文本可读', async () => {
+    const tool = makeTool();
+    await expect(tool.execute('t1', { op: 'hypothesis' })).rejects.toThrow(/text/);
+    await expect(tool.execute('t1', { op: 'falsify' })).rejects.toThrow(/id/);
+    await expect(tool.execute('t1', { op: 'falsify', id: 'H#1' })).rejects.toThrow(/reason/);
+    await expect(tool.execute('t1', { op: 'nope' })).rejects.toThrow(/未知操作/);
+    await expect(tool.execute('t1', { op: 'hypothesis', text: 'x', refs: 'V#1,foo' })).rejects.toThrow(/非法 id/);
+  });
+
+  it('人纠正过的实体,模型 correct 被拒(权威序)', async () => {
+    const tool = makeTool();
+    await tool.execute('t1', { op: 'finding', text: '结论一' });
+    await correctEntity('s-1', { id: 'C#1', by: 'human', reason: '人已终审' }, { dir });
+    await expect(tool.execute('t2', { op: 'correct', id: 'C#1', reason: '想翻案' })).rejects.toThrow(/人纠正/);
   });
 });

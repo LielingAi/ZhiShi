@@ -117,6 +117,8 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   // 1.3.2 决策面板——模型提请人拍板/人已作答,结构级事件,绝不丢。
   'chat:decision-request': 'critical',
   'chat:decision-resolved': 'critical',
+  // 1.4.4 研究档案——档案变更(GUI 研究面板整包刷新),结构级事件,绝不丢。
+  'archive:changed': 'critical',
   // env_bg 生命周期(P2 Phase 2)— 长驻进程在状态行的存在感 + 退出插行。
   'chat:bg-started': 'critical',
   'chat:bg-finished': 'critical',

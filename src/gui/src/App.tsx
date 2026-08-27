@@ -4,7 +4,7 @@
  * boundary / decision / tasks / queue / toast）。
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
 
 import { useSse } from './hooks/useSse';
@@ -12,6 +12,7 @@ import { useEsc } from './hooks/useEsc';
 import { useGuiStore } from './store/useGuiStore';
 import { hostAnchorLabel } from './model/access-gate';
 import { isAutoRunActive } from './model/auto-run';
+import { archiveBadgeCount } from './model/archive';
 import { EnvSidebar } from './components/EnvSidebar';
 import { Stream } from './components/Stream';
 import { Drawer } from './components/Drawer';
@@ -28,7 +29,102 @@ import { QueuePanel } from './components/QueuePanel';
 import { SettingsPage } from './components/SettingsPage';
 import { AttachView } from './components/AttachView';
 import { HistoryPanel } from './components/HistoryPanel';
+import { ResearchPanel } from './components/ResearchPanel';
 import { Toast } from './components/Toast';
+
+/** 1.4.4 分屏阈值：≥1280px 真分屏（6/4 可拖可互换），以下退单屏 + 抽屉。 */
+const SPLIT_MIN_WIDTH = 1280;
+
+function useWideScreen(): boolean {
+  const [wide, setWide] = useState<boolean>(
+    () => typeof window !== 'undefined' && window.matchMedia(`(min-width: ${SPLIT_MIN_WIDTH}px)`).matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(`(min-width: ${SPLIT_MIN_WIDTH}px)`);
+    const onChange = (e: MediaQueryListEvent) => setWide(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return wide;
+}
+
+/**
+ * 1.4.4 主区分屏：左流右档案（6/4 默认，分隔条可拖，左右可互换）。
+ * 研究 = 过程 + 成果的空间投影——左屏过程（对话流），右屏成果（档案）。
+ */
+function MainArea({ wide }: { wide: boolean }): React.JSX.Element {
+  const ratio = useGuiStore((s) => s.archivePaneRatio);
+  const swapped = useGuiStore((s) => s.archiveSwapped);
+  const drawerOpen = useGuiStore((s) => s.archiveDrawerOpen);
+  const setRatio = useGuiStore((s) => s.setArchivePaneRatio);
+  const setDrawerOpen = useGuiStore((s) => s.setArchiveDrawerOpen);
+  const drag = useRef<{ startX: number; startRatio: number } | null>(null);
+
+  const onDividerDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const container = e.currentTarget.parentElement as HTMLElement | null;
+    if (!container) return;
+    drag.current = { startX: e.clientX, startRatio: ratio };
+    const onMove = (ev: MouseEvent) => {
+      if (!drag.current) return;
+      const total = container.clientWidth;
+      if (total <= 0) return;
+      const delta = ev.clientX - drag.current.startX;
+      const next = swapped
+        ? drag.current.startRatio - delta / total
+        : drag.current.startRatio + delta / total;
+      setRatio(next);
+    };
+    const onUp = () => {
+      drag.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  if (!wide) {
+    return (
+      <>
+        <div className="stream-wrap">
+          <Stream />
+          <Drawer />
+        </div>
+        {drawerOpen && (
+          <div className="arc-drawer-backdrop" onClick={() => setDrawerOpen(false)}>
+            <div className="arc-drawer" onClick={(e) => e.stopPropagation()}>
+              <div className="arc-drawer-head">
+                <span className="arc-drawer-title">研究档案</span>
+                <button className="btn small" onClick={() => setDrawerOpen(false)}>关闭</button>
+              </div>
+              <ResearchPanel />
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
+
+  const stream = (
+    <div className="stream-wrap" style={{ flexBasis: `${ratio * 100}%` }}>
+      <Stream />
+      <Drawer />
+    </div>
+  );
+  const pane = (
+    <div className="arc-pane" style={{ flexBasis: `${(1 - ratio) * 100}%` }}>
+      <ResearchPanel />
+    </div>
+  );
+  return (
+    <div className={`main-split${swapped ? ' swapped' : ''}`}>
+      {swapped ? pane : stream}
+      <div className="arc-divider" onMouseDown={onDividerDown} title="拖动调整分屏比例" />
+      {swapped ? stream : pane}
+    </div>
+  );
+}
 
 function Toolbar(): React.JSX.Element {
   const envKey = useGuiStore((s) => s.currentEnvKey);
@@ -41,6 +137,10 @@ function Toolbar(): React.JSX.Element {
   const openHistoryPanel = useGuiStore((s) => s.openHistoryPanel);
   const autoRunActive = useGuiStore((s) => isAutoRunActive(s.autoRun));
   const openAutoRunStart = useGuiStore((s) => s.openAutoRunStart);
+  // 1.4.4 研究档案：小窗抽屉入口（未决问题 + 待复核徽章）；分屏态由 CSS 隐藏。
+  const archive = useGuiStore((s) => s.archive);
+  const setArchiveDrawerOpen = useGuiStore((s) => s.setArchiveDrawerOpen);
+  const archiveBadge = archiveBadgeCount(archive);
 
   // 1.3.2 ①：会话头部 pending 指示（决策模态收起后仍可点开重答）。
   const firstDecision = decisions[0] ?? null;
@@ -73,6 +173,13 @@ function Toolbar(): React.JSX.Element {
       >
         ⚡ auto loop
       </button>
+      <button
+        className="btn small ar-toolbar-btn"
+        title="研究档案（过程记录 + 成果汇总——假设/证据/结论/未决问题，点行纠正）"
+        onClick={() => setArchiveDrawerOpen(true)}
+      >
+        ▦ 研究{archiveBadge > 0 ? ` ${archiveBadge}` : ''}
+      </button>
       {pendingDecision && firstDecision && (
         <button
           className="toolbar-decision pending"
@@ -99,6 +206,7 @@ export function App(): React.JSX.Element {
   useEsc();
   const page = useGuiStore((s) => s.page);
   const theme = useGuiStore((s) => s.theme);
+  const wide = useWideScreen();
 
   // 1.3.2 ③：主题 → body.light class（styles.css 的浅色变量组开关）。
   useEffect(() => {
@@ -119,10 +227,7 @@ export function App(): React.JSX.Element {
           <HistoryPanel />
         ) : (
           <>
-            <div className="stream-wrap">
-              <Stream />
-              <Drawer />
-            </div>
+            <MainArea wide={wide} />
             <AutoRunCard />
             <div className="bottom-area">
               <StatusBar />

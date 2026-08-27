@@ -12,6 +12,7 @@
 
 import type { LoopTranscript, LoopTranscriptEntry } from '../loop/transcript';
 import type { ResearchEvent } from '../memory/store';
+import { renderArchiveForReport, type ArchiveSnapshot } from '../loop/archive';
 import { selectDomainTemplate, type DomainTemplate, type ReportDomain } from './templates';
 
 // ---------------------------------------------------------------------------
@@ -76,6 +77,8 @@ export interface ReportSkeleton {
   sections: ReportSection[];
   /** 证据回收结果（withEvidenceResults 回填；未回收前为 undefined）。 */
   evidenceResults?: EvidenceRecovery[];
+  /** 1.4.4 研究档案的交付投影（成果报告从档案派生——纯事实，不进叙述）。 */
+  archiveMarkdown?: string;
   truncated: boolean;
 }
 
@@ -302,6 +305,11 @@ export interface BuildSkeletonInput {
    * 返回 null。缺省 → expert_refs 一律按「不可考」渲染（纯骨架不联网不猜）。
    */
   lookupExpertEntry?: (id: number) => { title: string; kind: string } | null;
+  /**
+   * 1.4.4 研究档案（本会话 loop 线的档案快照）——报告 = 档案的交付投影：
+   * 结论带证据锚、证伪与纠正独立成节。缺省/空档案 → 报告零变化。
+   */
+  archive?: ArchiveSnapshot;
 }
 
 /**
@@ -341,6 +349,11 @@ export function buildReportSkeleton(input: BuildSkeletonInput): ReportSkeleton {
     }
   }
   const expertRefs = [...citationsById.values()].sort((a, b) => a.entryId - b.entryId);
+  // 1.4.4 研究档案交付投影：纯事实（结论带证据锚/证伪与纠正/未决问题），
+  // 不进叙述填肉（与 expert-refs 同纪律——档案每个字都是代码钉死的）。
+  const archiveMarkdown = input.archive && input.archive.entities.length > 0
+    ? renderArchiveForReport(input.archive)
+    : undefined;
   const skeleton: ReportSkeleton = {
     domain: template.domain,
     template,
@@ -354,6 +367,7 @@ export function buildReportSkeleton(input: BuildSkeletonInput): ReportSkeleton {
     excerpts,
     fileLineRefs,
     sections: [],
+    ...(archiveMarkdown ? { archiveMarkdown } : {}),
     truncated: false,
   };
   skeleton.sections = buildSections(skeleton);
@@ -433,6 +447,12 @@ export function renderReportMarkdown(skeleton: ReportSkeleton, options: RenderOp
     } else {
       for (const fact of section.facts) lines.push(`- ${fact}`);
     }
+    lines.push('');
+  }
+  // 1.4.4 研究档案交付投影：纯事实附录（结论带证据锚/证伪与纠正/未决
+  // 问题）——「报告不是另写的文案，是举证档案的投影」。
+  if (skeleton.archiveMarkdown) {
+    lines.push(skeleton.archiveMarkdown);
     lines.push('');
   }
   return `${lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()}\n`;

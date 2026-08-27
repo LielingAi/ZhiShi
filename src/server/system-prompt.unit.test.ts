@@ -102,3 +102,36 @@ describe('buildCliToolsAppend — hostShell 门控（1.2.6）', () => {
     expect(prompt).not.toContain('<zhishi-cli-task-exit>');
   });
 });
+
+describe('研究档案实时状态段（1.4.4）', () => {
+  const archive = {
+    sessionId: 's-1',
+    updatedAt: 't',
+    entities: [
+      { id: 'Q#1', kind: 'question', text: '远程入口限制是什么', status: 'open', links: [], createdAt: 't', updatedAt: 't' },
+      { id: 'V#1', kind: 'evidence', text: 'SIGSEGV at 0x41414141', status: 'valid', links: ['H#1'], createdAt: 't', updatedAt: 't' },
+      { id: 'C#1', kind: 'finding', text: '栈溢出可控制 RIP', status: 'established', links: ['V#1'], createdAt: 't', updatedAt: 't' },
+    ],
+    corrections: [],
+  };
+
+  it('security 场景注入档案段（待答问题/最新证据/结论带 V# 锚）', () => {
+    const prompt = buildSystemPromptAppend({ type: 'security' }, { researchArchive: archive });
+    expect(prompt).toContain('<zhishi-research-archive>');
+    expect(prompt).toContain('待答问题');
+    expect(prompt).toContain('Q#1');
+    expect(prompt).toContain('（V#1）');
+  });
+
+  it('auto-run 场景同样注入（headless 研究线）', () => {
+    const prompt = buildSystemPromptAppend({ type: 'auto-run', runId: 'r1' }, { researchArchive: archive });
+    expect(prompt).toContain('<zhishi-research-archive>');
+  });
+
+  it('desktop / cron 场景不注入;空档案零注入', () => {
+    expect(buildSystemPromptAppend({ type: 'desktop' }, { researchArchive: archive })).not.toContain('zhishi-research-archive');
+    expect(buildSystemPromptAppend(CRON_SCENARIO, { researchArchive: archive })).not.toContain('zhishi-research-archive');
+    expect(buildSystemPromptAppend({ type: 'security' })).not.toContain('zhishi-research-archive');
+    expect(buildSystemPromptAppend({ type: 'security' }, { researchArchive: { sessionId: 'x', entities: [], corrections: [], updatedAt: '' } })).not.toContain('zhishi-research-archive');
+  });
+});
