@@ -86,6 +86,6 @@ describe('分组选择器', () => {
   });
 
   it('entityRefs 只保留 H#/V#/C#/Q# 形态（note: 等过滤掉）', () => {
-    expect(entityRefs({ id: 'C#1', kind: 'finding', text: '', status: 'x', links: ['V#1', 'H#2', 'note:xxx', 'junk'] })).toEqual(['V#1', 'H#2']);
+    expect(entityRefs({ id: 'C#1', kind: 'finding', text: '', status: 'x', links: ['V#1', 'H#2', 'note:xxx', 'junk'], createdAt: 't', updatedAt: 't' })).toEqual(['V#1', 'H#2']);
   });
 });

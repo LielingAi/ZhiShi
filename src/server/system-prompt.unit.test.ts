@@ -108,9 +108,9 @@ describe('研究档案实时状态段（1.4.4）', () => {
     sessionId: 's-1',
     updatedAt: 't',
     entities: [
-      { id: 'Q#1', kind: 'question', text: '远程入口限制是什么', status: 'open', links: [], createdAt: 't', updatedAt: 't' },
-      { id: 'V#1', kind: 'evidence', text: 'SIGSEGV at 0x41414141', status: 'valid', links: ['H#1'], createdAt: 't', updatedAt: 't' },
-      { id: 'C#1', kind: 'finding', text: '栈溢出可控制 RIP', status: 'established', links: ['V#1'], createdAt: 't', updatedAt: 't' },
+      { id: 'Q#1', kind: 'question' as const, text: '远程入口限制是什么', status: 'open', links: [], createdAt: 't', updatedAt: 't' },
+      { id: 'V#1', kind: 'evidence' as const, text: 'SIGSEGV at 0x41414141', status: 'valid', links: ['H#1'], createdAt: 't', updatedAt: 't' },
+      { id: 'C#1', kind: 'finding' as const, text: '栈溢出可控制 RIP', status: 'established', links: ['V#1'], createdAt: 't', updatedAt: 't' },
     ],
     corrections: [],
   };
