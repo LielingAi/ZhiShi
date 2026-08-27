@@ -57,7 +57,7 @@ import {
   type WizardParams,
   type WizardSource,
 } from '../model/env-wizard';
-import { parseSessionRows, type SessionMetaRow } from '../model/history';
+import { parseSessionRows, autoRunRowsOf, mergeAutoRunRows, type SessionMetaRow } from '../model/history';
 import {
   INPUT_HISTORY_LIMIT,
   loadInputHistory,
@@ -76,6 +76,7 @@ import {
   parseBudgetLimit,
   validateAutoRunForm,
   activeAutoRunOf,
+  parseAutoRunList,
   type AutoRunEntry,
   type AutoRunFormView,
 } from '../model/auto-run';
@@ -1463,6 +1464,10 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         autoRun: restored,
         verdictDismissed: restored?.verdict ? false : get().verdictDismissed,
       });
+      // 1.4.6 dogfood 实证：恢复 active run 时按 run 的 loop 线加载研究档案——
+      // 缺这步，auto-run 场景研究面板查的是引擎当前会话（空档案，面板恒空）。
+      // （已完成 run 的档案不在此恢复——历史档案在历史回看中查看。）
+      if (restored?.loopSessionId) void get().loadArchive(restored.loopSessionId);
     } catch {
       // 静默——恢复失败保持本地状态（list 端点未接线时不阻塞会话）。
     }
@@ -1480,7 +1485,15 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     const c = client;
     if (!c) return;
     try {
-      const res = await api.fetchArchiveList(c, sessionId ? { sessionId } : {});
+      // 1.4.6 dogfood 实证：active run 存在时缺省也锚 run 的 loop 线——
+      // 否则 chat:init 的默认重锚会拿引擎当前会话的空档案覆盖 run 的档案。
+      // （已完成 run 的档案不进面板——历史档案在历史回看中查看，1.4.6 用户拍板：
+      // 面板 = 活的研究，完成的进历史。）
+      const sid = sessionId
+        ?? (isAutoRunActive(get().autoRun) && get().autoRun?.loopSessionId
+          ? get().autoRun!.loopSessionId
+          : undefined);
+      const res = await api.fetchArchiveList(c, sid ? { sessionId: sid } : {});
       if (res.ok && res.archive) set({ archive: res.archive });
       else if (res.ok) set({ archive: null });
       // 失败静默——档案缺失不阻塞会话（零注入语义同侧）。
@@ -1953,7 +1966,16 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     }
     try {
       const rows = parseSessionRows(await api.fetchSessions(c));
-      set({ historySessions: rows, historyError: null });
+      // 1.4.6 历史研究档案：auto-run 记录合成行并入（invoke 通道无会话元
+      // 绑定——run 的 loop 会话不进 sessions 清单，合成行使轨迹/档案可达）。
+      let merged = rows;
+      try {
+        const runs = parseAutoRunList(await api.autoRunList(c));
+        merged = mergeAutoRunRows(rows, autoRunRowsOf(runs));
+      } catch {
+        /* auto-run 清单失败不阻塞历史面板 */
+      }
+      set({ historySessions: merged, historyError: null });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ historySessions: null, historyError: message });

@@ -83,6 +83,8 @@ export interface AutoRunEntry {
   lastConclusion?: string;
   paused?: { reason: AutoRunPauseReason; summary?: string };
   verdict?: VerdictRequest;
+  /** run 的 loop 线（1.4.4 研究档案按线加载——恢复时研究面板据此查档案）。 */
+  loopSessionId?: string;
   updatedAt: number;
 }
 
@@ -309,6 +311,30 @@ export function parseVerdictRequest(payload: unknown): VerdictRequest {
   return { criteria, statement };
 }
 
+/**
+ * 盘上记录的 verdictPackage 形状（auto-run/list 恢复路径）→ VerdictRequest。
+ * 1.4.6 dogfood 实证：断线/重启后终审弹窗必须能从 list 恢复——记录存的是
+ * verdictPackage（statement + criteriaPrecheck[{text,status}]），与 SSE
+ * verdict-requested 的 verdict 形状不同；缺这个解析，弹窗永远不出
+ * （auto loop 卡死在 awaiting-verdict，人无法终审）。
+ */
+export function parseVerdictPackage(payload: unknown): VerdictRequest | undefined {
+  const p = rec(payload);
+  const statement = str(p.statement) ?? '';
+  const raw = p.criteriaPrecheck;
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const criteria: VerdictCriterion[] = [];
+  for (const c of raw) {
+    const r = rec(c);
+    const text = (str(r.text) ?? '').trim();
+    if (!text) continue;
+    const status = str(r.status) ?? '';
+    criteria.push({ text, hasEvidence: status === 'evidence' || status === 'hit', refs: [] });
+  }
+  if (criteria.length === 0) return undefined;
+  return { criteria, statement };
+}
+
 // ---------------------------------------------------------------------------
 // 事件归约（reducer.ts 发 AutoRunDelta → 本函数 merge 登记表）
 // ---------------------------------------------------------------------------
@@ -454,7 +480,11 @@ export function autoRunEntryOf(v: unknown, now = Date.now()): AutoRunEntry | nul
   const paused = p.paused !== undefined ? rec(p.paused) : null;
   const pausedReason = paused ? pauseReasonOf(paused.reason) : null;
   const pausedSummary = paused ? str(paused.summary) : undefined;
-  const verdict = p.verdict !== undefined ? parseVerdictRequest(p.verdict) : undefined;
+  const verdict = p.verdict !== undefined
+    ? parseVerdictRequest(p.verdict)
+    : p.verdictPackage !== undefined
+      ? parseVerdictPackage(p.verdictPackage)
+      : undefined;
   return {
     id,
     name: str(p.name) ?? id,
@@ -471,6 +501,7 @@ export function autoRunEntryOf(v: unknown, now = Date.now()): AutoRunEntry | nul
       : {}),
     ...(pausedReason ? { paused: { reason: pausedReason, summary: pausedSummary } } : {}),
     ...(verdict ? { verdict } : {}),
+    ...(str(p.loopSessionId) ? { loopSessionId: str(p.loopSessionId) } : {}),
     updatedAt: num(p.updatedAt) ?? now,
   };
 }
@@ -491,7 +522,16 @@ export function parseAutoRunList(raw: unknown): AutoRunEntry[] {
   }
   const v = rec(raw);
   const data = rec(v.data);
-  pushAll(Array.isArray(v.runs) ? v.runs : Array.isArray(data.runs) ? data.runs : data);
+  // 1.4.6 dogfood 实证：服务端 handleAutoRunList 的真实形状是
+  // { success, data: { records: [...] } }——只认 runs/裸数组会静默返回空，
+  // 恢复路径（弹窗/档案/观察卡）整体失效。
+  pushAll(
+    Array.isArray(v.runs) ? v.runs
+      : Array.isArray(data.runs) ? data.runs
+      : Array.isArray(data.records) ? data.records
+      : Array.isArray(v.records) ? v.records
+      : data,
+  );
   return out;
 }
 

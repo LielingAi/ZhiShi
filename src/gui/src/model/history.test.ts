@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  autoRunRowsOf,
   buildHistorySession,
   filterSessionRows,
   groupSessionRows,
+  mergeAutoRunRows,
   normalizeWireMessage,
   parseSessionRow,
   parseSessionRows,
@@ -182,5 +184,24 @@ describe('wire 归一 + 只读回放', () => {
     if (t.kind !== 'turn') throw new Error('not turn');
     expect(t.conclusion).toBe('');
     expect(t.status).toBe('complete');
+  });
+});
+
+describe('autoRunRowsOf / mergeAutoRunRows（1.4.6 auto-run 历史合成行）', () => {
+  it('run 记录 → ⚡ 合成行（无 loop 线丢弃）+ 合并去重', () => {
+    const runRows = autoRunRowsOf([
+      { id: 'run-1', name: 'cJSON 审计', envKey: 'pwn-vm', loopSessionId: 'ls-1', updatedAt: 1000 },
+      { id: 'run-2', name: '无线的', envKey: 'fuzz', updatedAt: 2000 },
+    ]);
+    expect(runRows).toHaveLength(1);
+    expect(runRows[0]).toMatchObject({ id: 'auto-run:run-1', title: '⚡ cJSON 审计', loopSessionId: 'ls-1', envKey: 'pwn-vm' });
+
+    const base = [
+      { id: 's1', title: '普通会话', createdAt: '', lastActiveAt: '', messageCount: 1, loopSessionId: 'ls-1' },
+    ] as never[];
+    const merged = mergeAutoRunRows(base, runRows);
+    expect(merged).toHaveLength(1); // ls-1 已存在 → 不重复
+    const merged2 = mergeAutoRunRows([], runRows);
+    expect(merged2).toHaveLength(1);
   });
 });

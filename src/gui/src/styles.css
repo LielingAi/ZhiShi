@@ -989,3 +989,18 @@ mark.h-search { background: rgba(232,163,61,.3); color: var(--text); border-radi
   border-radius: 10px; padding: 1px 8px; cursor: pointer;
 }
 .arc-turn-badge:hover { background: rgba(88,166,255,.12); }
+
+/* ── 1.4.6 历史回看的研究档案区 ────────────────────────── */
+.hv-archive {
+  border: 1px solid var(--panel-3);
+  border-radius: 8px;
+  margin: 8px 14px 4px;
+  padding: 8px 10px;
+  background: var(--bg);
+}
+.hva-head { font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+.hva-group { margin-top: 6px; }
+.hva-group-title { font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .04em; }
+.hva-row { padding: 4px 0 2px; border-bottom: 1px dashed var(--panel-3); display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.hva-row:last-child { border-bottom: none; }
+.hva-anchor { font-size: 10px; color: var(--muted); flex-basis: 100%; margin-top: 2px; }

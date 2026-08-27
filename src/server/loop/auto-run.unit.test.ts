@@ -39,6 +39,7 @@ import {
   serializeAutoRunRecord,
   summarizeRecentToolCalls,
   validateAutoRunStart,
+  verdictRequestOfRecord,
   withAutoRunDepDefaults,
   type AutoRunDeps,
   type AutoRunRecord,
@@ -500,5 +501,37 @@ describe('runAutoRunLoop(Esc 终止)', () => {
     await loop;
     expect(record.status).toBe('stopped');
     expect(dataOf(fake.sent, 'auto-run:completed')).toMatchObject({ id: 'run-1', outcome: 'stopped' });
+  });
+});
+
+describe('verdictRequestOfRecord（1.4.6 dogfood 实证：list 归一化）', () => {
+  const record = {
+    verdictPackage: {
+      statement: '全部达成',
+      evidenceRefs: [],
+      hitCount: 2,
+      missCount: 0,
+      criteriaPrecheck: [
+        { text: '条件一', status: 'evidence' as const },
+        { text: '条件二', status: 'partial' as const },
+        { text: '条件三', status: 'none' as const },
+      ],
+    },
+  } as never;
+
+  it('verdictPackage → 对外 verdict（evidence/partial → hasEvidence）', () => {
+    const v = verdictRequestOfRecord(record)!;
+    expect(v.statement).toBe('全部达成');
+    expect(v.criteria).toEqual([
+      { text: '条件一', hasEvidence: true, refs: [] },
+      { text: '条件二', hasEvidence: true, refs: [] },
+      { text: '条件三', hasEvidence: false, refs: [] },
+    ]);
+  });
+
+  it('无 verdictPackage / 空 criteriaPrecheck / 空文本 → undefined', () => {
+    expect(verdictRequestOfRecord({} as never)).toBeUndefined();
+    expect(verdictRequestOfRecord({ verdictPackage: { statement: 'x', evidenceRefs: [], hitCount: 0, missCount: 0, criteriaPrecheck: [] } } as never)).toBeUndefined();
+    expect(verdictRequestOfRecord({ verdictPackage: { statement: 'x', evidenceRefs: [], hitCount: 0, missCount: 0, criteriaPrecheck: [{ text: '  ', status: 'evidence' as const }] } } as never)).toBeUndefined();
   });
 });

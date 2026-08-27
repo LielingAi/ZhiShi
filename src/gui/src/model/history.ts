@@ -227,3 +227,38 @@ export function buildHistorySession(messages: unknown[]): SessionState {
   session = reduceSseEvent(session, { event: 'chat:message-complete', payload: {} }).session;
   return session;
 }
+
+// ---------------------------------------------------------------------------
+// 1.4.6 auto-run 历史合成行（invoke 通道无会话元绑定——run 的 loop 会话不进
+// sessions 清单，合成行使轨迹/研究档案在历史回看可达）
+// ---------------------------------------------------------------------------
+
+export interface AutoRunLike {
+  id: string;
+  name: string;
+  envKey: string;
+  loopSessionId?: string;
+  updatedAt: number;
+}
+
+/** auto-run 记录 → 历史合成行（⚡ 前缀标识；无 loop 线的记录丢弃）。 */
+export function autoRunRowsOf(runs: AutoRunLike[]): SessionMetaRow[] {
+  return runs
+    .filter((r) => r.loopSessionId)
+    .map((r) => ({
+      id: `auto-run:${r.id}`,
+      title: `⚡ ${r.name}`,
+      titleSource: 'user' as const,
+      createdAt: '',
+      lastActiveAt: r.updatedAt > 0 ? new Date(r.updatedAt).toISOString() : '',
+      messageCount: 0,
+      ...(r.loopSessionId ? { loopSessionId: r.loopSessionId } : {}),
+      envKey: r.envKey,
+    }));
+}
+
+/** 合并合成行（loopSessionId 去重——会话元里已有同线行时不重复）。 */
+export function mergeAutoRunRows(rows: SessionMetaRow[], runRows: SessionMetaRow[]): SessionMetaRow[] {
+  const existing = new Set(rows.map((r) => r.loopSessionId).filter(Boolean));
+  return [...rows, ...runRows.filter((r) => !r.loopSessionId || !existing.has(r.loopSessionId))];
+}

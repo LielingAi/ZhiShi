@@ -16,6 +16,18 @@ import type React from 'react';
 import { getSettingsClient, selectCurrentSession, useGuiStore } from '../store/useGuiStore';
 import * as api from '../client/api';
 import type { SessionState, StreamItem } from '../model/blocks';
+import {
+  archiveEvidence,
+  archiveFalsified,
+  archiveFindings,
+  archiveOpenQuestions,
+  archivePendingHypotheses,
+  entityRefs,
+  ENTITY_STATUS_LABEL,
+  FINDING_TYPE_LABEL,
+  type ArchiveEntity,
+  type ArchiveSnapshot,
+} from '../model/archive';
 import { buildHistorySession, filterSessionRows, groupSessionRows } from '../model/history';
 import type { SessionMetaRow } from '../model/history';
 import { TurnView } from './TurnView';
@@ -70,7 +82,77 @@ interface ViewerState {
   truncated?: boolean;
   totalMessages?: number;
   session?: SessionState;
+  /** 该会话线的研究档案（1.4.6 历史档案查看；无实体 → null 不渲染档案区）。 */
+  archive?: ArchiveSnapshot | null;
   error?: string;
+}
+
+/** 历史回看的研究档案区（只读——过程记录 + 成果汇总，先成果后过程）。 */
+function ArchiveSection({ archive }: { archive: ArchiveSnapshot }): React.JSX.Element {
+  const groups: Array<[string, ArchiveEntity[]]> = [
+    ['结论', archiveFindings(archive)],
+    ['当前假设', archivePendingHypotheses(archive)],
+    ['证据', archiveEvidence(archive)],
+    ['待答问题', archiveOpenQuestions(archive)],
+  ];
+  const falsified = archiveFalsified(archive);
+  return (
+    <div className="hv-archive">
+      <div className="hva-head">研究档案（{archive.entities.length} 实体 · 过程记录 + 成果汇总）</div>
+      {groups.map(([title, items]) =>
+        items.length > 0 ? (
+          <div className="hva-group" key={title}>
+            <div className="hva-group-title">
+              {title} <span className="arc-count">{items.length}</span>
+            </div>
+            {items.map((e) => (
+              <div className="hva-row" key={e.id}>
+                <span className="arc-id">{e.id}</span>
+                {e.findingType && (
+                  <span className="arc-kind">{FINDING_TYPE_LABEL[e.findingType] ?? e.findingType}</span>
+                )}
+                <span className="arc-text">{e.text}</span>
+                {ENTITY_STATUS_LABEL[e.status] && (
+                  <span className={`arc-chip${['falsified', 'overturned', 'corrected', 'doubtful'].includes(e.status) ? ' arc-chip-bad' : ''}`}>
+                    {ENTITY_STATUS_LABEL[e.status]}
+                  </span>
+                )}
+                {entityRefs(e).map((r) => (
+                  <span className="arc-ref" key={r}>{r}</span>
+                ))}
+                {e.anchorLabel && <div className="hva-anchor">{e.anchorLabel}</div>}
+              </div>
+            ))}
+          </div>
+        ) : null,
+      )}
+      {falsified.length > 0 && (
+        <div className="hva-group">
+          <div className="hva-group-title">
+            证伪与纠正 <span className="arc-count">{falsified.length}</span>
+          </div>
+          {falsified.map((row) =>
+            row.correction ? (
+              <div className="hva-row" key={row.correction.id}>
+                <span className="arc-id">{row.correction.id}</span>
+                <span className="arc-kind">{row.correction.by === 'human' ? '人纠正' : '模型自证伪'}</span>
+                <span className="arc-text">
+                  {row.entity ? `${row.entity.id} ${row.entity.text}` : row.correction.targetId}
+                </span>
+                <div className="hva-anchor">{row.correction.reason}</div>
+              </div>
+            ) : row.entity ? (
+              <div className="hva-row" key={row.entity.id}>
+                <span className="arc-id">{row.entity.id}</span>
+                <span className="arc-text">{row.entity.text}</span>
+                <span className="arc-chip arc-chip-bad">{ENTITY_STATUS_LABEL[row.entity.status]}</span>
+              </div>
+            ) : null,
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -135,11 +217,21 @@ export function HistoryPanel(): React.JSX.Element {
           setViewer({ status: 'error', error: res.error ?? 'wire transcript 读取失败' });
           return;
         }
+        // 1.4.6 历史研究档案：随 wire 一并加载（独立失败/无实体 → null，不影响回放）。
+        let archive: ArchiveSnapshot | null = null;
+        try {
+          const ar = await api.fetchArchiveList(c, { sessionId: loopId });
+          if (ar.ok && ar.archive && ar.archive.entities.length > 0) archive = ar.archive;
+        } catch {
+          /* 档案缺失不影响回放 */
+        }
+        if (cancelled) return;
         setViewer({
           status: 'ok',
           session: buildHistorySession(res.messages ?? []),
           truncated: res.truncated === true,
           totalMessages: res.totalMessages,
+          archive,
         });
       } catch (err) {
         if (cancelled) return;
@@ -290,6 +382,7 @@ export function HistoryPanel(): React.JSX.Element {
               )}
               {viewer.status === 'ok' && viewer.session && (
                 <>
+                  {viewer.archive && <ArchiveSection archive={viewer.archive} />}
                   {viewer.truncated && (
                     <div className="hv-truncated">
                       ⚠ 消息超护栏（共 {viewer.totalMessages ?? '?'} 条），仅回放前 2000 条（时间序保留）

@@ -7,6 +7,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  autoRunEntryOf,
+  parseVerdictPackage,
   activeAutoRunOf,
   applyAutoRunEvent,
   budgetKindOf,
@@ -432,5 +434,65 @@ describe('parseAutoRunList / activeAutoRunOf', () => {
 describe('DEFAULT_BUDGET_LIMITS', () => {
   it('默认保守档：50 轮 / 8M tokens / 2 小时', () => {
     expect(DEFAULT_BUDGET_LIMITS).toEqual({ turns: 50, tokens: 8_000_000, time: 120 });
+  });
+});
+
+describe('parseVerdictPackage（1.4.6 dogfood 实证：断线后终审弹窗从 list 恢复）', () => {
+  const pkg = {
+    statement: '全部验收条件达成，证据齐全。',
+    evidenceRefs: [10, 11],
+    hitCount: 2,
+    missCount: 0,
+    criteriaPrecheck: [
+      { text: '条件一：攻击面枚举完成', status: 'evidence' },
+      { text: '条件二：每候选有证据', status: 'evidence' },
+      { text: '条件三：fuzz 实跑', status: 'missing' },
+    ],
+  };
+
+  it('verdictPackage 形状 → VerdictRequest（criteriaPrecheck.status → hasEvidence）', () => {
+    const v = parseVerdictPackage(pkg)!;
+    expect(v.statement).toContain('验收条件达成');
+    expect(v.criteria).toHaveLength(3);
+    expect(v.criteria[0]).toMatchObject({ text: '条件一：攻击面枚举完成', hasEvidence: true });
+    expect(v.criteria[2].hasEvidence).toBe(false);
+  });
+
+  it('autoRunEntryOf：verdictPackage 恢复（缺 criteriaPrecheck → undefined；空文本行丢弃）', () => {
+    const entry = autoRunEntryOf({ id: 'ar-1', status: 'awaiting-verdict', verdictPackage: pkg, loopSessionId: 'ls-1' });
+    expect(entry?.verdict?.criteria).toHaveLength(3);
+    expect(entry?.loopSessionId).toBe('ls-1');
+    expect(autoRunEntryOf({ id: 'ar-2', status: 'awaiting-verdict', verdictPackage: { statement: 'x' } })?.verdict).toBeUndefined();
+    expect(autoRunEntryOf({ id: 'ar-3', status: 'awaiting-verdict', verdictPackage: { criteriaPrecheck: [{ text: '  ', status: 'evidence' }] } })?.verdict).toBeUndefined();
+  });
+
+  it('verdict 优先于 verdictPackage（SSE 形状在场时走 SSE 解析）', () => {
+    const entry = autoRunEntryOf({
+      id: 'ar-1', status: 'awaiting-verdict',
+      verdict: { criteria: [{ text: 'SSE 条件', hasEvidence: true }], evidence: { statement: 'SSE 陈述' } },
+      verdictPackage: pkg,
+    });
+    expect(entry?.verdict?.statement).toBe('SSE 陈述');
+  });
+});
+
+describe('parseAutoRunList — 服务端真实形状（1.4.6 dogfood 实证）', () => {
+  it('{success:true, data:{records:[…]}} → 条目恢复（records 键）', () => {
+    const list = parseAutoRunList({
+      success: true,
+      data: {
+        records: [{
+          id: 'ar-1', name: 'n', envKey: 'pwn-vm', goal: 'g',
+          budget: { kind: 'turns', limit: 40, spent: 1 },
+          criteria: ['c1'], status: 'awaiting-verdict',
+          loopSessionId: 'ls-1',
+          verdictPackage: { statement: 's', criteriaPrecheck: [{ text: 'c1', status: 'evidence' }] },
+        }],
+      },
+    });
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ id: 'ar-1', status: 'awaiting-verdict', loopSessionId: 'ls-1' });
+    expect(list[0].verdict?.criteria[0].hasEvidence).toBe(true);
+    expect(activeAutoRunOf({ success: true, data: { records: [{ id: 'ar-1', status: 'awaiting-verdict' }] } })?.id).toBe('ar-1');
   });
 });

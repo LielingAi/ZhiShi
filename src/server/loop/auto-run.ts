@@ -119,6 +119,34 @@ export interface VerdictPackage {
 }
 
 /**
+ * auto-run/list 的对外 verdict 形状（与 GUI VerdictRequest 契约一致——
+ * 恢复路径的终审弹窗按它渲染）。
+ */
+export interface VerdictRequestShape {
+  criteria: Array<{ text: string; hasEvidence: boolean; refs: string[] }>;
+  statement: string;
+}
+
+/**
+ * AutoRunRecord.verdictPackage → 对外 verdict（list 归一化；1.4.6 dogfood
+ * 实证：SSE 不重放 auto-run 事件族，list 是断线后终审弹窗的唯一恢复路径，
+ * 缺这个归一化弹窗永远不出——run 卡死在 awaiting-verdict，人无法终审）。
+ */
+export function verdictRequestOfRecord(record: AutoRunRecord): VerdictRequestShape | undefined {
+  const pkg = record.verdictPackage;
+  if (!pkg || pkg.criteriaPrecheck.length === 0) return undefined;
+  const criteria = pkg.criteriaPrecheck
+    .map((c) => ({
+      text: c.text.trim(),
+      hasEvidence: c.status === 'evidence' || c.status === 'partial',
+      refs: [] as string[],
+    }))
+    .filter((c) => c.text !== '');
+  if (criteria.length === 0) return undefined;
+  return { criteria, statement: pkg.statement };
+}
+
+/**
  * auto-run 记录(1.4.1 契约核心形状 + additive 服务端簿记字段)。
  * 落盘 <数据目录>/auto-runs/<id>.json,可追溯。
  */

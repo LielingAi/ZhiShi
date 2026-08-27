@@ -60,6 +60,7 @@ import {
   resolveAutoRunVerdict,
   startAutoRun,
   stopAutoRun,
+  verdictRequestOfRecord,
 } from './loop/auto-run';
 import { detectOsFamilyFromVmx } from './environment/os-family';
 import {
@@ -3504,7 +3505,17 @@ export async function handleAutoRunList(payload: { workspace?: unknown }): Promi
     ? payload.workspace.trim()
     : undefined;
   const records = await listAutoRuns(workspace);
-  return { success: true, data: { records } };
+  // 1.4.6 dogfood 实证修复：records 带 verdict 归一化字段（verdictPackage →
+  // 对外 verdict 形状）——断线后终审弹窗的唯一恢复路径。
+  return {
+    success: true,
+    data: {
+      records: records.map((r) => {
+        const verdict = verdictRequestOfRecord(r);
+        return verdict ? { ...r, verdict } : r;
+      }),
+    },
+  };
 }
 /** `environment/rm` — 拆除环境（P2 B4 / B3 多驱动 + D22）。vmware 直连
  * 语义：rm = 只摘登记（removeEnvironmentEntry），**绝不删用户 VM 文件**——
