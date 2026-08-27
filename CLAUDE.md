@@ -2,7 +2,7 @@
 
 
 
-安全研究员 harness（环境融合 / 原生工具 / 原生代码），形态为 `zhishi` CLI + agent 全屏 TUI——**无窗口 / 无 GUI**（renderer 与全部前端已删除，见文末「安全研究员版转型」节）。核心 loop 自研（`src/server/loop/`，pi 底座；Claude Agent SDK 已随 D25 废弃删除）。开源（AGPL-3.0），Conventional Commits，不提交敏感信息。
+安全研究员 harness（环境融合 / 原生工具 / 原生代码 / 研究档案），形态为 **GUI 主窗口（`src/gui/`，React + zustand）+ `zhishi` CLI**——1.3.9 起 TUI 退役，1.4.0 GUI 正式发版（文末「安全研究员版转型」节的 TUI 形态描述为历史）。核心 loop 自研（`src/server/loop/`，pi 底座；Claude Agent SDK 已随 D25 废弃删除）。开源（AGPL-3.0），Conventional Commits，不提交敏感信息。
 
 
 
@@ -14,13 +14,13 @@
 
 |------|------|
 
-| 桌面宿主 | Tauri v2 (Rust)——无窗口：不创建任何窗口；保留 sidecar Owner、Panel API（仅 term）、Management API、CronTaskManager、托盘（打开会话/exit；左键=打开 TUI）、updater、统一日志。交互入口=CLI/TUI：应用启动/重复点击/托盘动作均经 `tui_launcher.rs` 开终端跑 `zhishi agent`（`--minimized` 开机自启不弹）。W6 减法已删：invoke_handler 全部 IPC 命令、SearchEngine（tantivy）、browser.rs、sse_proxy、global_shortcut、attachment_protocol、webview2_check、macos 窗框 hacks、workspace_files 命令层（path_safety 保留） |
+| 桌面宿主 | Tauri v2 (Rust)——GUI 窗口（webview 渲染 `src/gui` 产物）+ sidecar Owner、Panel API（term / 端口发现）、Management API、CronTaskManager、托盘（打开会话/exit）、updater、统一日志。三入口（桌面图标/托盘/二次实例）统一聚焦 GUI 主窗口（`--minimized` 开机自启不弹）。已删：W6 减法（invoke_handler 全部 IPC 命令、SearchEngine（tantivy）、browser.rs、sse_proxy、global_shortcut、attachment_protocol、webview2_check、macos 窗框 hacks、workspace_files 命令层（path_safety 保留））+ 1.3.9 tui_launcher（TUI 退役随删） |
 
-| 后端 | Node.js v24 + 自研 loop（`src/server/loop/`，pi 底座钉版；多实例 Sidecar） |
+| 后端 | Node.js ≥22 + 自研 loop（`src/server/loop/`，pi 底座钉版；单例 Sidecar，会话按环境分线） |
 
-| 通信 | Rust HTTP/SSE Proxy (reqwest via `local_http` 模块) |
+| 通信 | GUI ↔ Sidecar 直连 HTTP+SSE+WS（127.0.0.1）；Rust panel_api 代理 term/管理面（reqwest via `local_http` 模块） |
 
-| 运行时 | 单一 Node.js v24（Sidecar / MCP Server / CLI），内置于应用包 |
+| 运行时 | 单一 Node.js ≥22（Sidecar / MCP Server / CLI），内置于应用包 |
 
 
 
@@ -28,15 +28,17 @@
 
 
 
-- `src/server/` — Node.js 后端 Sidecar（esbuild 打包成 `server-dist.js`）。入口 `index.ts` 只做启动/路由分发（1.1.7 绞杀拆分后 7.7k 行）；崩溃日志 `crash-log.ts`、skills 配置 `skills-config.ts`、cron 路由 `cron/`、sessions/mcp 路由 `routes/`、admin-api.ts admin handler 包、`report/` 报告导出（1.2.0：骨架组装 + 证据回收 + LLM 填肉 + 落盘，设计见 `docs/design/1.2.0-design.md`）
+- `src/server/` — Node.js 后端 Sidecar（esbuild 打包成 `server-dist.js`）。入口 `index.ts` 只做启动/路由分发（1.1.7 绞杀拆分后 ~3.8k 行）；崩溃日志 `crash-log.ts`、skills 配置 `skills-config.ts`、cron 路由 `cron/`、sessions/mcp 路由 `routes/`、admin-api.ts admin handler 包、`report/` 报告导出（1.2.0：骨架组装 + 证据回收 + LLM 填肉 + 落盘，设计见 `docs/design/1.2.0-design.md`）
 
 - `src/server/intel/` — 情报检索（1.1.2）：`intel.db`（NVD CVE + exploit-db 索引，FTS5）+ `zhishi intel update/status` + loop 工具 `intel_search`（宿主侧认知供给，与 research_log 同层）
 
 - `src/cli/` — `zhishi` CLI（同步到 `~/.zhishi/bin/`），产品能力的统一入口
 
+- `src/gui/` — GUI 主窗口（React + zustand + xterm；会话/环境/决策/历史/研究档案分屏看板）
+
 - `src/shared/` — 共享类型（server / cli 等消费）
 
-- `src-tauri/` — Tauri Rust 层（无窗口；`tauri.conf.json` 的 frontendDist 指向 `src-tauri/placeholder/` 极简占位页）
+- `src-tauri/` — Tauri Rust 层（GUI 窗口 + sidecar 生命周期；`tauri.conf.json` 的 frontendDist 指向 `src/gui/dist` 构建产物）
 
 - `bundled-skills/` — 13 个内置技能：agent-browser / ai-security / app-automation / binary-exploit / download-anything / native-code-loop / pentest / range-ops / task-alignment / task-implement / vuln-triage / whitebox-audit / zhishi-cli
 
@@ -104,7 +106,7 @@
 
 |---------|------|
 
-| TUI 渲染 / 事件归约 / 正门 / 命令 | `docs/spec/tui_tech_spec.md`（技术规范）+ `docs/spec/tui-rebuild-plan.md`（重建蓝图） |
+| GUI 操作 / 会话 / 环境 / 决策 / 研究档案 | `docs/user-guide.md` + `docs/roadmap.md`；TUI 时代规范（`docs/spec/tui_tech_spec.md` / `tui-rebuild-plan.md`）已退役归档，仅历史 |
 
 | 环境内长驻进程通道 / env_bg | `docs/spec/env-bg-design.md` |
 
@@ -245,8 +247,8 @@ MCP / Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**
 
 - 内置 8 家：`anthropic-api`、`deepseek`（anthropic 兼容端点）、`openai`、`moonshot`（Kimi，OpenAI 格式）、`dashscope`（通义）、`zhipu`（智谱）、`siliconflow`（硅基流动聚合）、`kimi`（pi 内置 kimi-coding，合成条目）。定义在 `src/shared/config-types.ts::PRESET_PROVIDERS`——新供应商照此结构加（`apiProtocol: 'openai'` 即走 OpenAI completions；pi 按 `Model.api` 显式选协议，不做 baseUrl 探测）。
 - 模型列表拉取：`src/server/utils/provider-models.ts`——`modelListUrl` 优先（set-key 后自动拉取，`parseProviderModelsResponse` 兼容 OpenAI/anthropic 双形状，上限 200 条）；失败降级不阻塞。发现模型写 `config.presetCustomModels`。
-- 配置入口：CLI `zhishi model set-key/list/verify/set-default`；TUI `/model`（状态卡）/ `/model set-key <id>`（隐藏输入填 key）/ `/model use <id> <模型>`（切换，`/chat/model` 带 providerId 防跨供应商撞名）。
-- MCP 开关进 TUI：`/mcp enable|disable <id>`（复用 mcp/enable、mcp/disable + 桥热重载）；add/remove 仍走 CLI（OAuth/多形态 spec 不适合 TUI 输入行）。
+- 配置入口：CLI `zhishi model set-key/list/verify/set-default`；GUI 设置页（模型/供应商管理——选模型只显示已配置供应商，`/chat/model` 带 providerId 防跨供应商撞名）。
+- MCP 开关：CLI `zhishi mcp enable|disable <id>`（复用 mcp/enable、mcp/disable + 桥热重载）；GUI 设置页 MCP 页签置灰占位（设计待定）；add/remove 仍走 CLI。
 
 - `intel.db`（`~/.zhishi/`，better-sqlite3，WAL）：NVD CVE（窗口分级 minimal/window/full，默认 minimal）+ exploit-db 索引（只存 CSV 索引行，PoC 文件不落盘）+ nuclei 模板索引（1.1.4：`nuclei_templates(cve_id, template_path)`，只存目录不存正文——模板内容给 GitHub 链接）。FTS5 全文检索，查询按需直查库、不做启动预载。
 - 更新：`zhishi intel update [--mode minimal|window|full] [--nuclei-file <本地 cves.json>]`（走 sidecar admin API）。NVD 走 API 2.0 增量（lastModStartDate 水位）+ 断点续传；exploit-db 拉 GitLab CSV 整体替换（解析层按 id 首行去重——真实 CSV 有重复行）。**网络错误/超时/响应体读取失败都进指数退避重试**（NVD 单页 6.4MB，慢网络实测 90s+，超时 120s）；`maxSizeMb` 超限删最旧。
@@ -261,9 +263,8 @@ MCP / Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**
 
 - 每个环境一条独立会话线：映射文件 `~/.zhishi/env-sessions.json`，行键 = `${规范化workspace}::${环境键}` → loopSessionId（`src/server/environment/env-sessions.ts`，写走 withFileLock + tmp+rename）。环境键：env → `env:<id>`、recipe → `recipe:<instanceId>`、host → `host`；workspace 键一律 resolve + 统一正斜杠（斜杠漂移是活体坑）。
 - 联动：`environment/select` busy 前置闸（先于落盘，「响应进行中，先 Esc 停止再切换环境」）→ 落盘 → `switchEnvSession` 切线（有映射接线/无映射开新线/同环境幂等；旧线先回填映射防丢）。新线的映射写盘点在 `ensureSessionBound` 绑定之后——映射永不指向无绑定的线。
-- 启动恢复 env-aware：引擎 `restorePiSession` + TUI `ensureAgentSession` 都按「当前选定环境」接线；「按全 workspace 最新 meta 接线」旧语义已废除（分线下最新多半是别的环境的线）。`resetPiChat` 同步清当前环境键的映射（防旧历史复活）。cron（1.2.6 批次 B 起）走 `invokePiSession` 独立 invoke 通道——不切引擎线、不进 steering/队列，按任务 meta 的 loopSessionId 解析目标线（无绑定当场愈合开线），读该线历史跑完续存回同一条线（文件锁串行化）；仅无 sessionId 的兜底分支跟随引擎当前线。
-- TUI 正门（gate）：`enterGate()` 入口必须重置 `gateBusy`（成功路径不复位曾致 /env 二次进门吞掉全部按键）；Esc 语义按来源区分——startup 退出到 shell，/env 重进返回 chat（`gateReentry`）。
-- 鼠标捕获（1.1.6 受控恢复）：writer enter 开 `?1000h+?1006h`、exit 关；keymap 只放行滚轮码 64/65，点击/拖拽继续吞掉（防点击误判 Esc 中断 turn）。取舍：终端原生拖选需按住 Shift。
+- 启动恢复 env-aware：引擎 `restorePiSession` + GUI 会话恢复都按「当前选定环境」接线；「按全 workspace 最新 meta 接线」旧语义已废除（分线下最新多半是别的环境的线）。`resetPiChat` 同步清当前环境键的映射（防旧历史复活）。cron（1.2.6 批次 B 起）走 `invokePiSession` 独立 invoke 通道——不切引擎线、不进 steering/队列，按任务 meta 的 loopSessionId 解析目标线（无绑定当场愈合开线），读该线历史跑完续存回同一条线（文件锁串行化）；仅无 sessionId 的兜底分支跟随引擎当前线。
+- 交互正门：GUI 主窗口（1.3.9 起 TUI 退役；TUI 正门 `enterGate`/`gateReentry` 与终端鼠标捕获（1.1.6 受控恢复）等 TUI 渲染细节随删——现 attach 终端为 xterm + WS pty 双模式）。
 
 
 
@@ -465,9 +466,9 @@ npm start                         # 别名 npm run server（sidecar 直接启动
 
 node --import tsx/esm src/server/index.ts --agent-dir <dir>   # sidecar（--agent-dir 必填）
 
-node --import tsx/esm src/cli/zhishi.ts agent                  # agent 全屏 TUI（ZHISHI_PORT 指向 sidecar 端口）
+node --import tsx/esm src/cli/zhishi.ts agent                  # 1.3.9 起 TUI 退役：打印引导（交互会话请用 GUI 主窗口）；`agent <subcommand>` 管理子代理
 
-npm run tauri:dev                 # Tauri 开发模式（无窗口：sidecar Owner / 托盘 / Panel API / Management API）
+npm run tauri:dev                 # Tauri 开发模式（GUI 窗口 + sidecar + vite HMR）
 
 ./scripts/dev/build_dev.sh        # Debug 构建
 
@@ -615,6 +616,8 @@ Team Hub 服务端（`zhishi-hub/`）从未随本仓库分发，且已被确认�
 
 
 
+**（2026-08-27 追记：1.3.9 起 TUI 退役、1.4.0 GUI 正式发版——本节成稿时的「CLI + agent 全屏 TUI，无窗口」形态已演进为「GUI 主窗口 + CLI」；下列删除清单仍为事实，形态描述为历史。）**
+
 产品形态从「桌面 GUI 应用」转为 **CLI（`zhishi` 命令）+ agent 全屏 TUI，无窗口**，方向为安全研究员。以下能力已删除；代码或存档文档中如出现相关描述，均为历史残留：
 
 
@@ -635,7 +638,7 @@ Team Hub 服务端（`zhishi-hub/`）从未随本仓库分发，且已被确认�
 
 
 
-保留核心能力：MCP enable 管线、memory 全套、task / cron 系统、CLI、panel_api.rs（仅 term 路由）/ terminal.rs、provider-probe / verify。（browser.rs 已在 W6 减法删除；openai-bridge 已随 D25/M4c 删除，OpenAI 协议 provider 由 pi 原生直连。）
+保留核心能力：MCP enable 管线、memory 全套、task / cron 系统、CLI、panel_api.rs（term / 端口发现）/ terminal.rs、provider-probe / verify。（browser.rs 已在 W6 减法删除；openai-bridge 已随 D25/M4c 删除，OpenAI 协议 provider 由 pi 原生直连。）
 
 
 
@@ -656,7 +659,7 @@ Team Hub 服务端（`zhishi-hub/`）从未随本仓库分发，且已被确认�
 
 
 
-- `/help` — Claude Code 用法
+- `/help` — CLI 命令帮助
 
-- 反馈：https://github.com/anthropics/claude-code/issues
+- 反馈：https://github.com/LielingAi/ZhiShi/issues
 

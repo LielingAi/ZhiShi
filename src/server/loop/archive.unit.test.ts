@@ -244,3 +244,27 @@ describe('变更广播', () => {
     await addEvidence(sessionId, { text: 'V' }, { dir });
   });
 });
+
+describe('1.4.5 审计修复：编号计数器不被纠正条目污染', () => {
+  it('有 R#n 纠正后,新假设仍是 H#2（不跳号）', async () => {
+    await addHypothesis(sessionId, { text: 'H1' }, { dir });
+    await correctEntity(sessionId, { id: 'H#1', by: 'model', reason: 'r1' }, { dir });
+    await correctEntity(sessionId, { id: 'H#1', by: 'model', reason: 'r2' }, { dir });
+    // R#1/R#2 存在时,旧实现会把 H 计数器拉到 2 → 新假设变 H#3（跳号 bug）。
+    const out = await addHypothesis(sessionId, { text: 'H2' }, { dir });
+    const ids = out.entities.map((e) => e.id);
+    expect(ids).toEqual(['H#1', 'H#2']);
+    // 纠正编号继续递增。
+    const out2 = await correctEntity(sessionId, { id: 'H#2', by: 'model', reason: 'r3' }, { dir });
+    expect(out2.corrections.map((c) => c.id)).toEqual(['R#1', 'R#2', 'R#3']);
+  });
+});
+
+describe('1.4.5 审计修复：人纠正未决问题 → abandoned', () => {
+  it('问题被纠正时状态翻转（不再保持 open）', async () => {
+    await addQuestion(sessionId, { text: '这个问题还要吗？' }, { dir });
+    const out = await correctEntity(sessionId, { id: 'Q#1', by: 'human', reason: '方向变了，不用答了' }, { dir });
+    expect(out.entities[0].status).toBe('abandoned');
+    expect(out.corrections[0]).toMatchObject({ id: 'R#1', by: 'human' });
+  });
+});
