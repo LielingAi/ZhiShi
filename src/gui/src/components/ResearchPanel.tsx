@@ -11,6 +11,7 @@ import { useState } from 'react';
 import type React from 'react';
 
 import {
+  archiveConfirmedHypotheses,
   archiveEvidence,
   archiveFalsified,
   archiveFindings,
@@ -45,6 +46,7 @@ function Row({
   reason,
   onReason,
   onSubmit,
+  onResolve,
 }: {
   e: ArchiveEntity;
   highlightId: string | null;
@@ -55,6 +57,8 @@ function Row({
   reason: string;
   onReason(v: string): void;
   onSubmit(): void;
+  /** 待验证假设专有：一键证实（终态推进，与「纠正=标错」对称）。 */
+  onResolve?(): void;
 }): React.JSX.Element {
   const refs = entityRefs(e);
   const typeLabel = e.findingType ? FINDING_TYPE_LABEL[e.findingType] : undefined;
@@ -69,6 +73,18 @@ function Row({
           <span className="arc-chip arc-chip-warn" title={e.reviewReason ?? '依赖的条目被纠正'}>待复核</span>
         )}
         {e.humanCorrected && <span className="arc-chip arc-chip-human" title="人已纠正（终局）">人纠正</span>}
+        {onResolve && (
+          <button
+            className="btn small arc-resolve"
+            title="实验已证实这条假设——给它终态（已证实）"
+            onClick={(ev) => {
+              ev.stopPropagation();
+              onResolve();
+            }}
+          >
+            ✓ 证实
+          </button>
+        )}
       </div>
       {(refs.length > 0 || e.anchorMessageId || e.anchorLabel) && (
         <div className="arc-row-sub">
@@ -149,6 +165,7 @@ export function ResearchPanel(): React.JSX.Element {
   const setHighlight = useGuiStore((s) => s.setArchiveHighlight);
   const jump = useGuiStore((s) => s.jumpToArchiveAnchor);
   const correct = useGuiStore((s) => s.correctArchiveEntity);
+  const resolve = useGuiStore((s) => s.resolveArchiveEntity);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [reason, setReason] = useState('');
@@ -156,7 +173,8 @@ export function ResearchPanel(): React.JSX.Element {
   const [falsifiedOpen, setFalsifiedOpen] = useState(false);
 
   const openQuestions = archiveOpenQuestions(archive);
-  const hypotheses = archivePendingHypotheses(archive);
+  // 当前假设 = 待验证 + 已证实（有终态的留痕不消失；证伪的在「证伪与纠正」区）。
+  const hypotheses = [...archivePendingHypotheses(archive), ...archiveConfirmedHypotheses(archive)];
   const findings = archiveFindings(archive);
   const evidence = archiveEvidence(archive);
   const falsified = archiveFalsified(archive);
@@ -190,6 +208,8 @@ export function ResearchPanel(): React.JSX.Element {
     reason,
     onReason: setReason,
     onSubmit: () => submit(e.id),
+    // 待验证假设给「✓ 证实」终态入口（confirmed 曾是死状态——证实无路径可达）。
+    ...(e.kind === 'hypothesis' && e.status === 'pending' ? { onResolve: () => void resolve(e.id) } : {}),
   });
 
   return (

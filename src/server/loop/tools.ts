@@ -39,6 +39,7 @@ import {
   falsifyHypothesis,
   loadArchive,
   parseEntityRefs,
+  resolveHypothesis,
   resolveQuestion,
   type BroadcastFn,
   type FindingType,
@@ -387,7 +388,7 @@ const archiveParameters = Type.Object({
     description:
       '操作:hypothesis 立假设(可验证的断言) / evidence 记证据(实验观察到的结果) / '
       + 'finding 立结论(证据支撑的断言,挂 V# 引用) / question 立未决问题(还缺什么) / '
-      + 'falsify 证伪自己的假设(必须,排除的路也是成果) / resolve 未决问题已解决 / '
+      + 'falsify 证伪自己的假设(必须,排除的路也是成果) / resolve 未决问题已解决或假设已证实(Q#/H#) / '
       + 'correct 纠正自己的结论或证据(错了就改,留痕)',
   }),
   text: Type.Optional(Type.String({
@@ -405,7 +406,7 @@ const archiveParameters = Type.Object({
   })),
   id: Type.Optional(Type.String({ description: '目标实体 id(op=falsify/resolve/correct 必填,如 H#1/V#1/C#1/Q#1)' })),
   reason: Type.Optional(Type.String({ description: '原因(op=falsify/correct 必填):错在哪、为什么' })),
-  note: Type.Optional(Type.String({ description: '补充说明(op=resolve 可选):问题被什么解决了' })),
+  note: Type.Optional(Type.String({ description: '补充说明(op=resolve 可选):问题被什么解决了/假设被什么证据证实了' })),
 });
 
 export type ArchiveToolParams = Static<typeof archiveParameters>;
@@ -446,7 +447,8 @@ export function createArchiveTool(
       + '②结论必须有证据支撑——finding 的 refs 必须挂已存在的 V# 证据实体(先 op=evidence 记证据再下结论,缺证据会被拒绝);'
       + '③证伪/纠错必须走 falsify/correct 操作留痕——实验推翻假设用 falsify,结论/证据错了用 correct;**不要把证伪写进 finding 文本里冒充成立**(排除的路也是成果,防止反复重访死路);'
       + '④目标不清/缺前提时立 question(未决问题),不要空转猜方向;'
-      + '⑤每条实体一两句话,全文在对话流里,anchor 标注它在流的哪。',
+      + '⑤假设要有终态——实验证实后 resolve(id=H#N) 标已证实,被推翻用 falsify;立结论时顺手把它证明的假设 resolve 掉,别让假设永远卡「待验证」;'
+      + '⑥每条实体一两句话,全文在对话流里,anchor 标注它在流的哪。',
     parameters: archiveParameters,
     execute: async (_toolCallId, params): Promise<AgentToolResult<ArchiveToolDetails>> => {
       const sid = session();
@@ -513,9 +515,20 @@ export function createArchiveTool(
           return { content: [{ type: 'text', text: `研究档案已更新:${params.id} 已证伪(${params.reason.slice(0, 80)})——排除的路也是成果,已留痕` }], details: { entityId: params.id } };
         }
         case 'resolve': {
-          if (!params.id) throw new Error('research_archive: resolve 需要 id(Q#N)');
-          await resolveQuestion(sid, { id: params.id, note: params.note }, common());
-          return { content: [{ type: 'text', text: `研究档案已更新:${params.id} 已解决${params.note ? `(${params.note.slice(0, 80)})` : ''}` }], details: { entityId: params.id } };
+          if (!params.id) throw new Error('research_archive: resolve 需要 id(Q#N/H#N)');
+          // 按实体类型路由：Q# → 问题已解决(resolved)；H# → 假设已证实(confirmed)。
+          // 证实曾经无路径可达（confirmed 死状态,假设永远卡 pending）——
+          // 实验证实假设后 resolve 给终态;被推翻走 falsify。
+          const kind = loadArchive(sid, { dir: options.dir }).entities.find((e) => e.id === params.id)?.kind;
+          if (kind === 'hypothesis') {
+            await resolveHypothesis(sid, { id: params.id, note: params.note }, common());
+            return { content: [{ type: 'text', text: `研究档案已更新:${params.id} 已证实${params.note ? `(${params.note.slice(0, 80)})` : ''}——假设有终态了` }], details: { entityId: params.id } };
+          }
+          if (kind === 'question') {
+            await resolveQuestion(sid, { id: params.id, note: params.note }, common());
+            return { content: [{ type: 'text', text: `研究档案已更新:${params.id} 已解决${params.note ? `(${params.note.slice(0, 80)})` : ''}` }], details: { entityId: params.id } };
+          }
+          throw new Error(`research_archive: resolve 只作用于假设(H#N)或未决问题(Q#N)——${params.id} ${kind ? `是 ${kind}` : '不存在'}`);
         }
         case 'correct': {
           if (!params.id) throw new Error('research_archive: correct 需要 id(C#N/V#N)');

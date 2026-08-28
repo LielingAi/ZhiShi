@@ -14,6 +14,7 @@ import {
   archiveFalsified,
   archiveFindings,
   archiveOpenQuestions,
+  archiveConfirmedHypotheses,
   archivePendingHypotheses,
   entityRefs,
   type ArchiveSnapshot,
@@ -27,6 +28,7 @@ function snap(): ArchiveSnapshot {
       { id: 'Q#1', kind: 'question', text: '远程入口限制？', status: 'open', links: [], createdAt: 't', updatedAt: 't' },
       { id: 'H#1', kind: 'hypothesis', text: '长度无校验', status: 'falsified', links: ['Q#1'], createdAt: 't', updatedAt: 't' },
       { id: 'H#2', kind: 'hypothesis', text: '解析器二次拷贝', status: 'pending', links: [], createdAt: 't', updatedAt: 't' },
+      { id: 'H#3', kind: 'hypothesis', text: '扩展段多写一字节', status: 'confirmed', links: ['V#1'], createdAt: 't', updatedAt: 't' },
       { id: 'V#1', kind: 'evidence', text: 'SIGSEGV 崩溃', status: 'valid', links: ['H#1'], anchorMessageId: '42', createdAt: 't', updatedAt: 't' },
       { id: 'C#1', kind: 'finding', text: '栈溢出可控制 RIP', status: 'corrected', links: ['V#1'], findingType: 'primitive', needsReview: true, reviewReason: '依赖被纠正（V#1：gdb 读错）', createdAt: 't', updatedAt: 't' },
     ],
@@ -38,8 +40,8 @@ describe('applyArchiveChanged（payload 归一化）', () => {
   it('合法 payload → 完整快照（实体/纠正/字段透传）', () => {
     const s = applyArchiveChanged(snap());
     expect(s.sessionId).toBe('s-1');
-    expect(s.entities).toHaveLength(5);
-    expect(s.entities[3]).toMatchObject({ id: 'V#1', anchorMessageId: '42', links: ['H#1'] });
+    expect(s.entities).toHaveLength(6);
+    expect(s.entities[4]).toMatchObject({ id: 'V#1', anchorMessageId: '42', links: ['H#1'] });
     expect(s.corrections[0]).toMatchObject({ id: 'R#1', by: 'model' });
   });
 
@@ -67,6 +69,7 @@ describe('分组选择器', () => {
     const s = snap();
     expect(archiveOpenQuestions(s).map((e) => e.id)).toEqual(['Q#1']);
     expect(archivePendingHypotheses(s).map((e) => e.id)).toEqual(['H#2']);
+    expect(archiveConfirmedHypotheses(s).map((e) => e.id)).toEqual(['H#3']);
     expect(archiveFindings(s).map((e) => e.id)).toEqual(['C#1']);
     expect(archiveEvidence(s).map((e) => e.id)).toEqual(['V#1']);
     // 证伪与纠正区：R#1 纠正条目挂 H#1（已证伪的假设,带纠正记录不再重复行）。

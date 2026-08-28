@@ -4,7 +4,7 @@
  * admin-api.ts re-export 保持既有调用点（index.ts routeAdminApi）不动。
  */
 
-import { correctEntity, loadArchive } from './loop/archive';
+import { correctEntity, loadArchive, resolveHypothesis, resolveQuestion } from './loop/archive';
 import { getPiSessionId } from './loop/chat-engine';
 import { broadcast } from './sse';
 
@@ -55,6 +55,36 @@ export async function handleArchiveCorrect(payload: {
       { broadcastFn: broadcast },
     );
     return { success: true, data: { archive: archive as unknown as Record<string, unknown> } };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** 假设证实 / 问题解决（终态推进的一等操作；GUI 档案行「✓ 证实」入口）。
+ *  按实体类型路由：H# → confirmed，Q# → resolved；其他类型报错。 */
+export async function handleArchiveResolve(payload: {
+  sessionId?: string;
+  id?: string;
+  note?: string;
+}): Promise<AdminResponse> {
+  const sessionId = typeof payload?.sessionId === 'string' && payload.sessionId.trim()
+    ? payload.sessionId.trim()
+    : getPiSessionId();
+  if (!sessionId) return { success: false, error: 'archive/resolve: 会话未锚定（先开/接会话）' };
+  const id = String(payload?.id ?? '').trim();
+  if (!id) return { success: false, error: 'archive/resolve: 需要 id（目标实体，如 H#1/Q#1）' };
+  const note = typeof payload?.note === 'string' && payload.note.trim() ? payload.note.trim() : undefined;
+  try {
+    const kind = loadArchive(sessionId).entities.find((e) => e.id === id)?.kind;
+    if (kind === 'hypothesis') {
+      const archive = await resolveHypothesis(sessionId, { id, note }, { broadcastFn: broadcast });
+      return { success: true, data: { archive: archive as unknown as Record<string, unknown> } };
+    }
+    if (kind === 'question') {
+      const archive = await resolveQuestion(sessionId, { id, note }, { broadcastFn: broadcast });
+      return { success: true, data: { archive: archive as unknown as Record<string, unknown> } };
+    }
+    return { success: false, error: `archive/resolve: 只作用于假设(H#N)或未决问题(Q#N)——${id} ${kind ? `是 ${kind}` : '不存在'}` };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }

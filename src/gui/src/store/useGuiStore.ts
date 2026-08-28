@@ -427,6 +427,7 @@ export interface GuiState {
   applyArchiveChanged(payload: unknown): void;
   loadArchive(sessionId?: string): Promise<void>;
   correctArchiveEntity(id: string, reason: string): Promise<void>;
+  resolveArchiveEntity(id: string): Promise<void>;
   setArchiveHighlight(id: string | null): void;
   jumpToArchiveAnchor(messageId: string): void;
   setArchivePaneRatio(ratio: number): void;
@@ -1523,6 +1524,22 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     set({
       archiveHighlightId: null,
       toast: `已纠正 ${id}——下游已标待复核`,
+      toastNonce: get().toastNonce + 1,
+    });
+  },
+
+  /** 假设证实/问题解决（终态推进;服务端广播 archive:changed 回来）。 */
+  async resolveArchiveEntity(id: string) {
+    const c = client;
+    if (!c) return;
+    const res = await api.postArchiveResolve(c, { id });
+    if (!res.ok) {
+      set({ toast: res.error ?? '操作失败', toastNonce: get().toastNonce + 1 });
+      return;
+    }
+    set({
+      archiveHighlightId: null,
+      toast: `${id} 已有终态（已证实/已解决）`,
       toastNonce: get().toastNonce + 1,
     });
   },

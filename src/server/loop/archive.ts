@@ -503,6 +503,30 @@ export async function resolveQuestion(
   return snapshot;
 }
 
+/** 假设 → confirmed（假设的推进是研究进展，不是纠正——confirmed 曾经
+ *  是死状态：没有任何路径可达，假设永远卡 pending。实验证实假设后
+ *  走这里给终态；被实验推翻走 falsifyHypothesis）。 */
+export async function resolveHypothesis(
+  sessionId: string,
+  input: ResolveInput,
+  options: ArchiveMutationOptions = {},
+): Promise<ArchiveSnapshot> {
+  const body = await mutateArchive(sessionId, (draft) => {
+    const target = draft.entities.find((e) => e.id === input.id && e.kind === 'hypothesis');
+    if (!target) throw new Error(`假设 ${input.id} 不存在（无法证实）`);
+    if (target.status === 'falsified') throw new Error(`假设 ${input.id} 已证伪（终态，不可翻案为证实）`);
+    const now = freshTimestamp();
+    target.status = 'confirmed';
+    target.updatedAt = now;
+    if (input.note?.trim()) target.links = [...target.links, `note:${input.note.trim().slice(0, 200)}`];
+    draft.meta.updatedAt = now;
+    return draft;
+  }, { dir: options.dir });
+  const snapshot = toSnapshot(sessionId, body);
+  broadcastArchive(snapshot, options.broadcastFn);
+  return snapshot;
+}
+
 // ---------------------------------------------------------------------------
 // 投影 — 注入段（每轮注回模型，紧凑、硬顶）
 // ---------------------------------------------------------------------------
@@ -577,13 +601,18 @@ export function renderArchiveForReport(snapshot: ArchiveSnapshot | undefined): s
   const parts: string[] = [];
 
   const findings = snapshot.entities.filter((e) => e.kind === 'finding');
-  if (findings.length > 0) {
+  const confirmedHyp = snapshot.entities.filter((e) => e.kind === 'hypothesis' && e.status === 'confirmed');
+  if (findings.length > 0 || confirmedHyp.length > 0) {
     const lines = findings.map((e) => {
       const refs = e.links.filter((l) => /^V#\d+$/.test(l));
       const statusMark = e.status === 'corrected' ? '（已纠正）' : e.needsReview ? '（待复核）' : '';
       const type = e.findingType ? `[${e.findingType}] ` : '';
       return `- ${e.id} ${type}${oneLineText(e.text, 300)}${refs.length > 0 ? ` —— 证据：${refs.join('、')}` : ''}${statusMark}`;
     });
+    // 已证实假设并入成果史（confirmed 曾是无路径可达的死状态——全程账本不留黑洞）。
+    for (const e of confirmedHyp) {
+      lines.push(`- ${e.id} ${oneLineText(e.text, 300)}（已证实假设）`);
+    }
     parts.push(`## 研究结论\n\n${lines.join('\n')}`);
   }
 

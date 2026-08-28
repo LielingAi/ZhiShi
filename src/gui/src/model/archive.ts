@@ -111,6 +111,11 @@ export function archivePendingHypotheses(s: ArchiveSnapshot | null): ArchiveEnti
   return s ? s.entities.filter((e) => e.kind === 'hypothesis' && e.status === 'pending') : [];
 }
 
+/** 已证实假设（confirmed——有终态的留在看板留痕，不随证实消失）。 */
+export function archiveConfirmedHypotheses(s: ArchiveSnapshot | null): ArchiveEntity[] {
+  return s ? s.entities.filter((e) => e.kind === 'hypothesis' && e.status === 'confirmed') : [];
+}
+
 /** 结论（全部 finding；被纠正/待复核的带徽章留在原地——成果的完整史）。 */
 export function archiveFindings(s: ArchiveSnapshot | null): ArchiveEntity[] {
   return s ? s.entities.filter((e) => e.kind === 'finding') : [];

@@ -2080,7 +2080,7 @@ export async function handleResearchList(payload: {
 }
 
 // 1.4.7 god file 绞杀续拆：archive/list + archive/correct 已抽到 './admin-archive'——re-export 保持既有调用点不动。
-export { handleArchiveList, handleArchiveCorrect } from './admin-archive';
+export { handleArchiveList, handleArchiveCorrect, handleArchiveResolve } from './admin-archive';
 /** 情报索引更新（zhishi intel update）。mode 旗标 > config.json::intel.mode
  *  > INTEL_DEFAULTS；windowYears/maxSizeMb 恒取 config（无旗标）。长任务
  *  （首次全量回填）同步执行——CLI 侧等待期间 WAL 保证查询不受影响。 */

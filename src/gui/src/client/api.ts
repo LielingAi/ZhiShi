@@ -899,3 +899,14 @@ export function postArchiveCorrect(
     .then((r) => ({ ok: r.success, error: r.error }))
     .catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
 }
+
+/** POST archive/resolve { id, note? }（假设证实/问题解决；服务端广播 archive:changed）。 */
+export function postArchiveResolve(
+  client: GuiSidecarClient,
+  input: { id: string; note?: string },
+): Promise<{ ok: boolean; error?: string }> {
+  return client
+    .adminPost<{ success: boolean; error?: string }>('archive/resolve', input)
+    .then((r) => ({ ok: r.success, error: r.error }))
+    .catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+}

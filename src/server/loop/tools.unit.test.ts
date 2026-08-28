@@ -408,6 +408,22 @@ describe('createArchiveTool（1.4.4 research_archive）', () => {
     expect(snap.entities[0].links).toContain('note:源码第 42 行确认');
   });
 
+  it('hypothesis/resolve:假设立→证实(pending→confirmed,按实体类型路由)', async () => {
+    const tool = makeTool();
+    await tool.execute('t1', { op: 'hypothesis', text: 'writeOpcode 扩展段多写一字节' });
+    const r = await tool.execute('t2', { op: 'resolve', id: 'H#1', note: 'V#1 实验证实' });
+    expect((r.content[0] as { text: string }).text).toContain('已证实');
+    const snap = loadArchive('s-1', { dir });
+    expect(snap.entities[0].status).toBe('confirmed');
+  });
+
+  it('resolve 对证据/结论/不存在 id 抛错（只作用于 H#/Q#）', async () => {
+    const tool = makeTool();
+    await tool.execute('t1', { op: 'evidence', text: 'env_exec #1 输出' });
+    await expect(tool.execute('t2', { op: 'resolve', id: 'V#1' })).rejects.toThrow(/只作用于假设/);
+    await expect(tool.execute('t3', { op: 'resolve', id: 'H#99' })).rejects.toThrow(/不存在/);
+  });
+
   it('参数校验:缺 text/id/reason 抛错,错误文本可读', async () => {
     const tool = makeTool();
     await expect(tool.execute('t1', { op: 'hypothesis' })).rejects.toThrow(/text/);

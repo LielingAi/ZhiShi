@@ -970,6 +970,8 @@ mark.h-search { background: rgba(232,163,61,.3); color: var(--text); border-radi
 .arc-chip-bad { background: rgba(248,81,73,.15); color: #f85149; }
 .arc-chip-warn { background: rgba(210,153,34,.16); color: #d29922; }
 .arc-chip-human { background: rgba(63,185,80,.14); color: #3fb950; }
+.arc-resolve { flex: none; padding: 0 6px; font-size: 10px; line-height: 18px; color: #3fb950; border-color: rgba(63,185,80,.4); }
+.arc-resolve:hover { background: rgba(63,185,80,.14); }
 .arc-row-sub { display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
 .arc-ref { font-size: 10px; color: #58a6ff; cursor: pointer; }
 .arc-ref:hover { text-decoration: underline; }

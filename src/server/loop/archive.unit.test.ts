@@ -27,6 +27,7 @@ import {
   parseEntityRefs,
   renderArchiveForInjection,
   renderArchiveForReport,
+  resolveHypothesis,
   resolveQuestion,
   type ArchiveSnapshot,
 } from './archive';
@@ -124,7 +125,7 @@ describe('纠正语义（append-only + 状态翻转 + 级联不连坐）', () =>
 
 describe('证伪与解决专门入口', () => {
   it('falsifyHypothesis = by:model 的纠正别名(假设 → falsified)', async () => {
-    const h = await addHypothesis(sessionId, { text: '假设一' }, { dir });
+    await addHypothesis(sessionId, { text: '假设一' }, { dir });
     const out = await falsifyHypothesis(sessionId, 'H#1', '本地成立但远程不可达', { dir });
     expect(out.entities.find((e) => e.id === 'H#1')!.status).toBe('falsified');
     expect(out.corrections[0]).toMatchObject({ by: 'model', targetId: 'H#1' });
@@ -140,6 +141,21 @@ describe('证伪与解决专门入口', () => {
   it('resolveQuestion 对非问题实体抛错', async () => {
     await addHypothesis(sessionId, { text: 'H' }, { dir });
     await expect(resolveQuestion(sessionId, { id: 'H#1' }, { dir })).rejects.toThrow(/未决问题/);
+  });
+
+  it('resolveHypothesis:pending → confirmed,note 挂进 links（confirmed 不再是死状态）', async () => {
+    await addHypothesis(sessionId, { text: '假设一' }, { dir });
+    const out = await resolveHypothesis(sessionId, { id: 'H#1', note: '由 V#1 实验证实' }, { dir });
+    expect(out.entities[0].status).toBe('confirmed');
+    expect(out.entities[0].links).toContain('note:由 V#1 实验证实');
+  });
+
+  it('resolveHypothesis 对非假设实体抛错；已证伪假设不可翻案为证实', async () => {
+    await addQuestion(sessionId, { text: 'Q' }, { dir });
+    await expect(resolveHypothesis(sessionId, { id: 'Q#1' }, { dir })).rejects.toThrow(/假设/);
+    await addHypothesis(sessionId, { text: 'H' }, { dir });
+    await falsifyHypothesis(sessionId, 'H#1', '实验推翻', { dir });
+    await expect(resolveHypothesis(sessionId, { id: 'H#1' }, { dir })).rejects.toThrow(/已证伪/);
   });
 });
 
