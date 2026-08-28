@@ -910,3 +910,14 @@ export function postArchiveResolve(
     .then((r) => ({ ok: r.success, error: r.error }))
     .catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
 }
+
+/** POST archive/abandon { id, reason }（搁置假设/问题——不追了≠错了；服务端广播 archive:changed）。 */
+export function postArchiveAbandon(
+  client: GuiSidecarClient,
+  input: { id: string; reason: string },
+): Promise<{ ok: boolean; error?: string }> {
+  return client
+    .adminPost<{ success: boolean; error?: string }>('archive/abandon', input)
+    .then((r) => ({ ok: r.success, error: r.error }))
+    .catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+}

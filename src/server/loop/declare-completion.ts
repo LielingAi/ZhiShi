@@ -142,7 +142,7 @@ export function createDeclareCompletionTool(
         const pending = loadArchive(getSessionId(), { dir: options.dir }).entities
           .filter((e) => e.kind === 'hypothesis' && e.status === 'pending');
         if (pending.length > 0) {
-          reminder = ` 提醒:档案里还有 ${pending.length} 条待验证假设(${pending.map((e) => e.id).join('、')})——确认达成前给它们终态:证实(resolve)或证伪(falsify)。`;
+          reminder = ` 提醒:档案里还有 ${pending.length} 条待验证假设(${pending.map((e) => e.id).join('、')})——确认达成前给它们终态:证实(resolve)、证伪(falsify)或搁置(abandon)。`;
         }
       } catch {
         /* 档案读取失败不阻塞声明 */

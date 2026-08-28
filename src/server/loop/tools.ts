@@ -31,6 +31,7 @@ import {
   type ResearchTaskKind,
 } from '../memory/store';
 import {
+  abandonEntity,
   addEvidence,
   addFinding,
   addHypothesis,
@@ -384,11 +385,12 @@ export const ARCHIVE_FINDING_TYPES: FindingType[] = ['bug_class', 'primitive', '
 
 const archiveParameters = Type.Object({
   op: Type.String({
-    enum: ['hypothesis', 'evidence', 'finding', 'question', 'falsify', 'resolve', 'correct'],
+    enum: ['hypothesis', 'evidence', 'finding', 'question', 'falsify', 'resolve', 'abandon', 'correct'],
     description:
       '操作:hypothesis 立假设(可验证的断言) / evidence 记证据(实验观察到的结果) / '
       + 'finding 立结论(证据支撑的断言,挂 V# 引用) / question 立未决问题(还缺什么) / '
       + 'falsify 证伪自己的假设(必须,排除的路也是成果) / resolve 未决问题已解决或假设已证实(Q#/H#) / '
+      + 'abandon 搁置假设或未决问题(不追了≠错了,H#/Q#) / '
       + 'correct 纠正自己的结论或证据(错了就改,留痕)',
   }),
   text: Type.Optional(Type.String({
@@ -399,13 +401,16 @@ const archiveParameters = Type.Object({
     description: `结论类型(op=finding 可选):${ARCHIVE_FINDING_TYPES.join(' / ')}`,
   })),
   refs: Type.Optional(Type.String({
-    description: '实体引用,逗号分隔(op 新增类可选):假设/问题挂派生依据,证据挂由哪个假设驱动,结论挂证据(V#N)——正反推论的机械锚',
+    description: '实体引用,逗号分隔(op 新增类可选):假设/问题挂派生依据,证据挂由哪个假设驱动(H#N),结论挂支持证据(V#N)与结晶来源(H#N)——正反推论的机械锚',
+  })),
+  against: Type.Optional(Type.String({
+    description: '反证引用,逗号分隔(op=finding 可选):反对本结论的 V# 证据——反证与支持并列挂着,共存不自动推翻,推翻走 correct;不报反证=确认偏误',
   })),
   anchor: Type.Optional(Type.String({
     description: '来源标注(op 新增类可选):这条实体的证据在流的哪里——用「env_exec #N / 命令名 / 文件:行号」形态(如「env_exec #6 build_verify 重跑」「src/cJSON.c:261」),不要用「轮」(与 auto loop 轮次撞车,实机实证编号误导)',
   })),
   id: Type.Optional(Type.String({ description: '目标实体 id(op=falsify/resolve/correct 必填,如 H#1/V#1/C#1/Q#1)' })),
-  reason: Type.Optional(Type.String({ description: '原因(op=falsify/correct 必填):错在哪、为什么' })),
+  reason: Type.Optional(Type.String({ description: '原因(op=falsify/correct/abandon 必填):错在哪、为什么/为什么不追了' })),
   note: Type.Optional(Type.String({ description: '补充说明(op=resolve 可选):问题被什么解决了/假设被什么证据证实了' })),
 });
 
@@ -443,11 +448,11 @@ export function createArchiveTool(
     label: '更新研究档案',
     description:
       '研究档案是本会话的显式研究状态(假设/证据/结论/未决问题),随研究持续更新,每轮注回你的上下文。纪律:'
-      + '①假设驱动实验,立假设后去做实验,evidence 挂假设引用;'
-      + '②结论必须有证据支撑——finding 的 refs 必须挂已存在的 V# 证据实体(先 op=evidence 记证据再下结论,缺证据会被拒绝);'
+      + '①假设驱动实验,立假设后去做实验,evidence 挂驱动假设引用(H#N);'
+      + '②结论必须有证据支撑——finding 的 refs 必须挂已存在的 V# 证据实体(先 op=evidence 记证据再下结论,缺证据会被拒绝),并挂回结晶来源假设(H#N);有反证用 against 挂反证 V#(反证与支持并列,不报反证=确认偏误);'
       + '③证伪/纠错必须走 falsify/correct 操作留痕——实验推翻假设用 falsify,结论/证据错了用 correct;**不要把证伪写进 finding 文本里冒充成立**(排除的路也是成果,防止反复重访死路);'
       + '④目标不清/缺前提时立 question(未决问题),不要空转猜方向;'
-      + '⑤假设要有终态——实验证实后 resolve(id=H#N) 标已证实,被推翻用 falsify;立结论时顺手把它证明的假设 resolve 掉,别让假设永远卡「待验证」;'
+      + '⑤假设要有终态——实验证实后 resolve(id=H#N) 标已证实,被推翻用 falsify,不追了用 abandon(不追了≠错了);立结论时顺手把它证明的假设 resolve 掉,别让假设永远卡「待验证」;'
       + '⑥每条实体一两句话,全文在对话流里,anchor 标注它在流的哪。',
     parameters: archiveParameters,
     execute: async (_toolCallId, params): Promise<AgentToolResult<ArchiveToolDetails>> => {
@@ -469,7 +474,12 @@ export function createArchiveTool(
           if (!params.text?.trim()) throw new Error('research_archive: evidence 需要 text');
           const snap = await addEvidence(sid, { text: params.text, ...base }, common());
           const e = snap.entities.at(-1)!;
-          return { content: [{ type: 'text', text: `研究档案已更新:${e.id} 证据已记${e.links.length > 0 ? `(由 ${e.links.join(' ')} 驱动)` : ''}` }], details: { entityId: e.id } };
+          // 1.4.8 挂链纪律（提醒级）：证据不挂驱动假设 → 链式投影里进孤儿区
+          // （「顺手观察」语义合法不拒绝，但断链要让人看见）。
+          const orphanReminder = e.links.some((l) => /^H#\d+$/.test(l))
+            ? ''
+            : ' 提醒:未挂驱动假设(H#N),链式投影里会进孤儿区——有来源假设就补挂(refs)。';
+          return { content: [{ type: 'text', text: `研究档案已更新:${e.id} 证据已记${e.links.length > 0 ? `(由 ${e.links.join(' ')} 驱动)` : ''}${orphanReminder}` }], details: { entityId: e.id } };
         }
         case 'finding': {
           if (!params.text?.trim()) throw new Error('research_archive: finding 需要 text');
@@ -494,13 +504,27 @@ export function createArchiveTool(
               + '先 op=evidence 记录证据，再 finding refs 挂 V# 引用。',
             );
           }
+          // 1.4.8 反证结构：against 挂反证性 V# 证据（与支持并列，共存不自动
+          // 推翻——推翻走 correct）。校验口径同 refs：必须是已存在的证据实体。
+          const against = parseEntityRefs(params.against);
+          const badAgainst = against.filter((r) => !evidenceIds.has(r));
+          if (badAgainst.length > 0) {
+            throw new Error(
+              `research_archive: against 含非证据实体（${badAgainst.join('、')}）——`
+              + '反证也是证据：先 op=evidence 记录它，再 against 挂 V# 引用。',
+            );
+          }
           const snap = await addFinding(
             sid,
-            { text: params.text, findingType: params.findingType as FindingType | undefined, ...base },
+            { text: params.text, findingType: params.findingType as FindingType | undefined, ...(against.length > 0 ? { againstRefs: against.join(',') } : {}), ...base },
             common(),
           );
           const e = snap.entities.at(-1)!;
-          return { content: [{ type: 'text', text: `研究档案已更新:${e.id} 结论已立,证据 ${e.links.join(' ')}` }], details: { entityId: e.id } };
+          // 挂链纪律（提醒级）：结论挂回结晶来源假设，链式投影才连得上。
+          const chainReminder = e.links.some((l) => /^H#\d+$/.test(l))
+            ? ''
+            : ' 提醒:refs 未挂结晶来源假设(H#N)——结论在链式投影里会断链,建议补上。';
+          return { content: [{ type: 'text', text: `研究档案已更新:${e.id} 结论已立,证据 ${e.links.join(' ')}${e.against?.length ? `,反证 ${e.against.join(' ')}` : ''}${chainReminder}` }], details: { entityId: e.id } };
         }
         case 'question': {
           if (!params.text?.trim()) throw new Error('research_archive: question 需要 text');
@@ -513,6 +537,12 @@ export function createArchiveTool(
           if (!params.reason?.trim()) throw new Error('research_archive: falsify 需要 reason(错在哪、为什么)');
           await falsifyHypothesis(sid, params.id, params.reason, common());
           return { content: [{ type: 'text', text: `研究档案已更新:${params.id} 已证伪(${params.reason.slice(0, 80)})——排除的路也是成果,已留痕` }], details: { entityId: params.id } };
+        }
+        case 'abandon': {
+          if (!params.id) throw new Error('research_archive: abandon 需要 id(H#N/Q#N)');
+          if (!params.reason?.trim()) throw new Error('research_archive: abandon 需要 reason(为什么不追了——留痕)');
+          await abandonEntity(sid, { id: params.id, note: params.reason }, common());
+          return { content: [{ type: 'text', text: `研究档案已更新:${params.id} 已搁置(${params.reason.slice(0, 80)})——不追了≠错了,已留痕` }], details: { entityId: params.id } };
         }
         case 'resolve': {
           if (!params.id) throw new Error('research_archive: resolve 需要 id(Q#N/H#N)');

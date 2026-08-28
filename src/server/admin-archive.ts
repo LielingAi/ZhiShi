@@ -4,7 +4,7 @@
  * admin-api.ts re-export 保持既有调用点（index.ts routeAdminApi）不动。
  */
 
-import { correctEntity, loadArchive, resolveHypothesis, resolveQuestion } from './loop/archive';
+import { abandonEntity, correctEntity, loadArchive, resolveHypothesis, resolveQuestion } from './loop/archive';
 import { getPiSessionId } from './loop/chat-engine';
 import { broadcast } from './sse';
 
@@ -85,6 +85,29 @@ export async function handleArchiveResolve(payload: {
       return { success: true, data: { archive: archive as unknown as Record<string, unknown> } };
     }
     return { success: false, error: `archive/resolve: 只作用于假设(H#N)或未决问题(Q#N)——${id} ${kind ? `是 ${kind}` : '不存在'}` };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** 搁置假设/未决问题（1.4.8 第三终态；GUI 档案行「搁置」入口）。
+ *  「不追了」≠「错了」——终态推进留 note，不进纠正台账。 */
+export async function handleArchiveAbandon(payload: {
+  sessionId?: string;
+  id?: string;
+  reason?: string;
+}): Promise<AdminResponse> {
+  const sessionId = typeof payload?.sessionId === 'string' && payload.sessionId.trim()
+    ? payload.sessionId.trim()
+    : getPiSessionId();
+  if (!sessionId) return { success: false, error: 'archive/abandon: 会话未锚定（先开/接会话）' };
+  const id = String(payload?.id ?? '').trim();
+  if (!id) return { success: false, error: 'archive/abandon: 需要 id（目标实体，如 H#1/Q#1）' };
+  const reason = String(payload?.reason ?? '').trim();
+  if (!reason) return { success: false, error: 'archive/abandon: 需要 reason（为什么不追了——留痕）' };
+  try {
+    const archive = await abandonEntity(sessionId, { id, note: reason }, { broadcastFn: broadcast });
+    return { success: true, data: { archive: archive as unknown as Record<string, unknown> } };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }

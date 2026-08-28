@@ -428,6 +428,7 @@ export interface GuiState {
   loadArchive(sessionId?: string): Promise<void>;
   correctArchiveEntity(id: string, reason: string): Promise<void>;
   resolveArchiveEntity(id: string): Promise<void>;
+  abandonArchiveEntity(id: string, reason: string): Promise<void>;
   setArchiveHighlight(id: string | null): void;
   jumpToArchiveAnchor(messageId: string): void;
   setArchivePaneRatio(ratio: number): void;
@@ -1540,6 +1541,22 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     set({
       archiveHighlightId: null,
       toast: `${id} 已有终态（已证实/已解决）`,
+      toastNonce: get().toastNonce + 1,
+    });
+  },
+
+  /** 搁置假设/问题（不追了≠错了;服务端广播 archive:changed 回来）。 */
+  async abandonArchiveEntity(id: string, reason: string) {
+    const c = client;
+    if (!c) return;
+    const res = await api.postArchiveAbandon(c, { id, reason });
+    if (!res.ok) {
+      set({ toast: res.error ?? '搁置失败', toastNonce: get().toastNonce + 1 });
+      return;
+    }
+    set({
+      archiveHighlightId: null,
+      toast: `${id} 已搁置——不追了≠错了，已留痕`,
       toastNonce: get().toastNonce + 1,
     });
   },

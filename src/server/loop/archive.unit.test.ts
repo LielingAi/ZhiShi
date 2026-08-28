@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  abandonEntity,
   addEvidence,
   addFinding,
   addHypothesis,
@@ -156,6 +157,59 @@ describe('证伪与解决专门入口', () => {
     await addHypothesis(sessionId, { text: 'H' }, { dir });
     await falsifyHypothesis(sessionId, 'H#1', '实验推翻', { dir });
     await expect(resolveHypothesis(sessionId, { id: 'H#1' }, { dir })).rejects.toThrow(/已证伪/);
+  });
+});
+
+describe('1.4.8 — 反证结构（against）与第三终态（abandon）', () => {
+  it('addFinding 挂 againstRefs → against 持久化（仅 V# 入库，读回还原）', async () => {
+    await addHypothesis(sessionId, { text: 'H' }, { dir });
+    await addEvidence(sessionId, { text: '支持证据', refs: 'H#1' }, { dir });
+    await addEvidence(sessionId, { text: '反证：构造输入未复现', refs: 'H#1' }, { dir });
+    const out = await addFinding(
+      sessionId,
+      { text: '结论带反证', refs: 'V#1,H#1', againstRefs: 'V#2' },
+      { dir },
+    );
+    const f = out.entities.find((e) => e.id === 'C#1')!;
+    expect(f.against).toEqual(['V#2']);
+    // 跨实例读回（持久化还原）。
+    const back = loadArchive(sessionId, { dir });
+    expect(back.entities.find((e) => e.id === 'C#1')!.against).toEqual(['V#2']);
+  });
+
+  it('abandonEntity:假设/问题 pending/open → abandoned,理由进 note 链接,不进纠正台账', async () => {
+    await addHypothesis(sessionId, { text: 'H' }, { dir });
+    await addQuestion(sessionId, { text: 'Q' }, { dir });
+    const out = await abandonEntity(sessionId, { id: 'H#1', note: '方向改为协议面' }, { dir });
+    expect(out.entities[0].status).toBe('abandoned');
+    expect(out.entities[0].links).toContain('note:方向改为协议面');
+    expect(out.corrections).toHaveLength(0); // 不追了≠错了——不留 R#
+    const out2 = await abandonEntity(sessionId, { id: 'Q#1', note: '目标已下线' }, { dir });
+    expect(out2.entities[1].status).toBe('abandoned');
+  });
+
+  it('abandonEntity:已有终态/非 HQ 类实体 → 抛错', async () => {
+    await addHypothesis(sessionId, { text: 'H1' }, { dir });
+    await resolveHypothesis(sessionId, { id: 'H#1' }, { dir });
+    await expect(abandonEntity(sessionId, { id: 'H#1' }, { dir })).rejects.toThrow(/已有终态/);
+    await addHypothesis(sessionId, { text: 'H2' }, { dir });
+    await falsifyHypothesis(sessionId, 'H#2', 'x', { dir });
+    await expect(abandonEntity(sessionId, { id: 'H#2' }, { dir })).rejects.toThrow(/已有终态/);
+    await addEvidence(sessionId, { text: 'V' }, { dir });
+    await expect(abandonEntity(sessionId, { id: 'V#1' }, { dir })).rejects.toThrow(/不存在/);
+  });
+
+  it('注入投影:结论行带反证引用;报告投影:研究结论带反证、搁置进证伪与纠正节', async () => {
+    await addHypothesis(sessionId, { text: 'H 正文' }, { dir });
+    await addEvidence(sessionId, { text: '支持', refs: 'H#1' }, { dir });
+    await addEvidence(sessionId, { text: '反证', refs: 'H#1' }, { dir });
+    await addFinding(sessionId, { text: '结论正文', refs: 'V#1,H#1', againstRefs: 'V#2' }, { dir });
+    const inj = renderArchiveForInjection(loadArchive(sessionId, { dir }));
+    expect(inj).toContain('反证 V#2');
+    await abandonEntity(sessionId, { id: 'H#1', note: '不追了' }, { dir });
+    const report = renderArchiveForReport(loadArchive(sessionId, { dir }));
+    expect(report).toContain('—— 反证：V#2');
+    expect(report).toContain('已搁置：不追了');
   });
 });
 

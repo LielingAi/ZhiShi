@@ -10,13 +10,16 @@ import { describe, expect, it } from 'vitest';
 import {
   applyArchiveChanged,
   archiveBadgeCount,
+  archiveConfirmedHypotheses,
   archiveEvidence,
   archiveFalsified,
   archiveFindings,
   archiveOpenQuestions,
-  archiveConfirmedHypotheses,
+  archiveOrphans,
   archivePendingHypotheses,
+  archiveThreads,
   entityRefs,
+  findingEvidenceCounts,
   type ArchiveSnapshot,
 } from './archive';
 
@@ -90,5 +93,51 @@ describe('分组选择器', () => {
 
   it('entityRefs 只保留 H#/V#/C#/Q# 形态（note: 等过滤掉）', () => {
     expect(entityRefs({ id: 'C#1', kind: 'finding', text: '', status: 'x', links: ['V#1', 'H#2', 'note:xxx', 'junk'], createdAt: 't', updatedAt: 't' })).toEqual(['V#1', 'H#2']);
+  });
+});
+
+describe('1.4.8 链式投影（研究线派生 + 孤儿区 + 反证计数）', () => {
+  function chainSnap(): ArchiveSnapshot {
+    return {
+      sessionId: 's-1',
+      updatedAt: 't',
+      entities: [
+        { id: 'H#1', kind: 'hypothesis', text: '长度无校验', status: 'pending', links: [], createdAt: 't', updatedAt: 't' },
+        { id: 'V#1', kind: 'evidence', text: '崩溃复现', status: 'valid', links: ['H#1'], createdAt: 't', updatedAt: 't' },
+        { id: 'V#2', kind: 'evidence', text: '远程未复现（反证）', status: 'valid', links: ['H#1'], createdAt: 't', updatedAt: 't' },
+        { id: 'C#1', kind: 'finding', text: '栈溢出可控 RIP', status: 'established', links: ['V#1'], against: ['V#2'], createdAt: 't', updatedAt: 't' },
+        { id: 'H#2', kind: 'hypothesis', text: '空线假设', status: 'falsified', links: [], createdAt: 't', updatedAt: 't' },
+        { id: 'V#3', kind: 'evidence', text: '顺手观察', status: 'valid', links: [], createdAt: 't', updatedAt: 't' },
+        { id: 'C#2', kind: 'finding', text: '断链结论', status: 'established', links: ['V#3'], createdAt: 't', updatedAt: 't' },
+      ],
+      corrections: [],
+    };
+  }
+
+  it('链组装：证据挂假设归线，结论经链上 V# 反推归线', () => {
+    const threads = archiveThreads(chainSnap());
+    expect(threads.map((t) => t.hypothesis.id)).toEqual(['H#1', 'H#2']);
+    expect(threads[0].evidence.map((e) => e.id)).toEqual(['V#1', 'V#2']);
+    expect(threads[0].findings.map((e) => e.id)).toEqual(['C#1']); // 经 V#1 反推
+    expect(threads[1].evidence).toEqual([]);
+    expect(threads[1].findings).toEqual([]);
+  });
+
+  it('孤儿区：未挂假设的证据 + 不挂研究线的结论（断链显式化）', () => {
+    const orphans = archiveOrphans(chainSnap());
+    expect(orphans.evidence.map((e) => e.id)).toEqual(['V#3']);
+    expect(orphans.findings.map((e) => e.id)).toEqual(['C#2']); // 只挂孤儿 V#3，归不了线
+  });
+
+  it('against 归一化（读侧容错）+ findingEvidenceCounts 支持/反证计数', () => {
+    const s = applyArchiveChanged(chainSnap());
+    const c1 = s.entities.find((e) => e.id === 'C#1')!;
+    expect(c1.against).toEqual(['V#2']);
+    expect(findingEvidenceCounts(c1)).toEqual({ supports: 1, against: 1 });
+  });
+
+  it('null/空档案 → 空链空孤儿（面板空态依赖）', () => {
+    expect(archiveThreads(null)).toEqual([]);
+    expect(archiveOrphans(null)).toEqual({ evidence: [], findings: [] });
   });
 });

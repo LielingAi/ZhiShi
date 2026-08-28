@@ -970,8 +970,18 @@ mark.h-search { background: rgba(232,163,61,.3); color: var(--text); border-radi
 .arc-chip-bad { background: rgba(248,81,73,.15); color: #f85149; }
 .arc-chip-warn { background: rgba(210,153,34,.16); color: #d29922; }
 .arc-chip-human { background: rgba(63,185,80,.14); color: #3fb950; }
+.arc-chip-ok { background: rgba(63,185,80,.14); color: #3fb950; }
 .arc-resolve { flex: none; padding: 0 6px; font-size: 10px; line-height: 18px; color: #3fb950; border-color: rgba(63,185,80,.4); }
 .arc-resolve:hover { background: rgba(63,185,80,.14); }
+.arc-ref-against { color: #f85149; }
+/* 1.4.8 链式投影：研究线（假设 → 证据/结论缩进挂线） */
+.arc-thread { display: flex; flex-direction: column; gap: 4px; }
+.arc-thread-head { display: flex; align-items: flex-start; gap: 4px; }
+.arc-thread-fold { flex: none; margin-top: 8px; }
+.arc-thread-hyp { flex: 1; min-width: 0; }
+.arc-thread-body { display: flex; flex-direction: column; gap: 6px; margin-left: 18px; padding-left: 8px; border-left: 1px solid var(--panel-3); }
+.arc-thread-empty { font-size: 11px; color: var(--muted); padding: 2px 0; }
+.arc-orphan-hint { font-size: 11px; color: var(--muted); padding: 2px 0 4px; }
 .arc-row-sub { display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
 .arc-ref { font-size: 10px; color: #58a6ff; cursor: pointer; }
 .arc-ref:hover { text-decoration: underline; }

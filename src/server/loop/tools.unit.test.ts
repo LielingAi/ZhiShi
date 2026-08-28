@@ -424,6 +424,51 @@ describe('createArchiveTool（1.4.4 research_archive）', () => {
     await expect(tool.execute('t3', { op: 'resolve', id: 'H#99' })).rejects.toThrow(/不存在/);
   });
 
+  it('finding against:反证挂已存在 V# → 立结论带反证;挂非证据实体 → 拒绝', async () => {
+    const tool = makeTool();
+    await tool.execute('t1', { op: 'hypothesis', text: 'H' });
+    await tool.execute('t2', { op: 'evidence', text: '支持', refs: 'H#1' });
+    await tool.execute('t3', { op: 'evidence', text: '反证', refs: 'H#1' });
+    const r = await tool.execute('t4', { op: 'finding', text: '结论', refs: 'V#1,H#1', against: 'V#2' });
+    expect((r.content[0] as { text: string }).text).toContain('反证 V#2');
+    const snap = loadArchive('s-1', { dir });
+    expect(snap.entities.find((e) => e.id === 'C#1')!.against).toEqual(['V#2']);
+    await expect(tool.execute('t5', { op: 'finding', text: '结论2', refs: 'V#1', against: 'V#99' })).rejects.toThrow(/非证据实体/);
+    await expect(tool.execute('t6', { op: 'finding', text: '结论3', refs: 'V#1', against: 'H#1' })).rejects.toThrow(/非证据实体/);
+  });
+
+  it('挂链提醒（提醒级不拒绝）:证据不挂 H# → 孤儿区提醒;结论不挂 H# → 断链提醒', async () => {
+    const tool = makeTool();
+    const r1 = await tool.execute('t1', { op: 'evidence', text: '顺手观察' });
+    expect((r1.content[0] as { text: string }).text).toContain('孤儿区');
+    const r2 = await tool.execute('t2', { op: 'finding', text: '结论', refs: 'V#1' });
+    expect((r2.content[0] as { text: string }).text).toContain('断链');
+    // 挂上 H# → 无提醒。
+    await tool.execute('t3', { op: 'hypothesis', text: 'H' });
+    const r3 = await tool.execute('t4', { op: 'evidence', text: '驱动证据', refs: 'H#1' });
+    expect((r3.content[0] as { text: string }).text).not.toContain('孤儿区');
+    const r4 = await tool.execute('t5', { op: 'finding', text: '结论2', refs: 'V#2,H#1' });
+    expect((r4.content[0] as { text: string }).text).not.toContain('断链');
+  });
+
+  it('abandon:假设/问题 → 已搁置(终态,reason 必填);证据/结论/终态实体 → 拒绝', async () => {
+    const tool = makeTool();
+    await tool.execute('t1', { op: 'hypothesis', text: 'H' });
+    await tool.execute('t2', { op: 'question', text: 'Q' });
+    await tool.execute('t3', { op: 'evidence', text: 'V' });
+    const r = await tool.execute('t4', { op: 'abandon', id: 'H#1', reason: '方向改为协议面' });
+    expect((r.content[0] as { text: string }).text).toContain('已搁置');
+    let snap = loadArchive('s-1', { dir });
+    expect(snap.entities.find((e) => e.id === 'H#1')!.status).toBe('abandoned');
+    expect(snap.corrections).toHaveLength(0);
+    await tool.execute('t5', { op: 'abandon', id: 'Q#1', reason: '目标下线' });
+    snap = loadArchive('s-1', { dir });
+    expect(snap.entities.find((e) => e.id === 'Q#1')!.status).toBe('abandoned');
+    await expect(tool.execute('t6', { op: 'abandon', id: 'V#1', reason: 'x' })).rejects.toThrow(/不存在/);
+    await expect(tool.execute('t7', { op: 'abandon', id: 'H#1', reason: 'x' })).rejects.toThrow(/已有终态/);
+    await expect(tool.execute('t8', { op: 'abandon', id: 'H#2' })).rejects.toThrow(/reason/);
+  });
+
   it('参数校验:缺 text/id/reason 抛错,错误文本可读', async () => {
     const tool = makeTool();
     await expect(tool.execute('t1', { op: 'hypothesis' })).rejects.toThrow(/text/);

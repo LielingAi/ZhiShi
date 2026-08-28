@@ -275,7 +275,7 @@ export function buildFirstTurnText(goal: string, criteria: string[]): string {
     '2. 确认全部验收条件已达成且每条都有研究记录证据支撑时,调用 declare_completion 宣布达成(statement 写清哪条条件被哪条证据支撑,evidenceRefs 挂 research_log 返回的事件编号 E#N),然后停下等研究员终审;',
     '3. 方向分歧/关键取舍无把握、且 expert_search 无基准时,用 request_decision 提请人拍板,提请后停等决定注入;平时自主推进,不逐轮请示;',
     '4. 越界动作(写宿主/用本机凭据/改网络策略/销毁环境)会被边界拦截,如实遵守拦截提示;',
-    '5. 研究档案(research_archive 工具)是你的显式研究状态,随研究持续更新、每轮注回你的上下文——基于它继续,不从历史脑补:假设驱动实验(evidence 挂假设引用);结论必须有证据支撑(finding 的 refs 必须挂已存在的 V# 证据实体,缺证据会被工具拒绝——先 op=evidence 再下结论);证伪/纠错走 falsify/correct,不要把证伪写进 finding 文本冒充成立;假设要有终态——实验证实后 resolve(id=H#N) 标已证实,别让假设永远卡「待验证」;目标不清立 question;anchor 标注用「env_exec #N / 命令名 / 文件:行号」,不要用「轮」(与 auto loop 轮次撞车)。',
+    '5. 研究档案(research_archive 工具)是你的显式研究状态,随研究持续更新、每轮注回你的上下文——基于它继续,不从历史脑补:假设驱动实验(evidence 挂驱动假设引用 H#N,不挂断链进孤儿区);结论必须有证据支撑(finding 的 refs 必须挂已存在的 V# 证据实体并挂回结晶来源假设 H#N,缺证据会被工具拒绝——先 op=evidence 再下结论;有反证用 against 挂反证 V#,不报反证=确认偏误);证伪/纠错走 falsify/correct,不要把证伪写进 finding 文本冒充成立;假设要有终态——实验证实后 resolve(id=H#N) 标已证实,被推翻用 falsify,不追了用 abandon;目标不清立 question;anchor 标注用「env_exec #N / 命令名 / 文件:行号」,不要用「轮」(与 auto loop 轮次撞车)。',
   ].join('\n');
 }
 

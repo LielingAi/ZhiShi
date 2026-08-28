@@ -22,6 +22,8 @@ export interface ArchiveEntity {
   anchorLabel?: string;
   /** 引用其他实体 id（H#/V#/C#/Q#）。 */
   links: string[];
+  /** 反证证据 id（V#N，仅 finding——1.4.8 反证结构）。 */
+  against?: string[];
   findingType?: string;
   needsReview?: boolean;
   reviewReason?: string;
@@ -63,6 +65,7 @@ export function applyArchiveChanged(payload: unknown): ArchiveSnapshot {
         ...(typeof e.anchorMessageId === 'string' ? { anchorMessageId: e.anchorMessageId } : {}),
         ...(typeof e.anchorLabel === 'string' ? { anchorLabel: e.anchorLabel } : {}),
         links: Array.isArray(e.links) ? (e.links as string[]).filter((l) => typeof l === 'string') : [],
+        ...(Array.isArray(e.against) ? { against: (e.against as string[]).filter((l) => typeof l === 'string') } : {}),
         ...(typeof e.findingType === 'string' ? { findingType: e.findingType } : {}),
         ...(e.needsReview === true ? { needsReview: true } : {}),
         ...(typeof e.reviewReason === 'string' ? { reviewReason: e.reviewReason } : {}),
@@ -111,7 +114,8 @@ export function archivePendingHypotheses(s: ArchiveSnapshot | null): ArchiveEnti
   return s ? s.entities.filter((e) => e.kind === 'hypothesis' && e.status === 'pending') : [];
 }
 
-/** 已证实假设（confirmed——有终态的留在看板留痕，不随证实消失）。 */
+/** 已证实假设（confirmed——有终态的留在看板留痕，不随证实消失）。
+ *  历史回看（HistoryPanel）分组用；主看板 1.4.8 起走链式投影。 */
 export function archiveConfirmedHypotheses(s: ArchiveSnapshot | null): ArchiveEntity[] {
   return s ? s.entities.filter((e) => e.kind === 'hypothesis' && e.status === 'confirmed') : [];
 }
@@ -146,6 +150,77 @@ export function archiveFalsified(s: ArchiveSnapshot | null): Array<{ entity?: Ar
 export function archiveBadgeCount(s: ArchiveSnapshot | null): number {
   if (!s) return 0;
   return archiveOpenQuestions(s).length + s.entities.filter((e) => e.needsReview).length;
+}
+
+// ---------------------------------------------------------------------------
+// 1.4.8 链式投影（替换类型分区——对应关系从 links 反向索引派生，不是存储）
+// ---------------------------------------------------------------------------
+
+/** 一条研究线：假设 → 由它驱动的证据 → 链上结论（含反证挂边）。 */
+export interface ArchiveThread {
+  hypothesis: ArchiveEntity;
+  /** 由本假设驱动的证据（V 的 links 挂本 H#）。 */
+  evidence: ArchiveEntity[];
+  /** 链上结论：直挂本 H#，或 refs 经链上证据反推（C → V → H）。 */
+  findings: ArchiveEntity[];
+}
+
+/** 断链实体（挂链纪律收紧前的存量 + 模型偷懒的新增——显式列出，装不了不知道）。 */
+export interface ArchiveOrphans {
+  /** 未挂驱动假设的证据（「顺手观察」语义合法，但断链要看得见）。 */
+  evidence: ArchiveEntity[];
+  /** 不挂在任何研究线上的结论。 */
+  findings: ArchiveEntity[];
+}
+
+const EVIDENCE_ID_RE = /^V#\d+$/;
+
+function computeChains(s: ArchiveSnapshot | null): { threads: ArchiveThread[]; orphans: ArchiveOrphans } {
+  const empty = { threads: [], orphans: { evidence: [], findings: [] } };
+  if (!s) return empty;
+  const hypotheses = s.entities.filter((e) => e.kind === 'hypothesis');
+  const allEvidence = s.entities.filter((e) => e.kind === 'evidence');
+  const allFindings = s.entities.filter((e) => e.kind === 'finding');
+  const threads: ArchiveThread[] = [];
+  const assignedEvidence = new Set<string>();
+  const assignedFindings = new Set<string>();
+  for (const h of hypotheses) {
+    const evidence = allEvidence.filter((e) => e.links.includes(h.id));
+    for (const e of evidence) assignedEvidence.add(e.id);
+    const evIds = new Set(evidence.map((e) => e.id));
+    // 结论认领规则（确定性）：直挂本 H# 优先，其次经链上 V# 反推；
+    // 跨线结论被先扫到的线认领（实体序 = 时序）。
+    const findings = allFindings.filter(
+      (f) => !assignedFindings.has(f.id) && (f.links.includes(h.id) || f.links.some((l) => evIds.has(l))),
+    );
+    for (const f of findings) assignedFindings.add(f.id);
+    threads.push({ hypothesis: h, evidence, findings });
+  }
+  return {
+    threads,
+    orphans: {
+      evidence: allEvidence.filter((e) => !assignedEvidence.has(e.id)),
+      findings: allFindings.filter((f) => !assignedFindings.has(f.id)),
+    },
+  };
+}
+
+/** 研究线列表（按假设时序）。 */
+export function archiveThreads(s: ArchiveSnapshot | null): ArchiveThread[] {
+  return computeChains(s).threads;
+}
+
+/** 断链实体（孤儿区）。 */
+export function archiveOrphans(s: ArchiveSnapshot | null): ArchiveOrphans {
+  return computeChains(s).orphans;
+}
+
+/** 结论的支持/反证计数（看板「+N / −M」徽章）。 */
+export function findingEvidenceCounts(e: ArchiveEntity): { supports: number; against: number } {
+  return {
+    supports: e.links.filter((l) => EVIDENCE_ID_RE.test(l)).length,
+    against: (e.against ?? []).filter((l) => EVIDENCE_ID_RE.test(l)).length,
+  };
 }
 
 /** 状态 → 中文标签（看板徽章）。 */

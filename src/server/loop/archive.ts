@@ -7,10 +7,12 @@
  * 服务端半：实体层 + 纠正 + 持久化 + 渲染投影。
  *
  * 实体层四类 + 纠正条目（每会话一份，跨会话档案是蒸馏弧职责——不做）：
- *   - 假设 H#n：可验证的断言（pending / confirmed / falsified）
+ *   - 假设 H#n：可验证的断言（pending / confirmed / falsified / abandoned
+ *     ——1.4.8 第三终态：「我不追了」≠「我错了」，搁置不进纠正台账）
  *   - 证据 V#n：实验观察到的结果（valid / doubtful / overturned）
  *   - 结论 C#n：关于系统的断言，带类型 bug_class / primitive / constraint /
- *     fact（established / doubtful / corrected）
+ *     fact（established / doubtful / corrected）；links 挂支持性证据，
+ *     against 挂反证性证据（1.4.8 反证结构——反证共存不自动推翻）
  *   - 未决问题 Q#n：还缺哪一环（open / resolved / abandoned）
  *   - 纠正条目 R#n：append-only（不删原文，研究记录本从不撕页）
  *
@@ -46,7 +48,7 @@ import { withFileLock, writeFileAtomic } from '../utils/file-lock';
 
 export type ArchiveEntityKind = 'hypothesis' | 'evidence' | 'finding' | 'question';
 
-export type HypothesisStatus = 'pending' | 'confirmed' | 'falsified';
+export type HypothesisStatus = 'pending' | 'confirmed' | 'falsified' | 'abandoned';
 export type EvidenceStatus = 'valid' | 'doubtful' | 'overturned';
 export type FindingStatus = 'established' | 'doubtful' | 'corrected';
 export type QuestionStatus = 'open' | 'resolved' | 'abandoned';
@@ -69,6 +71,9 @@ export interface ArchiveEntity {
   anchorLabel?: string;
   /** 链接：引用其他实体 id（如 "Q#1,C#2" → ["Q#1","C#2"]）。 */
   links: string[];
+  /** 反证：指向本结论的反证性证据 id（V#N，仅 finding；与 links 里的
+   *  支持性证据并列——1.4.8 反证结构。反证共存不自动推翻，推翻走纠正）。 */
+  against?: string[];
   /** 结论类型（仅 finding）。 */
   findingType?: FindingType;
   /** 级联标记：依赖的实体被纠正 → 待复核（不连坐，见文件头）。 */
@@ -324,6 +329,8 @@ export interface AddEntityInput {
   text: string;
   /** 逗号分隔实体 id（链接）。 */
   refs?: string;
+  /** 逗号分隔反证证据 id（V#N，仅 finding——1.4.8 反证结构）。 */
+  againstRefs?: string;
   anchorMessageId?: string;
   anchorLabel?: string;
   findingType?: FindingType;
@@ -349,6 +356,10 @@ function buildEntity(
   if (input.anchorMessageId) entity.anchorMessageId = input.anchorMessageId;
   if (input.anchorLabel) entity.anchorLabel = input.anchorLabel.trim();
   if (kind === 'finding' && input.findingType) entity.findingType = input.findingType;
+  if (kind === 'finding') {
+    const against = parseEntityRefs(input.againstRefs).filter((r) => r.startsWith('V#'));
+    if (against.length > 0) entity.against = against;
+  }
   return entity;
 }
 
@@ -527,6 +538,34 @@ export async function resolveHypothesis(
   return snapshot;
 }
 
+/** 假设/未决问题 → abandoned（1.4.8 第三终态：「我不追了」≠「我错了」。
+ *  方向变/不再相关的搁置，不是证伪——走终态推进留 note，不进纠正台账。
+ *  已有终态（confirmed/falsified/resolved/abandoned）的不可再放弃。 */
+export async function abandonEntity(
+  sessionId: string,
+  input: ResolveInput,
+  options: ArchiveMutationOptions = {},
+): Promise<ArchiveSnapshot> {
+  const body = await mutateArchive(sessionId, (draft) => {
+    const target = draft.entities.find(
+      (e) => e.id === input.id && (e.kind === 'hypothesis' || e.kind === 'question'),
+    );
+    if (!target) throw new Error(`假设/未决问题 ${input.id} 不存在（无法搁置）`);
+    if (target.status !== 'pending' && target.status !== 'open') {
+      throw new Error(`实体 ${input.id} 已有终态（${target.status}）——不可再搁置`);
+    }
+    const now = freshTimestamp();
+    target.status = 'abandoned';
+    target.updatedAt = now;
+    if (input.note?.trim()) target.links = [...target.links, `note:${input.note.trim().slice(0, 200)}`];
+    draft.meta.updatedAt = now;
+    return draft;
+  }, { dir: options.dir });
+  const snapshot = toSnapshot(sessionId, body);
+  broadcastArchive(snapshot, options.broadcastFn);
+  return snapshot;
+}
+
 // ---------------------------------------------------------------------------
 // 投影 — 注入段（每轮注回模型，紧凑、硬顶）
 // ---------------------------------------------------------------------------
@@ -562,7 +601,8 @@ export function renderArchiveForInjection(snapshot: ArchiveSnapshot | undefined,
     lines.push(`${title}：`);
     for (const e of items) {
       const refs = e.links.filter((l) => /^[HVCQ]#\d+$/.test(l));
-      lines.push(`  ${e.id} ${oneLineText(e.text, 90)}${refs.length > 0 ? `（${refs.join(' ')}）` : ''}`);
+      const against = (e.against ?? []).filter((l) => /^V#\d+$/.test(l));
+      lines.push(`  ${e.id} ${oneLineText(e.text, 90)}${refs.length > 0 ? `（${refs.join(' ')}）` : ''}${against.length > 0 ? `（反证 ${against.join(' ')}）` : ''}`);
     }
   };
   group('待答问题', open);
@@ -605,9 +645,11 @@ export function renderArchiveForReport(snapshot: ArchiveSnapshot | undefined): s
   if (findings.length > 0 || confirmedHyp.length > 0) {
     const lines = findings.map((e) => {
       const refs = e.links.filter((l) => /^V#\d+$/.test(l));
+      const against = (e.against ?? []).filter((l) => /^V#\d+$/.test(l));
       const statusMark = e.status === 'corrected' ? '（已纠正）' : e.needsReview ? '（待复核）' : '';
       const type = e.findingType ? `[${e.findingType}] ` : '';
-      return `- ${e.id} ${type}${oneLineText(e.text, 300)}${refs.length > 0 ? ` —— 证据：${refs.join('、')}` : ''}${statusMark}`;
+      const evidencePart = `${refs.length > 0 ? ` —— 证据：${refs.join('、')}` : ''}${against.length > 0 ? ` —— 反证：${against.join('、')}` : ''}`;
+      return `- ${e.id} ${type}${oneLineText(e.text, 300)}${evidencePart}${statusMark}`;
     });
     // 已证实假设并入成果史（confirmed 曾是无路径可达的死状态——全程账本不留黑洞）。
     for (const e of confirmedHyp) {
@@ -620,12 +662,19 @@ export function renderArchiveForReport(snapshot: ArchiveSnapshot | undefined): s
   const otherCorrected = snapshot.entities.filter(
     (e) => e.kind !== 'hypothesis' && ['overturned', 'corrected'].includes(e.status),
   );
-  if (falsified.length > 0 || otherCorrected.length > 0 || snapshot.corrections.length > 0) {
+  // 1.4.8 第三终态：搁置的假设/问题同样留痕（「我不追了」≠「我错了」，
+  // 不进纠正台账，理由在 note: 链接里）。
+  const abandoned = snapshot.entities.filter((e) => e.status === 'abandoned');
+  if (falsified.length > 0 || otherCorrected.length > 0 || abandoned.length > 0 || snapshot.corrections.length > 0) {
     const lines: string[] = [];
     for (const e of [...falsified, ...otherCorrected]) {
       const corr = snapshot.corrections.filter((c) => c.targetId === e.id).at(-1);
       const by = corr ? (corr.by === 'human' ? '人纠正' : '模型自证伪') : '状态已翻转';
       lines.push(`- ${e.id} ${oneLineText(e.text, 200)} —— ${by}${corr ? `：${oneLineText(corr.reason, 200)}` : ''}`);
+    }
+    for (const e of abandoned) {
+      const note = e.links.find((l) => l.startsWith('note:'))?.slice(5) ?? '';
+      lines.push(`- ${e.id} ${oneLineText(e.text, 200)} —— 已搁置${note ? `：${oneLineText(note, 200)}` : ''}`);
     }
     parts.push(`## 证伪与纠正\n\n${lines.join('\n')}`);
   }
