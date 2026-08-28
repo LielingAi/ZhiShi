@@ -234,14 +234,14 @@ flowchart LR
 | 单元测试 | 2390+ 全绿；`tsc --noEmit` / `eslint` 零错 / depcruise 架构边界强制 |
 | 活体回归 | `npm run smoke` 一键（真端点 + 真 VM，m1-m4 全链路）；产物级 smoke（打包产物跑关键路径） |
 | 活体 dogfood | ret2win 全程打通；1.1.8 三域实战验证（whitebox 埋雷审计全中 / pentest 全链拿 flag / ai-security 注入探针全拒），详见 `docs/design/` |
-| GUI 全链路真机 | 选环境 / 流式 / 中断 / 回退 / 快照回滚 / attach 终端 / 决策面板 / 历史面板 / 越界模态 / 后台任务全部通过（1.3.0-1.3.8 实机走查）；auto loop（1.4.1）与研究档案分屏看板（1.4.4）实机走查通过；Harness 复杂任务优化（1.4.6）cJSON 四轮 dogfood 实证 |
+| GUI 全链路真机 | 选环境 / 流式 / 中断 / 回退 / 快照回滚 / attach 终端 / 决策面板 / 历史面板 / 越界模态 / 后台任务全部通过（1.3.0-1.3.8 实机走查）；auto loop（1.4.1）与研究档案分屏看板（1.4.4）实机走查通过；Harness 复杂任务优化（1.4.6）cJSON 四轮 dogfood 实证；研究档案本体迭代（1.4.8 反证结构 + 链式投影 + 假设三终态）实机走查通过 |
 | 域内容件 | 四域齐备（binary / pentest / whitebox / ai-security）并经实战验证 |
 
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
-| `docs/roadmap.md` | 版本任务池（当前线：1.4.x——1.4.6 Harness 复杂任务优化已发版） |
+| `docs/roadmap.md` | 版本任务池（当前线：1.4.x——1.4.8 研究档案本体迭代已发版） |
 | `docs/user-guide.md` | 使用指南（安装、选环境、配模型、GUI 操作、常见问题） |
 | `docs/expert-import-guide.md` | 专家知识导入指南（命令/字段规范/JSON+YAML 格式，附可导入的 `expert-import.demo.yaml`） |
 | `docs/design/` | 各版本设计与分析稿（1.1.6–1.2.7、distill-eval、1.3.4 TUI 退役评估） |
