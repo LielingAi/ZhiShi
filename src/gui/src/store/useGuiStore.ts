@@ -57,7 +57,7 @@ import {
   type WizardParams,
   type WizardSource,
 } from '../model/env-wizard';
-import { parseSessionRows, autoRunRowsOf, mergeAutoRunRows, type SessionMetaRow } from '../model/history';
+import { parseSessionRows, autoRunRowsOf, mergeAutoRunRows, applySessionTitleChange, type SessionMetaRow } from '../model/history';
 import {
   INPUT_HISTORY_LIMIT,
   loadInputHistory,
@@ -725,6 +725,15 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
             const snap = get().archive;
             if (snap && get().archiveHighlightId && !snap.entities.some((e) => e.id === get().archiveHighlightId)) {
               set({ archiveHighlightId: null });
+            }
+          }
+          // 1.4.7 SSE 漏面收口：chat:session-title-changed——auto-titler/人改
+          // 标题后，已加载的历史行就地换标题（不重拉清单）。
+          if (input.event === 'chat:session-title-changed') {
+            const rows = get().historySessions;
+            if (rows) {
+              const next = applySessionTitleChange(rows, input.payload as { sessionId?: unknown; title?: unknown });
+              if (next !== rows) set({ historySessions: next });
             }
           }
         }

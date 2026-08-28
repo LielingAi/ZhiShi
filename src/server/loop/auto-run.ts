@@ -38,14 +38,14 @@
  * (cron 模板原文与本设计的 request_decision 纪律直接冲突,见交付报告)。
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
 import { getZhiShiDataDir } from '../utils/app-dirs';
-import { withFileLock } from '../utils/file-lock';
+import { withFileLock, writeFileAtomic } from '../utils/file-lock';
 import { isResearchOutcome } from '../../shared/research-kinds';
 import type { ResearchEvent } from '../memory/store';
 import {
@@ -559,9 +559,7 @@ export async function saveAutoRunRecord(record: AutoRunRecord, options: AutoRunS
     mkdirSync(dir, { recursive: true });
     const file = autoRunFilePath(record.id, dir);
     await withFileLock({ lockPath: `${file}.lock` }, async () => {
-      const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-      writeFileSync(tmp, serializeAutoRunRecord(record), 'utf-8');
-      renameSync(tmp, file);
+      writeFileAtomic(file, serializeAutoRunRecord(record));
     });
   } catch (err) {
     logWarn(`[auto-run] 记录落盘失败(内存态继续,重启后本记录不可恢复):${err instanceof Error ? err.message : String(err)}`);

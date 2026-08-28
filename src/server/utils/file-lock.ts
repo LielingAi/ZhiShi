@@ -360,3 +360,14 @@ export async function withFileLock<T>(
     }
   }
 }
+
+/**
+ * 原子写 helper（1.4.7 工程卫生收口）：tmp+rename 替换——写一半崩了不留
+ * 半成品文件。session/archive/auto-run 的持久化此前各写一份内联实现，
+ * 收编统一（withFileLock 是锁纪律，本函数是锁内的写纪律）。
+ */
+export function writeFileAtomic(file: string, content: string): void {
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, content, 'utf-8');
+  renameSync(tmp, file);
+}

@@ -15,14 +15,14 @@
  * 损坏行跳过,不炸整会话。
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
 import { getZhiShiDataDir } from '../utils/app-dirs';
-import { withFileLock } from '../utils/file-lock';
+import { withFileLock, writeFileAtomic } from '../utils/file-lock';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -179,9 +179,7 @@ export async function appendLoopMessages(
       compactedAt: meta?.compactedAt ?? existing.meta?.compactedAt,
     };
     const merged = [...existing.messages, ...normalizeMessagesForPersist(messages)];
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(tmp, serializeLoopSession(nextMeta, merged), 'utf-8');
-    renameSync(tmp, file);
+    writeFileAtomic(file, serializeLoopSession(nextMeta, merged));
   });
 }
 
@@ -212,9 +210,7 @@ export async function forkLoopSession(
       compactedAt: existing.meta?.compactedAt,
     };
     const kept = existing.messages.slice(0, Math.max(0, keepCount));
-    const tmp = `${dstFile}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(tmp, serializeLoopSession(meta, kept), 'utf-8');
-    renameSync(tmp, dstFile);
+    writeFileAtomic(dstFile, serializeLoopSession(meta, kept));
   });
   return newId;
 }
@@ -244,9 +240,7 @@ export async function truncateLoopSession(
       compactedAt: existing.meta?.compactedAt,
     };
     const kept = existing.messages.slice(0, Math.max(0, keepCount));
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(tmp, serializeLoopSession(nextMeta, kept), 'utf-8');
-    renameSync(tmp, file);
+    writeFileAtomic(file, serializeLoopSession(nextMeta, kept));
   });
 }
 
@@ -272,8 +266,6 @@ export async function markLoopSessionCompacted(
       updatedAt: existing.meta?.updatedAt || now,
       compactedAt: now,
     };
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(tmp, serializeLoopSession(nextMeta, existing.messages), 'utf-8');
-    renameSync(tmp, file);
+    writeFileAtomic(file, serializeLoopSession(nextMeta, existing.messages));
   });
 }

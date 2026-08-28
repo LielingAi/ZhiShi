@@ -262,3 +262,25 @@ export function mergeAutoRunRows(rows: SessionMetaRow[], runRows: SessionMetaRow
   const existing = new Set(rows.map((r) => r.loopSessionId).filter(Boolean));
   return [...rows, ...runRows.filter((r) => !r.loopSessionId || !existing.has(r.loopSessionId))];
 }
+
+/**
+ * 1.4.7 SSE 漏面收口：chat:session-title-changed 消费——auto-titler/人改
+ * 标题后，历史清单已加载的行就地换标题（不重拉）。payload 的 sessionId
+ * 是 SessionStore 元 id（与行 id 同键）；未加载（null）→ 原样返回。
+ */
+export function applySessionTitleChange(
+  rows: SessionMetaRow[] | null,
+  input: { sessionId?: unknown; title?: unknown },
+): SessionMetaRow[] | null {
+  if (!rows) return rows;
+  const id = typeof input.sessionId === 'string' ? input.sessionId : '';
+  const title = typeof input.title === 'string' ? input.title.trim() : '';
+  if (!id || !title) return rows;
+  let changed = false;
+  const next = rows.map((r) => {
+    if (r.id !== id) return r;
+    changed = true;
+    return { ...r, title, titleSource: 'auto' as const };
+  });
+  return changed ? next : rows;
+}

@@ -541,3 +541,13 @@ export function parseAutoRunList(raw: unknown): AutoRunEntry[] {
 export function activeAutoRunOf(raw: unknown): AutoRunEntry | null {
   return parseAutoRunList(raw).find((e) => isAutoRunActive(e)) ?? null;
 }
+
+/** 1.4.7 轮内进度（观察卡）：当前轮号 = 已完成轮数 + 1；轮内耗时 =
+ *  now − updatedAt（上轮完成时刻近似）。非 running 态 → null（不显示）。 */
+export function turnProgressOf(entry: AutoRunEntry, now = Date.now()): { turn: number; elapsedSec: number } | null {
+  if (entry.status !== 'running') return null;
+  return {
+    turn: (entry.turnCount ?? 0) + 1,
+    elapsedSec: Math.max(0, Math.round((now - entry.updatedAt) / 1000)),
+  };
+}

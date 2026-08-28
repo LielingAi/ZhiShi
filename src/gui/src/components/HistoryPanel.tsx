@@ -361,18 +361,21 @@ export function HistoryPanel(): React.JSX.Element {
                     {selectedRow.envKey ? ` · ${selectedRow.envKey}` : ' · 宿主'}
                   </div>
                 </div>
-                <button
-                  className="btn primary small"
-                  disabled={busy}
-                  title={
-                    busy
-                      ? '当前 turn 运行中——Esc 中断后再载回（避免与活跃会话流冲突）'
-                      : 'POST /sessions/switch 载回续跑（关闭面板回到活跃会话视图）'
-                  }
-                  onClick={() => resume(selectedRow)}
-                >
-                  ↺ 载回续跑
-                </button>
+                {/* 1.4.7：auto-run 合成行藏「载回续跑」——run 无会话元绑定，点了报错 */}
+                {!selectedRow.id.startsWith('auto-run:') && (
+                  <button
+                    className="btn primary small"
+                    disabled={busy}
+                    title={
+                      busy
+                        ? '当前 turn 运行中——Esc 中断后再载回（避免与活跃会话流冲突）'
+                        : 'POST /sessions/switch 载回续跑（关闭面板回到活跃会话视图）'
+                    }
+                    onClick={() => resume(selectedRow)}
+                  >
+                    ↺ 载回续跑
+                  </button>
+                )}
               </div>
               {(viewer.status === 'loading' || viewer.status === 'idle') && (
                 <StateHint kind="loading" center text="读取 wire transcript…" />

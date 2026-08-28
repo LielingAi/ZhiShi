@@ -4,6 +4,7 @@ import {
   autoRunRowsOf,
   buildHistorySession,
   filterSessionRows,
+  applySessionTitleChange,
   groupSessionRows,
   mergeAutoRunRows,
   normalizeWireMessage,
@@ -203,5 +204,22 @@ describe('autoRunRowsOf / mergeAutoRunRows（1.4.6 auto-run 历史合成行）',
     expect(merged).toHaveLength(1); // ls-1 已存在 → 不重复
     const merged2 = mergeAutoRunRows([], runRows);
     expect(merged2).toHaveLength(1);
+  });
+});
+
+describe('applySessionTitleChange（1.4.7 SSE 漏面收口）', () => {
+  const rows = [
+    { id: 's1', title: '旧标题', createdAt: '', lastActiveAt: '', messageCount: 1 },
+    { id: 's2', title: '另一个', createdAt: '', lastActiveAt: '', messageCount: 1 },
+  ] as never[];
+
+  it('命中行就地换标题 + titleSource=auto;未命中/坏 payload 原样', () => {
+    const next = applySessionTitleChange(rows, { sessionId: 's2', title: '新标题' });
+    expect(next?.find((r) => r.id === 's2')?.title).toBe('新标题');
+    expect(next?.find((r) => r.id === 's2')?.titleSource).toBe('auto');
+    expect(next?.find((r) => r.id === 's1')?.title).toBe('旧标题');
+    expect(applySessionTitleChange(rows, { sessionId: 'ghost', title: 'x' })).toBe(rows);
+    expect(applySessionTitleChange(null, { sessionId: 's1', title: 'x' })).toBeNull();
+    expect(applySessionTitleChange(rows, { sessionId: 's1', title: '  ' })).toBe(rows);
   });
 });

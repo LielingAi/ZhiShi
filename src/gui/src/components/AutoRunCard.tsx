@@ -12,7 +12,7 @@
  * 数据源：store.autoRun（SSE auto-run:* 归约 + auto-run/list 恢复）。
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type React from 'react';
 
 import { useGuiStore } from '../store/useGuiStore';
@@ -21,6 +21,7 @@ import {
   formatBudget,
   isAutoRunActive,
   parseBudgetLimit,
+  turnProgressOf,
   type AutoRunEntry,
 } from '../model/auto-run';
 
@@ -32,6 +33,19 @@ const STATUS_TEXT: Record<AutoRunEntry['status'], string> = {
   completed: '已完成',
   stopped: '已终止',
 };
+
+/** 1.4.7 轮内进度（观察卡）：running 态显示「第 N 轮进行中 · 耗时 N s」，每秒自增。 */
+function TurnProgress({ entry }: { entry: AutoRunEntry }): React.JSX.Element | null {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (entry.status !== 'running') return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [entry.status]);
+  const progress = turnProgressOf(entry, now);
+  if (!progress) return null;
+  return <span className="ar-phase">第 {progress.turn} 轮进行中 · {progress.elapsedSec}s</span>;
+}
 
 function BudgetRow({ entry }: { entry: AutoRunEntry }): React.JSX.Element {
   const [ext, setExt] = useState('');
@@ -118,6 +132,7 @@ export function AutoRunCard(): React.JSX.Element | null {
         {entry.turnCount !== undefined && (
           <span className="ar-phase">轮次 · {entry.turnCount}</span>
         )}
+        <TurnProgress entry={entry} />
       </div>
       <div className="ar-meta">
         <span className="ar-budget">
