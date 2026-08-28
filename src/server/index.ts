@@ -397,6 +397,7 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'archive/list') return api.handleArchiveList(payload as Parameters<typeof api.handleArchiveList>[0]);
   if (route === 'archive/correct') return await api.handleArchiveCorrect(payload as Parameters<typeof api.handleArchiveCorrect>[0]);
   if (route === 'archive/resolve') return await api.handleArchiveResolve(payload as Parameters<typeof api.handleArchiveResolve>[0]);
+  if (route === 'archive/abandon') return await api.handleArchiveAbandon(payload as Parameters<typeof api.handleArchiveAbandon>[0]);
   if (route === 'environment/adopt') return await api.handleEnvironmentAdopt(payload as Parameters<typeof api.handleEnvironmentAdopt>[0]);
   if (route === 'environment/install') return await api.handleEnvironmentInstall(payload as Parameters<typeof api.handleEnvironmentInstall>[0]);
   if (route === 'environment/build') return await api.handleEnvironmentBuild(payload as Parameters<typeof api.handleEnvironmentBuild>[0]);
