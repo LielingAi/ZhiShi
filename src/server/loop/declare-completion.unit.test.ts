@@ -3,7 +3,12 @@
  * 工具。覆盖:登记/take 即消费、evidenceRefs 归一化(去重/非法拒绝)、工具
  * execute 的声明落桶与「停等终审」返回文本。全内存,绝不触网/不触真库。
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { addHypothesis, falsifyHypothesis } from './archive';
 
 import {
   clearCompletionDeclarations,
@@ -80,5 +85,39 @@ describe('createDeclareCompletionTool(工具)', () => {
   it('缺 statement 抛错(工具错误语义)', async () => {
     const tool = createDeclareCompletionTool({ getSessionId: () => 'ls-run-1' });
     await expect(tool.execute('tc-1', { statement: '  ' } as never)).rejects.toThrow(/statement/);
+  });
+});
+
+describe('declare_completion — 1.4.7 证伪结案提醒（档案待验证假设）', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'zhishi-decl-arch-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('档案有待验证假设 → 返回带提醒（声明照常登记，提醒不阻塞）', async () => {
+    await addHypothesis('ls-run-1', { text: '假设一' }, { dir });
+    const tool = createDeclareCompletionTool({ getSessionId: () => 'ls-run-1', dir });
+    const result = await tool.execute('tc-1', { statement: '全部达成', evidenceRefs: [1] } as never);
+    expect(textOf(result)).toContain('待验证假设');
+    expect(textOf(result)).toContain('H#1');
+    expect(textOf(result)).toContain('falsify');
+    expect(takeCompletionDeclaration('ls-run-1')?.statement).toBe('全部达成');
+  });
+
+  it('假设证伪后 → 无提醒；无档案 → 无提醒（读侧容错）', async () => {
+    await addHypothesis('ls-run-2', { text: '假设一' }, { dir });
+    const tool = createDeclareCompletionTool({ getSessionId: () => 'ls-run-2', dir });
+    const r1 = await tool.execute('tc-1', { statement: '达成' } as never);
+    expect(textOf(r1)).toContain('待验证假设');
+    await falsifyHypothesis('ls-run-2', 'H#1', '实验推翻', { dir });
+    const r2 = await tool.execute('tc-2', { statement: '达成' } as never);
+    expect(textOf(r2)).not.toContain('待验证假设');
+    // 完全不存在的线（无档案文件）→ 零注入语义，无提醒不炸。
+    const tool3 = createDeclareCompletionTool({ getSessionId: () => 'ls-ghost', dir });
+    const r3 = await tool3.execute('tc-3', { statement: '达成' } as never);
+    expect(textOf(r3)).not.toContain('待验证假设');
   });
 });

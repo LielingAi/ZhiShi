@@ -24,6 +24,8 @@
 import { Type, type Static } from '@earendil-works/pi-ai';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 
+import { loadArchive } from './archive';
+
 export const DECLARE_COMPLETION_TOOL_NAME = 'declare_completion';
 
 /** 一次达成声明(注册表条目)。 */
@@ -90,6 +92,8 @@ export type DeclareCompletionParams = Static<typeof declareCompletionParameters>
 export interface CreateDeclareCompletionToolOptions {
   /** 当前 loop 线(turn 快照线)——声明归属与 runner 验收路由依据。 */
   getSessionId?: () => string;
+  /** 档案存储目录(测试注入临时目录;缺省 loop-sessions 默认目录)。 */
+  dir?: string;
 }
 
 /** 归一化 evidenceRefs:数字数组 → 去重正整数;非整数/≤0 抛错(工具错误语义)。 */
@@ -131,11 +135,24 @@ export function createDeclareCompletionTool(
       if (!statement) throw new Error('declare_completion 需要 statement(达成陈述)');
       const evidenceRefs = parseEvidenceRefs(params.evidenceRefs);
       declareCompletion(getSessionId(), statement, evidenceRefs);
+      // 1.4.7 证伪结案提醒:档案还有待验证假设 → 返回里带提醒(不阻塞;
+      // 读侧容错——档案缺失/读取失败按无提醒)。「他可也能不会用」的轻量纪律。
+      let reminder = '';
+      try {
+        const pending = loadArchive(getSessionId(), { dir: options.dir }).entities
+          .filter((e) => e.kind === 'hypothesis' && e.status === 'pending');
+        if (pending.length > 0) {
+          reminder = ` 提醒:档案里还有 ${pending.length} 条待验证假设(${pending.map((e) => e.id).join('、')})——确认达成前把它们证伪(falsify)或解决掉。`;
+        }
+      } catch {
+        /* 档案读取失败不阻塞声明 */
+      }
       return {
         content: [{
           type: 'text',
           text: `达成声明已提交(证据引用 ${evidenceRefs.length} 条)。等待研究员终审——`
-            + '终审通过前不要继续推进、不要再调用工具;终审决定会作为消息回来,届时严格按决定执行。',
+            + '终审通过前不要继续推进、不要再调用工具;终审决定会作为消息回来,届时严格按决定执行。'
+            + reminder,
         }],
         details: { refCount: evidenceRefs.length },
       };

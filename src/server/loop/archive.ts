@@ -34,11 +34,11 @@
  * → 空档案（读侧容错，研究不因档案 IO 故障而阻塞）。
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { getZhiShiDataDir } from '../utils/app-dirs';
-import { withFileLock } from '../utils/file-lock';
+import { withFileLock, writeFileAtomic } from '../utils/file-lock';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -226,9 +226,7 @@ async function mutateArchive(
       R: maxCorrectionSeq(),
     };
     next = fn(draft);
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(tmp, serializeBody(next), 'utf-8');
-    renameSync(tmp, file);
+    writeFileAtomic(file, serializeBody(next));
   });
   return next;
 }

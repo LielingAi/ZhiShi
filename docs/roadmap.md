@@ -5,16 +5,18 @@
 
 ---
 
-## 1.4.7 —— 打磨收口（进行中）
+## 1.4.7 —— 打磨收口（已完成）
 
 **缘起（2026-08-28 用户逐项拍板，1.4.6 dogfood 遗留）**：1.4.6 收掉 1.x 头号正题后，剩余小尾巴逐项定夺：①观察卡轮内进度——长轮中预算不动，加「第 N 轮进行中」指示（可以，做）；②历史 ⚡ run 行的「载回续跑」按钮——run 无会话元绑定，点了报错，**藏起来**；③1.4.5 挂账裁决——研究档案问题（Q#）纠正语义：**算放弃**（当前实现 a：纠正问题 → abandoned，定为定稿，挂账结案）；④证伪结案提醒——declare_completion 时若档案有待验证假设，返回里带一句提醒（不阻塞，模型用不用随它——用户原话「可以，但是他可能也不会用」）；⑤工程卫生做掉：god file 绞杀续拆、原子写 helper 迁移、zhishi.ts 主体单测、SSE 对账漏面（G-13/G-14/G-21）。
 
-- [ ] **观察卡轮内进度**：运行中长轮显示「第 N 轮进行中」（N = turns+1）+ 轮内耗时（turn 开始到现在的秒数，观察卡每秒自增）。
-- [ ] **历史 ⚡ run 行藏「载回续跑」**：合成行（id 前缀 `auto-run:`）不渲染续跑按钮。
-- [ ] **①裁决定稿**：纠正未决问题 → abandoned（当前实现）定为定稿；1.4.5 挂账条目移除。
-- [ ] **证伪结案提醒**：declare_completion 执行时，档案有待验证假设（pending）→ 返回文本追加提醒「档案里还有待验证假设（H#…），确认前要证伪/解决掉」；不强约束。
-- [ ] **工程卫生**：god file 绞杀续拆（admin-api.ts 或 index.ts 再抽一块）+ 原子写 helper 迁移（session.ts/archive.ts/auto-run.ts 的 tmp+rename 段收编）+ zhishi.ts 主体单测起步 + SSE 对账漏面（G-13/G-14/G-21）。
+- [x] **观察卡轮内进度**：运行中长轮显示「第 N 轮进行中」（N = turns+1）+ 轮内耗时（turn 开始到现在的秒数，观察卡每秒自增）。
+- [x] **历史 ⚡ run 行藏「载回续跑」**：合成行（id 前缀 `auto-run:`）不渲染续跑按钮。
+- [x] **①裁决定稿**：纠正未决问题 → abandoned（当前实现）定为定稿；1.4.5 挂账条目移除。
+- [x] **证伪结案提醒**：declare_completion 执行时，档案有待验证假设（pending）→ 返回文本追加提醒「档案里还有待验证假设（H#…），确认前要证伪/解决掉」；不强约束。
+- [x] **工程卫生**：god file 绞杀续拆（admin-api.ts 或 index.ts 再抽一块）+ 原子写 helper 迁移（session.ts/archive.ts/auto-run.ts 的 tmp+rename 段收编）+ zhishi.ts 主体单测起步 + SSE 对账漏面（G-13/G-14/G-21）。
 
+> 实际落地（2026-08-28）：①`turnProgressOf` 纯函数（running 态 → 当前轮号=turnCount+1、耗时=now−updatedAt）+ AutoRunCard 每秒自增显示「第 N 轮进行中 · Ns」（非 running 不显示）——1.4.6 走查的 0/40 观感残留收口。②HistoryPanel 的 ⚡ 合成行（id 前缀 `auto-run:`）不渲染「载回续跑」按钮。③1.4.5 挂账结案：纠正未决问题 → abandoned 定为定稿（1.4.5 已有实现 + 回归测试，本版无代码改动）。④declare-completion 执行时档案有待验证假设 → 返回文本追加提醒（H# 列表 + falsify 指引，不阻塞声明登记；读侧容错零提醒不炸）。⑤工程卫生四项：a) 原子写——`writeFileAtomic` 进 file-lock.ts（tmp+rename 收编），session/archive/auto-run 三处内联实现迁移（回归测试：落盘/覆盖/中文长内容）；b) zhishi.ts 主体单测起步——parseArgs + camelCase 抽离为 `src/cli/cli-args.ts`（无 IO 无 process.exit 的纯边界层），9 个解析单测；c) god file 续拆——admin-api.ts 的 archive/list + archive/correct 抽到 `src/server/admin-archive.ts`（re-export 保持调用点不动，AdminResponse 索引签名对齐），4400→4362 行；d) SSE 漏面对账——注册表 40 事件 × GUI 消费面：3 个有意不消费（reducer 注释已写明 chat:logs/subagent-tool-result-complete/chat:log）、config:changed 记录在案（设置页开即重拉）、**chat:session-title-changed 真缺口**（auto-titler 改标题后 GUI 不刷新）→ `applySessionTitleChange` 纯函数 + store 消费（已加载历史行就地换标题，回归测试钉死）。新增 13 单测；全量 181 文件 2376 测试绿 + typecheck + eslint + 三构建绿。
+>
 > 不做（本版）：档案图化、跨会话档案（蒸馏弧职责）、历史 run 真续跑（藏按钮即可）、新功能。
 > 验收：全量测试 + 实机走查。
 
@@ -75,7 +77,7 @@
 > **验证**：新增 2 回归单测；全量 179 文件 2345 测试绿 + typecheck + eslint + 双构建绿。
 
 > 不做（本版）：记录在案的五条低危（不强行处理）、CLAUDE.md 的 L1 红线总表重写（红线仍有效，本次只修失实描述）。
-> 挂账待讨论（2026-08-27，用户拍板先记后议）：**研究档案问题（Q#）纠正语义裁决**——当前实现 a：纠正通道统一覆盖问题（纠正问题 → abandoned，纠正条目即放弃留痕）；备选 b：纠正严格限定断言，问题给独立「放弃」通道（语义洁癖，多一条交互）。b 若拍板需回退 a 并补放弃通道。
+> 挂账待讨论（2026-08-27，用户拍板先记后议）：**研究档案问题（Q#）纠正语义裁决**——当前实现 a：纠正通道统一覆盖问题（纠正问题 → abandoned，纠正条目即放弃留痕）；备选 b：纠正严格限定断言，问题给独立「放弃」通道（语义洁癖，多一条交互）。b 若拍板需回退 a 并补放弃通道。**（2026-08-28 1.4.7 定稿：a 拍板——纠正问题即放弃，结案。）**
 
 > 验收：全量测试 + 台账闭环（每条有定性：修复 / 记录在案）。
 > 方法纪律：与 1.3.10 同——修 bug 必带回归测试；带证据（文件+行号）；记录在案的另行立项，不在审计版强做。

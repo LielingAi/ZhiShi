@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   autoRunEntryOf,
+  turnProgressOf,
   parseVerdictPackage,
   activeAutoRunOf,
   applyAutoRunEvent,
@@ -505,5 +506,19 @@ describe('autoRunEntryOf — 预算恢复（1.4.6 走查实证）', () => {
     });
     expect(entry?.used).toBe(1);
     expect(entry?.budget).toEqual({ kind: 'turns', limit: 40 });
+  });
+});
+
+describe('turnProgressOf（1.4.7 观察卡轮内进度）', () => {
+  it('running → 当前轮号 = turnCount+1，耗时 = now − updatedAt', () => {
+    const e = autoRunEntryOf({ id: 'r', status: 'running', turnCount: 3, updatedAt: 10_000 });
+    expect(turnProgressOf(e!, 16_000)).toEqual({ turn: 4, elapsedSec: 6 });
+  });
+
+  it('非 running（paused/awaiting-verdict/completed）→ null（不显示）；turnCount 缺省按 0', () => {
+    const paused = autoRunEntryOf({ id: 'r', status: 'paused', updatedAt: 0, paused: { reason: 'budget' } });
+    expect(turnProgressOf(paused!)).toBeNull();
+    const fresh = autoRunEntryOf({ id: 'r', status: 'running', updatedAt: 1000 });
+    expect(turnProgressOf(fresh!, 2500)).toEqual({ turn: 1, elapsedSec: 2 });
   });
 });

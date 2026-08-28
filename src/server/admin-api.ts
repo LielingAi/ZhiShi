@@ -76,8 +76,8 @@ import { parseSkillFrontmatter } from '../shared/slashCommands';
 import { resolve } from 'path';
 import { connect } from 'net';
 import { setMcpServers, setAgents, getMcpServers, getSidecarPort } from './agent-session';
-import { getPiAgentState, getPiSessionId, envSwitchBlocker, getEnvSessionBinding, switchEnvSession, resolveSessionEnv, resolveSessionEnvKey } from './loop/chat-engine';
-import { correctEntity, loadArchive } from './loop/archive';
+import { getPiAgentState, envSwitchBlocker, getEnvSessionBinding, switchEnvSession, resolveSessionEnv, resolveSessionEnvKey } from './loop/chat-engine';
+import { loadArchive } from './loop/archive';
 import { envKeyForSelection, getEnvSessionLine, loadEnvSessionsMap, removeEnvSessionsForEnvId } from './environment/env-sessions';
 import { getMcpStatus, initMcpBridge, reloadMcpBridge } from './loop/mcp-bridge';
 import { resolveLoopModel } from './loop/pi-provider';
@@ -2079,46 +2079,8 @@ export async function handleResearchList(payload: {
   return { success: true, data: { results } };
 }
 
-/** 1.4.4 研究档案查询（GUI 研究面板初始加载/重连重放；auto-run 面板按
- *  run 的 loopSessionId 显式传入）。缺省当前 pi 会话线。 */
-export function handleArchiveList(payload: { sessionId?: string }): AdminResponse {
-  const sessionId = typeof payload?.sessionId === 'string' && payload.sessionId.trim()
-    ? payload.sessionId.trim()
-    : getPiSessionId();
-  if (!sessionId) return { success: false, error: 'archive/list: 会话未锚定（先开/接会话）' };
-  try {
-    return { success: true, data: { archive: loadArchive(sessionId) } };
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-/** 1.4.4 人纠正（行内纠正的一等操作；权威序：人 > 专家知识 > 模型自证伪
- *  ——人纠正后模型不得翻案）。纠正留痕 append-only + 下游待复核。 */
-export async function handleArchiveCorrect(payload: {
-  sessionId?: string;
-  id?: string;
-  reason?: string;
-}): Promise<AdminResponse> {
-  const sessionId = typeof payload?.sessionId === 'string' && payload.sessionId.trim()
-    ? payload.sessionId.trim()
-    : getPiSessionId();
-  if (!sessionId) return { success: false, error: 'archive/correct: 会话未锚定（先开/接会话）' };
-  const id = String(payload?.id ?? '').trim();
-  if (!id) return { success: false, error: 'archive/correct: 需要 id（目标实体，如 C#1）' };
-  const reason = String(payload?.reason ?? '').trim();
-  if (!reason) return { success: false, error: 'archive/correct: 需要 reason（错在哪、为什么）' };
-  try {
-    const archive = await correctEntity(
-      sessionId,
-      { id, by: 'human', reason },
-      { broadcastFn: broadcast },
-    );
-    return { success: true, data: { archive } };
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
+// 1.4.7 god file 绞杀续拆：archive/list + archive/correct 已抽到 './admin-archive'——re-export 保持既有调用点不动。
+export { handleArchiveList, handleArchiveCorrect } from './admin-archive';
 /** 情报索引更新（zhishi intel update）。mode 旗标 > config.json::intel.mode
  *  > INTEL_DEFAULTS；windowYears/maxSizeMb 恒取 config（无旗标）。长任务
  *  （首次全量回填）同步执行——CLI 侧等待期间 WAL 保证查询不受影响。 */
