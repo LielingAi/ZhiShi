@@ -18,6 +18,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.7] - 2026-08-28
+
+> **打磨收口**：观察卡轮内进度、历史续跑死按钮收敛、档案纠正裁决定稿、证伪结案提醒、工程卫生四项。1.4.6 dogfood 遗留逐项拍板驱动。
+
+### 新增
+- 观察卡轮内进度：auto loop 运行中显示「第 N 轮进行中 · Ns」（每秒自增），长轮期间预算表不再「装死」
+- declare_completion 结案提醒：档案还有「待验证」假设时返回里提醒证伪/解决（不阻塞声明）
+
+### 修复
+- 历史面板 ⚡ auto-run 合成行不再渲染「载回续跑」（run 无会话元绑定，点了报错的死按钮）
+- SSE 漏面：chat:session-title-changed 消费——改标题后 GUI 历史行就地更新（auto-titler/人改标题不再无声）
+- 研究档案问题（Q#）纠正语义定稿：纠正问题 = 放弃（1.4.5 挂账结案）
+
+### 工程卫生
+- 原子写 `writeFileAtomic` 收编三处 tmp+rename（session/archive/auto-run）
+- `cli-args.ts` 抽离（parseArgs/camelCase 纯边界层，zhishi.ts 主体单测起步）
+- `admin-archive.ts` 抽取（god file 续拆，admin-api 4400→4362）
+- SSE 对账漏面核对：3 个有意不消费、config:changed 记录在案、1 个真缺口修复
+
 ## [1.4.6] - 2026-08-28
 
 > **Harness 复杂任务优化**：相位体系修复、档案举证强度（结论必须有证据支撑）、auto loop 实证修复族（预算计数、幽灵终审、孤儿终审、观察卡字段、左屏过程观察）。golang 轨迹取证 + cJSON 四轮 dogfood 实证驱动。
