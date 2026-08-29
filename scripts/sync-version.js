@@ -3,7 +3,9 @@
  * 由 npm version 钩子自动调用
  *
  * 数据源: package.json (单一数据源)
- * 同步目标: src-tauri/tauri.conf.json, src-tauri/Cargo.toml
+ * 同步目标: src-tauri/tauri.conf.json, src-tauri/Cargo.toml,
+ *           src/shared/constants.ts（GUI_VERSION——1.4.8/1.4.9 两次发版漏同步
+ *           的教训：GUI 关于页版本号必须进同一同步链）
  */
 
 import { readFileSync, writeFileSync } from 'fs';
@@ -41,5 +43,15 @@ cargoContent = cargoContent.replace(
 );
 writeFileSync(cargoPath, cargoContent, 'utf-8');
 console.log('  ✓ src-tauri/Cargo.toml');
+
+// 更新 GUI_VERSION（src/shared/constants.ts——GUI 关于页版本号）
+const constantsPath = join(rootDir, 'src/shared/constants.ts');
+let constantsContent = readFileSync(constantsPath, 'utf-8');
+constantsContent = constantsContent.replace(
+    /export const GUI_VERSION = '[0-9]+\.[0-9]+\.[0-9]+'/,
+    `export const GUI_VERSION = '${version}'`
+);
+writeFileSync(constantsPath, constantsContent, 'utf-8');
+console.log('  ✓ src/shared/constants.ts (GUI_VERSION)');
 
 console.log(`\n版本号已同步到 ${version}`);

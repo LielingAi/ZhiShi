@@ -18,8 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### 修复（1.4.9 实机事故补丁，随下一版发布）
-- 补齐链路 CRLF 免疫：core.autocrlf=true 的 Windows 检出把 30 个 .sh 写成 CRLF 并随打包资源出厂，`base64 -d | bash` 传输后 bash 读到 `set -euo pipefail\r` 炸 `invalid option`（pwn-vm 补齐实机复现）——脚本传输加 `tr -d '\r'` 剥离（任何行尾免疫）+ 新增 `.gitattributes`（*.sh 强制 LF）+ 全仓 .sh 归一化
+## [1.4.10] - 2026-08-29
+
+> **第三方 API（中转站）支持 + provision 铺开**：issue #6 驱动。中转站/自建网关今天起在 GUI 全程可配；docker 配方的补齐链路铺满。
+
+### 新增
+- 自定义供应商 GUI 入口（#6）：设置页供应商区「+ 添加」表单（id/名称/baseUrl/协议 OpenAI·Anthropic/模型 ID 列表/主模型），自定义供应商行内标记 + 两段式删除——中转站不再困死在「CLI 能配、GUI 看不见」
+- provision.sh 铺开：pentest（Dockerfile 同源 + 镜像回落 + ZAP 双条件守卫）与 fuzz（纯 apt + 插桩自检）——docker 配方绑 VM 都有补齐路径了
+
+### 修复
+- 补齐链路 CRLF 免疫：core.autocrlf=true 的 Windows 检出把 30 个 .sh 写成 CRLF 并随打包资源出厂，bash 读 `set -euo pipefail\r` 炸 `invalid option`（pwn-vm 补齐实机复现）——脚本传输加 `tr -d '\r'` 剥离（任何行尾免疫）+ 新增 `.gitattributes`（*.sh 强制 LF）+ 全仓 .sh 归一化
+- GUI 关于页版本号进版本同步链（`sync-version.js` 同步 `GUI_VERSION`——此前连漏两个版本）
+
+### 实机验证
+- 中转站全链（DeepSeek 官方端点充当 OpenAI 兼容中转角色）：添加 → 配 key（自动拉取模型目录）→ 验证 ✓ → 选环境 → 切模型 → 发消息 → SSE 5 秒回 pong
 
 ## [1.4.9] - 2026-08-29
 
