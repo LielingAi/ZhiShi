@@ -11,11 +11,11 @@
 
 - [ ] **MISS 落盘 + 在场显式化**：`probeEnvironmentCapabilities` 把探测面 MISS 清单（surface − present）落盘 `EnvironmentEntry.capabilityMissing`（全集落盘，展示侧过滤）；能力清单段「声明了但环境里没有」标注数据源换 `capabilityMissing ∪ toolCheck.missing`（adopt 环境也可见）；GUI 环境卡片显示「在场 M/N」+ 缺失清单（悬停/展开）。
 - [ ] **绑定域认 recipeIds**：`boundDomainsForEntry` 候选展开 recipeIds（主配方恒在前）；回归——绑 code-audit 后 whitebox 恒在集合（不再靠探测命中撑着）；与①互补：标签声明变宽的同时缺失显式化，名实分离但都可查。
-- [ ] **已有环境补齐链路**：新端点 `environment/setup`——对已有环境重放配方的安装脚本：VM 配方直接重放 setup.sh（自带 sudo 安装段；`sudo -n` 检测，不免密 → 明确报错「需要免密 sudo」）；docker 配方绑 VM 属跨基底——**配方格式加可选 `provision.sh`**（裸机/VM 通用安装脚本，与 Dockerfile 安装段同源），code-audit 首个落地（opengrep/joern/ast-grep/bandit/pip-audit/osv-scanner，对应 1.2.5 选型清单）；长任务有界超时 + 日志尾部返回；成功后自动重推能力（闭环）。GUI 环境卡片「补齐环境」入口（有缺失时显示，确认后执行，结果 toast + 列表自动刷新）。
+- [ ] **已有环境补齐链路**：新端点 `environment/setup`——对已有环境重放配方的安装脚本：VM 配方直接重放 setup.sh（自带 sudo 安装段；`sudo -n` 检测，不免密 → 明确报错「需要免密 sudo」）；docker 配方绑 VM 属跨基底——**配方格式加可选 `provision.sh`**（裸机/VM 通用安装脚本，与 Dockerfile 安装段同源），code-audit 首个落地（opengrep/joern/ast-grep/bandit/pip-audit/osv-scanner，对应 1.2.5 选型清单）；长任务有界超时 + 日志尾部返回；成功后自动重推能力（闭环）。GUI 环境卡片「补齐环境」入口（有缺失时显示，确认后执行，结果 toast + 列表自动刷新）。**前置：VM setup.sh 幂等化改造**——pentest-vm 的 ZAP 段非幂等（已有 /opt/zaproxy 时重放会把新目录 mv 进旧目录、zap.sh 软链打断）必须修；nuclei/katana/ZAP 走最新 release（重放 = 升级非复原，各段加 `command -v` 已装跳过守卫）。
 - [ ] **回归 + 验证**：capability-derive 单测（MISS 落盘/recipeIds 绑定/合并顺序）；provision 通道单测（exec 注入假通道：成功/失败/sudo 不免密/超时）；全量测试 + typecheck + eslint + 构建；实机（pwn-vm：重推 → 缺失可见 → 补齐 code-audit → opengrep 在场 → 标签闭环）。
 
 > 取舍记录在案：①重推保持只读不装工具（用户拍板定稿）。②补齐粒度 = 整配方安装脚本重放，**不做按工具补齐**（配方无 per-tool 安装命令表，粒度 invented 出来的是空中楼阁）。③docker 配方的 Dockerfile RUN 段不做「提取翻译到裸机」的脆弱转换——走显式 provision.sh（同源手写，code-audit 试点，其他 docker 配方验证可行后补）。④setup 重放的 sudo 只认免密（`sudo -n`）——密码通道不做（凭据不进新链路）。
-> 不做（本版）：按工具补齐、Dockerfile RUN 提取转换、GUI 环境构建（build）入口、引擎安装（environment/install）GUI 化。
+> 不做（本版）：按工具补齐、Dockerfile RUN 提取转换、GUI 环境构建（build）入口、引擎安装（environment/install）GUI 化、**Windows 目标机**（整个环境体系是 POSIX 假设——探测协议 `command -v`、setup.sh/provision.sh 全 bash、env-exec 走 ssh+sh；Windows 支持是探测/exec/配方全链的独立主题，不是本版一块）。
 > 验收：全量测试 + 实机闭环（pwn-vm 补齐 code-audit 全链）。
 
 ---
