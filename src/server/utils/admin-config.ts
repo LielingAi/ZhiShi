@@ -44,9 +44,9 @@ import { getZhiShiDataDir } from './app-dirs';
 
 import { stripBom } from '../../shared/utils';
 
-import type { EnvironmentEntry, McpServerDefinition, VmTemplateEntry } from '../../shared/config-types';
+import type { EnvironmentEntry, VmTemplateEntry } from '../../shared/config-types';
 
-import { applyProviderEnablementAndOrder, isProviderEnabled, PRESET_MCP_SERVERS, PRESET_PROVIDERS } from '../../shared/config-types';
+import { applyProviderEnablementAndOrder, isProviderEnabled, PRESET_PROVIDERS } from '../../shared/config-types';
 
 import type { SessionMetadata } from '../types/session';
 
@@ -123,16 +123,6 @@ export class ConfigBusyError extends Error {
 /** Lightweight AppConfig subset used by admin operations */
 
 export interface AdminAppConfig {
-
-  // MCP
-
-  mcpServers?: McpServerDefinition[];
-
-  mcpEnabledServers?: string[];
-
-  mcpServerEnv?: Record<string, Record<string, string>>;
-
-  mcpServerArgs?: Record<string, string[]>;
 
   // Provider
 
@@ -238,8 +228,6 @@ export interface ProjectSlim {
   name: string;
 
   path: string;
-
-  mcpEnabledServers?: string[];
 
   model?: string;
 
@@ -524,173 +512,6 @@ export function saveProjects(projects: ProjectSlim[]): void {
   }
 
 }
-
-
-
-// ---------------------------------------------------------------------------
-
-// MCP helpers (preset + custom merge, matching renderer/config/services/mcpService.ts)
-
-// ---------------------------------------------------------------------------
-
-
-
-/** Preset MCP servers (statically imported — see top of file) */
-
-function getPresetMcpServers(): McpServerDefinition[] {
-
-  // Filter out presets whose `platforms` field doesn't include the host —
-
-  // keeps platform-specific presets (e.g. one restricted to darwin/win32)
-
-  // everywhere on unsupported hosts (catalogue, validation, effective
-
-  // MCP lists, `zhishi mcp list`).
-
-  return (PRESET_MCP_SERVERS as McpServerDefinition[]).filter(p =>
-
-    !p.platforms || p.platforms.includes(process.platform)
-
-  );
-
-}
-
-
-
-/**
-
- * Get all MCP servers (preset + custom), with user env/args overrides applied.
-
- * Mirrors getAllMcpServers() from mcpService.ts.
-
- */
-
-export function getAllMcpServers(config?: AdminAppConfig): McpServerDefinition[] {
-
-  const c = config ?? loadConfig();
-
-  const presets = getPresetMcpServers();
-
-  const custom = c.mcpServers ?? [];
-
-  const envOverrides = c.mcpServerEnv ?? {};
-
-  const argsOverrides = c.mcpServerArgs ?? {};
-
-
-
-  // Custom servers can override presets with same ID
-
-  const customIds = new Set(custom.map(s => s.id));
-
-  const merged = [
-
-    ...presets.filter(p => !customIds.has(p.id)),
-
-    ...custom,
-
-  ];
-
-
-
-  // Apply user env/args overrides
-
-  return merged.map(server => {
-
-    const userEnv = envOverrides[server.id];
-
-    const userArgs = argsOverrides[server.id];
-
-    return {
-
-      ...server,
-
-      ...(userEnv ? { env: { ...(server.env || {}), ...userEnv } } : {}),
-
-      ...(userArgs !== undefined ? { args: userArgs } : {}),
-
-    };
-
-  });
-
-}
-
-
-
-/**
-
- * Get globally enabled MCP server IDs
-
- */
-
-export function getEnabledMcpServerIds(config?: AdminAppConfig): string[] {
-
-  const c = config ?? loadConfig();
-
-  return c.mcpEnabledServers ?? [];
-
-}
-
-
-
-/**
-
- * Get effective MCP servers for a specific project (global enabled ∩ project enabled)
-
- */
-
-export function getEffectiveMcpServers(projectPath: string): McpServerDefinition[] {
-
-  const config = loadConfig();
-
-  const allServers = getAllMcpServers(config);
-
-  const globalEnabled = new Set(getEnabledMcpServerIds(config));
-
-
-
-  // Find project by path
-
-  const projects = loadProjects();
-
-  const project = projects.find(p => p.path === projectPath);
-
-
-
-  // Semantics: project-level enablement is an OPTIONAL restriction layer.
-
-  // - field unset (undefined) → no restriction: everything enabled globally
-
-  //   applies to this project. This is what users expect when they toggle an
-
-  //   MCP on in Settings — a workspace with no explicit override must inherit
-
-  //   it (0.2.36 MVP bug: unset was treated as "enable nothing", silently
-
-  //   dropping all MCPs from sessions in that workspace).
-
-  // - explicit [] → nothing enabled for this project.
-
-  // - explicit list → global ∩ project.
-
-  if (project?.mcpEnabledServers === undefined) {
-
-    return allServers.filter(s => globalEnabled.has(s.id));
-
-  }
-
-
-
-  const projectEnabled = new Set(project.mcpEnabledServers);
-
-  if (projectEnabled.size === 0) return [];
-
-
-
-  return allServers.filter(s => globalEnabled.has(s.id) && projectEnabled.has(s.id));
-
-}
-
 
 
 // ---------------------------------------------------------------------------
@@ -1041,9 +862,8 @@ export function resolveProviderEnv(
 
  * Returns the raw on-disk shape — callers cast to AgentConfig at use sites (the session snapshot
 
- * helpers only read `runtime`/`providerId`/`providerEnvJson`/`model`/`permissionMode`/
-
- * `mcpEnabledServers`, all of which are documented optional/required on AgentConfig).
+ * helpers only read `runtime`/`providerId`/`providerEnvJson`/`model`/`permissionMode`,
+ * all of which are documented optional/required on AgentConfig).
 
  */
 
@@ -1123,8 +943,6 @@ export function decodeProviderEnvSnapshot(
 
 export interface WorkspaceResolvedConfig {
 
-  mcpServers: McpServerDefinition[];
-
   providerEnv: ResolvedProviderEnv | undefined;
 
   model: string | undefined;
@@ -1157,17 +975,11 @@ function asBuiltinPermissionMode(value: unknown): string | undefined {
 
  *
 
- * This eliminates the dependency on pre-serialized snapshot fields (providerEnvJson, mcpServersJson)
+ * This eliminates the dependency on pre-serialized snapshot fields (providerEnvJson)
 
  * that can fail to save or go stale. The Sidecar calls this during initializeAgent() so IM Bot
 
  * sessions work correctly without the frontend having been opened first.
-
- *
-
- * For desktop Chat sessions, the frontend's /api/mcp/set and per-message providerEnv will
-
- * override the self-resolved values — so there is no conflict.
 
  *
 
@@ -1179,13 +991,13 @@ function asBuiltinPermissionMode(value: unknown): string | undefined {
 
  * fallback is field-by-field: a session may have captured `model` but not
 
- * `mcpEnabledServers`, in which case the unset fields lazily resolve via agent —
+ * `permissionMode`, in which case the unset fields lazily resolve via agent —
 
  * this is a *read-only* fallback (no write-back), per PRD §6.4.
 
  *
 
- * IM sessions deliberately don't snapshot model/permission/mcp (D4 live-follow), so
+ * IM sessions deliberately don't snapshot model/permission (D4 live-follow), so
 
  * the session-meta merge is a no-op for them — `meta?.<field>` is undefined and we
 
@@ -1201,23 +1013,9 @@ export function resolveWorkspaceConfig(
 
   sessionMeta?: SessionMetadata | null,
 
-  options?: { includeMcp?: boolean },
-
 ): WorkspaceResolvedConfig {
 
   const config = loadConfig();
-
-  // MCP resolution is the expensive part here (walks all agents, intersects
-
-  // enable sets, builds McpServerDefinition from disk). Desktop Tab sessions
-
-  // don't need it — the frontend's /api/mcp/set is authoritative — so callers
-
-  // can short-circuit via `{ includeMcp: false }` to skip it entirely.
-
-  const includeMcp = options?.includeMcp !== false;
-
-
 
   // Normalize path separators for cross-platform matching
 
@@ -1240,42 +1038,6 @@ export function resolveWorkspaceConfig(
     typeof p.path === 'string' && p.path.replace(/\\/g, '/') === normalizedDir
 
   );
-
-
-
-  // --- Resolve MCP ---
-
-  // Session snapshot first (PRD §6 D2/D9): if the session captured its own enabled
-
-  // server list, intersect with the global-enabled set so users disabling a server
-
-  // globally still wins (security stays at the global lever, locked sessions just
-
-  // pin their feature surface).
-
-  let mcpServers: McpServerDefinition[] = [];
-
-  if (includeMcp) {
-
-    if (sessionMeta?.mcpEnabledServers) {
-
-      const allServers = getAllMcpServers(config);
-
-      const globalEnabled = new Set(getEnabledMcpServerIds(config));
-
-      const sessionEnabled = new Set(sessionMeta.mcpEnabledServers);
-
-      mcpServers = allServers.filter(s => globalEnabled.has(s.id) && sessionEnabled.has(s.id));
-
-    } else {
-
-      // Lazy fallback for legacy / IM sessions — uses project ∩ global as before.
-
-      mcpServers = getEffectiveMcpServers(agentDir);
-
-    }
-
-  }
 
 
 
@@ -1403,7 +1165,7 @@ export function resolveWorkspaceConfig(
 
   // resolved, as before.
 
-  if (mcpServers.length > 0 || providerEnv || model || agent) {
+  if (providerEnv || model || agent) {
 
     const source = sessionMeta?.configSnapshotAt ? 'session-snapshot' : 'agent';
 
@@ -1413,7 +1175,7 @@ export function resolveWorkspaceConfig(
 
       `provider=${providerId ?? 'none'}, model=${model ?? 'default'}, ` +
 
-      `permission=${permissionMode}, mcp=${mcpServers.length} server(s)${agent ? '' : ' (no agent match)'}`
+      `permission=${permissionMode}${agent ? '' : ' (no agent match)'}`
 
     );
 
@@ -1421,7 +1183,7 @@ export function resolveWorkspaceConfig(
 
 
 
-  return { mcpServers, providerEnv, model, permissionMode };
+  return { providerEnv, model, permissionMode };
 
 }
 

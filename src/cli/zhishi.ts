@@ -90,13 +90,11 @@ function requirePositional(
 const TOP_HELP = `zhishi — ZhiShi Self-Configuration CLI
 Usage: zhishi <command> [options]
 Commands:
-  mcp       Manage MCP tool servers
   model     Manage model providers
   agent     Manage agents (+ 'agent show <id>' for effective defaults)
             会话引擎: pi(M4c 起唯一引擎,SDK 已删除);
             ZHISHI_LOOP_ENGINE/loopEngine=sdk 仅兼容读取,告警并回落 pi
   env       Named environments (list/add/remove/open) + recipes (recipes/up/down/ps) + engine probe
-  skill     Manage skills (list, info, enable/disable, remove)
   domain    域包清单（list / check <域>——就绪自检：引用完整性+验收清单）
   task      Manage Task Center tasks (list/get/update-status/run/rerun ...)
   research  Research outcome signals (log/list) — security researcher edition
@@ -114,16 +112,8 @@ Global flags:
   --dry-run   Preview changes without applying
   --port NUM  Override Sidecar port (default: $ZHISHI_PORT)
 Examples:
-  zhishi mcp list
-  zhishi mcp show playwright
-  zhishi mcp add --id playwright --type stdio --command npx --args @playwright/mcp@latest
-  zhishi mcp enable playwright --scope both
-  zhishi mcp oauth discover notion-mcp
-  zhishi mcp oauth start notion-mcp
   zhishi model list
   zhishi model set-key deepseek sk-xxx
-  zhishi skill list
-  zhishi skill remove my-skill
   zhishi env engines                        # probe docker/hypervisors/ssh + install guidance
   zhishi env install docker|hyperv          # auto-install a missing engine (download + verify + launch / dism)
   zhishi env list                           # named environments (id/kind/target/user)
@@ -284,14 +274,6 @@ if (!result.success) {
     return;
   }
 // Group-specific formatting
-  if (group === 'mcp' && action === 'list') {
-    printMcpList(result.data as Array<Record<string, unknown>>);
-    return;
-  }
-  if (group === 'mcp' && action === 'show') {
-    printMcpShow(result.data as Record<string, unknown>);
-    return;
-  }
   if (group === 'model' && action === 'list') {
     printModelList(result.data as Array<Record<string, unknown>>);
     return;
@@ -306,18 +288,6 @@ if (!result.success) {
   }
   if (group === 'task' && action === 'get') {
     printTaskDetail(result.data as Record<string, unknown>);
-    return;
-  }
-  if (group === 'skill' && action === 'list') {
-    printSkillList(result.data as Array<Record<string, unknown>>);
-    return;
-  }
-  if (group === 'skill' && action === 'info') {
-    printSkillInfo(result.data as Record<string, unknown>);
-    return;
-  }
-  if (group === 'mcp' && action === 'oauth') {
-    printMcpOAuth(result.data as Record<string, unknown>);
     return;
   }
   if (group === 'version') {
@@ -336,19 +306,6 @@ if (!result.success) {
     } else {
       console.log(`${key}: ${value === undefined ? '(unset)' : String(value)}`);
     }
-    return;
-  }
-  if (group === 'mcp' && action === 'env') {
-    // `mcp env get/set/delete` — generic ✓ formatter swallowed values for
-    // get. Render env map for any sub-action (issue #149).
-    const data = (result.data as Record<string, unknown>) ?? {};
-    const env = (data.env as Record<string, unknown>) ?? data;
-    if (env && typeof env === 'object' && Object.keys(env).length > 0) {
-      console.log(formatObject(env as Record<string, unknown>));
-    } else {
-      console.log('(no env vars set)');
-    }
-    if (result.hint) console.log(`\n${result.hint}`);
     return;
   }
   if (group === 'agent' && action === 'show') {
@@ -833,80 +790,6 @@ console.log(`\u2713 Task ${action === 'rerun' ? 'redispatched' : 'dispatched'}`)
   console.log(`  runtime:  ${runtime}`);
   console.log(`  model:    ${model}`);
 }
-function printMcpList(servers: Array<Record<string, unknown>>): void {
-  if (!servers || servers.length === 0) {
-    console.log('No MCP servers configured.');
-    return;
-  }
-  const pad = (s: string, n: number) => s.padEnd(n);
-  console.log(pad('ID', 24) + pad('Type', 8) + pad('Status', 10) + 'Name');
-  for (const s of servers) {
-    const status = s.enabled ? 'enabled' : 'disabled';
-    const builtin = s.isBuiltin ? ' (built-in)' : '';
-    console.log(pad(String(s.id), 24) + pad(String(s.type), 8) + pad(status, 10) + String(s.name) + builtin);
-  }
-  const enabled = servers.filter(s => s.enabled).length;
-  console.log(`\n${servers.length} MCP servers (${enabled} enabled)`);
-}
-/**
- * Format `zhishi mcp show <id>` output.
- *
- * Parallels printAgentShow — prints the user-visible config + enable state
- * (global / per-project) for a single server. Env and headers are rendered
- * as `key = <redacted>` lines when values exist; AI callers can read the
- * structure without ever seeing a secret.
- */
-function printMcpShow(data: Record<string, unknown>): void {
-  if (!data) {
-    console.log('No MCP data.');
-    return;
-  }
-  console.log(`MCP Server:   ${String(data.name ?? '')}`);
-  console.log(`  id:         ${String(data.id ?? '')}`);
-  console.log(`  type:       ${String(data.type ?? '')}`);
-  if (data.description) console.log(`  description:${String(data.description)}`);
-  console.log(`  built-in:   ${data.isBuiltin ? 'yes' : 'no'}`);
-const enabled = (data.enabled as { global?: boolean; project?: boolean | null }) ?? {};
-  const globalState = enabled.global ? 'enabled' : 'disabled';
-  const projectState = enabled.project === null || enabled.project === undefined
-    ? '(no active workspace)'
-    : enabled.project
-      ? 'enabled'
-      : 'disabled';
-  console.log('');
-  console.log('Enable state:');
-  console.log(`  global:     ${globalState}`);
-  console.log(`  project:    ${projectState}`);
-  if (data.workspacePath) console.log(`  workspace:  ${String(data.workspacePath)}`);
-console.log('');
-  console.log('Transport:');
-  if (data.command) console.log(`  command:    ${String(data.command)}`);
-  if (Array.isArray(data.args) && (data.args as unknown[]).length > 0) {
-    console.log(`  args:       ${(data.args as unknown[]).map(String).join(' ')}`);
-  }
-  if (data.url) console.log(`  url:        ${String(data.url)}`);
-const env = data.env as Record<string, string> | undefined;
-  if (env && Object.keys(env).length > 0) {
-    console.log('');
-    console.log('Env (values redacted):');
-    for (const [k, v] of Object.entries(env)) {
-      console.log(`  ${k} = ${v}`);
-    }
-  }
-  const headers = data.headers as Record<string, string> | undefined;
-  if (headers && Object.keys(headers).length > 0) {
-    console.log('');
-    console.log('Headers (values redacted):');
-    for (const [k, v] of Object.entries(headers)) {
-      console.log(`  ${k} = ${v}`);
-    }
-  }
-if (data.requiresConfig) {
-    console.log('');
-    console.log('Note: this server requires configuration before it can be enabled.');
-    if (data.websiteUrl) console.log(`  See: ${String(data.websiteUrl)}`);
-  }
-}
 function printModelList(providers: Array<Record<string, unknown>>): void {
   if (!providers || providers.length === 0) {
     console.log('No model providers configured.');
@@ -943,44 +826,8 @@ function printAgentList(agents: Array<Record<string, unknown>>): void {
   }
 }
 function printStatus(data: Record<string, unknown>): void {
-  const mcp = data.mcpServers as Record<string, number>;
-  console.log(`MCP Servers: ${mcp?.total ?? 0} total, ${mcp?.enabled ?? 0} enabled`);
-  console.log(`Active MCP in session: ${data.activeMcpInSession}`);
   console.log(`Default provider: ${data.defaultProvider}`);
   console.log(`Agents: ${data.agents}`);
-}
-function printSkillList(skills: Array<Record<string, unknown>>): void {
-  if (!skills || skills.length === 0) {
-    console.log('No skills installed.');
-    return;
-  }
-  const pad = (s: string, n: number) => s.padEnd(n);
-  console.log(pad('Folder', 28) + pad('Scope', 10) + pad('Enabled', 10) + 'Description');
-  for (const s of skills) {
-    const enabled = s.enabled === false ? 'off' : 'on';
-    const desc = String(s.description ?? '').slice(0, 60);
-    console.log(
-      pad(String(s.folderName ?? s.name ?? '?').slice(0, 26), 28) +
-      pad(String(s.scope ?? 'user'), 10) +
-      pad(enabled, 10) +
-      desc,
-    );
-  }
-  console.log(`\n${skills.length} skill(s)`);
-}
-function printSkillInfo(data: Record<string, unknown>): void {
-  if (!data) {
-    console.log('Skill not found.');
-    return;
-  }
-  const fm = (data.frontmatter as Record<string, unknown>) || {};
-  console.log(`Name:        ${fm.name ?? data.name ?? '?'}`);
-  console.log(`Folder:      ${data.folderName ?? '?'}`);
-  console.log(`Scope:       ${data.scope ?? 'user'}`);
-  console.log(`Description: ${fm.description ?? ''}`);
-  if (fm.author) console.log(`Author:      ${fm.author}`);
-  if (fm['allowed-tools']) console.log(`Allowed:     ${JSON.stringify(fm['allowed-tools'])}`);
-  console.log(`Path:        ${data.path ?? ''}`);
 }
 function printTaskList(tasks: Array<Record<string, unknown>>): void {
   if (!tasks || tasks.length === 0) {
@@ -1092,33 +939,6 @@ function printTaskDetail(task: Record<string, unknown>): void {
   console.log('  zhishi task run <id>                                     # dispatch immediately');
   console.log('  zhishi task rerun <id>                                   # re-arm stopped/blocked task');
   console.log('  zhishi task --help                                       # full Task CLI reference');
-}
-function printMcpOAuth(data: Record<string, unknown>): void {
-  if (!data) return;
-  const id = data.id ?? '';
-// discover result
-  if (data.required !== undefined) {
-    console.log(`MCP: ${id}`);
-    console.log(`OAuth required: ${data.required ? 'yes' : 'no'}`);
-    if (data.supportsDynamicRegistration) console.log('Dynamic registration: supported (zero-config)');
-    if (data.scopes) console.log(`Scopes: ${(data.scopes as string[]).join(', ')}`);
-    return;
-  }
-// status result
-  if (data.status !== undefined) {
-    const symbol = data.status === 'connected' ? '\u2713' : data.status === 'expired' ? '\u26A0' : '\u2717';
-    console.log(`${symbol} ${id}: ${data.status}`);
-    if (data.expiresAt) console.log(`  Expires: ${new Date(Number(data.expiresAt)).toLocaleString()}`);
-    if (data.scope) console.log(`  Scope: ${data.scope}`);
-    return;
-  }
-// start result (authUrl present)
-  if (data.authUrl) {
-    console.log(`OAuth authorization URL:\n  ${data.authUrl}`);
-    return;
-  }
-// Generic fallback (revoke, etc.)
-  console.log(`\u2713 ${id}: done`);
 }
 function formatObject(obj: Record<string, unknown> | undefined, indent = '  '): string {
   if (!obj) return `${indent}(empty)`;
@@ -1757,12 +1577,7 @@ printResult(group, action, result, jsonMode, flags);
 // Exit with proper code: 0 = success, 1 = business error
   if (result && !result.success) process.exit(1);
 }
-function buildRoute(group: string, action: string, rest: string[]): string {
-  // MCP OAuth subcommands: mcp oauth discover/start/status/revoke
-  if (group === 'mcp' && action === 'oauth') {
-    const oauthAction = rest[0] || 'status';
-    return `mcp/oauth/${oauthAction}`;
-  }
+function buildRoute(group: string, action: string, _rest: string[]): string {
   // Tool readmes: `zhishi widget ...` — the server returns a brief readme
   // (or the widget design contract) as raw text.
   if (action === 'readme' && group === 'widget') {
@@ -1978,61 +1793,6 @@ function buildRequestBody(
     }
     return {};
   }
-  // MCP commands
-  if (group === 'mcp') {
-    if (action === 'add') {
-      return {
-        server: {
-          id: flags.id,
-          name: flags.name,
-          type: flags.type || 'stdio',
-          command: flags.command,
-          args: flags.args,
-          url: flags.url,
-          env: parseEnvFlags(flags.env as string[] | undefined),
-          headers: parseEnvFlags(flags.headers as string[] | undefined),
-          description: flags.description,
-        },
-        dryRun: flags.dryRun,
-      };
-    }
-    if (action === 'remove' || action === 'enable' || action === 'disable' || action === 'test') {
-      return { id: rest[0] || flags.id, scope: flags.scope };
-    }
-    if (action === 'show') {
-      return { id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'mcp-id', 'mcp show', 'id') };
-    }
-    if (action === 'oauth') {
-      const oauthAction = rest[0] || 'status'; // discover | start | status | revoke
-      const serverId = rest[1] || (flags.id as string);
-      if (!serverId) return { id: undefined }; // will trigger missing field error
-      if (oauthAction === 'start') {
-        return {
-          id: serverId,
-          clientId: flags.clientId,
-          clientSecret: flags.clientSecret,
-          scopes: flags.scopes,
-          callbackPort: flags.callbackPort ? Number(flags.callbackPort) : undefined,
-        };
-      }
-      return { id: serverId };
-    }
-    if (action === 'env') {
-      const serverId = rest[0];
-      const subAction = rest[1]; // set | get | delete
-      const envPairs = rest.slice(2);
-      // For 'delete', bare keys (no =value) are valid — convert to KEY=1 for parseEnvFlags
-      const envInput = subAction === 'delete'
-        ? envPairs.map(k => k.includes('=') ? k : `${k}=`)
-        : envPairs;
-      return {
-        id: serverId,
-        action: subAction,
-        env: parseEnvFlags(envInput.length > 0 ? envInput : flags.env as string[] | undefined),
-      };
-    }
-    return {};
-  }
 // Model commands
   if (group === 'model') {
     if (action === 'set-key') return { id: rest[0] || flags.id, apiKey: rest[1] || flags.apiKey };
@@ -2192,13 +1952,6 @@ function buildRequestBody(
       : candidates;
     return { modules };
   }
-// Skill commands
-  if (group === 'skill') {
-    if (action === 'remove' || action === 'info' || action === 'enable' || action === 'disable') {
-      return { name: rest[0] || flags.name, scope: (flags.scope as string) || 'user' };
-    }
-    return {};
-  }
 // Config commands
   if (group === 'config') {
     if (action === 'get') return { key: rest[0] || flags.key };
@@ -2346,18 +2099,6 @@ function buildRequestBody(
     return {};
   }
 return flags;
-}
-/** Parse KEY=VALUE pairs from --env flags */
-function parseEnvFlags(envPairs: string[] | undefined): Record<string, string> | undefined {
-  if (!envPairs || envPairs.length === 0) return undefined;
-  const result: Record<string, string> = {};
-  for (const pair of envPairs) {
-    const eqIdx = pair.indexOf('=');
-    if (eqIdx > 0) {
-      result[pair.slice(0, eqIdx)] = pair.slice(eqIdx + 1);
-    }
-  }
-  return Object.keys(result).length > 0 ? result : undefined;
 }
 /** Try to parse a string as JSON, otherwise return as-is */
 function tryParseJson(value: string | undefined): unknown {

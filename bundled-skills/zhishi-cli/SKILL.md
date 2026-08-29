@@ -14,9 +14,7 @@ description: >-
 
   典型触发场景：用户说"每天 X 点帮我 Y"（→ task 定时）、"派发成任务"（→ task）、
 
-  "接个 X 工具进来"（→ mcp）、"配 X 模型/Provider"（→ model）、
-
-  "装个 X skill"（→ skill）、"做个图表/仪表盘"
+  "配 X 模型/Provider"（→ model）、"做个图表/仪表盘"
 
   （→ widget readme）、"看下我有啥任务/定时/版本"（→ list / status / version）、"改下应用设置"（→ config）。
 
@@ -88,7 +86,7 @@ CLI 通过 `~/.zhishi/bin/zhishi` 暴露，你的 SDK 子进程 PATH 已注入�
 
 - **MCP 工具变更**（增删改 / 启禁用 / 环境变量 / OAuth）：磁盘立即写入，但工具在**下一轮对话**才能调用——MCP server 在 session 创建时绑定。当前轮配完后告诉用户："发条新消息我就能用了"
 
-- **其他配置**（Provider / Agent / task / skill / config）：写入即时生效
+- **其他配置**（Provider / Agent / task / config）：写入即时生效
 
 
 
@@ -97,60 +95,6 @@ CLI 通过 `~/.zhishi/bin/zhishi` 暴露，你的 SDK 子进程 PATH 已注入�
 
 
 ## 命令速查 + 何时使用
-
-
-
-### MCP 工具（mcp）
-
-
-
-```bash
-
-zhishi mcp list                                       # 看用户配了哪些 MCP
-
-zhishi mcp show <id>                                  # 看某个 MCP 的完整配置（command/args/env/headers）
-
-zhishi mcp add --id <id> --type <stdio|sse|http> ...  # 新增
-
-zhishi mcp remove <id>                                # 删除
-
-zhishi mcp enable <id> --scope <user|project|both>    # 启用
-
-zhishi mcp disable <id> --scope <user|project|both>   # 禁用
-
-zhishi mcp test <id>                                  # 实际握手测试连通性
-
-zhishi mcp env <id> set KEY=val [KEY2=val2 ...]       # 设环境变量（覆盖）
-
-zhishi mcp env <id> get [KEY ...]                     # 读环境变量
-
-zhishi mcp env <id> delete KEY [KEY2 ...]             # 删环境变量
-
-zhishi mcp oauth discover <id>                        # 探测 MCP server 是否支持 OAuth + 拿到 metadata
-
-zhishi mcp oauth start <id> [--clientId X --clientSecret Y --scopes "..." --callbackPort N]
-
-                                                        # 启动 OAuth 授权流程（会打开浏览器）
-
-zhishi mcp oauth status <id>                          # 看授权状态（已授权 / token 是否过期）
-
-zhishi mcp oauth revoke <id>                          # 撤销授权
-
-```
-
-
-
-**何时用：**
-
-- "帮我接个 X 工具" → `mcp add` → `mcp enable --scope both` → `mcp test`
-
-- "看下 playwright 配的啥" → `mcp show playwright`
-
-- "Notion MCP 怎么登录" → `mcp oauth discover` 看支持的 scopes，再 `mcp oauth start`
-
-- "X 工具用不了，是不是登录过期了" → `mcp oauth status <id>`，过期就重跑 `oauth start`
-
-- "给 fetch 加个 API Key 环境变量" → `mcp env fetch set FETCH_API_KEY=sk-xxx`
 
 
 
@@ -269,30 +213,6 @@ zhishi env remove <id>
 - "进环境干活" → `env open <id>`；交互会话用 GUI 主窗口（1.3.9 起 `zhishi agent` 无参数已退役，仅子命令 list/show/enable/disable/set 可用）
 
 
-
-
-
-### Skills（skill）
-
-
-
-```bash
-
-zhishi skill list                                     # 已装 skill（用户级 ~/.zhishi/skills）
-
-zhishi skill info <name>                              # 某 skill 的详情
-
-zhishi skill remove <name>                            # 删除
-
-zhishi skill enable <name>                            # 启用
-
-zhishi skill disable <name>                           # 禁用
-
-```
-
-
-
-技能市场 / URL 安装管线已删除（wave 3b）——新 skill 通过插件体系或直接把目录放进 `~/.zhishi/skills/` 获得。
 
 
 
@@ -527,26 +447,6 @@ zhishi widget readme <module1> [<module2> ...]        # 拉具体模块的完整
 
 
 ## 典型工作流
-
-
-
-### 接入 MCP 工具
-
-
-
-1. 从用户给的文档提取：server ID、类型（stdio/sse/http）、command 或 URL、所需环境变量
-
-2. `zhishi mcp add --dry-run ...` 预览
-
-3. 给用户看预览，确认
-
-4. 执行：`mcp add` → `mcp enable --scope both` → 配 env（如需）→ 如果是 OAuth 类的再 `mcp oauth start`
-
-5. `zhishi mcp test <id>` 实际握手测试
-
-6. `zhishi reload`
-
-7. 告诉用户："发条新消息我就能用了"
 
 
 

@@ -1,8 +1,10 @@
 /**
- * 1.5.0 触发权归人——研究四命令（/expert /intel /archive /decide）的纯模型层。
+ * 1.5.0 触发权归人——研究命令（/intel /archive /decide）的纯模型层。
+ * （1.5.1：/expert 斜杠命令随注入面瘦身删除——专家知识改由 harness 按
+ * 焦点自动注入，不再需要人手动检索触发。）
  *
  * 背景（用户深度使用实证 + 轨迹取证）：「模型主动」路线实证失败——决策
- * 0 调用、专家 1 会话、档案全靠人打字触发。这四个命令把触发权还给人：
+ * 0 调用、专家 1 会话、档案全靠人打字触发。这些命令把触发权还给人：
  * 人什么时候要查证/要拍板，人自己最知道；模型只需要在被明确要求时执行
  * （轨迹实证：人说了它就做得好）。
  *
@@ -32,12 +34,7 @@ export function effectiveQuery(arg: string, items: StreamItem[]): string {
   return explicit || contextQueryFallback(items);
 }
 
-/** /expert 注入文本（查询结果作为上下文块，与工具结果同席——以 user 消息注入）。 */
-export function buildExpertInjectText(query: string, resultsText: string): string {
-  return `【/expert 专家知识 · 查询：${query}】\n${resultsText}\n——以上是应我请求检索的专家审定知识，请结合它继续当前研究。`;
-}
-
-/** /intel 注入文本（同上，情报库——线索不是结论）。 */
+/** /intel 注入文本（查询结果作为上下文块，与工具结果同席——以 user 消息注入；线索不是结论）。 */
 export function buildIntelInjectText(query: string, resultsText: string): string {
   return `【/intel 情报检索 · 查询：${query}】\n${resultsText}\n——以上是应我请求检索的情报（线索不是结论，受影响版本与公开 PoC 需你验证），请结合它继续当前研究。`;
 }

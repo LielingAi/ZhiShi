@@ -58,7 +58,7 @@ async function streamUploadToFile(file: File, destination: string): Promise<void
     throw err;
   }
 }
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { tmpdir } from 'os';
 import { getZhiShiDataDir } from './utils/app-dirs';
 import { randomUUID } from 'crypto';
@@ -67,11 +67,8 @@ import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
 // cost when the feature is never used.
 import {
   extractCommandName,
-  parseFullSkillContent,
   parseFullCommandContent,
-  serializeSkillContent,
   serializeCommandContent,
-  type SkillFrontmatter,
   type CommandFrontmatter
 } from '../shared/slashCommands';
 import { sanitizeFolderName, isWindowsReservedName } from '../shared/utils';
@@ -93,16 +90,6 @@ import {
   handlePatchSession,
   handleSwitchSession,
 } from './routes/sessions';
-import {
-  handleMcpEnable,
-  handleMcpGet,
-  handleMcpOauthDiscover,
-  handleMcpOauthRefresh,
-  handleMcpOauthStart,
-  handleMcpOauthStatus,
-  handleMcpOauthToken,
-  handleMcpSet,
-} from './routes/mcp';
 // admin-api module (~2900 lines, depends on zod + full config/session/cron surface)
 // is lazy-loaded on first /api/admin/* hit to shave ~150ms off sidecar cold
 // start. All handlers are only used inside routeAdminApi() below.
@@ -117,7 +104,6 @@ installCrashDiagnostics();
 // ============= END CRASH DIAGNOSTICS =============
 import {
   initializeAgent,
-  getMcpServers,
   setAgents,
   setSessionModel,
   setSidecarPort,
@@ -177,7 +163,6 @@ import {
   chatSendErrorStatus,
 } from './loop/chat-engine';
 import { buildLoopTranscript } from './loop/transcript';
-import { initMcpBridge } from './loop/mcp-bridge';
 import { isKimiCodingProvider } from './loop/pi-provider';
 import { pendingBoundaryAsks, respondBoundaryAsk } from './loop/boundary-ask';
 // 1.3.2 决策面板:pending 注册表 + 重连重放。
@@ -270,10 +255,10 @@ async function ensureAgentDir(dir: string): Promise<string> {
   return resolved;
 }
 // ============= SKILLS CONFIG & SEED =============
-// Extracted to ./skills-config (1.1.7 ③). writeSkillsConfig was folded into
-// mutateSkillsConfig (withFileLock 锁内读-改-写 + tmp+rename)；调用点随之 async 化。
+// Extracted to ./skills-config (1.1.7 ③)；1.5.1 起只剩环境配方 seed 与
+// Playwright 锁清理（skills seed/配置写侧随注入面瘦身删除）。
 // ============= END SKILLS CONFIG & SEED =============
-import { bumpSkillsGeneration, cleanupStalePlaywrightProfile, mutateSkillsConfig, seedBundledSkills, seedEnvironmentRecipes } from './skills-config';
+import { cleanupStalePlaywrightProfile, seedEnvironmentRecipes } from './skills-config';
 import { seedBundledExpert } from './expert/seed';
 /**
  * Validate that the agent directory is safe to access.
@@ -346,21 +331,6 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   const route = pathname.replace('/api/admin/', '');
 // Lazy-load admin-api (~150ms on first hit, cached thereafter)
   const api = await getAdminApi();
-// MCP commands
-  if (route === 'mcp/list') return api.handleMcpList();
-  if (route === 'mcp/show') return api.handleMcpShow(payload as Parameters<typeof api.handleMcpShow>[0]);
-  if (route === 'mcp/add') return api.handleMcpAdd(payload as Parameters<typeof api.handleMcpAdd>[0]);
-  if (route === 'mcp/remove') return api.handleMcpRemove(payload as Parameters<typeof api.handleMcpRemove>[0]);
-  if (route === 'mcp/enable') return api.handleMcpEnable(payload as Parameters<typeof api.handleMcpEnable>[0]);
-  if (route === 'mcp/disable') return api.handleMcpDisable(payload as Parameters<typeof api.handleMcpDisable>[0]);
-  if (route === 'mcp/env') return api.handleMcpEnv(payload as Parameters<typeof api.handleMcpEnv>[0]);
-  if (route === 'mcp/test') return await api.handleMcpTest(payload as Parameters<typeof api.handleMcpTest>[0]);
-  if (route === 'mcp/oauth/discover') return await api.handleMcpOAuthDiscover(payload as Parameters<typeof api.handleMcpOAuthDiscover>[0]);
-  if (route === 'mcp/oauth/start') return await api.handleMcpOAuthStart(payload as Parameters<typeof api.handleMcpOAuthStart>[0]);
-  if (route === 'mcp/oauth/status') return await api.handleMcpOAuthStatus(payload as Parameters<typeof api.handleMcpOAuthStatus>[0]);
-  if (route === 'mcp/oauth/revoke') return await api.handleMcpOAuthRevoke(payload as Parameters<typeof api.handleMcpOAuthRevoke>[0]);
-  if (route === 'mcp/list-status') return await api.handleMcpListStatus();
-  if (route === 'mcp/reload') return await api.handleMcpReload();
 // Model commands
   if (route === 'model/list') return api.handleModelList();
   if (route === 'model/add') return api.handleModelAdd(payload as Parameters<typeof api.handleModelAdd>[0]);
@@ -427,12 +397,6 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
       modules: Array.isArray(payload.modules) ? (payload.modules as string[]) : undefined,
     });
   }
-// Skill commands
-  if (route === 'skill/list') return await api.handleSkillList();
-  if (route === 'skill/info') return await api.handleSkillInfo(payload as Parameters<typeof api.handleSkillInfo>[0]);
-  if (route === 'skill/remove') return await api.handleSkillRemove(payload as Parameters<typeof api.handleSkillRemove>[0]);
-  if (route === 'skill/enable') return await api.handleSkillToggle({ name: String(payload.name ?? ''), enabled: true });
-  if (route === 'skill/disable') return await api.handleSkillToggle({ name: String(payload.name ?? ''), enabled: false });
 // AppCraft 已随 1.2.3 退役移除（桌面自动化整体切除）——老客户端打到这些
   // 路由时给明确错误，而不是 unknown route。
   if (route.startsWith('appcraft/')) {
@@ -2118,46 +2082,6 @@ return jsonResponse({
           );
         }
       }
-// ============= MCP API =============
-      // Handlers extracted to ./routes/mcp (1.1.7 ③ — pure move); the
-      // if-chain order below preserves the original registration order.
-      // POST /api/mcp/set - Set MCP servers for current workspace
-      if (pathname === '/api/mcp/set' && request.method === 'POST') {
-        return await handleMcpSet(request, jsonResponse);
-      }
-      // GET /api/mcp - Get current MCP servers
-      if (pathname === '/api/mcp' && request.method === 'GET') {
-        return await handleMcpGet(jsonResponse);
-      }
-      // POST /api/mcp/enable - Validate and enable MCP server
-      // For preset MCP (npx): warmup npm/npx cache (system npx → bundled npx → bun x)
-      // For custom MCP: check if command exists
-      if (pathname === '/api/mcp/enable' && request.method === 'POST') {
-        return await handleMcpEnable(request, jsonResponse);
-      }
-      // ============= MCP OAuth API =============
-      // POST /api/mcp/oauth/discover - Probe MCP server for OAuth requirements
-      if (pathname === '/api/mcp/oauth/discover' && request.method === 'POST') {
-        return await handleMcpOauthDiscover(request, jsonResponse);
-      }
-      // POST /api/mcp/oauth/start - Start OAuth flow (auto or manual mode)
-      if (pathname === '/api/mcp/oauth/start' && request.method === 'POST') {
-        return await handleMcpOauthStart(request, jsonResponse);
-      }
-      // GET /api/mcp/oauth/status/:serverId - Get OAuth status
-      if (pathname.startsWith('/api/mcp/oauth/status/') && request.method === 'GET') {
-        return await handleMcpOauthStatus(pathname, jsonResponse);
-      }
-      // POST /api/mcp/oauth/refresh - Manually refresh OAuth token
-      if (pathname === '/api/mcp/oauth/refresh' && request.method === 'POST') {
-        return await handleMcpOauthRefresh(request, jsonResponse);
-      }
-      // DELETE /api/mcp/oauth/token - Revoke OAuth authorization
-      if (pathname === '/api/mcp/oauth/token' && request.method === 'DELETE') {
-        return await handleMcpOauthToken(request, jsonResponse);
-      }
-      // ============= END MCP OAuth API =============
-      // ============= END MCP API =============
 // ============= ADMIN API (Self-Config CLI) =============
       if (pathname.startsWith('/api/admin/') && request.method === 'POST') {
         try {
@@ -2447,9 +2371,8 @@ const result = await routeAdminApi(pathname, payload);
           );
         }
       }
-// ============= SKILLS MANAGEMENT API =============
-const userSkillsBaseDir = join(getZhiShiDataDir(), 'skills');
-      const userCommandsBaseDir = join(getZhiShiDataDir(), 'commands');
+// ============= COMMANDS MANAGEMENT API =============
+const userCommandsBaseDir = join(getZhiShiDataDir(), 'commands');
 // Helper: Get project base directories (supports explicit agentDir parameter)
       // Security: validates agentDir to prevent path traversal attacks
       const getProjectBaseDirs = (queryAgentDir: string | null) => {
@@ -2463,336 +2386,12 @@ const userSkillsBaseDir = join(getZhiShiDataDir(), 'skills');
         const effectiveAgentDir = queryAgentDir || currentAgentDir;
         const hasValidDir = effectiveAgentDir && existsSync(effectiveAgentDir);
         return {
-          skillsDir: hasValidDir ? join(effectiveAgentDir, '.claude', 'skills') : '',
           commandsDir: hasValidDir ? join(effectiveAgentDir, '.claude', 'commands') : '',
         };
       };
 // Default project paths (using currentAgentDir)
       const hasValidAgentDir = currentAgentDir && existsSync(currentAgentDir);
-      const projectSkillsBaseDir = hasValidAgentDir ? join(currentAgentDir, '.claude', 'skills') : '';
       const projectCommandsBaseDir = hasValidAgentDir ? join(currentAgentDir, '.claude', 'commands') : '';
-// POST /api/skill/toggle-enable - Enable/disable a user-level skill
-      // NOTE: This route MUST be before /api/skill/:name to avoid being captured by the wildcard
-      if (pathname === '/api/skill/toggle-enable' && request.method === 'POST') {
-        try {
-          const { folderName, enabled } = await request.json() as { folderName: string; enabled: boolean };
-          if (!folderName || typeof folderName !== 'string') {
-            return jsonResponse({ success: false, error: 'Invalid folderName' }, 400);
-          }
-          await mutateSkillsConfig((config) => {
-            if (enabled) {
-              config.disabled = config.disabled.filter(n => n !== folderName);
-            } else {
-              if (!config.disabled.includes(folderName)) config.disabled.push(folderName);
-            }
-            return true;
-          });
-          // Re-sync project skill symlinks if this sidecar has an agentDir
-          // (Global Sidecar has no agentDir; Tab Sidecars will sync on next /api/commands)
-          if (agentDir) { syncProjectUserConfig(agentDir); }
-          return jsonResponse({ success: true });
-        } catch (error) {
-          console.error('[api/skill/toggle-enable] Error:', error);
-          return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to toggle skill' },
-            500
-          );
-        }
-      }
-// GET /api/skill/:name - Get skill detail
-      if (pathname.startsWith('/api/skill/') && request.method === 'GET') {
-        try {
-          const skillName = decodeURIComponent(pathname.replace('/api/skill/', ''));
-          if (!isValidItemName(skillName)) {
-            return jsonResponse({ success: false, error: 'Invalid skill name' }, 400);
-          }
-          const scope = url.searchParams.get('scope') || 'project';
-          const queryAgentDir = url.searchParams.get('agentDir');
-// Use explicit agentDir if provided for project scope
-          const { skillsDir } = getProjectBaseDirs(queryAgentDir);
-          const baseDir = scope === 'user' ? userSkillsBaseDir : skillsDir;
-          const skillPath = join(baseDir, skillName, 'SKILL.md');
-if (!existsSync(skillPath)) {
-            return jsonResponse({ success: false, error: 'Skill not found' }, 404);
-          }
-const content = readFileSync(skillPath, 'utf-8');
-          const { frontmatter, body } = parseFullSkillContent(content);
-return jsonResponse({
-            success: true,
-            skill: {
-              name: frontmatter.name || skillName,
-              folderName: skillName,
-              path: skillPath,
-              scope,
-              frontmatter,
-              body,
-            }
-          });
-        } catch (error) {
-          console.error('[api/skill] Error:', error);
-          return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to get skill' },
-            500
-          );
-        }
-      }
-// PUT /api/skill/:name - Update skill (with optional folder rename)
-      if (pathname.startsWith('/api/skill/') && request.method === 'PUT') {
-        try {
-          const skillName = decodeURIComponent(pathname.replace('/api/skill/', ''));
-          if (!isValidItemName(skillName)) {
-            return jsonResponse({ success: false, error: 'Invalid skill name' }, 400);
-          }
-          const payload = await request.json() as {
-            scope: 'user' | 'project';
-            frontmatter: Partial<SkillFrontmatter>;
-            body: string;
-            newFolderName?: string; // Optional: rename folder if provided
-            agentDir?: string; // Optional: explicit project directory
-          };
-// Use explicit agentDir if provided for project scope
-          const { skillsDir } = getProjectBaseDirs(payload.agentDir || null);
-          const baseDir = payload.scope === 'user' ? userSkillsBaseDir : skillsDir;
-          let currentFolderName = skillName;
-          let skillDir = join(baseDir, currentFolderName);
-          let skillPath = join(skillDir, 'SKILL.md');
-if (!existsSync(skillPath)) {
-            return jsonResponse({ success: false, error: 'Skill not found' }, 404);
-          }
-// Handle folder rename if newFolderName is provided and different
-          if (payload.newFolderName && payload.newFolderName !== currentFolderName) {
-            const newFolderName = payload.newFolderName;
-// Validate new folder name
-            if (!isValidItemName(newFolderName)) {
-              return jsonResponse({ success: false, error: 'Invalid new folder name' }, 400);
-            }
-const newSkillDir = join(baseDir, newFolderName);
-// Check for conflict
-            if (existsSync(newSkillDir)) {
-              return jsonResponse({ success: false, error: `技能文件夹 "${newFolderName}" 已存在，请使用其他名称` }, 409);
-            }
-// Atomic-like operation: prepare content first, then rename
-            // If rename fails, nothing is lost. If write fails after rename, folder is renamed but content unchanged.
-            const content = serializeSkillContent(payload.frontmatter, payload.body);
-// Rename the folder
-            renameSync(skillDir, newSkillDir);
-            skillDir = newSkillDir;
-            skillPath = join(skillDir, 'SKILL.md');
-            currentFolderName = newFolderName;
-// Write content to new location
-            writeFileSync(skillPath, content, 'utf-8');
-// User skill renamed — bump generation + re-sync to fix old dangling symlink + create new one
-            if (payload.scope === 'user') {
-              await bumpSkillsGeneration();
-              if (agentDir) { syncProjectUserConfig(agentDir); }
-            }
-            return jsonResponse({
-              success: true,
-              path: skillPath,
-              folderName: currentFolderName,
-              fullPath: skillDir
-            });
-          }
-// No rename, just update content
-          const content = serializeSkillContent(payload.frontmatter, payload.body);
-          writeFileSync(skillPath, content, 'utf-8');
-return jsonResponse({
-            success: true,
-            path: skillPath,
-            folderName: currentFolderName,
-            fullPath: skillDir
-          });
-        } catch (error) {
-          console.error('[api/skill] Error:', error);
-          return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to update skill' },
-            500
-          );
-        }
-      }
-// DELETE /api/skill/:name - Delete skill
-      if (pathname.startsWith('/api/skill/') && request.method === 'DELETE') {
-        try {
-          const skillName = decodeURIComponent(pathname.replace('/api/skill/', ''));
-          if (!isValidItemName(skillName)) {
-            return jsonResponse({ success: false, error: 'Invalid skill name' }, 400);
-          }
-          const scope = url.searchParams.get('scope') || 'project';
-          const queryAgentDir = url.searchParams.get('agentDir');
-// Use explicit agentDir if provided for project scope
-          const { skillsDir } = getProjectBaseDirs(queryAgentDir);
-          const baseDir = scope === 'user' ? userSkillsBaseDir : skillsDir;
-          const skillDir = join(baseDir, skillName);
-if (!existsSync(skillDir)) {
-            return jsonResponse({ success: false, error: 'Skill not found' }, 404);
-          }
-rmSync(skillDir, { recursive: true, force: true });
-          // User skill deleted — bump generation + re-sync to remove dangling symlinks
-          if (scope === 'user') {
-            await bumpSkillsGeneration();
-            if (agentDir) { syncProjectUserConfig(agentDir); }
-          }
-          return jsonResponse({ success: true });
-        } catch (error) {
-          console.error('[api/skill] Error:', error);
-          return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to delete skill' },
-            500
-          );
-        }
-      }
-// POST /api/skill/copy-to-global - Copy a project skill to global (~/.zhishi/skills/)
-      // NOTE: This route MUST be before /api/skill/:name to avoid being captured by the wildcard
-      if (pathname === '/api/skill/copy-to-global' && request.method === 'POST') {
-        try {
-          const { folderName } = await request.json() as { folderName: string };
-          if (!folderName || typeof folderName !== 'string' || !isValidItemName(folderName)) {
-            return jsonResponse({ success: false, error: 'Invalid folderName' }, 400);
-          }
-// Validate project skills directory
-          if (!projectSkillsBaseDir) {
-            return jsonResponse({ success: false, error: '当前没有项目工作目录' }, 400);
-          }
-const srcDir = join(projectSkillsBaseDir, folderName);
-          if (!existsSync(srcDir)) {
-            return jsonResponse({ success: false, error: '项目技能不存在' }, 404);
-          }
-// Check SKILL.md exists in source
-          if (!existsSync(join(srcDir, 'SKILL.md'))) {
-            return jsonResponse({ success: false, error: '项目技能缺少 SKILL.md' }, 400);
-          }
-// Check if already exists in global
-          const destDir = join(userSkillsBaseDir, folderName);
-          if (existsSync(destDir)) {
-            return jsonResponse({ success: false, error: '全局技能中已存在同名技能' }, 409);
-          }
-// Ensure global skills directory exists
-          ensureDirSync(userSkillsBaseDir);
-// Copy the skill folder — async variant so /health stays responsive
-          // while large skills copy (see copyDirRecursive doc).
-          await copyDirRecursive(srcDir, destDir, '[api/skill/copy-to-global]');
-// Bump generation + sync symlinks into project
-          await bumpSkillsGeneration();
-          if (currentAgentDir) { syncProjectUserConfig(currentAgentDir); }
-return jsonResponse({ success: true, folderName });
-        } catch (error) {
-          console.error('[api/skill/copy-to-global] Error:', error);
-          return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to copy skill to global' },
-            500
-          );
-        }
-      }
-// POST /api/skill/import-folder - Import skill from a local folder path.
-      // 1.3.2 验证:非 Tauri-only——webview/浏览器直连 sidecar 可达(同一条
-      // handler 链、OPTIONS 预检 ACAO:* 放行 POST、jsonResponse 全响应带
-      // ACAO:*、127.0.0.1 无 origin 门禁;GUI 经 GuiSidecarClient.postJson
-      // 原生 fetch 直连,已在用)。旧注释「Tauri only」为过期标注。
-      if (pathname === '/api/skill/import-folder' && request.method === 'POST') {
-        try {
-          const payload = await request.json() as {
-            folderPath: string;
-            scope: 'user' | 'project';
-          };
-if (!payload.folderPath) {
-            return jsonResponse({ success: false, error: 'Folder path is required' }, 400);
-          }
-const sourcePath = payload.folderPath;
-          const baseDir = payload.scope === 'user' ? userSkillsBaseDir : projectSkillsBaseDir;
-// Validate target directory is available
-          if (!baseDir) {
-            return jsonResponse({ success: false, error: '请先设置工作目录' }, 400);
-          }
-// Validate source folder exists
-          if (!existsSync(sourcePath)) {
-            return jsonResponse({ success: false, error: '指定的文件夹不存在' }, 400);
-          }
-// Check if it's a directory
-          try {
-            const stats = statSync(sourcePath);
-            if (!stats.isDirectory()) {
-              return jsonResponse({ success: false, error: '指定的路径不是文件夹' }, 400);
-            }
-          } catch {
-            return jsonResponse({ success: false, error: '无法读取文件夹信息' }, 400);
-          }
-// Check for SKILL.md at root (case-insensitive for Windows/macOS)
-          let skillMdPath = join(sourcePath, 'SKILL.md');
-          if (!existsSync(skillMdPath)) {
-            try {
-              const entries = readdirSync(sourcePath);
-              const match = entries.find((e) => e.toLowerCase() === 'skill.md');
-              if (match) {
-                skillMdPath = join(sourcePath, match);
-              }
-            } catch {
-              // ignore readdir errors, fall through to the exists check below
-            }
-          }
-          if (!existsSync(skillMdPath)) {
-            return jsonResponse({ success: false, error: '文件夹中未找到 SKILL.md 文件' }, 400);
-          }
-// Read SKILL.md to get the skill name
-          const skillMdContent = readFileSync(skillMdPath, 'utf-8');
-          let folderName = basename(sourcePath);
-// Try to extract name from SKILL.md frontmatter
-          try {
-            const parsed = parseFullSkillContent(skillMdContent);
-            if (parsed.frontmatter.name) {
-              folderName = parsed.frontmatter.name;
-            }
-          } catch {
-            // Use folder name as fallback
-          }
-// Sanitize folder name
-          folderName = sanitizeFolderName(folderName);
-          const targetDir = join(baseDir, folderName);
-// Check if skill already exists
-          if (existsSync(targetDir)) {
-            return jsonResponse({ success: false, error: `技能 "${folderName}" 已存在` }, 409);
-          }
-// Copy folder recursively — async so the sidecar's /health probe
-          // stays responsive during large imports (see copyDirRecursive doc).
-          // Keeps the hidden-file / __MACOSX filter that distinguishes this
-          // path from the bulk-sync variant.
-          const copyImportedSkillDir = async (src: string, dest: string): Promise<void> => {
-            await ensureDir(dest);
-            const entries = await readdirAsync(src, { withFileTypes: true });
-            for (const entry of entries) {
-              if (entry.name.startsWith('.') || entry.name === '__MACOSX') continue;
-              if (entry.isSymbolicLink()) {
-                console.warn(`[api/skill/import-folder] Skipping symlink: ${join(src, entry.name)}`);
-                continue;
-              }
-              const srcPath = join(src, entry.name);
-              const destPath = join(dest, entry.name);
-              if (entry.isDirectory()) {
-                await copyImportedSkillDir(srcPath, destPath);
-              } else {
-                await copyFileAsync(srcPath, destPath);
-              }
-            }
-          };
-await copyImportedSkillDir(sourcePath, targetDir);
-if (payload.scope === 'user') {
-            await bumpSkillsGeneration();
-            if (agentDir) { syncProjectUserConfig(agentDir); }
-          }
-          return jsonResponse({
-            success: true,
-            folderName,
-            path: targetDir,
-            message: `已成功导入技能 "${folderName}"`
-          });
-} catch (error) {
-          console.error('[api/skill/import-folder] Error:', error);
-          return jsonResponse(
-            { success: false, error: error instanceof Error ? error.message : 'Failed to import skill folder' },
-            500
-          );
-        }
-      }
-// ============= COMMANDS MANAGEMENT API =============
       // GET /api/command-items - List all commands
       // Supports ?agentDir= for listing commands from a specific workspace (e.g. from Launcher)
       if (pathname === '/api/command-items' && request.method === 'GET') {
@@ -3396,16 +2995,14 @@ return jsonResponse({ success: true, path: agentPath, folderName });
       // the session's config instead of pushing their own.
       if (pathname === '/api/session/config' && request.method === 'GET') {
         try {
-          const { getSessionModel, getMcpServers, getAgents } = await import('./agent-session');
+          const { getSessionModel, getAgents } = await import('./agent-session');
           const model = getSessionModel();
-          const mcpServers = getMcpServers();
           const agents = getAgents();
           const permissionMode = null; // M4c: 会话权限模式随 SDK 删除
           return jsonResponse({
             success: true,
             runtime: 'builtin',
             model: model ?? null,
-            mcpServerIds: mcpServers?.map(s => s.id) ?? null,
             agentNames: agents ? Object.keys(agents) : null,
             permissionMode,
           });
@@ -3692,9 +3289,8 @@ return new Response('Not Found', { status: 404 });
 currentInitPhase = 'skill-seed';
       setDeferredInitPhase(currentInitPhase);
       initPhaseStarted = nowMs();
-      await seedBundledSkills();
       seedEnvironmentRecipes();
-      console.log('[startup] seedBundledSkills done');
+      console.log('[startup] seedEnvironmentRecipes done');
 // 1.2.1 专家知识层：bundled-expert 幂等导入 expert.db（按 content_hash；
       // 内置条目强制覆盖，user/promoted 条目绝不动）。失败不阻塞启动。
       try {
@@ -3735,31 +3331,16 @@ currentInitPhase = 'sdk-init';
       await initPiChatEngine(currentAgentDir);
       console.log(`[startup] loop engine: ${isPiEngine() ? 'pi (M4c 默认)' : 'sdk (default)'}`);
       emitDeferredPhaseDone('sdk-init');
-// M4d — MCP bridge:连接全部启用的 MCP server 供 loop 工具集使用。
-      // 单个 server 连接失败不抛(记入桥状态),整段非致命——桥挂了只影响
-      // MCP 工具可用性,sidecar 其余能力不受影响。
-      currentInitPhase = 'mcp-bridge';
-      setDeferredInitPhase(currentInitPhase);
-      initPhaseStarted = nowMs();
-      try {
-        await initMcpBridge();
-        console.log('[startup] MCP bridge ready');
-      } catch (err) {
-        console.warn(`[startup] MCP bridge init failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-      }
-      emitDeferredPhaseDone('mcp-bridge');
 // ── Sidecar Boot Banner: single-line for AI grep ──
       {
         const model = getSessionModel() || '?';
-        const mcpList = getMcpServers();
-        const mcpNames = mcpList ? Object.keys(mcpList).join(',') || 'none' : 'none';
         const bridge = 'no'; // M4c: openai-bridge 已删除
         // Health signal: surface which builtin MCP META ids are registered.
         // An empty list ('none') is expected when no user-toggleable builtins
         // are registered (the gemini-image / edge-tts builtins were removed).
         const { listBuiltinMcpIds } = await import('./tools/builtin-mcp-registry');
         const builtinMcpMeta = listBuiltinMcpIds().join(',') || 'none';
-        console.log(`[boot] pid=${process.pid} port=${port} node=${process.versions.node} workspace=${currentAgentDir} session=${initialSessionId ?? 'new'} resume=${!!initialSessionId} model=${model} bridge=${bridge} mcp=${mcpNames} builtin-mcp-meta=${builtinMcpMeta}`);
+        console.log(`[boot] pid=${process.pid} port=${port} node=${process.versions.node} workspace=${currentAgentDir} session=${initialSessionId ?? 'new'} resume=${!!initialSessionId} model=${model} bridge=${bridge} builtin-mcp-meta=${builtinMcpMeta}`);
       }
 markDeferredInitReady();
       resolveDeferredInit();

@@ -140,9 +140,6 @@ export interface AgentConfig {
   model?: string;
   providerEnvJson?: string;
   permissionMode: string;  // 'plan' | 'auto' | 'fullAgency'
-  mcpEnabledServers?: string[];
-  /** Resolved MCP server definitions JSON (persisted for auto-start, rebuilt on manual start) */
-  mcpServersJson?: string;
 
   // Heartbeat (Agent-level, shared across channels)
   heartbeat?: HeartbeatConfig;
@@ -170,7 +167,6 @@ export function resolveEffectiveConfig(agent: AgentConfig, channel: ChannelConfi
     providerEnvJson: channel.overrides?.providerEnvJson ?? agent.providerEnvJson,
     model: channel.overrides?.model ?? agent.model,
     permissionMode: channel.overrides?.permissionMode ?? agent.permissionMode,
-    mcpEnabledServers: agent.mcpEnabledServers,      // Channel cannot override
     toolsDeny: channel.overrides?.toolsDeny ?? [],
     workspacePath: agent.workspacePath,               // Always Agent's
     heartbeat: agent.heartbeat,                       // Always Agent's

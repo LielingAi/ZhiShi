@@ -7,8 +7,8 @@
  * (and AI agents) as cryptic "Unexpected token 'F'" errors.
  *
  * This helper reads the body once as text, then dispatches based on
- * `resp.ok` + `Content-Type`. The four call sites it replaces (admin-api's
- * `managementApi` + `sidecarSelf`) all want the same behaviour: return parsed JSON on
+ * `resp.ok` + `Content-Type`. The call sites it replaces (admin-api's
+ * `managementApi` 等 loopback 读取点) all want the same behaviour: return parsed JSON on
  * success, surface the actual server text on failure, never throw.
  */
 

@@ -602,43 +602,8 @@ export function fetchAgents(client: GuiSidecarClient): Promise<AgentEntity[]> {
 }
 
 // ---------------------------------------------------------------------------
-// 1.3.1 新增：设置页（skills / intel / expert / research / model key）
+// 1.3.1 新增：设置页（intel / expert / research / model key）
 // ---------------------------------------------------------------------------
-
-export interface SkillEntity {
-  name: string;
-  description?: string;
-  scope?: string;
-  folderName?: string;
-  author?: string;
-  enabled: boolean;
-}
-
-export function fetchSkillList(client: GuiSidecarClient): Promise<SkillEntity[]> {
-  return client
-    .adminPost<{ success: boolean; data?: SkillEntity[] }>('skill/list')
-    .then((r) => (Array.isArray(r.data) ? r.data : []));
-}
-
-export function skillToggle(
-  client: GuiSidecarClient,
-  name: string,
-  enabled: boolean,
-): Promise<{ success: boolean; error?: string; data?: { name: string; enabled: boolean } }> {
-  return client.adminPost(enabled ? 'skill/enable' : 'skill/disable', { name });
-}
-
-/** 技能导入走 sidecar 直连路由（非 admin）：POST /api/skill/import-folder。 */
-export function skillImportFolder(
-  client: GuiSidecarClient,
-  folderPath: string,
-  scope: 'user' | 'project' = 'user',
-): Promise<{ success: boolean; error?: string }> {
-  return client.postJson<{ success: boolean; error?: string }>('/api/skill/import-folder', {
-    folderPath,
-    scope,
-  });
-}
 
 export interface IntelStatusData {
   status?: Record<string, unknown>;
@@ -678,14 +643,6 @@ export function expertSearch(
   query: string,
 ): Promise<{ success: boolean; error?: string; data?: { results?: ExpertSummary[] } }> {
   return client.adminPost('expert/search', { query });
-}
-
-/** 1.5.0 /expert：返回格式化注入文本（服务端与 loop 工具同一渲染函数）。 */
-export function expertSearchText(
-  client: GuiSidecarClient,
-  query: string,
-): Promise<{ success: boolean; error?: string; data?: { text?: string } }> {
-  return client.adminPost('expert/search', { query, format: 'text' });
 }
 
 /** 1.5.0 /intel：情报检索（服务端直接驱动 intel_search 工具执行体）。 */
@@ -801,63 +758,6 @@ export function modelRemoveProvider(
   id: string,
 ): Promise<{ success: boolean; error?: string }> {
   return client.adminPost('model/remove', { id });
-}
-
-// ---------------------------------------------------------------------------
-// 1.3.5 新增：MCP 管理（设置页 MCP 页签——list/状态/启停/热重载）
-// ---------------------------------------------------------------------------
-
-/** admin mcp/list 的服务器条目（全量，含 enabled/isBuiltin 标记）。 */
-export interface McpServerEntity {
-  id: string;
-  name: string;
-  type?: string;
-  enabled?: boolean;
-  isBuiltin?: boolean;
-  command?: string;
-  url?: string;
-  requiresConfig?: boolean;
-  hasEnv?: boolean;
-}
-
-export function fetchMcpList(client: GuiSidecarClient): Promise<McpServerEntity[]> {
-  return client
-    .adminPost<{ success: boolean; data?: McpServerEntity[] }>('mcp/list')
-    .then((r) => (Array.isArray(r.data) ? r.data : []));
-}
-
-/** admin mcp/list-status / mcp/reload 的桥状态条目（仅已启用服务器）。 */
-export interface McpStatusEntity {
-  id: string;
-  name: string;
-  status: 'connected' | 'failed';
-  toolCount?: number;
-  error?: string;
-}
-
-export function fetchMcpStatus(client: GuiSidecarClient): Promise<McpStatusEntity[]> {
-  return client
-    .adminPost<{ success: boolean; data?: { servers?: McpStatusEntity[] } }>('mcp/list-status')
-    .then((r) => (Array.isArray(r.data?.servers) ? r.data.servers : []));
-}
-
-/** admin mcp/enable | mcp/disable { id }——写盘（桥由服务端联动）。 */
-export function mcpToggle(
-  client: GuiSidecarClient,
-  id: string,
-  enabled: boolean,
-): Promise<{ success: boolean; error?: string }> {
-  return client.adminPost<{ success: boolean; error?: string }>(enabled ? 'mcp/enable' : 'mcp/disable', { id });
-}
-
-/** admin mcp/reload {}——桥热重载（断开 → 重读磁盘 → 重连），返回新状态。 */
-export function mcpReload(
-  client: GuiSidecarClient,
-): Promise<{ success: boolean; error?: string; data?: { servers?: McpStatusEntity[] } }> {
-  return client.adminPost<{ success: boolean; error?: string; data?: { servers?: McpStatusEntity[] } }>(
-    'mcp/reload',
-    {},
-  );
 }
 
 // ---------------------------------------------------------------------------

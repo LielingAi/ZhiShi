@@ -9,16 +9,11 @@
  *   5. Broadcast SSE event for frontend sync
  *   6. Return result
  */
-import type { EnvironmentEntry, IntelConfig, McpServerDefinition, ModelEntity } from '../shared/config-types';
+import type { EnvironmentEntry, IntelConfig, ModelEntity } from '../shared/config-types';
 import { resolveIntelConfig } from '../shared/config-types';
-import { SDK_RESERVED_MCP_NAMES } from './agent-session';
 import {
   loadConfig,
   atomicModifyConfig,
-  getAllMcpServers,
-  getEnabledMcpServerIds,
-  loadProjects,
-  saveProjects,
   redactSecret,
   findProvider,
   getAllEffectiveProviders,
@@ -27,18 +22,12 @@ import {
   type AdminAppConfig,
   type AgentConfigSlim,
 } from './utils/admin-config';
-import { cancellableFetch } from './utils/cancellation';
-import { readLoopbackJson } from './utils/loopback-response';
 import { managementApi } from './utils/management-api';
 // 1.3.2 任务二 #5：task/list 行 conclusion 字段的数据源（cron 结论登记）。
 import { taskConclusionFor } from './cron/task-conclusions';
 // Localhost loopback timeout for management / sidecar self-calls.
-// 10s is generous for an in-process Rust handler or a same-process Hono
-// route — anything slower means the backend is wedged, in which case we'd
-// rather surface a CLI error than hang the user's terminal indefinitely.
-const ADMIN_LOOPBACK_TIMEOUT_MS = 10_000;
 import { existsSync , mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync } from 'fs';
-import { ensureDirSync, isDirEntry } from './utils/fs-utils';
+import { ensureDirSync } from './utils/fs-utils';
 import { resolveSshTarget, execInEnvironment, buildScpArgv } from './loop/env-exec';
 import { buildToolCheckScript, parseToolCheckOutput } from './environment/recipes';
 import {
@@ -73,15 +62,12 @@ import {
 } from './domains/manifest';
 import { resolveBundledSkillsDir } from './loop/skills';
 import { augmentedProcessEnv, resolveCommand } from './utils/env-utils';
-import { isSkillBlockedOnPlatform } from './utils/platform';
-import { parseSkillFrontmatter } from '../shared/slashCommands';
 import { resolve } from 'path';
 import { connect } from 'net';
-import { setMcpServers, setAgents, getMcpServers, getSidecarPort } from './agent-session';
+import { setAgents } from './agent-session';
 import { getPiAgentState, envSwitchBlocker, getEnvSessionBinding, switchEnvSession, resolveSessionEnv, resolveSessionEnvKey } from './loop/chat-engine';
 import { loadArchive } from './loop/archive';
 import { envKeyForSelection, getEnvSessionLine, loadEnvSessionsMap, removeEnvSessionsForEnvId } from './environment/env-sessions';
-import { getMcpStatus, initMcpBridge, reloadMcpBridge } from './loop/mcp-bridge';
 import { resolveLoopModel } from './loop/pi-provider';
 import { runLoopText } from './loop/loop';
 import { buildLoopTranscript } from './loop/transcript';
@@ -111,7 +97,6 @@ import {
   type ExpertEntry,
 } from './expert/store';
 import { searchExpertEntries, EXPERT_SEARCH_LIMIT } from './expert/search';
-import { formatExpertSearchResult } from './loop/expert';
 import { createIntelSearchTool } from './loop/intel';
 import { computeContentHash, validateEntry, EXPERT_ENTRY_KINDS, EXPERT_PROVENANCES } from './expert/validate';
 // 1.1.2 情报横切：intel.db 更新/状态（sidecar 进程内直连,不经网络）。
@@ -224,42 +209,6 @@ import {
 // too, and importing admin-api from agent-session would close an ESM cycle).
 // Handlers below keep calling the same names — they are imported from there.
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Sidecar self-loopback (for thin wrappers over existing /api/skill/* routes)
-// ---------------------------------------------------------------------------
-async function sidecarSelf(
-  path: string,
-  method: 'GET' | 'POST' | 'DELETE' | 'PUT' = 'GET',
-  body?: Record<string, unknown>,
-  opts?: { timeoutMs?: number },
-): Promise<{ status: number; json: Record<string, unknown> }> {
-  const sidecarPort = getSidecarPort();
-  if (!sidecarPort) {
-    return { status: 500, json: { success: false, error: 'Sidecar port not initialized' } };
-  }
-  const url = `http://127.0.0.1:${sidecarPort}${path}`;
-  const options: RequestInit = {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-  };
-  if (body && (method === 'POST' || method === 'PUT')) {
-    options.body = JSON.stringify(body);
-  }
-  try {
-    const resp = await cancellableFetch(url, options, {
-      timeoutMs: opts?.timeoutMs ?? ADMIN_LOOPBACK_TIMEOUT_MS,
-    });
-    // Issue #114 — defensive read via shared helper. Map to this caller's
-    // legacy {status, json} shape (sidecarSelf has callers that branch on
-    // status code, so we preserve that envelope rather than collapsing to
-    // a flat error object).
-    const json = await readLoopbackJson(resp, 'Sidecar self-call');
-    return { status: resp.status, json };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { status: 500, json: { success: false, error: `Sidecar self-call failed: ${msg}` } };
-  }
-}
 /**
  * Build an AdminResponse error from a Management API failure, preserving any
  * `recoveryHint` the helper attached (currently: unreachable-backend cases).
@@ -333,476 +282,6 @@ interface AdminResponse<T = unknown> {
   dryRun?: boolean;
   preview?: unknown;
   [key: string]: unknown;
-}
-// ---------------------------------------------------------------------------
-// MCP Handlers
-// ---------------------------------------------------------------------------
-export function handleMcpList(): AdminResponse {
-  const config = loadConfig();
-  const allServers = getAllMcpServers(config);
-  const enabledIds = new Set(getEnabledMcpServerIds(config));
-const data = allServers.map(s => ({
-    id: s.id,
-    name: s.name,
-    type: s.type,
-    enabled: enabledIds.has(s.id),
-    isBuiltin: s.isBuiltin,
-    command: s.command,
-    url: s.url,
-    requiresConfig: s.requiresConfig,
-    hasEnv: !!(s.env && Object.keys(s.env).length > 0),
-  }));
-return { success: true, data };
-}
-/**
- * `zhishi mcp show <id>` — details for a single MCP server.
- *
- * Mirrors handleAgentShow: parses user-facing config + workspace enable state
- * into one consolidated payload the AI / user can inspect without dumping the
- * whole list. Env values are redacted so an AI transcript never leaks API keys
- * (same redaction rule the model-list endpoint already uses).
- */
-export function handleMcpShow(payload: { id?: string }): AdminResponse {
-  const id = payload.id;
-  if (!id) {
-    return {
-      success: false,
-      error: 'Missing required argument: <mcp-id>',
-      recoveryHint: {
-        recoveryCommand: 'zhishi mcp list',
-        message: 'See valid MCP server ids.',
-      },
-    };
-  }
-  const config = loadConfig();
-  const allServers = getAllMcpServers(config);
-  const server = allServers.find(s => s.id === id);
-  if (!server) {
-    return {
-      success: false,
-      error: `MCP server '${id}' not found.`,
-      recoveryHint: {
-        recoveryCommand: 'zhishi mcp list',
-        message: 'See valid MCP server ids.',
-      },
-    };
-  }
-const globalEnabled = new Set(getEnabledMcpServerIds(config));
-  const workspacePath = getCurrentWorkspacePath();
-  let projectEnabled: boolean | null = null;
-  if (workspacePath) {
-    const projects = loadProjects();
-    const project = projects.find(p => p.path === workspacePath);
-    projectEnabled = new Set(project?.mcpEnabledServers ?? []).has(id);
-  }
-// Redact env values — mirrors what `model list` does for provider api keys.
-  const env = server.env ? Object.fromEntries(
-    Object.entries(server.env).map(([k, v]) => [k, redactSecret(v)]),
-  ) : undefined;
-return {
-    success: true,
-    data: {
-      id: server.id,
-      name: server.name,
-      type: server.type,
-      description: server.description,
-      isBuiltin: !!server.isBuiltin,
-      requiresConfig: !!server.requiresConfig,
-      websiteUrl: server.websiteUrl,
-      command: server.command,
-      args: server.args,
-      url: server.url,
-      // Headers (for http/sse) and env (for stdio) — redacted values only.
-      headers: server.headers ? Object.fromEntries(
-        Object.entries(server.headers).map(([k, v]) => [k, redactSecret(v)]),
-      ) : undefined,
-      env,
-      enabled: {
-        global: globalEnabled.has(id),
-        // null = no current workspace session → project scope n/a.
-        project: projectEnabled,
-      },
-      workspacePath: workspacePath ?? null,
-    },
-  };
-}
-export async function handleMcpAdd(payload: {
-  server: Partial<McpServerDefinition>;
-  dryRun?: boolean;
-}): Promise<AdminResponse> {
-  const { dryRun } = payload;
-  const s = payload.server;
-// Validate required fields
-  if (!s.id) return { success: false, error: 'Missing required field: id' };
-  if (!s.type) return { success: false, error: 'Missing required field: type' };
-// Reject SDK reserved MCP names — these cause the Claude Agent SDK to crash (exit code 1)
-  // with "Invalid MCP configuration: X is a reserved MCP name."
-  const normalizedId = s.id.replace(/[^a-zA-Z0-9_-]/g, '_');
-  if (SDK_RESERVED_MCP_NAMES.includes(normalizedId)) {
-    return { success: false, error: `MCP ID "${s.id}" 与 Claude SDK 内置保留名冲突，请使用其他名称（如 "my-${s.id}"）` };
-  }
-if (s.type === 'stdio' && !s.command) {
-    return { success: false, error: 'stdio type requires "command" field' };
-  }
-  if ((s.type === 'sse' || s.type === 'http') && !s.url) {
-    return { success: false, error: `${s.type} type requires "url" field` };
-  }
-const server: McpServerDefinition = {
-    id: s.id,
-    name: s.name || s.id,
-    type: s.type,
-    description: s.description,
-    command: s.command,
-    // Defensive: CLI may send non-array args (boolean, string) due to parsing edge cases
-    args: Array.isArray(s.args) ? s.args : undefined,
-    env: s.env,
-    url: s.url,
-    headers: s.headers,
-    isBuiltin: false,
-    requiresConfig: s.requiresConfig,
-    websiteUrl: s.websiteUrl,
-    configHint: s.configHint,
-  };
-if (dryRun) {
-    return { success: true, dryRun: true, preview: server };
-  }
-await atomicModifyConfig(c => ({
-    ...c,
-    mcpServers: [...(c.mcpServers || []).filter(x => x.id !== server.id), server],
-  }));
-notifyMcpChange('add', server.id);
-  return {
-    success: true,
-    data: { id: server.id, name: server.name },
-    hint: 'Server added. Use "zhishi mcp enable" to activate.',
-  };
-}
-export async function handleMcpRemove(payload: { id: string }): Promise<AdminResponse> {
-  const { id } = payload;
-  if (!id) return { success: false, error: 'Missing required field: id' };
-// Check if it's a built-in preset
-  const allServers = getAllMcpServers();
-  const target = allServers.find(s => s.id === id);
-  if (!target) return { success: false, error: `MCP server '${id}' not found` };
-  if (target.isBuiltin) {
-    return { success: false, error: `Cannot remove built-in MCP server '${id}'. Only custom servers can be removed.` };
-  }
-await atomicModifyConfig(c => {
-    const servers = (c.mcpServers || []).filter(s => s.id !== id);
-    const enabled = (c.mcpEnabledServers || []).filter(s => s !== id);
-    const envOverrides = { ...(c.mcpServerEnv || {}) };
-    delete envOverrides[id];
-    const argsOverrides = { ...(c.mcpServerArgs || {}) };
-    delete argsOverrides[id];
-    return { ...c, mcpServers: servers, mcpEnabledServers: enabled, mcpServerEnv: envOverrides, mcpServerArgs: argsOverrides };
-  });
-notifyMcpChange('remove', id);
-  return { success: true, data: { id }, hint: 'Server removed.' };
-}
-export async function handleMcpEnable(payload: { id: string; scope?: string }): Promise<AdminResponse> {
-  const { id, scope = 'both' } = payload;
-  if (!id) return { success: false, error: 'Missing required field: id' };
-// Verify server exists
-  const allServers = getAllMcpServers();
-  if (!allServers.find(s => s.id === id)) {
-    return { success: false, error: `MCP server '${id}' not found` };
-  }
-if (scope === 'global' || scope === 'both') {
-    await atomicModifyConfig(c => {
-      const enabled = new Set(c.mcpEnabledServers || []);
-      enabled.add(id);
-      return { ...c, mcpEnabledServers: Array.from(enabled) };
-    });
-  }
-if (scope === 'project' || scope === 'both') {
-    enableMcpForCurrentProject(id);
-  }
-notifyMcpChange('enable', id);
-  const scopeLabel = scope === 'both' ? 'global + project' : scope;
-  return { success: true, data: { id, scope: scopeLabel }, hint: `Enabled ${id} (${scopeLabel}).` };
-}
-export async function handleMcpDisable(payload: { id: string; scope?: string }): Promise<AdminResponse> {
-  const { id, scope = 'both' } = payload;
-  if (!id) return { success: false, error: 'Missing required field: id' };
-if (scope === 'global' || scope === 'both') {
-    await atomicModifyConfig(c => {
-      const enabled = new Set(c.mcpEnabledServers || []);
-      enabled.delete(id);
-      return { ...c, mcpEnabledServers: Array.from(enabled) };
-    });
-  }
-if (scope === 'project' || scope === 'both') {
-    disableMcpForCurrentProject(id);
-  }
-notifyMcpChange('disable', id);
-  return { success: true, data: { id } };
-}
-/**
- * M4d — MCP bridge 连接状态。惰性兜底:若 sidecar 启动的 deferred init
- * 尚未跑完(或从未跑),先触发桥初始化再取状态——状态永远反映真实连接
- * (已初始化时 initMcpBridge 是幂等 no-op)。
- */
-export async function handleMcpListStatus(): Promise<AdminResponse> {
-  await initMcpBridge();
-  return { success: true, data: { servers: getMcpStatus() } };
-}
-/**
- * M4d — MCP bridge 热重载:断开全部连接 → 重读磁盘配置(权威来源)→ 重连。
- * 单个 server 失败不抛(记入状态),只有配置读取失败才返回 success:false。
- */
-export async function handleMcpReload(): Promise<AdminResponse> {
-  try {
-    const servers = await reloadMcpBridge();
-    return { success: true, data: { servers } };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : String(err),
-      recoveryHint: {
-        recoveryCommand: 'zhishi mcp list',
-        message: '检查 MCP 配置(config.json)后重试。',
-      },
-    };
-  }
-}
-export async function handleMcpEnv(payload: {
-  id: string;
-  action: 'set' | 'get' | 'delete';
-  env?: Record<string, string>;
-}): Promise<AdminResponse> {
-  const { id, action, env } = payload;
-  if (!id) return { success: false, error: 'Missing required field: id' };
-if (action === 'get') {
-    const config = loadConfig();
-    const serverEnv = (config.mcpServerEnv ?? {})[id] ?? {};
-    // Redact values for safety
-    const redacted: Record<string, string> = {};
-    for (const [k, v] of Object.entries(serverEnv)) {
-      redacted[k] = redactSecret(v);
-    }
-    return { success: true, data: { id, env: redacted } };
-  }
-if (action === 'set') {
-    if (!env || Object.keys(env).length === 0) {
-      return { success: false, error: 'No environment variables provided' };
-    }
-    await atomicModifyConfig(c => {
-      const mcpServerEnv = { ...(c.mcpServerEnv || {}) };
-      mcpServerEnv[id] = { ...(mcpServerEnv[id] || {}), ...env };
-      return { ...c, mcpServerEnv };
-    });
-    notifyMcpChange('env', id);
-    return { success: true, data: { id, keys: Object.keys(env) }, hint: 'Environment variables updated.' };
-  }
-if (action === 'delete') {
-    if (!env || Object.keys(env).length === 0) {
-      return { success: false, error: 'No keys specified for deletion' };
-    }
-    await atomicModifyConfig(c => {
-      const mcpServerEnv = { ...(c.mcpServerEnv || {}) };
-      if (mcpServerEnv[id]) {
-        // Deep-copy per-server env to avoid mutating the original config object
-        const serverEnv = { ...mcpServerEnv[id] };
-        for (const key of Object.keys(env)) {
-          delete serverEnv[key];
-        }
-        if (Object.keys(serverEnv).length === 0) {
-          delete mcpServerEnv[id];
-        } else {
-          mcpServerEnv[id] = serverEnv;
-        }
-      }
-      return { ...c, mcpServerEnv };
-    });
-    notifyMcpChange('env', id);
-    return { success: true, data: { id, deletedKeys: Object.keys(env) } };
-  }
-return { success: false, error: `Unknown action: ${action}. Use 'set', 'get', or 'delete'.` };
-}
-export async function handleMcpTest(payload: { id: string }): Promise<AdminResponse> {
-  const { id } = payload;
-  if (!id) return { success: false, error: 'Missing required field: id' };
-const allServers = getAllMcpServers();
-  const server = allServers.find(s => s.id === id);
-  if (!server) return { success: false, error: `MCP server '${id}' not found` };
-// Validate config completeness
-  if (server.type === 'stdio' && !server.command) {
-    return { success: false, error: `MCP server '${id}' has no command configured` };
-  }
-  if ((server.type === 'sse' || server.type === 'http') && !server.url) {
-    return { success: false, error: `MCP server '${id}' has no URL configured` };
-  }
-// Built-in MCP: delegate to registry.
-  // getBuiltinMcpInstance() force-loads the tool module (SDK+zod+server
-  // construction) on first hit; it returns undefined only when the id isn't
-  // registered in META. META registrations happen at module load before any
-  // admin handler can fire — no need to force-import META here.
-  if (server.command === '__builtin__') {
-    const { getBuiltinMcpInstance } = await import('./tools/builtin-mcp-registry');
-    const entryPromise = getBuiltinMcpInstance(server.id);
-    if (!entryPromise) {
-      return { success: false, error: `Built-in MCP '${server.id}' not registered` };
-    }
-    // Don't swallow factory/import errors — a failing `zhishi mcp test` must
-    // surface as "failure" so users/agents diagnose the actual issue instead of
-    // getting a false "validated" green light while the session keeps breaking.
-    try {
-      const entry = await entryPromise;
-      if (entry.validate) {
-        const validationError = await entry.validate(server.env || {});
-        if (validationError) {
-          const errMsg = typeof validationError === 'string' ? validationError : JSON.stringify(validationError);
-          return { success: false, error: errMsg };
-        }
-      }
-    } catch (err) {
-      return {
-        success: false,
-        error: `Built-in MCP '${server.id}' load failed: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-    return { success: true, data: { id, type: 'builtin' }, hint: 'Built-in MCP validated.' };
-  }
-// SSE/HTTP: test URL reachability
-  if (server.type === 'sse' || server.type === 'http') {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
-// Inject stored OAuth token if no explicit Authorization header
-      const { resolveAuthHeaders } = await import('./mcp-oauth');
-      const configHeaders = server.headers || {};
-      const hasExplicitAuth = Object.keys(configHeaders).some(k => k.toLowerCase() === 'authorization');
-      const oauthHeaders = hasExplicitAuth ? {} : await resolveAuthHeaders(server.id);
-const headers: Record<string, string> = {
-        'Accept': server.type === 'sse' ? 'text/event-stream' : 'application/json, text/event-stream',
-        'Accept-Encoding': 'identity',
-        ...configHeaders,
-        ...oauthHeaders,
-      };
-const resp = server.type === 'http'
-        ? await fetch(server.url!, {
-            method: 'POST',
-            headers: { ...headers, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'ZhiShi', version: '1.0' } } }),
-            signal: controller.signal,
-          })
-        : await fetch(server.url!, { method: 'GET', headers, signal: controller.signal });
-clearTimeout(timeout);
-if (resp.status === 401 || resp.status === 403) {
-        const hint = oauthHeaders['Authorization']
-          ? 'OAuth token may be expired or revoked. Try re-authorizing.'
-          : 'This server may require OAuth authorization. Use Settings UI or `zhishi mcp oauth start`.';
-        return { success: false, error: `Authentication failed (HTTP ${resp.status}). ${hint}` };
-      }
-      if (!resp.ok) {
-        return { success: false, error: `Server returned HTTP ${resp.status}` };
-      }
-return { success: true, data: { id, type: server.type, status: resp.status }, hint: `Connection OK (HTTP ${resp.status}).` };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('abort')) return { success: false, error: 'Connection timed out (15s).' };
-      return { success: false, error: `Connection failed: ${msg}` };
-    }
-  }
-// stdio: check command exists in PATH
-  if (server.type === 'stdio' && server.command && server.command !== '__builtin__') {
-    try {
-      const { getShellEnv } = await import('./utils/shell');
-      const checkCmd = process.platform === 'win32' ? 'where' : 'which';
-      const { spawn } = await import('child_process');
-      const code = await new Promise<number | null>(resolve => {
-        const proc = spawn(checkCmd, [server.command!], { stdio: 'ignore', env: getShellEnv() });
-        proc.on('close', resolve);
-        proc.on('error', () => resolve(null));
-      });
-      if (code === 0) {
-        return { success: true, data: { id, type: 'stdio', command: server.command }, hint: `Command '${server.command}' found.` };
-      }
-      return { success: false, error: `Command '${server.command}' not found in PATH.` };
-    } catch (err) {
-      return { success: false, error: `Failed to check command: ${err instanceof Error ? err.message : String(err)}` };
-    }
-  }
-return { success: true, data: { id, type: server.type }, hint: 'Configuration valid.' };
-}
-// ---------------------------------------------------------------------------
-// MCP OAuth Handlers (CLI-facing wrappers around mcp-oauth module)
-// ---------------------------------------------------------------------------
-/** Resolve MCP server URL from config by ID */
-function getMcpServerUrl(id: string): { url: string } | { error: string } {
-  const allServers = getAllMcpServers();
-  const server = allServers.find(s => s.id === id);
-  if (!server) return { error: `MCP server '${id}' not found` };
-  if (server.type !== 'sse' && server.type !== 'http') {
-    return { error: `MCP server '${id}' is type '${server.type}' — OAuth only applies to sse/http servers.` };
-  }
-  if (!server.url) return { error: `MCP server '${id}' has no URL configured` };
-  return { url: server.url };
-}
-export async function handleMcpOAuthDiscover(payload: { id: string }): Promise<AdminResponse> {
-  const { id } = payload;
-  if (!id) return { success: false, error: 'Missing required field: id' };
-  const resolved = getMcpServerUrl(id);
-  if ('error' in resolved) return { success: false, error: resolved.error };
-try {
-    const { probeOAuthRequirement } = await import('./mcp-oauth');
-    const result = await probeOAuthRequirement(id, resolved.url, true);
-    return { success: true, data: { id, ...result } };
-  } catch (err) {
-    return { success: false, error: `OAuth discovery failed: ${err instanceof Error ? err.message : String(err)}` };
-  }
-}
-export async function handleMcpOAuthStart(payload: {
-  id: string;
-  clientId?: string;
-  clientSecret?: string;
-  scopes?: string;
-  callbackPort?: number;
-}): Promise<AdminResponse> {
-  const { id } = payload;
-  if (!id) return { success: false, error: 'Missing required field: id' };
-  const resolved = getMcpServerUrl(id);
-  if ('error' in resolved) return { success: false, error: resolved.error };
-try {
-    const { authorizeServer } = await import('./mcp-oauth');
-    const manualConfig = payload.clientId ? {
-      clientId: payload.clientId,
-      clientSecret: payload.clientSecret,
-      scopes: payload.scopes ? payload.scopes.split(/[,\s]+/).filter(Boolean) : undefined,
-      callbackPort: payload.callbackPort,
-    } : undefined;
-const { authUrl, waitForCompletion } = await authorizeServer(id, resolved.url, manualConfig);
-// Fire-and-forget: log completion but don't block the HTTP response.
-    // CLI should poll `mcp oauth status <id>` to check completion.
-    waitForCompletion.then(ok => {
-      console.log(`[admin] OAuth ${ok ? 'completed' : 'failed/cancelled'} for MCP ${id}`);
-    });
-return { success: true, data: { id, authUrl }, hint: 'Authorization started. Complete in browser, then check with `mcp oauth status`.' };
-  } catch (err) {
-    return { success: false, error: `OAuth start failed: ${err instanceof Error ? err.message : String(err)}` };
-  }
-}
-export async function handleMcpOAuthStatus(payload: { id: string }): Promise<AdminResponse> {
-  const { id } = payload;
-  if (!id) return { success: false, error: 'Missing required field: id' };
-try {
-    const { getOAuthStatus } = await import('./mcp-oauth');
-    const result = getOAuthStatus(id);
-    return { success: true, data: { id, ...result } };
-  } catch (err) {
-    return { success: false, error: `OAuth status check failed: ${err instanceof Error ? err.message : String(err)}` };
-  }
-}
-export async function handleMcpOAuthRevoke(payload: { id: string }): Promise<AdminResponse> {
-  const { id } = payload;
-  if (!id) return { success: false, error: 'Missing required field: id' };
-try {
-    const { revokeAuthorization } = await import('./mcp-oauth');
-    await revokeAuthorization(id);
-    return { success: true, data: { id }, hint: 'OAuth authorization revoked.' };
-  } catch (err) {
-    return { success: false, error: `OAuth revoke failed: ${err instanceof Error ? err.message : String(err)}` };
-  }
 }
 // ---------------------------------------------------------------------------
 // Model Provider Handlers
@@ -1197,10 +676,10 @@ export async function handleConfigSet(payload: { key: string; value: unknown; dr
     return { success: false, error: 'Invalid key path' };
   }
 // Protect structural/sensitive keys that have dedicated commands
-  const protectedKeys = ['providerApiKeys', 'providerVerifyStatus', 'agents', 'mcpServers', 'mcpEnabledServers', 'mcpServerEnv', 'mcpServerArgs', 'imBotConfigs'];
+  const protectedKeys = ['providerApiKeys', 'providerVerifyStatus', 'agents', 'imBotConfigs'];
   const rootKey = key.split('.')[0];
   if (protectedKeys.includes(rootKey)) {
-    return { success: false, error: `Cannot set '${key}' via config set. Use dedicated commands (e.g., 'zhishi mcp', 'zhishi agent', 'zhishi model set-key').` };
+    return { success: false, error: `Cannot set '${key}' via config set. Use dedicated commands (e.g., 'zhishi agent', 'zhishi model set-key').` };
   }
 if (dryRun) {
     return { success: true, dryRun: true, preview: { key, value } };
@@ -1214,57 +693,22 @@ await atomicModifyConfig(c => setNestedValue(c, key, value));
 // ---------------------------------------------------------------------------
 export function handleStatus(): AdminResponse {
   const config = loadConfig();
-  const allServers = getAllMcpServers(config);
-  const enabledIds = getEnabledMcpServerIds(config);
-  const currentMcp = getMcpServers();
 return {
     success: true,
     data: {
-      mcpServers: { total: allServers.length, enabled: enabledIds.length },
-      activeMcpInSession: currentMcp ? currentMcp.length : 0,
       defaultProvider: config.defaultProviderId ?? 'not set',
       agents: (config.agents ?? []).length,
     },
   };
 }
 export function handleReload(workspacePath?: string): AdminResponse {
-  // Re-read config from disk and push effective MCP + sub-agents to in-memory state.
+  // Re-read sub-agent definitions from disk and push them to in-memory state.
   // Workspace resolution: prefer explicit arg → fall back to the session's agentDir.
   // Without this fallback, sub-agent reload would only see global agents.
   const effectiveWorkspace = workspacePath || getCurrentWorkspacePath();
-const config = loadConfig();
-  const allServers = getAllMcpServers(config);
-  const globalEnabled = new Set(getEnabledMcpServerIds(config));
-let effectiveServers: McpServerDefinition[];
-if (effectiveWorkspace) {
-    // Filter by project if workspace is known
-    const projects = loadProjects();
-    const project = projects.find(p => p.path === effectiveWorkspace);
-    if (project) {
-      const projectEnabled = new Set(project.mcpEnabledServers ?? []);
-      effectiveServers = allServers.filter(s => globalEnabled.has(s.id) && projectEnabled.has(s.id));
-    } else {
-      // Workspace path doesn't match any registered project (transient state
-      // during project-rename, or unregistered workspace). Without this
-      // branch we'd silently push ZERO MCP servers — cross-review Agent-1
-      // W6. Fall back to the "no workspace" branch (globally enabled) so
-      // reload is a no-op on MCP rather than a destructive clear.
-      console.warn(
-        `[admin-api] handleReload: workspace ${effectiveWorkspace} not found in projects; falling back to global MCP set`,
-      );
-      effectiveServers = allServers.filter(s => globalEnabled.has(s.id));
-    }
-  } else {
-    // Fallback: use all globally enabled servers
-    effectiveServers = allServers.filter(s => globalEnabled.has(s.id));
-  }
 // Sub-agent reload: re-scan the .md files on disk so edits to frontmatter
   // (model, description, tools) take effect without restarting the app.
   // Mirror /api/agents/enabled's resolution — project dir (if any) + user dir.
-  //
-  // We read BOTH sources of truth (MCP from config.json + agents from .md files)
-  // before mutating any in-memory state, so a scan failure doesn't leave the
-  // caller with a half-applied reload (MCP pushed but agents stale).
   const userAgentsBaseDir = join(getZhiShiDataDir(), 'agents');
   const projAgentsDir = effectiveWorkspace ? join(effectiveWorkspace, '.claude', 'agents') : '';
   let agents: ReturnType<typeof loadEnabledAgents>;
@@ -1278,63 +722,20 @@ if (effectiveWorkspace) {
       error: `Failed to reload sub-agents from disk: ${msg}`,
     };
   }
-// Both sources loaded cleanly — now commit the in-memory state atomically
-  // (well, as atomically as two module-level setters allow) and trigger the
-  // forced restart that applies them.
-  setMcpServers(effectiveServers);
+// Scan loaded cleanly — commit the in-memory state.
   setAgents(agents);
   const agentCount = Object.keys(agents).length;
-// Force a session restart even for snapshotted (Tab / Cron / Background)
-  // sessions — reload is an explicit request, not noise from React state
-  // sync. Without this the in-memory config is refreshed but the running
-  // SDK subprocess keeps delegating to the old sub-agent definitions (#98).
-  // M4c: pi 引擎每 turn 读最新配置,无需 SDK 会话重载(原 forceReloadActiveSession)。
+// M4c: pi 引擎每 turn 读最新配置,无需 SDK 会话重载(原 forceReloadActiveSession)。
 broadcast('config:changed', { section: 'all', action: 'reload' });
   return {
     success: true,
-    hint: `Configuration reloaded (MCP: ${effectiveServers.length}, sub-agents: ${agentCount}). The session will restart on the next turn to apply changes.`,
+    hint: `Configuration reloaded (sub-agents: ${agentCount}). The session will restart on the next turn to apply changes.`,
   };
 }
 // ---------------------------------------------------------------------------
 // Help text
 // ---------------------------------------------------------------------------
 const HELP_TEXTS: Record<string, string> = {
-  mcp: `zhishi mcp — Manage MCP tool servers
-Commands:
-  list                     List all MCP servers
-  show <id>                Show one MCP server's config + enable state (env/headers redacted)
-  add                      Add a new MCP server
-  remove <id>              Remove a custom MCP server
-  enable <id>              Enable an MCP server
-  disable <id>             Disable an MCP server
-  test <id>                Validate MCP server connectivity
-  env <id> <action>        Manage environment variables
-  oauth <action> <id>      Manage OAuth for HTTP/SSE servers
-Options for 'add':
-  --id          Server ID (required)
-  --name        Display name (defaults to id)
-  --type        stdio | sse | http (default: stdio)
-  --command     Command to run (for stdio)
-  --args        Arguments (repeatable)
-  --url         Endpoint URL (for sse/http)
-  --env         KEY=VALUE (repeatable)
-  --headers     KEY=VALUE (repeatable, for sse/http)
-Options for 'enable' / 'disable':
-  --scope       global | project | both (default: both)
-Options for 'env':
-  set KEY=VALUE [KEY2=VALUE2 ...]
-  get
-  delete KEY [KEY2 ...]
-OAuth subcommands:
-  oauth discover <id>      Probe server for OAuth requirements
-  oauth start <id>         Start OAuth authorization (opens browser)
-  oauth status <id>        Check OAuth status
-  oauth revoke <id>        Revoke stored OAuth token
-Options for 'oauth start' (manual mode):
-  --client-id      OAuth client ID (skip for auto mode)
-  --client-secret  OAuth client secret
-  --scopes         Scopes (comma or space separated)
-  --callback-port  Local callback port`,
 model: `zhishi model — Manage model providers
 Commands:
   list                     List all providers (preset + custom)
@@ -1495,13 +896,6 @@ widget: `zhishi widget — Generative UI widget design guidelines
 (run 'zhishi widget readme' for the full design system + modules)
 Use to render inline charts / SVG / dashboards in desktop Chat replies.
 IM bot sessions don't render widgets.`,
-skill: `zhishi skill — Manage ZhiShi skills (user skills live under ~/.zhishi/skills/)
-Commands:
-  list                       List installed skills + enabled state
-  info <name>                Show one skill's manifest + description
-  remove <name>              Uninstall a skill   [--scope user|project]
-  enable <name>              Enable an installed skill
-  disable <name>             Disable without uninstalling`,
 agent: `zhishi agent — Manage agents
 Commands:
   list                            List all agents
@@ -1824,9 +1218,9 @@ export async function handleTaskWriteDoc(payload: {
 // ---------------------------------------------------------------------------
 // Tool readme lookups — progressive disclosure (v0.1.67)
 //
-// Skill layer pre-injects BRIEF descriptions of these tools into the system
-// prompt (system-prompt-cli-tools.ts). When the AI actually needs to use one,
-// it calls `zhishi X readme` to pull the full usage doc on demand.
+// The CLI-tools appendix pre-injects BRIEF descriptions of these tools into
+// the system prompt (system-prompt-cli-tools.ts). When the AI actually needs
+// to use one, it calls `zhishi X readme` to pull the full usage doc on demand.
 // ---------------------------------------------------------------------------
 const README_WIDGET = `zhishi widget — Generative UI widget design guidelines
 WHAT
@@ -1871,83 +1265,6 @@ if (topic === 'widget' || topic === 'generative-ui' || topic === 'ui') {
     success: false,
     error: `Unknown readme topic "${payload.topic}". Available: widget.`,
   };
-}
-// ---------------------------------------------------------------------------
-// Skill handlers (thin wrappers over /api/skill/* self-loopback; list scans
-// the user skills dir directly — the marketplace/install pipeline was removed)
-// ---------------------------------------------------------------------------
-/** Disabled-list from ~/.zhishi/skills-config.json (same file the toggle route writes). */
-function readDisabledSkills(): string[] {
-  try {
-    const configPath = join(getZhiShiDataDir(), 'skills-config.json');
-    if (existsSync(configPath)) {
-      const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-      if (Array.isArray(raw?.disabled)) return raw.disabled as string[];
-    }
-  } catch (err) {
-    console.warn('[skills-config] Error reading config:', err);
-  }
-  return [];
-}
-export async function handleSkillList(): Promise<AdminResponse> {
-  // User-level skills (~/.zhishi/skills) only. The project-scope half of the
-  // old /api/skills route rode on the Tab sidecar's currentAgentDir; that
-  // route was removed with the skills install pipeline (wave 3b).
-  try {
-    const skillsDir = join(getZhiShiDataDir(), 'skills');
-    const disabled = readDisabledSkills();
-    const skills: Array<Record<string, unknown>> = [];
-    if (existsSync(skillsDir)) {
-      for (const folder of readdirSync(skillsDir, { withFileTypes: true })) {
-        if (!isDirEntry(folder, join(skillsDir, folder.name))) continue;
-        if (isSkillBlockedOnPlatform(folder.name)) continue;
-        const skillMdPath = join(skillsDir, folder.name, 'SKILL.md');
-        if (!existsSync(skillMdPath)) continue;
-        const content = readFileSync(skillMdPath, 'utf-8');
-        const { name, description, author } = parseSkillFrontmatter(content);
-        skills.push({
-          name: name || folder.name,
-          description: description || '',
-          scope: 'user',
-          path: skillMdPath,
-          folderName: folder.name,
-          author,
-          enabled: !disabled.includes(folder.name),
-        });
-      }
-    }
-    return { success: true, data: skills };
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : 'Failed to list skills' };
-  }
-}
-export async function handleSkillInfo(payload: { name: string; scope?: 'user' | 'project' }): Promise<AdminResponse> {
-  if (!payload.name) return { success: false, error: 'name is required' };
-  const scope = payload.scope ?? 'user';
-  const { json } = await sidecarSelf(`/api/skill/${encodeURIComponent(payload.name)}?scope=${scope}`);
-  if (json.success) {
-    return { success: true, data: json.skill ?? null };
-  }
-  return { success: false, error: String(json.error ?? 'Skill not found') };
-}
-export async function handleSkillRemove(payload: { name: string; scope?: 'user' | 'project' }): Promise<AdminResponse> {
-  if (!payload.name) return { success: false, error: 'name is required' };
-  const scope = payload.scope ?? 'user';
-  const { json } = await sidecarSelf(
-    `/api/skill/${encodeURIComponent(payload.name)}?scope=${scope}`,
-    'DELETE',
-  );
-  if (json.success) return { success: true, data: { name: payload.name } };
-  return { success: false, error: String(json.error ?? 'Failed to remove skill') };
-}
-export async function handleSkillToggle(payload: { name: string; enabled: boolean }): Promise<AdminResponse> {
-  if (!payload.name) return { success: false, error: 'name is required' };
-  const { json } = await sidecarSelf('/api/skill/toggle-enable', 'POST', {
-    folderName: payload.name,
-    enabled: payload.enabled,
-  });
-  if (json.success) return { success: true, data: { name: payload.name, enabled: payload.enabled } };
-  return { success: false, error: String(json.error ?? 'Failed to toggle skill') };
 }
 /**
  * 想法流数据源（COWORK 任务7/8）：搭子的主动提醒——记忆库中未过期的
@@ -2231,9 +1548,6 @@ function toExpertEntrySummary(entry: ExpertEntry): Record<string, unknown> {
 export async function handleExpertSearch(payload: {
   query?: string;
   domain?: string;
-  /** 1.5.0：'text' → 返回格式化注入文本（/expert 斜杠命令的即注形态，
-   *  与 loop 工具输出同一渲染函数——GUI 不复刻格式，契约零漂移）。 */
-  format?: string;
 }, deps: ExpertAdminDeps = {}): Promise<AdminResponse> {
   const query = typeof payload?.query === 'string' ? payload.query.trim() : '';
   if (!query) return { success: false, error: 'usage: expert/search { query, domain? }' };
@@ -2246,9 +1560,6 @@ export async function handleExpertSearch(payload: {
       limit: EXPERT_SEARCH_LIMIT,
       ...(payload.domain ? { domain: payload.domain } : {}),
     });
-    if (payload.format === 'text') {
-      return { success: true, data: { text: formatExpertSearchResult({ query, hits: results, unavailable: false }) } };
-    }
     return { success: true, data: { results } };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -2343,6 +1654,14 @@ export async function handleExpertAdd(payload: Record<string, unknown>, deps: Ex
     }
     sourceEventId = n;
   }
+  // 1.5.1 判据化硬校验（四必填之一）：reviewer 必填——每条都要有名有姓的
+  // 审定人（权威级可追溯：「以它为准」的前提是知道谁拍的板）。
+  const reviewer = typeof payload?.reviewer === 'string' && payload.reviewer.trim()
+    ? payload.reviewer.trim()
+    : null;
+  if (!reviewer) {
+    return { success: false, error: 'expert/add: reviewer 必填（谁审定的——判据化契约，权威级可追溯）' };
+  }
   const result = validateEntry({
     domain: payload?.domain,
     kind: payload?.kind,
@@ -2351,7 +1670,7 @@ export async function handleExpertAdd(payload: Record<string, unknown>, deps: Ex
     content: payload?.content,
     criteria: payload?.criteria,
     provenance,
-    reviewer: payload?.reviewer,
+    reviewer,
     sourceEventId,
     tags: payload?.tags,
   });
@@ -4339,56 +3658,6 @@ function deleteCustomProviderFile(id: string): boolean {
   unlinkSync(filePath);
   return true;
 }
-// ---------------------------------------------------------------------------
-// MCP helpers
-// ---------------------------------------------------------------------------
-/** Update Sidecar MCP state and notify frontend after config change.
- *  Respects project-scope: only servers enabled both globally AND in the
- *  current workspace project are pushed to the session. */
-function notifyMcpChange(action: string, id: string): void {
-  const workspacePath = getCurrentWorkspacePath();
-  const config = loadConfig();
-  const allServers = getAllMcpServers(config);
-  const globalEnabled = new Set(getEnabledMcpServerIds(config));
-let effectiveServers: McpServerDefinition[];
-  if (workspacePath) {
-    const projects = loadProjects();
-    const project = projects.find(p => p.path === workspacePath);
-    const projectEnabled = new Set(project?.mcpEnabledServers ?? []);
-    effectiveServers = allServers.filter(s => globalEnabled.has(s.id) && projectEnabled.has(s.id));
-  } else {
-    effectiveServers = allServers.filter(s => globalEnabled.has(s.id));
-  }
-setMcpServers(effectiveServers);
-  broadcast('config:changed', { section: 'mcp', action, id });
-}
-/** Enable MCP for the current workspace project */
-function enableMcpForCurrentProject(serverId: string): void {
-  // The workspace path is set via process-global; use it to find the project
-  const workspacePath = getCurrentWorkspacePath();
-  if (!workspacePath) return;
-const projects = loadProjects();
-  const idx = projects.findIndex(p => p.path === workspacePath);
-  if (idx < 0) return;
-const project = projects[idx];
-  const enabled = new Set(project.mcpEnabledServers ?? []);
-  enabled.add(serverId);
-  projects[idx] = { ...project, mcpEnabledServers: Array.from(enabled) };
-  saveProjects(projects);
-}
-/** Disable MCP for the current workspace project */
-function disableMcpForCurrentProject(serverId: string): void {
-  const workspacePath = getCurrentWorkspacePath();
-  if (!workspacePath) return;
-const projects = loadProjects();
-  const idx = projects.findIndex(p => p.path === workspacePath);
-  if (idx < 0) return;
-const project = projects[idx];
-  const enabled = new Set(project.mcpEnabledServers ?? []);
-  enabled.delete(serverId);
-  projects[idx] = { ...project, mcpEnabledServers: Array.from(enabled) };
-  saveProjects(projects);
-}
 /** Get workspace path from agent-session (set during session init) */
 function getCurrentWorkspacePath(): string | undefined {
   const state = getPiAgentState();
@@ -4418,7 +3687,7 @@ broadcast('config:changed', { section: 'agent', action, id });
 }
 /** Keys and patterns that contain secrets and must be redacted in config get */
 const SENSITIVE_KEY_PATTERNS = /apikey|api_key|secret|token|password/i;
-const SENSITIVE_TOP_KEYS = new Set(['providerApiKeys', 'mcpServerEnv']);
+const SENSITIVE_TOP_KEYS = new Set(['providerApiKeys']);
 /** Recursively redact sensitive values in config output */
 function redactSensitiveValues(key: string, value: unknown): unknown {
   const rootKey = key.split('.')[0];

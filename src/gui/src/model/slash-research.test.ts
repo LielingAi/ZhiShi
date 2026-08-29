@@ -1,8 +1,9 @@
 /**
- * slash-research.test.ts — 1.5.0 研究四命令模型层单测。
+ * slash-research.test.ts — 1.5.0 研究命令模型层单测（1.5.1 裁留）。
  *
  * 覆盖：上下文缺省提取（最近用户消息/截断/空态）、显式参数优先、
  * 注入文本形态（查询词+结果+人请求标注）、/decide 议题缺省、/archive 固化指令。
+ * 1.5.1：/expert 斜杠命令（buildExpertInjectText）随注入面瘦身删除，对应用例同步删除。
  */
 import { describe, expect, it } from 'vitest';
 
@@ -10,7 +11,6 @@ import type { StreamItem } from './blocks';
 import {
   ARCHIVE_INSTRUCTION,
   buildDecideInstruction,
-  buildExpertInjectText,
   buildIntelInjectText,
   contextQueryFallback,
   effectiveQuery,
@@ -48,13 +48,6 @@ describe('effectiveQuery（显式参数优先，留空吃上下文）', () => {
 });
 
 describe('注入文本形态（人请求的上下文块）', () => {
-  it('/expert：查询词 + 结果 + 人请求标注', () => {
-    const t = buildExpertInjectText('opengrep 污点规则', '【专家审定知识】命中 1 条');
-    expect(t).toContain('【/expert 专家知识 · 查询：opengrep 污点规则】');
-    expect(t).toContain('命中 1 条');
-    expect(t).toContain('应我请求检索');
-  });
-
   it('/intel：标注线索不是结论', () => {
     const t = buildIntelInjectText('CVE-2024-1234', 'CVE-2024-1234 | CVSS 9.8');
     expect(t).toContain('【/intel 情报检索 · 查询：CVE-2024-1234】');

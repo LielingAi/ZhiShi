@@ -24,7 +24,6 @@ import {
   buildSecurityKernelSection,
   type SecurityCapabilitiesData,
 } from './system-prompt-security';
-import { buildSkillsSection, type SkillPack } from './loop/skills';
 import { renderArchiveForInjection, type ArchiveSnapshot } from './loop/archive';
 
 // ===== Scenario types =====
@@ -215,19 +214,19 @@ export interface SystemPromptOptions {
    */
   securityResearchDomain?: ResearchTaskKind;
   /**
-   * 已启用的 skills（提示词级能力包）——调用方在会话启动时经
-   * collectEnabledSkills() 采集（bundled + 用户库合并、禁用表过滤）。
-   * undefined/空数组 = <skills> 段零注入。SKILL.md 全文直给是结构性
-   * 必然：研究环境边界下模型读不到宿主文件，惰性索引不成立。
-   */
-  skills?: SkillPack[];
-  /**
    * 1.4.4 — 研究档案实时状态段（security / auto-run 场景消费）。调用方
    * 按本 turn 的 loop 线装载（loadArchive，读侧容错）；undefined/空档案 =
    * 零注入。硬顶 ARCHIVE_INJECT_MAX_CHARS（renderArchiveForInjection）——
    * 实时状态只给「知道在哪、还缺什么」，全文在 GUI 研究面板。
    */
   researchArchive?: ArchiveSnapshot;
+  /**
+   * 1.5.1 — 专家知识邻域投影段（security / auto-run 场景消费）。调用方经
+   * collectExpertInjection 预渲染（焦点锚点：档案 pending H#/open Q# +
+   * 最近用户消息；确定性检索 + 会话内去重 + 透明标注）；'' / undefined =
+   * 零注入（邻域为空静默）。
+   */
+  expertKnowledge?: string;
 }
 
 export function buildSystemPromptAppend(scenario: InteractionScenario, options?: SystemPromptOptions): string {
@@ -297,11 +296,10 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
   if (scenario.type === 'security' || scenario.type === 'auto-run') {
     const archiveSection = renderArchiveForInjection(options?.researchArchive);
     if (archiveSection) parts.push(archiveSection);
+    // 1.5.1 专家知识邻域投影（唯一注入路径）——harness 确定性检索注入，
+    // 预渲染段非空才追加（零注入语义；透明标注列 #id）。
+    if (options?.expertKnowledge) parts.push(options.expertKnowledge);
   }
-
-  // L3: skills(提示词级能力包)——harness 的扩展面,全场景注入,零注入语义。
-  const skillsSection = buildSkillsSection(options?.skills);
-  if (skillsSection) parts.push(skillsSection);
 
   // L3: Browser storage state save instruction (when Playwright with --caps=storage is active)
   if (options?.playwrightStorageEnabled) {

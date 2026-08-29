@@ -221,7 +221,7 @@ export async function handleCreateSession(request: Request, jsonResponse: JsonRe
 
           : undefined;
 
-        // v0.1.69 Desktop session = owned snapshot. Capture model/permission/mcp/provider
+        // v0.1.69 Desktop session = owned snapshot. Capture model/permission/provider
 
         // from AgentConfig so the session is self-contained from creation onward.
 
@@ -815,8 +815,6 @@ export async function handlePatchSession(pathname: string, request: Request, jso
 
           permissionMode?: string | null;
 
-          mcpEnabledServers?: string[] | null;
-
           providerId?: string | null;
 
           providerEnvJson?: string | null;
@@ -858,8 +856,6 @@ export async function handlePatchSession(pathname: string, request: Request, jso
           'model',
 
           'permissionMode',
-
-          'mcpEnabledServers',
 
           'providerId',
 
@@ -918,8 +914,6 @@ export async function handlePatchSession(pathname: string, request: Request, jso
           'model',
 
           'permissionMode',
-
-          'mcpEnabledServers',
 
           'providerId',
 

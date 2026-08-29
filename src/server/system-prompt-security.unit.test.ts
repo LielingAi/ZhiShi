@@ -580,13 +580,15 @@ describe('buildSecurityKernelSection — 决策点语义（1.5.0 触发权归人
 });
 
 describe('buildSecurityKernelSection — 1.5.0 触发权归人（kernel 瘦身）', () => {
-  it('四命令指引进内核（/expert /intel /archive /decide）；「人请求的」上下文块口径', () => {
+  it('研究命令指引进内核（/intel /archive /decide）；1.5.1 起 /expert 退出（专家知识自动注入）', () => {
     const section = buildSecurityKernelSection();
-    expect(section).toContain('/expert');
+    // 1.5.1：/expert 斜杠命令随注入面瘦身删除——kernel 不再指引它，
+    // 改为声明专家知识由 harness 按焦点自动注入。
+    expect(section).not.toContain('/expert');
+    expect(section).toContain('专家知识自动注入');
     expect(section).toContain('/intel');
     expect(section).toContain('/archive');
     expect(section).toContain('/decide');
-    expect(section).toContain('人请求的');
     // 档案纪律骨架保留（反证/终态是 1.4.x 硬约束，不随瘦身丢）。
     expect(section).toContain('against');
     expect(section).toContain('resolve');

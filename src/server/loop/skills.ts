@@ -1,30 +1,20 @@
 /**
- * Skills 装载（提示词级能力包）— harness 的扩展面，v1 只做 skills。
+ * Skills 目录扫描器（1.5.1 注入面瘦身后的裁留件）。
  *
- * 模型:
- *   - 两个来源合并:bundled-skills(随产品发行,含安全方法四件:
- *     native-code-loop / binary-exploit / vuln-triage / range-ops)+ 用户库
- *     ~/.zhishi/skills(seed/自装)。同名用户库覆盖 bundled(用户优先)。
- *   - 禁用表 ~/.zhishi/skills-config.json 的 disabled 数组按文件夹名
- *     过滤两个来源(zhishi skill disable 对 bundled 同样生效)。
- *   - 平台屏蔽(isSkillBlockedOnPlatform)与 skill/list 同口径。
- *
- * 注入语义:SKILL.md 全文进系统提示——这是结构性必然,不是偷懒:
- * 研究环境边界(D14)下模型读不到宿主文件,「按名索引、按需再读」的
- * 惰性模式在本产品不成立,能力包必须随提示词直给。为防止失控,
- * 单个 skill 截断 4000 字符(截断点取整行边界,不断半句),总量封顶
- * 12000,超出按序丢弃——用户库最后丢(用户显式装的能力优先于随产品
- * 发行的 bundled)。
- *
- * 零注入:无启用 skill 时整段不出现。
+ * 1.5.1 起提示词注入层（collectEnabledSkills / buildSkillsSection /
+ * filterSkillsByDomain 及总量封顶）整体删除——SKILL.md 不再进系统提示。
+ * 本模块只保留「什么是一个合法 skill 目录」的扫描口径：
+ *   - resolveBundledSkillsDir:bundled-skills 目录解析（domain check 的
+ *     引用完整性校验在用——domain.json 的 skills 清单要对得上目录）。
+ *   - scanSkillsDir:目录 → SkillPack 的扫描（SKILL.md 存在 + frontmatter
+ *     解析 + 平台屏蔽），与 agent-session 的 .claude/skills 软链同步
+ *     （syncProjectUserConfig，外部 runtime 兼容面）同一定义。
  */
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { parseSkillFrontmatter, extractFrontmatter } from '../../shared/slashCommands';
-import { loadDomainManifests, type DomainManifest } from '../../shared/domain-manifest';
-import { getZhiShiDataDir } from '../utils/app-dirs';
 import { isSkillBlockedOnPlatform } from '../utils/platform';
 import { getScriptDir } from '../utils/runtime';
 
@@ -39,7 +29,6 @@ export interface SkillPack {
 }
 
 export const SKILL_BODY_CAP = 4000;
-export const SKILLS_TOTAL_CAP = 12000;
 
 /** 单篇正文截断:取整行边界(硬切可能断在半句);无换行可退硬切。 */
 export function truncateSkillBody(body: string, cap: number = SKILL_BODY_CAP): string {
@@ -50,27 +39,9 @@ export function truncateSkillBody(body: string, cap: number = SKILL_BODY_CAP): s
   return `${cut}\n…(截断)`;
 }
 
-export interface CollectSkillsOptions {
-  /** 测试注入:用户库目录(缺省 ~/.zhishi/skills)。 */
-  userSkillsDir?: string;
-  /** 测试注入:bundled 目录(缺省 resolveBundledSkillsDir())。 */
-  bundledDir?: string | null;
-  /** 测试注入:数据目录(禁用表所在,缺省 ~/.zhishi)。 */
-  dataDir?: string;
-  /**
-   * 会话研究域(1.2.7 域边界):命中 domain.json 的 skills 清单时只保留该域
-   * skills + 无域归属的通用 skills(不在任何域清单里的 skill 视为通用保留);
-   * 清单名在目录不存在 → 自然跳过(容错)。undefined/域未被清单覆盖 → 全量
-   * (域过滤是预算优化,不是正确性闸门,宁多勿缺)。
-   */
-  domain?: string;
-  /** 测试注入:域清单(缺省进程内缓存的 loadDomainManifests())。 */
-  domainManifests?: DomainManifest[];
-}
-
 /**
- * bundled-skills 目录解析(与 index.ts 的 resolveBundledSkillsDir 同策略,
- * 独立一份以避免从服务器入口反向依赖):脚本同级(prod)→ 向上 5 层(dev)。
+ * bundled-skills 目录解析:脚本同级(prod)→ 向上 5 层(dev)。
+ * domain check(admin-api)用它定位 bundled-skills 做引用完整性校验。
  */
 export function resolveBundledSkillsDir(fromDir?: string): string | null {
   const scriptDir = fromDir ?? getScriptDir();
@@ -85,20 +56,8 @@ export function resolveBundledSkillsDir(fromDir?: string): string | null {
   return null;
 }
 
-function readDisabledSkills(dataDir: string): Set<string> {
-  try {
-    const configPath = join(dataDir, 'skills-config.json');
-    if (existsSync(configPath)) {
-      const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-      if (Array.isArray(raw?.disabled)) return new Set(raw.disabled as string[]);
-    }
-  } catch {
-    /* 禁用表读不动 = 无禁用(读侧容错,与 skill/list 同) */
-  }
-  return new Set();
-}
-
-function scanSkillsDir(dir: string | null, source: SkillPack['source']): Map<string, SkillPack> {
+/** 扫描 skills 目录:有 SKILL.md 且正文非空的子目录才算合法 skill(平台屏蔽除外)。 */
+export function scanSkillsDir(dir: string | null, source: SkillPack['source']): Map<string, SkillPack> {
   const out = new Map<string, SkillPack>();
   if (!dir || !existsSync(dir)) return out;
   for (const folder of readdirSync(dir, { withFileTypes: true })) {
@@ -125,77 +84,4 @@ function scanSkillsDir(dir: string | null, source: SkillPack['source']): Map<str
     });
   }
   return out;
-}
-
-/** 域清单的进程内缓存(bundled-domains 只在升级时变,会话期不变)。 */
-let domainManifestsCache: DomainManifest[] | null = null;
-
-/**
- * 按会话域过滤 skills(1.2.7 域边界,纯函数):域命中 domain.json skills
- * 清单 → 保留该域清单内的 skills ∪ 无域归属的通用 skills(不在任何域清单
- * 里的 id 视为通用,跨域工具型如 task-alignment / zhishi-cli);清单引用了
- * 目录里不存在的名字 → 自然跳过(入参 skills 来自目录扫描,对不上即缺)。
- * 无 domain / 域未被清单覆盖 → 原样返回(全量,宁多勿缺)。
- */
-export function filterSkillsByDomain(
-  skills: SkillPack[],
-  domain?: string,
-  manifests?: DomainManifest[],
-): SkillPack[] {
-  if (!domain) return skills;
-  const list = manifests ?? (domainManifestsCache ??= loadDomainManifests());
-  const current = list.find((m) => m.kind === domain);
-  if (!current) return skills;
-  const claimed = new Set(list.flatMap((m) => m.skills));
-  const keep = new Set(current.skills);
-  return skills.filter((p) => keep.has(p.id) || !claimed.has(p.id));
-}
-
-/** 合并收集启用的 skills(bundled 先,用户库覆盖同名;禁用表过滤;可选按域收窄)。 */
-export function collectEnabledSkills(options: CollectSkillsOptions = {}): SkillPack[] {
-  const dataDir = options.dataDir ?? getZhiShiDataDir();
-  const disabled = readDisabledSkills(dataDir);
-  const bundledDir = options.bundledDir === undefined ? resolveBundledSkillsDir() : options.bundledDir;
-  const userDir = options.userSkillsDir ?? join(dataDir, 'skills');
-
-  const merged = scanSkillsDir(bundledDir, 'bundled');
-  for (const [id, pack] of scanSkillsDir(userDir, 'user')) {
-    merged.set(id, pack); // 用户库覆盖同名 bundled
-  }
-  const enabled = [...merged.values()].filter((p) => !disabled.has(p.id));
-  return filterSkillsByDomain(enabled, options.domain, options.domainManifests);
-}
-
-/**
- * 渲染系统提示的 skills 段。零注入语义:空数组 → ''。总量封顶
- * SKILLS_TOTAL_CAP,按序取舍——用户库排最前(最后丢):预算满时先丢
- * bundled(随产品发行、可再 enable),用户显式装的能力优先保留(1.2.6
- * 修 Map 合并序导致的用户库先丢)。
- */
-export function buildSkillsSection(skills: SkillPack[] | undefined): string {
-  if (!skills || skills.length === 0) return '';
-  // 稳定分区:user 在前、bundled 在后;截断从尾部丢 → 用户库最后丢。
-  const ordered = [
-    ...skills.filter((s) => s.source === 'user'),
-    ...skills.filter((s) => s.source !== 'user'),
-  ];
-  const lines: string[] = [
-    '<skills>',
-    '以下能力包已启用,其内容即操作指南——涉及环境内动作时经 env_exec 落实,研究留痕用 research_log。',
-    '',
-  ];
-  let total = 0;
-  let included = 0;
-  for (const s of ordered) {
-    const chunk = `## ${s.name}${s.description ? ` — ${s.description}` : ''}\n\n${s.body}\n`;
-    if (total + chunk.length > SKILLS_TOTAL_CAP) break;
-    lines.push(chunk);
-    total += chunk.length;
-    included++;
-  }
-  if (included < ordered.length) {
-    lines.push(`(另有 ${ordered.length - included} 个已启用 skill 因总量上限未注入——人侧可用 zhishi skill list 查看并 disable 腾位)`);
-  }
-  lines.push('</skills>');
-  return lines.join('\n');
 }

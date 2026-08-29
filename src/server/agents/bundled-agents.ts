@@ -95,7 +95,8 @@ let domainManifestsCache: DomainManifest[] | null = null;
  * 子代理 ∪ 无域归属的通用子代理(不在任何域清单里的名字视为通用保留);
  * 清单名在 bundled-agents 目录不存在 → 自然跳过(容错)。无 domain / 域未
  * 被清单覆盖 → 原样返回(全量,宁多勿缺——域过滤是预算与聚焦优化,不是
- * 正确性闸门)。与 skills 的 filterSkillsByDomain 同一语义。
+ * 正确性闸门)。与 1.2.7 域边界的 skills 域过滤同一语义（1.5.1 skills
+ * 注入层已删，域过滤语义由本函数与能力清单收窄继承）。
  */
 export function filterAgentsByDomain<T extends { name: string }>(
   agents: T[],

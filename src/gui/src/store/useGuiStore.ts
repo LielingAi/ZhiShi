@@ -24,7 +24,6 @@
  *   - 输入历史 per-env localStorage 落盘 + 子序列模糊评分（model/input-history）
  *   - /export [sanitize] 脱敏导出（slash-args 模态收参）
  *   - registerDiscovered：本机发现条目「选中即注册」（environment/add）
- *   - MCP 管理在 SettingsPage 页签（数据映射在 model/mcp）
  */
 
 import { create } from 'zustand';
@@ -109,7 +108,6 @@ import {
 import {
   ARCHIVE_INSTRUCTION,
   buildDecideInstruction,
-  buildExpertInjectText,
   buildIntelInjectText,
   effectiveQuery,
 } from '../model/slash-research';
@@ -153,7 +151,6 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'queue', detail: '查看/取消排队消息', group: '线程' },
   { name: 'tasks', detail: '查看子任务与后台进程', group: '线程' },
   { name: 'export', detail: '导出研究报告 [sanitize 脱敏]', group: '线程' },
-  { name: 'expert', detail: '查专家库 [查询词，留空吃上下文]', group: '研究' },
   { name: 'intel', detail: '查情报库 [CVE/关键字，留空吃上下文]', group: '研究' },
   { name: 'archive', detail: '整理研究档案（近期进展立实体/收尾终态）', group: '研究' },
   { name: 'decide', detail: '给我选项（人拍板）[议题，留空取上下文焦点]', group: '研究' },
@@ -2711,13 +2708,12 @@ async function runSlashCommand(
       set({ modal: { kind: 'pick-message', command: route.command } });
       return;
     }
-    // 1.5.0 触发权归人（研究四命令）：archive 无参直接执行；expert/intel/
+    // 1.5.0 触发权归人（研究命令）：archive 无参直接执行；intel/
     // decide 走 slash-args 模态收可选参数（留空 = 吃当前会话上下文）。
     case 'archive': {
       await executeSlash(get, set, 'archive', '');
       return;
     }
-    case 'expert':
     case 'intel':
     case 'decide': {
       set({ modal: { kind: 'slash-args', command: route.command } });
@@ -2739,9 +2735,9 @@ async function executeSlash(
     s.showToast('未连接 sidecar');
     return;
   }
-  // 1.5.0 触发权归人（研究四命令）：查询 → 拼注入文本 → s.send（正常 turn
+  // 1.5.0 触发权归人（研究命令）：查询 → 拼注入文本 → s.send（正常 turn
   // 语义，闸门/排队/纠偏全复用）。通吃上下文：参数留空取最近用户消息。
-  if (command === 'expert' || command === 'intel' || command === 'archive' || command === 'decide') {
+  if (command === 'intel' || command === 'archive' || command === 'decide') {
     if (command === 'archive') {
       await s.send(ARCHIVE_INSTRUCTION);
       return;
@@ -2757,23 +2753,14 @@ async function executeSlash(
       s.showToast(`/${command}：需要查询词（当前会话还没有上下文可吃）`);
       return;
     }
-    s.showToast(`⏳ 检索${command === 'expert' ? '专家库' : '情报库'}：${query.slice(0, 60)}${query.length > 60 ? '…' : ''}`);
+    s.showToast(`⏳ 检索情报库：${query.slice(0, 60)}${query.length > 60 ? '…' : ''}`);
     try {
-      if (command === 'expert') {
-        const res = await api.expertSearchText(c, query);
-        if (!res.success || !res.data?.text) {
-          s.showToast(`专家库检索失败：${res.error ?? '空结果'}`);
-          return;
-        }
-        await s.send(buildExpertInjectText(query, res.data.text));
-      } else {
-        const res = await api.intelSearch(c, query);
-        if (!res.success || !res.data?.text) {
-          s.showToast(`情报检索失败：${res.error ?? '空结果'}`);
-          return;
-        }
-        await s.send(buildIntelInjectText(query, res.data.text));
+      const res = await api.intelSearch(c, query);
+      if (!res.success || !res.data?.text) {
+        s.showToast(`情报检索失败：${res.error ?? '空结果'}`);
+        return;
       }
+      await s.send(buildIntelInjectText(query, res.data.text));
     } catch (err) {
       s.showToast(`检索失败：${err instanceof Error ? err.message : String(err)}`);
     }

@@ -654,7 +654,6 @@ export async function updateSessionMetadata(
         | 'lastContextUsage'
         | 'model'
         | 'permissionMode'
-        | 'mcpEnabledServers'
         | 'providerId'
         | 'providerEnvJson'
         | 'configSnapshotAt'

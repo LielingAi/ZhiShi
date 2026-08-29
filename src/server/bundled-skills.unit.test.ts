@@ -6,11 +6,13 @@ import { resolve } from 'node:path';
 // 技术方案 docs/spec/security_researcher_agent_tech_plan.md §2.2）。
 // 防三类静默事故：
 //  1. bundled-skills/<name>/SKILL.md 缺失或 frontmatter 缺 name/description；
-//  2. Rust SYSTEM_SKILLS（src-tauri/src/commands.rs）与 Node 镜像清单
-//     （src/server/skills-config.ts::SYSTEM_SKILLS，1.1.7 ③ 从 index.ts 抽出的
-//     原块）漂移——漏改任一侧会静默 double-seed；
+//  2. Rust SYSTEM_SKILLS（src-tauri/src/commands.rs）清单与 bundled-skills
+//     目录漂移——清单里有、目录没有会在 Tauri 宿主 sync 时静默跳过；
 //  3. 新增/变更 system skill 忘了 bump SYSTEM_SKILLS_VERSION（版本门不触发，
 //     存量用户拿不到新 skill）。
+// 1.5.1：Node 侧镜像清单（skills-config.ts::SYSTEM_SKILLS）随 skills 管理面
+// 整体删除——system skills 的落盘只剩 Rust 宿主版本门一条路径，不再有
+// 双写漂移面，对应两条 Node 镜像断言同步删除。
 const ROOT = process.cwd();
 const SKILLS_ROOT = resolve(ROOT, 'bundled-skills');
 
@@ -27,9 +29,7 @@ function extractStringList(source: string, startMarker: string): string[] {
 }
 
 const rustSrc = readFileSync(resolve(ROOT, 'src-tauri/src/commands.rs'), 'utf8');
-const nodeSrc = readFileSync(resolve(ROOT, 'src/server/skills-config.ts'), 'utf8');
 const rustList = extractStringList(rustSrc, 'const SYSTEM_SKILLS: &[&str] = &[');
-const nodeList = extractStringList(nodeSrc, 'const SYSTEM_SKILLS: readonly string[] = [');
 
 describe('bundled security skills（P1 S2 守卫）', () => {
   it('4 个 skill 目录与 SKILL.md 齐备', () => {
@@ -55,16 +55,6 @@ describe('bundled security skills（P1 S2 守卫）', () => {
     for (const name of NEW_SECURITY_SKILLS) {
       expect(rustList, `commands.rs::SYSTEM_SKILLS missing ${name}`).toContain(name);
     }
-  });
-
-  it('Node 镜像清单包含 4 个新 skill', () => {
-    for (const name of NEW_SECURITY_SKILLS) {
-      expect(nodeList, `index.ts::SYSTEM_SKILLS missing ${name}`).toContain(name);
-    }
-  });
-
-  it('两处 SYSTEM_SKILLS 清单完全一致（防单侧漏改 → 静默 double-seed）', () => {
-    expect([...nodeList].sort()).toEqual([...rustList].sort());
   });
 
   it('清单内每个 system skill 都有对应 bundled-skills 目录', () => {

@@ -1,6 +1,6 @@
 /**
  * 内置专家知识播种（1.2.1 骨架期）——bundled-expert/<domain>/<slug>.md
- * 随包分发，sidecar 启动（deferred init，挂在 seedBundledSkills 之后）按
+ * 随包分发，sidecar 启动（deferred init，挂在环境配方 seed 之后）按
  * content_hash 幂等导入/更新 expert.db。
  *
  * 文件是发行载体不是存储——DB 是唯一事实源。纪律：
