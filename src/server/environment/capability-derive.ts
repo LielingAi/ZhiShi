@@ -27,12 +27,14 @@ import { buildToolCheckScript } from './recipes';
 import type { EnvironmentRecipe } from './recipes';
 
 /** 能力探测的执行通道签名（与 env-exec 的 execInEnvironment 同形的最小子集；
- *  失败分支允许不带 stdout）。 */
+ *  失败分支允许不带 stdout）。1.4.9：补上 exitCode/stderr 可选字段——
+ *  execInEnvironment 本就返回它们，provision 链路（environment/setup）复用
+ *  同一通道时要靠 exitCode 判脚本成败。 */
 export type CapabilityExecFn = (
   entry: EnvironmentEntry,
   script: string,
   opts: { timeoutMs: number },
-) => Promise<{ ok: boolean; stdout?: string }>;
+) => Promise<{ ok: boolean; stdout?: string; stderr?: string; exitCode?: number }>;
 
 /** 能力探测超时：探测面是全配方工具并集（远宽于单配方 toolCheck），给足余量。 */
 export const CAPABILITY_PROBE_TIMEOUT_MS = 60_000;
@@ -110,15 +112,17 @@ export function parseProbePresentTools(stdout: string): Set<string> {
 }
 
 /**
- * 配方绑定域（恒在集合）：条目 recipeId（回落 id/vmName 同名配方，与
- * buildSecurityCapabilitiesSection / resolveSessionResearchDomain 同一绑定规则）
- * → domain.json recipes 反查。按 manifests 顺序，去重。
+ * 配方绑定域（恒在集合）：条目 recipeIds ∪ recipeId（回落 id/vmName 同名
+ * 配方，与 buildSecurityCapabilitiesSection / resolveSessionResearchDomain
+ * 同一绑定规则）→ domain.json recipes 反查。按 manifests 顺序，去重。
+ * 1.4.9：候选补上 recipeIds（多配方）——1.3.8 加多配方绑定时这里漏改，
+ * 辅配方对能力集合曾零贡献（pwn-vm 的 whitebox 靠探测命中撑着）。
  */
 export function boundDomainsForEntry(
-  entry: Pick<EnvironmentEntry, 'id' | 'recipeId' | 'vmName'>,
+  entry: Pick<EnvironmentEntry, 'id' | 'recipeId' | 'recipeIds' | 'vmName'>,
   manifests: readonly DomainManifest[],
 ): string[] {
-  const candidates = [entry.recipeId, entry.id, entry.vmName].filter(
+  const candidates = [...(entry.recipeIds ?? []), entry.recipeId, entry.id, entry.vmName].filter(
     (c): c is string => typeof c === 'string' && c.length > 0,
   );
   const out: string[] = [];
@@ -158,6 +162,42 @@ export function probedDomainsForTools(
   return manifests.map((m) => m.kind).filter((k) => hit.has(k));
 }
 
+/**
+ * 能力集合内的工具口径（1.4.9，与能力清单段同一规则）：集合内域 →
+ * manifests recipes → valid 配方 tools 并集（去重，字典序）。
+ * 用途：GUI「在场 M/N」与缺失清单的计数口径——capabilityMissing 是全探测面
+ * 落盘（67 个工具级），展示只关心「这个环境声明的能力所涉及的工具」。
+ */
+export function capabilityScopeTools(
+  domains: readonly string[],
+  recipes: readonly EnvironmentRecipe[],
+  manifests: readonly DomainManifest[],
+): string[] {
+  const recipeIds = new Set(
+    manifests.filter((m) => domains.includes(m.kind)).flatMap((m) => m.recipes),
+  );
+  return [
+    ...new Set(
+      recipes.filter((r) => r.valid && recipeIds.has(r.id)).flatMap((r) => r.tools),
+    ),
+  ].sort((a, b) => a.localeCompare(b));
+}
+
+/** 集合内缺失（toolCheck.missing ∪ capabilityMissing ∩ 集合内工具）。 */
+export function capabilityMissingInScope(
+  entry: Pick<EnvironmentEntry, 'capabilityDomains' | 'capabilityMissing' | 'toolCheck'>,
+  recipes: readonly EnvironmentRecipe[],
+  manifests: readonly DomainManifest[],
+): { total: number; missing: string[] } | undefined {
+  if (!entry.capabilityDomains?.length) return undefined;
+  const scope = capabilityScopeTools(entry.capabilityDomains, recipes, manifests);
+  if (scope.length === 0) return undefined;
+  const missing = [
+    ...new Set([...(entry.toolCheck?.missing ?? []), ...(entry.capabilityMissing ?? [])]),
+  ].filter((t) => scope.includes(t));
+  return { total: scope.length, missing };
+}
+
 // ---------------------------------------------------------------------------
 // 薄 IO — 一次性批量探测（exec 可注入，测试不碰真实环境）
 // ---------------------------------------------------------------------------
@@ -176,6 +216,10 @@ export interface CapabilityProbeDeps {
 export interface CapabilityProbeResult {
   capabilityDomains: string[];
   capabilityDerivedAt: string;
+  /** 探测面中缺失的工具（surface − 在场，字典序；1.4.9 MISS 落盘）。
+   *  探测未执行（空探测面 bound-only）时为 undefined——与「探测了但零
+   *  缺失」区分。 */
+  capabilityMissing?: string[];
 }
 
 /**
@@ -194,6 +238,7 @@ export async function probeEnvironmentCapabilities(
   const bound = boundDomainsForEntry(entry, deps.manifests);
   const surface = collectProbeSurface(deps.recipes);
   let probed: string[] = [];
+  let missing: string[] | undefined;
   if (surface.length > 0) {
     let stdout: string;
     try {
@@ -205,16 +250,21 @@ export async function probeEnvironmentCapabilities(
     } catch {
       return undefined;
     }
+    const present = parseProbePresentTools(stdout);
     probed = probedDomainsForTools(
-      parseProbePresentTools(stdout),
+      present,
       buildToolDomainIndex(deps.recipes, deps.manifests),
       deps.manifests,
     );
+    // 1.4.9：MISS 清单随探测落盘——「声明了但环境里没有」是元数据可信的
+    // 另一半（adopt 环境此前永远看不到缺失）。
+    missing = surface.filter((t) => !present.has(t));
   }
   const domains = mergeCapabilityDomains(bound, probed);
   if (domains.length === 0) return undefined;
   return {
     capabilityDomains: domains,
     capabilityDerivedAt: (deps.now?.() ?? new Date()).toISOString(),
+    ...(missing !== undefined ? { capabilityMissing: missing } : {}),
   };
 }

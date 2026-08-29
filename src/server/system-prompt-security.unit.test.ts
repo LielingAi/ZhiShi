@@ -923,7 +923,7 @@ describe('buildSecurityCapabilitiesSection — 能力集合呈现（1.3.7 场景
   it('能力集合行 + 集合内配方工具并集（去重）+ 漂移证据标注（toolCheck 口径）', () => {
     const section = buildSecurityCapabilitiesSection(capData(), { manifests: CAP_MANIFESTS });
     expect(section).toContain('当前环境能力集合（现场推导：配方绑定 ∪ 工具探测，探测于 2026-08-25T12:00:00Z）：binary · pentest');
-    expect(section).toContain('可用工具（能力集合内配方并集）：gdb、pwntools、afl-fuzz、nmap、hydra（声明了但环境里没有：hydra）');
+    expect(section).toContain('可用工具（能力集合内配方并集）：gdb、pwntools、afl-fuzz、nmap、hydra（声明了但环境里没有：hydra');
     // 集合内各域配方都列出（收窄空间 = 整个能力集合，不是单域）
     expect(section).toContain('- pwn（docker）：gdb、pwntools');
     expect(section).toContain('- fuzz（docker）：afl-fuzz');
@@ -932,6 +932,27 @@ describe('buildSecurityCapabilitiesSection — 能力集合呈现（1.3.7 场景
     expect(section).not.toContain('- dev（docker）');
     // 具名环境条目带能力徽章
     expect(section).toContain('- pwn-box → docker:zhishi-pwn-a3f2（类型 pwn：gdb、pwntools）；能力：binary·pentest');
+  });
+
+  it('1.4.9：capabilityMissing 并入漂移标注（adopt 环境无 toolCheck 也可见缺失）', () => {
+    const adopted: EnvironmentEntry = {
+      id: 'pwn-box',
+      kind: 'docker',
+      container: 'zhishi-pwn-a3f2',
+      recipeId: 'pwn',
+      capabilityDomains: ['binary', 'pentest'],
+      capabilityDerivedAt: '2026-08-29T00:00:00Z',
+      capabilityMissing: ['hydra', 'pwntools'],
+      createdAt: '',
+    };
+    const d = data({
+      engines: enginesReport(['docker']),
+      recipes: [recipe('pwn', ['gdb', 'pwntools']), recipe('fuzz', ['afl-fuzz']), recipe('pentest', ['nmap', 'hydra'])],
+      environments: [adopted],
+      selection: { kind: 'env', id: 'pwn-box' },
+    });
+    const section = buildSecurityCapabilitiesSection(d, { manifests: CAP_MANIFESTS });
+    expect(section).toContain('声明了但环境里没有：hydra、pwntools');
   });
 
   it('能力集合存在时收窄优先于 options.domain（集合 ⊇ 单域，放宽不丢能力）', () => {

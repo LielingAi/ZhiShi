@@ -1,11 +1,28 @@
 # Roadmap
 
-> 版本任务池。1.0.0 = 安全研究员版定型；1.1.x = 能力补齐 + 引擎深化（已完成）；1.2.x = 研究交付 + 校准协作主线 + 做深不做广（已完成）；1.3.x = GUI 主线（会话/决策/历史 + 环境业务逻辑 + TUI 退役 + 质量审计，已完成，1.4.0 发版）；**当前线：1.4.x（GUI 正式版后——auto loop agent 已落地（1.4.1，设计 `docs/design/auto-loop-design.md`）；1.4.3 域模型归位已发版；1.4.4 研究档案已发版；1.4.5 质量审计已发版；1.4.6 Harness 复杂任务优化已发版；1.4.7 打磨收口已发版；1.4.8 研究档案本体迭代（反证结构 + 链式投影 + 假设第三终态 + confirmed 死状态修复）已发版。记录在案：god file 拆分、引擎单例残余耦合（纯技术债，无 2.0 绑定——「引擎多实例」已随 2.0 范围砍单，2026-08-27 决策）。已砍：/bg 转后台（2026-08-26 决策——auto loop + env_bg 全覆盖其价值）、决策面板澄清提问（2026-08-27 决策——澄清是输入不是决策，普通对话打字即交互、auto loop 自主含义不允许向人要信息）、引擎多实例（2026-08-27 决策——与 TUI 多线同屏、跨机协同调度一起，2.0 范围砍单））**。
+> 版本任务池。1.0.0 = 安全研究员版定型；1.1.x = 能力补齐 + 引擎深化（已完成）；1.2.x = 研究交付 + 校准协作主线 + 做深不做广（已完成）；1.3.x = GUI 主线（会话/决策/历史 + 环境业务逻辑 + TUI 退役 + 质量审计，已完成，1.4.0 发版）；**当前线：1.4.x（GUI 正式版后——auto loop agent 已落地（1.4.1，设计 `docs/design/auto-loop-design.md`）；1.4.3 域模型归位已发版；1.4.4 研究档案已发版；1.4.5 质量审计已发版；1.4.6 Harness 复杂任务优化已发版；1.4.7 打磨收口已发版；1.4.8 研究档案本体迭代（反证结构 + 链式投影 + 假设第三终态 + confirmed 死状态修复）已发版；**1.4.9 环境元数据可信（MISS 显式化 + 绑定域认多配方 + 已有环境补齐链路）进行中**。记录在案：god file 拆分、引擎单例残余耦合（纯技术债，无 2.0 绑定——「引擎多实例」已随 2.0 范围砍单，2026-08-27 决策）。已砍：/bg 转后台（2026-08-26 决策——auto loop + env_bg 全覆盖其价值）、决策面板澄清提问（2026-08-27 决策——澄清是输入不是决策，普通对话打字即交互、auto loop 自主含义不允许向人要信息）、引擎多实例（2026-08-27 决策——与 TUI 多线同屏、跨机协同调度一起，2.0 范围砍单））**。
 > 状态约定：`[ ]` 未开始 · `[~]` 进行中 · `[x]` 已完成。任务细节不写在这里——细节进对应设计文档。
 
 ---
 
+## 1.4.9 —— 环境元数据可信：MISS 显式化 + 绑定域认多配方 + 已有环境补齐链路（进行中）
+
+**缘起（2026-08-29 三连环实证，用户逐项对齐）**：①pwn-vm 研究会话中模型自查发现「能力清单声明 opengrep/joern 等可用，实际全缺」——能力重推只把命中工具归并成域，**MISS 清单不落盘**，「声明了但环境里没有」的标注数据源（toolCheck.missing）只覆盖 build 流程，adopt 环境永远没有缺失标注，模型把配方声明当在场证据。②实探发现 `boundDomainsForEntry` 候选只有 recipeId（单数）/id/vmName——**不认 1.3.8 的 recipeIds（多配方）**，辅配方绑定对能力集合零贡献（pwn-vm 的 whitebox 标签纯靠 ctags/rg/sg 探测命中撑着）。③「重推该不该装工具」讨论定稿：**探测只读不装**（触发点全是顺手场景，带副作用违反最小惊讶；工具版本是研究员的显式决策），但「发现缺失之后没有下文」是断链——已有环境没有装工具的产品入口（environment/install 是装宿主引擎不是装工具、build 只服务从零新建、GUI 对两端点零调用）。**实探数据（2026-08-29，67 工具面全量探测 pwn-vm）：binary 20/30 名实相符；pentest 4/21、whitebox 3/9、ai-security 1/4 由个别工具撑标签。**
+
+- [x] **MISS 落盘 + 在场显式化**：`probeEnvironmentCapabilities` 把探测面 MISS 清单（surface − present）落盘 `EnvironmentEntry.capabilityMissing`（全集落盘，展示侧过滤）；能力清单段「声明了但环境里没有」标注数据源换 `capabilityMissing ∪ toolCheck.missing`（adopt 环境也可见）；GUI 环境卡片显示「在场 M/N」+ 缺失清单（悬停/展开）。
+- [x] **绑定域认 recipeIds**：`boundDomainsForEntry` 候选展开 recipeIds（主配方恒在前）；回归——绑 code-audit 后 whitebox 恒在集合（不再靠探测命中撑着）；与①互补：标签声明变宽的同时缺失显式化，名实分离但都可查。
+- [x] **已有环境补齐链路**：新端点 `environment/setup`——对已有环境重放配方的安装脚本：VM 配方直接重放 setup.sh（自带 sudo 安装段；`sudo -n` 检测，不免密 → 明确报错「需要免密 sudo」）；docker 配方绑 VM 属跨基底——**配方格式加可选 `provision.sh`**（裸机/VM 通用安装脚本，与 Dockerfile 安装段同源），code-audit 首个落地（opengrep/joern/ast-grep/bandit/pip-audit/osv-scanner，对应 1.2.5 选型清单）；长任务有界超时 + 日志尾部返回；成功后自动重推能力（闭环）。GUI 环境卡片「补齐环境」入口（有缺失时显示，确认后执行，结果 toast + 列表自动刷新）。**前置：VM setup.sh 幂等化改造**——pentest-vm 的 ZAP 段非幂等（已有 /opt/zaproxy 时重放会把新目录 mv 进旧目录、zap.sh 软链打断）必须修；nuclei/katana/ZAP 走最新 release（重放 = 升级非复原，各段加 `command -v` 已装跳过守卫）。
+- [x] **回归 + 验证**：capability-derive 单测（MISS 落盘/recipeIds 绑定/合并顺序）；provision 通道单测（exec 注入假通道：成功/失败/sudo 不免密/超时）；全量测试 + typecheck + eslint + 构建；实机（pwn-vm：重推 → 缺失可见 → 补齐 code-audit → opengrep 在场 → 标签闭环）。
+
+> 实际落地（2026-08-29）：①MISS 落盘——`probeEnvironmentCapabilities`/`runEnvProbeWithCapabilities` 双路产出 capabilityMissing（surface−present）；refreshEntryCapabilities/domain-check/env-up 三处回写全部带上（**自查抓出 domain/check 显式挑字段丢 capabilityMissing 的断链**）；能力清单段缺失标注源扩为 toolCheck ∪ capabilityMissing + 引导文案。②绑定域认 recipeIds——candidates 加 recipeIds（在前，主配方恒在 recipeIds[0]，基线语义不变）。③补齐链路——新模块 `environment/provision.ts`（纯函数：脚本解析 VM→setup.sh/docker→provision.sh、sudo 判定、base64 包装、日志尾部；唯一 IO provisionEnvironment：sudo -n 预检不免密不进场 → base64 传输执行 20min 有界 → 失败带 logTail）；`environment/setup` 端点（payload.recipe 缺省跑全部绑定配方、失败即停、成功自动 refreshEntryCapabilities 闭环）；GUI 徽章「缺 N」+ tooltip「在场 M/N + 缺失清单」+ 「⋯→补齐环境」菜单 + 确认模态（m-info 不存在样式的自查修复→m-note）。**幂等化前置**：pentest-vm setup.sh 三修（ZAP 段已装跳过——重放打断软链的实机坑修复、install_go_bin/SecLists/playwright 加守卫）。**源码自查另修**：CapabilityExecFn 类型拓宽（补 exitCode/stderr——provision 判败依赖，原类型是谎言）、exitCode 缺省不误判、provisionScriptCandidates 单元素数组简化。**实机两轮（pwn-vm 真补齐 code-audit）**：第一轮 pypi 系全成（清华镜像回落）、GitHub 系全挂（joern 300s 下 5.7/46MB、osv-scanner install.sh 404）→ provision.sh 加 gh_dl 镜像回落（gh-proxy.com）+ osv-scanner 改直接 release 二进制；第二轮 opengrep/osv-scanner 装上（在场 29→34），**joern 仍缺——gh-proxy 对 >40MB 文件 404、直连 60s 仅 9 字节，记录为环境网络限制**（WARN 不阻塞 + 缺失持续可见 + 幂等可重试，网络恢复后点「补齐环境」即可）。回归：新增 19 单测（capability-derive 6 + provision 8 + prompt 1 + GUI 2 + 既有断言按新契约更新 2）；全量 182 文件 2408 测试绿 + typecheck + eslint + 三构建绿。
+> 取舍记录在案：①重推保持只读不装工具（用户拍板定稿）。②补齐粒度 = 整配方安装脚本重放，**不做按工具补齐**（配方无 per-tool 安装命令表，粒度 invented 出来的是空中楼阁）。③docker 配方的 Dockerfile RUN 段不做「提取翻译到裸机」的脆弱转换——走显式 provision.sh（同源手写，code-audit 试点，其他 docker 配方验证可行后补）。④setup 重放的 sudo 只认免密（`sudo -n`）——密码通道不做（凭据不进新链路）。
+> 不做（本版）：按工具补齐、Dockerfile RUN 提取转换、GUI 环境构建（build）入口、引擎安装（environment/install）GUI 化、**Windows 目标机**（整个环境体系是 POSIX 假设——探测协议 `command -v`、setup.sh/provision.sh 全 bash、env-exec 走 ssh+sh；Windows 支持是探测/exec/配方全链的独立主题，不是本版一块）。
+> 验收：全量测试 + 实机闭环（pwn-vm 补齐 code-audit 全链）。
+
+---
+
 ## 1.4.8 —— 研究档案本体迭代：反证结构 + 链式投影 + 假设第三终态（已完成）
+
 **缘起（2026-08-28 用户全程对齐，三层缺口讨论定稿）**：①**confirmed 死状态**（前置已修，master 直推 5c0645f）——HypothesisStatus 声明 confirmed 但无路径可达，假设永远卡「待验证」；resolve op 按实体类型路由（H#→confirmed / Q#→resolved）+ GUI 行内「✓ 证实」+ 教学双终态口径。②**结论无反证结构**——links 无极性，结论只能挂支持性证据，反对它的实验结果没有结构化的家（只能事后 correct 推翻）→ 确认偏误（看板永远「+N」）+ 丢失「带保留成立」中间态。③**N 假设/N 证据/N 结论平铺对不上号**——对应关系在 links 里（V→H 驱动、C→V 支撑），但看板按类型分摞，人脑做反向索引，N 大即崩。④**假设缺第三终态**——「我不追了」（方向变/不再相关）≠「我错了」（falsified），目前人停掉假设只能走纠正强制 falsified，语义过重。**用户拍板：链式投影替换类型分区（不做双视图——两套投影就是两套真相）；反证共存不自动推翻结论。**
 
 - [x] **反证结构（against）**：finding 增加可选 `against` 引用（V# 反证，与 refs 支持并列）；research_archive 工具 finding op 加 against 参数（校验挂已存在 V#，同 refs 口径）；注入投影/报告投影/GUI 结论行显示「+N 支持 / −M 反证」；纪律（教学层）：反证共存不自动推翻——累积到动摇结论仍走 correct 翻转，「−M」是公开压力信号；旧档案无 against 读侧容错，不做存量迁移。

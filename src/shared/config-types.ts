@@ -1221,6 +1221,14 @@ export interface EnvironmentEntry {
 
   capabilityDerivedAt?: string;
 
+  /** 能力探测的 MISS 清单（1.4.9：探测面中声明了但环境里没有的工具，
+   *  全集落盘——展示侧按「集合内配方工具并集」过滤）。与 capabilityDomains
+   *  同次探测产出、同探测时间戳；探测失败时不写（保留旧值）。此前 MISS
+   *  只在 env up 的 toolCheck 里落盘，adopt 环境永远看不到缺失——模型把
+   *  配方声明当在场证据（1.4.8 实机事故）。 */
+
+  capabilityMissing?: string[];
+
   /** ISO 时间戳，server 侧写入时盖章。 */
 
   createdAt: string;

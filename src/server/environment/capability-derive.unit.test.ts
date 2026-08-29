@@ -16,6 +16,8 @@ import {
   boundDomainsForEntry,
   buildRecipeDomainMap,
   buildToolDomainIndex,
+  capabilityMissingInScope,
+  capabilityScopeTools,
   collectProbeSurface,
   mergeCapabilityDomains,
   parseProbePresentTools,
@@ -117,6 +119,18 @@ describe('boundDomainsForEntry（配方绑定域反查）', () => {
     const bare: EnvironmentEntry = { id: 'random', kind: 'ssh', host: 'h', createdAt: '' };
     expect(boundDomainsForEntry(bare, MANIFESTS)).toEqual([]);
   });
+
+  it('1.4.9：recipeIds 多配方入候选（辅配方绑定域恒在——1.3.8 漏改修复）', () => {
+    const multi: EnvironmentEntry = {
+      id: 'pwn-vm',
+      kind: 'vm',
+      recipeId: 'pwn',
+      recipeIds: ['pwn', 'code-audit'],
+      createdAt: '',
+    };
+    // pwn→binary、code-audit→whitebox 都在集合；manifests 顺序（binary 先于 whitebox）。
+    expect(boundDomainsForEntry(multi, MANIFESTS)).toEqual(['binary', 'whitebox']);
+  });
 });
 
 describe('mergeCapabilityDomains（合并规则：绑定域在前 = 基线语义）', () => {
@@ -134,6 +148,27 @@ describe('mergeCapabilityDomains（合并规则：绑定域在前 = 基线语义
   });
 });
 
+describe('1.4.9 — 集合内工具口径（capabilityScopeTools / capabilityMissingInScope）', () => {
+  it('capabilityScopeTools：集合内域 → 配方 → valid 工具并集（去重排序）', () => {
+    const tools = capabilityScopeTools(['binary', 'whitebox'], RECIPES, MANIFESTS);
+    expect(new Set(tools)).toEqual(new Set(['gdb', 'pwntools', 'ROPgadget', 'afl-fuzz', 'opengrep', 'rg']));
+    expect(tools).not.toContain('clang'); // dev 配方不在集合内
+    expect([...tools].sort((a, b) => a.localeCompare(b))).toEqual(tools); // 输出稳定
+  });
+
+  it('capabilityMissingInScope：toolCheck ∪ capabilityMissing 过滤到集合内；无能力集合 → undefined', () => {
+    const entry = {
+      capabilityDomains: ['binary'],
+      capabilityMissing: ['afl-fuzz', 'opengrep'], // opengrep 属 whitebox——不在集合内，被过滤
+      toolCheck: { ok: false, missing: ['pwntools'], checkedAt: 't' },
+    };
+    const r = capabilityMissingInScope(entry, RECIPES, MANIFESTS);
+    expect(r?.total).toBe(4); // binary 集合：gdb/pwntools/ROPgadget/afl-fuzz（pwn+fuzz 并集去重）
+    expect(new Set(r?.missing)).toEqual(new Set(['afl-fuzz', 'pwntools']));
+    expect(capabilityMissingInScope({ capabilityDomains: [] }, RECIPES, MANIFESTS)).toBeUndefined();
+  });
+});
+
 describe('probeEnvironmentCapabilities（注入 exec，不真连）', () => {
   const fixedNow = () => new Date('2026-08-25T12:00:00Z');
   const okExec = (stdout: string) => () => Promise.resolve({ ok: true as const, stdout });
@@ -146,7 +181,23 @@ describe('probeEnvironmentCapabilities（注入 exec，不真连）', () => {
       now: fixedNow,
     });
     // 绑定 pwn→binary 恒在（首位）；探测 nmap→pentest 追加。
-    expect(r).toEqual({ capabilityDomains: ['binary', 'pentest'], capabilityDerivedAt: '2026-08-25T12:00:00.000Z' });
+    expect(r?.capabilityDomains).toEqual(['binary', 'pentest']);
+    expect(r?.capabilityDerivedAt).toBe('2026-08-25T12:00:00.000Z');
+    // 1.4.9：MISS 清单 = 探测面 − 在场（afl-fuzz/clang/hydra/opengrep/pwntools/rg/ROPgadget）。
+    expect(new Set(r?.capabilityMissing)).toEqual(
+      new Set(['afl-fuzz', 'clang', 'hydra', 'opengrep', 'pwntools', 'rg', 'ROPgadget']),
+    );
+  });
+
+  it('探测零缺失 → capabilityMissing 空数组（与「未探测」的 undefined 区分）', async () => {
+    const allOk = collectProbeSurface(RECIPES).map((t) => `OK:${t}`).join('\n');
+    const r = await probeEnvironmentCapabilities(ENTRY, {
+      recipes: RECIPES,
+      manifests: MANIFESTS,
+      exec: okExec(allOk),
+      now: fixedNow,
+    });
+    expect(r?.capabilityMissing).toEqual([]);
   });
 
   it('通道失败 → undefined（不写能力字段，保 baseline）', async () => {

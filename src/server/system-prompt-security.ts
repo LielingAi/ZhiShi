@@ -298,10 +298,18 @@ export function buildSecurityCapabilitiesSection(
       `当前环境能力集合（现场推导：配方绑定 ∪ 工具探测${derivedNote}）：${capability.domains.join(' · ')}`,
     );
     if (capTools.length > 0) {
-      const missing = (capability.entry.toolCheck?.missing ?? []).filter((t) => capTools.includes(t));
+      // 1.4.9：缺失标注源 = env up 的 toolCheck.missing ∪ 能力探测落盘的
+      // capabilityMissing（adopt 环境也有缺失可见性——此前标注只覆盖 build
+      // 流程，adopt 环境永远显示「声明即可用」，模型把声明当在场证据）。
+      const missing = [
+        ...new Set([
+          ...(capability.entry.toolCheck?.missing ?? []),
+          ...(capability.entry.capabilityMissing ?? []),
+        ]),
+      ].filter((t) => capTools.includes(t));
       lines.push(
         `可用工具（能力集合内配方并集）：${capTools.join('、')}` +
-          (missing.length > 0 ? `（声明了但环境里没有：${missing.join('、')}）` : ''),
+          (missing.length > 0 ? `（声明了但环境里没有：${missing.join('、')}——需要时请在环境内安装后再用）` : ''),
       );
     }
   }

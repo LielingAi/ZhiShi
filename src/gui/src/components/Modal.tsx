@@ -978,6 +978,59 @@ function EnvDownModal(): React.JSX.Element | null {
   );
 }
 
+// ── 1.4.9：环境补齐确认（重放配方安装脚本——改机器状态的显式动作；幂等化后已装跳过） ──
+
+function EnvProvisionModal(): React.JSX.Element | null {
+  const modal = useGuiStore((s) => s.modal);
+  const closeModal = useGuiStore((s) => s.closeModal);
+  const confirmEnvProvision = useGuiStore((s) => s.confirmEnvProvision);
+  const [busy, setBusy] = useState(false);
+
+  const target = modal?.envProvision;
+  if (!target) return null;
+
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal">
+        <div className="m-head">
+          <span className="m-title">
+            补齐环境 <b className="m-env-name">{target.label}</b>
+          </span>
+          <span className="m-sub">environment/setup · 重放配方安装脚本</span>
+          <button className="m-close" onClick={closeModal}>✕</button>
+        </div>
+        <div className="m-body">
+          <div>
+            将在该环境内执行绑定配方的安装脚本（VM→setup.sh / 容器配方→provision.sh），
+            装齐缺失工具；已安装的工具会跳过（幂等）。脚本含 sudo 段时需要该环境用户免密 sudo。
+            完成后自动重推能力集合。
+          </div>
+          <div className="m-note">
+            当前缺失（{target.missing.length}）：{target.missing.join('、')}
+          </div>
+          <div className="m-actions">
+            <button className="btn" onClick={closeModal}>取消</button>
+            <button
+              className="btn primary"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await confirmEnvProvision();
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {busy ? '补齐中（可能要几分钟）…' : '开始补齐'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Modal(): React.JSX.Element | null {
   const modal = useGuiStore((s) => s.modal);
   if (!modal) return null;
@@ -998,6 +1051,8 @@ export function Modal(): React.JSX.Element | null {
       return <EnvRemoveModal />;
     case 'env-down':
       return <EnvDownModal />;
+    case 'env-provision':
+      return <EnvProvisionModal />;
     case 'env-detail':
       return <EnvDetailModal />;
     case 'auto-run-start':
