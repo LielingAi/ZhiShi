@@ -18,6 +18,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.9] - 2026-08-29
+
+> **环境元数据可信**：能力探测 MISS 显式化 + 绑定域认多配方 + 已有环境补齐链路。实机事故（模型把配方声明当在场证据）驱动。
+
+### 新增
+- 能力探测 MISS 清单落盘（`capabilityMissing`）：能力清单段对 adopt 环境也标注「声明了但环境里没有」，GUI 环境徽章带「缺 N」+ tooltip「在场 M/N + 缺失清单」
+- 已有环境补齐：`environment/setup` 端点对登记环境重放配方安装脚本（VM→setup.sh / 容器配方→provision.sh），sudo 免密预检不免密不进场，成功自动重推能力闭环；GUI「⋯ → 补齐环境」菜单 + 确认模态
+- 配方格式新增可选 `provision.sh`（裸机/VM 通用安装脚本），code-audit 首个落地（opengrep/joern/ast-grep/bandit/pip-audit/osv-scanner）
+
+### 修复
+- 绑定域推导认 recipeIds——1.3.8 多配方绑定的漏改：辅配方对能力集合曾零贡献（whitebox 靠 ctags/rg/sg 探测命中撑着）
+- pentest-vm setup.sh 幂等化：ZAP 段重放会打断已有 zap.sh 软链（实机坑），nuclei/katana/SecLists/playwright 加已装守卫——重放不再升级/破坏现场
+- code-audit provision 的 GitHub 下载加镜像回落（实机：pypi 靠清华镜像全成，GitHub 直连全挂）
+- 自查修复：domain/check 路径丢 capabilityMissing（域新缺失旧的自相矛盾）、CapabilityExecFn 类型拓宽（exitCode/stderr 诚实声明）
+
+### 记录在案
+- joern 在本机网络装不上（GitHub 大文件直连近乎不通 + 公共镜像 40MB 限制）——WARN 不阻塞、缺失持续可见、幂等可重试，网络恢复后再点「补齐环境」即可
+
 ## [1.4.8] - 2026-08-28
 
 > **研究档案本体迭代**：反证结构（against）+ 链式投影替换类型分区 + 假设第三终态（abandoned）；confirmed 死状态修复（resolve 终态全链路）。1.4.4 研究档案上线后的本体论收口——用户讨论定稿驱动。
