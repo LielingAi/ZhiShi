@@ -1,0 +1,4 @@
+# Shell 脚本强制 LF（core.autocrlf=true 的 Windows 检出会把 .sh 写成 CRLF，
+# bash 读到 `set -euo pipefail\r` 直接炸——1.4.9 补齐链路实机事故）。
+# 配方的 setup.sh / provision.sh 会在 guest（Linux）内执行，必须 LF。
+*.sh text eol=lf

@@ -56,9 +56,12 @@ export function scriptNeedsSudo(script: string): boolean {
   return /(^|\s)sudo\s/.test(script);
 }
 
-/** base64 包装传输：`base64 -d | bash`——多行脚本过 ssh argv 的稳态形态。 */
+/** base64 包装传输 + CR 剥离：`base64 -d | tr -d '\r' | bash`——多行脚本过
+ *  ssh argv 的稳态形态。tr 兜底 CRLF 源文件：core.autocrlf=true 的 Windows
+ *  检出会把仓库里的 setup.sh 写成 CRLF，bash 读到 `set -euo pipefail\r`
+ *  直接炸（2026-08-29 实机：用户点「补齐环境」报 pipefail invalid option）。 */
 export function wrapProvisionCommand(script: string): string {
-  return `echo ${Buffer.from(script, 'utf8').toString('base64')} | base64 -d | bash`;
+  return `echo ${Buffer.from(script, 'utf8').toString('base64')} | base64 -d | tr -d '\\r' | bash`;
 }
 
 /** 日志尾部（排障用——安装日志动辄数千行，只回尾部）。 */

@@ -78,6 +78,15 @@ describe('纯函数 — 脚本解析 / 包装 / sudo 判定', () => {
     expect(Buffer.from(b64, 'base64').toString('utf8')).toBe(script);
   });
 
+  it('wrapProvisionCommand：CR 剥离管道（CRLF 源文件免疫——实机回归）', () => {
+    const cmd = wrapProvisionCommand('set -euo pipefail\r\nsudo apt-get update\r\n');
+    expect(cmd).toContain("tr -d '\\r'");
+    // 模拟远端管道：base64 -d | tr -d '\r' → LF 干净脚本
+    const b64 = cmd.slice('echo '.length, cmd.indexOf(' | '));
+    const decoded = Buffer.from(b64, 'base64').toString('utf8').replace(/\r/g, '');
+    expect(decoded).toBe('set -euo pipefail\nsudo apt-get update\n');
+  });
+
   it('logTail：超长截尾保留尾部', () => {
     const long = 'x'.repeat(3000);
     expect(logTail(long)).toContain('前略');
