@@ -45,6 +45,7 @@ import {
   CAPABILITY_PROBE_TIMEOUT_MS,
   boundDomainsForEntry,
   buildToolDomainIndex,
+  capabilityMissingInScope,
   collectProbeSurface,
   mergeCapabilityDomains,
   parseProbePresentTools,
@@ -52,6 +53,7 @@ import {
   probeEnvironmentCapabilities,
   type CapabilityExecFn,
 } from './environment/capability-derive';
+import { provisionEnvironment } from './environment/provision';
 import { requestBoundaryAsk } from './loop/boundary-ask';
 // 1.4.1 auto loop agent(design docs/design/auto-loop-design.md)。
 import {
@@ -147,6 +149,7 @@ import {
   defaultRecipesRoot,
   loadRecipe,
   scanRecipes,
+  type EnvironmentRecipe,
 } from './environment/recipes';
 import {
   dockerContainerRunning,
@@ -2588,9 +2591,19 @@ export async function handleEnvironmentEngines(payload: {
 // ---------------------------------------------------------------------------
 // 安全研究员版 P1 E3 — named-environment registry (config.json::environments)
 // ---------------------------------------------------------------------------
-/** `environment/list` — list all registered environments (legacy configs → []). */
+/** `environment/list` — list all registered environments (legacy configs → []).
+ *  1.4.9：附带集合内工具口径（capabilityTools = {total, missing}）——GUI
+ *  「在场 M/N」与缺失清单的数据源（capabilityMissing 是全探测面落盘，
+ *  展示只关心能力集合涉及的工具）。 */
 export function handleEnvironmentList(): AdminResponse {
-  return { success: true, data: { environments: listEnvironments(loadConfig()) } };
+  const entries = listEnvironments(loadConfig());
+  const recipes = scanRecipes(defaultRecipesRoot());
+  const manifests = loadDomainManifests();
+  const environments = entries.map((e) => {
+    const scope = capabilityMissingInScope(e, recipes, manifests);
+    return scope ? { ...e, capabilityTools: scope } : e;
+  });
+  return { success: true, data: { environments } };
 }
 /** `environment/add` — validate then persist a new entry (id must be unique). */
 export async function handleEnvironmentAdd(
@@ -2918,6 +2931,7 @@ export async function runEnvProbeWithCapabilities(
   toolCheck?: { ok: boolean; missing: string[]; checkedAt: string };
   capabilityDomains?: string[];
   capabilityDerivedAt?: string;
+  capabilityMissing?: string[];
 }> {
   const recipes = scanRecipes(defaultRecipesRoot());
   const surface = [...new Set([...collectProbeSurface(recipes), ...recipeTools])].sort((a, b) =>
@@ -2941,10 +2955,13 @@ export async function runEnvProbeWithCapabilities(
       toolCheck?: { ok: boolean; missing: string[]; checkedAt: string };
       capabilityDomains?: string[];
       capabilityDerivedAt?: string;
+      capabilityMissing?: string[];
     } = {};
     if (recipeTools.length > 0) {
       out.toolCheck = { ...parseToolCheckOutput(stdout, recipeTools), checkedAt: now };
     }
+    // 1.4.9：MISS 清单随探测落盘（全集——展示侧按集合内配方过滤）。
+    out.capabilityMissing = surface.filter((t) => !parseProbePresentTools(stdout).has(t));
     const manifests = loadDomainManifests();
     const domains = mergeCapabilityDomains(
       boundDomainsForEntry(entry, manifests),
@@ -2969,7 +2986,7 @@ export async function runEnvProbeWithCapabilities(
  */
 export async function refreshEntryCapabilities(
   entry: EnvironmentEntry,
-): Promise<{ capabilityDomains: string[]; capabilityDerivedAt: string } | null> {
+): Promise<{ capabilityDomains: string[]; capabilityDerivedAt: string; capabilityMissing?: string[] } | null> {
   const probed = await probeEnvironmentCapabilities(entry, {
     recipes: scanRecipes(defaultRecipesRoot()),
     manifests: loadDomainManifests(),
@@ -2980,7 +2997,14 @@ export async function refreshEntryCapabilities(
     await atomicModifyConfig((config) => {
       const entries = listEnvironments(config).map((e) =>
         e.id === entry.id
-          ? { ...e, capabilityDomains: probed.capabilityDomains, capabilityDerivedAt: probed.capabilityDerivedAt }
+          ? {
+              ...e,
+              capabilityDomains: probed.capabilityDomains,
+              capabilityDerivedAt: probed.capabilityDerivedAt,
+              // 1.4.9：MISS 清单随重推落盘；探测未执行（bound-only）时清掉
+              // 旧缺失——缺失真相跟着最近一次真探测走。
+              capabilityMissing: probed.capabilityMissing ?? [],
+            }
           : e,
       );
       return { ...config, environments: entries };
@@ -3014,7 +3038,80 @@ export async function handleEnvironmentCapabilityRefresh(payload: {
   }
   return {
     success: true,
-    data: { id, capabilityDomains: probed.capabilityDomains, capabilityDerivedAt: probed.capabilityDerivedAt },
+    data: { id, capabilityDomains: probed.capabilityDomains, capabilityDerivedAt: probed.capabilityDerivedAt, capabilityMissing: probed.capabilityMissing ?? [] },
+  };
+}
+/** `environment/setup` — 1.4.9 已有环境补齐：对登记环境重放配方安装脚本
+ *  （VM→setup.sh / docker→provision.sh）。探测只读不装（重推职责），补齐
+ *  是显式动作（本端点）；成功后自动重推能力（MISS 清单同步刷新——闭环）。
+ *  payload.recipe 缺省 = 绑定集合中全部可 provision 的配方依次执行；
+ *  失败即停（后续配方在同一台机器上，先让人看清楚第一个失败）。 */
+export async function handleEnvironmentSetup(payload: {
+  id?: string;
+  recipe?: string;
+}): Promise<AdminResponse> {
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!id) return { success: false, error: 'Missing required argument: <id>' };
+  const entry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
+  if (!entry) {
+    return {
+      success: false,
+      error: `未找到环境 "${id}"`,
+      recoveryHint: { recoveryCommand: 'zhishi env list', message: 'See registered environment ids.' },
+    };
+  }
+  const reachable =
+    (entry.kind === 'ssh' && entry.host) ||
+    (entry.kind === 'docker' && entry.container) ||
+    (entry.kind === 'vm' && entry.address);
+  if (!reachable) {
+    return { success: false, error: `环境 "${id}" 无可用执行通道（需要 ssh host / docker 容器 / vm address）` };
+  }
+  const recipes = scanRecipes(defaultRecipesRoot());
+  const want = typeof payload.recipe === 'string' && payload.recipe.trim() ? payload.recipe.trim() : null;
+  if (want && !recipes.some((r) => r.id === want)) {
+    return { success: false, error: `未找到配方 "${want}"` };
+  }
+  // 绑定集合（与能力清单段同一回落规则：recipeIds ∪ recipeId ∪ id/vmName）。
+  const boundIds = [
+    ...new Set([
+      ...(entry.recipeIds ?? []),
+      ...(entry.recipeId ? [entry.recipeId] : []),
+      entry.id,
+      ...(entry.vmName ? [entry.vmName] : []),
+    ]),
+  ];
+  const targets = (want ? [want] : boundIds)
+    .map((rid) => recipes.find((r) => r.id === rid))
+    .filter((r): r is EnvironmentRecipe => !!r);
+  if (targets.length === 0) {
+    return { success: false, error: `环境 "${id}" 没有可补齐的绑定配方` };
+  }
+  const results: Array<Record<string, unknown>> = [];
+  for (const recipe of targets) {
+    if (!recipe.valid) {
+      results.push({ recipe: recipe.id, ok: false, error: `配方无效：${recipe.invalidReasons.join('；')}` });
+      break;
+    }
+    const r = await provisionEnvironment(entry, recipe, {
+      exec: (e, cmd, opts) => capabilityExecImpl(e, cmd, opts),
+    });
+    results.push({ recipe: recipe.id, ...r });
+    if (!r.ok) break;
+  }
+  const failed = results.find((r) => r.ok === false);
+  if (failed) {
+    return { success: false, error: `补齐失败（${failed.recipe}）：${failed.error}`, data: { id, results } };
+  }
+  // 闭环：补齐后自动重推（capabilityDomains + capabilityMissing 同步刷新）。
+  const probed = await refreshEntryCapabilities(entry);
+  return {
+    success: true,
+    data: {
+      id,
+      results,
+      ...(probed ? { capabilityDomains: probed.capabilityDomains, capabilityMissing: probed.capabilityMissing ?? [] } : {}),
+    },
   };
 }
 /** `environment/bind-recipes` — 1.3.8 多配方关联侧：整体替换环境的多配方
@@ -3204,7 +3301,14 @@ export async function handleDomainCheck(payload: { id?: string }): Promise<Admin
             ...config,
             environments: listEnvironments(config).map((e) =>
               e.id === entry.id
-                ? { ...e, capabilityDomains: check.capabilityDomains, capabilityDerivedAt: check.capabilityDerivedAt }
+                ? {
+                    ...e,
+                    capabilityDomains: check.capabilityDomains,
+                    capabilityDerivedAt: check.capabilityDerivedAt,
+                    // 1.4.9：MISS 清单同步刷新（此前丢字段——域是新的、缺失是
+                    // 旧的，两栏自相矛盾）。
+                    capabilityMissing: check.capabilityMissing ?? [],
+                  }
                 : e,
             ),
           }));

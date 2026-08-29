@@ -30,6 +30,9 @@ export interface EnvEntryLike {
   capabilityDomains?: string[];
   /** capabilityDomains 的推导时间（ISO）。 */
   capabilityDerivedAt?: string;
+  /** 1.4.9：能力集合内工具口径（服务端 environment/list 装饰）——
+   *  total = 集合内配方工具总数；missing = 声明了但环境里没有的清单。 */
+  capabilityTools?: { total: number; missing: string[] };
 }
 
 export interface PsInstanceLike {
@@ -73,8 +76,9 @@ export interface SidebarEnvItem {
    * 命中后行内显「已登记为 X」徽章、不再出「登记」按钮；点击改为切入已登记条目。
    */
   registeredAs?: { key: string; label: string };
-  /** 1.3.7 场景 3：现场推导的能力集合（透明展示，无声明 UI）。 */
-  capability?: { domains: string[]; derivedAt?: string };
+  /** 1.3.7 场景 3：现场推导的能力集合（透明展示，无声明 UI）。
+   *  1.4.9：带集合内工具口径（在场/缺失——缺失是「补齐环境」入口的依据）。 */
+  capability?: { domains: string[]; derivedAt?: string; toolsTotal?: number; toolsMissing?: string[] };
 }
 
 export interface SidebarGroup {
@@ -85,21 +89,36 @@ export interface SidebarGroup {
 /** 条目 → 能力集合（1.3.7 场景 3：无字段 = 未推导过，不是空集合）。 */
 function capabilityOf(e: EnvEntryLike | undefined): SidebarEnvItem['capability'] {
   return e?.capabilityDomains?.length
-    ? { domains: e.capabilityDomains, derivedAt: e.capabilityDerivedAt }
+    ? {
+        domains: e.capabilityDomains,
+        derivedAt: e.capabilityDerivedAt,
+        ...(e.capabilityTools
+          ? { toolsTotal: e.capabilityTools.total, toolsMissing: e.capabilityTools.missing }
+          : {}),
+      }
     : undefined;
 }
 
-/** 能力徽章文案（侧栏行内短形态——最多 2 个域 + 「+N」，行内不挤环境名）。 */
+/** 能力徽章文案（侧栏行内短形态——最多 2 个域 + 「+N」，行内不挤环境名）。
+ *  1.4.9：有缺失时带「缺 N」缺口标记（名实分离的可视面）。 */
 export function capabilityBadgeText(cap: NonNullable<SidebarEnvItem['capability']>): string {
   const domains = cap.domains;
   const shown = domains.slice(0, 2).join(' · ');
-  return domains.length > 2 ? `能力：${shown} +${domains.length - 2}` : `能力：${shown}`;
+  const base = domains.length > 2 ? `能力：${shown} +${domains.length - 2}` : `能力：${shown}`;
+  const miss = cap.toolsMissing?.length ?? 0;
+  return miss > 0 ? `${base} · 缺${miss}` : base;
 }
 
-/** 能力徽章 tooltip（完整列表 + 推导时间与来源说明）。 */
+/** 能力徽章 tooltip（完整列表 + 推导时间与来源说明 + 在场/缺失明细）。 */
 export function capabilityTooltip(cap: NonNullable<SidebarEnvItem['capability']>): string {
   const when = cap.derivedAt ? `，探测于 ${cap.derivedAt}` : '';
-  return `能力：${cap.domains.join(' · ')}（现场推导：配方绑定 ∪ 工具探测${when}）`;
+  const base = `能力：${cap.domains.join(' · ')}（现场推导：配方绑定 ∪ 工具探测${when}）`;
+  if (cap.toolsTotal === undefined) return base;
+  const present = cap.toolsTotal - (cap.toolsMissing?.length ?? 0);
+  const missing = cap.toolsMissing?.length
+    ? `\n声明了但环境里没有（${cap.toolsMissing.length}）：${cap.toolsMissing.join('、')}——可用「⋯ → 补齐环境」安装`
+    : '';
+  return `${base}\n工具在场 ${present}/${cap.toolsTotal}${missing}`;
 }
 
 /**

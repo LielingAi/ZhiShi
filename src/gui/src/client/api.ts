@@ -298,6 +298,23 @@ export function environmentCapabilityRefresh(
   return client.adminPost('environment/capability-refresh', input);
 }
 
+/** 1.4.9 补齐链路：对已有环境重放配方安装脚本（VM→setup.sh /
+ *  docker→provision.sh），成功后服务端自动重推能力（闭环）。 */
+export function environmentSetup(
+  client: GuiSidecarClient,
+  input: { id: string; recipe?: string },
+): Promise<{
+  success: boolean;
+  error?: string;
+  data?: {
+    results?: Array<{ recipe?: string; ok?: boolean; error?: string; logTail?: string }>;
+    capabilityDomains?: string[];
+    capabilityMissing?: string[];
+  };
+}> {
+  return client.adminPost('environment/setup', input);
+}
+
 /** 1.3.8 多配方：绑定集合整体替换（含主配方，主配方不可移除）。 */
 export function environmentBindRecipes(
   client: GuiSidecarClient,

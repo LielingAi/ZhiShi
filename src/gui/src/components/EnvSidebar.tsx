@@ -30,6 +30,7 @@ export function EnvSidebar(): React.JSX.Element {
   const switchEnv = useGuiStore((s) => s.switchEnv);
   const startEnv = useGuiStore((s) => s.startEnv);
   const refreshEnvCapability = useGuiStore((s) => s.refreshEnvCapability);
+  const requestEnvProvision = useGuiStore((s) => s.requestEnvProvision);
   const registerDiscovered = useGuiStore((s) => s.registerDiscovered);
   const requestEnvRemove = useGuiStore((s) => s.requestEnvRemove);
   const requestEnvDown = useGuiStore((s) => s.requestEnvDown);
@@ -219,6 +220,21 @@ export function EnvSidebar(): React.JSX.Element {
                     >
                       ⟳ 重推能力集合
                     </button>
+                    {(it.capability?.toolsMissing?.length ?? 0) > 0 && (
+                      <button
+                        className="eb-menu-item"
+                        onClick={() => {
+                          setMenuFor(null);
+                          requestEnvProvision({
+                            id: it.key,
+                            label: it.label,
+                            missing: it.capability!.toolsMissing!,
+                          });
+                        }}
+                      >
+                        🧩 补齐环境（缺 {it.capability!.toolsMissing!.length} 项）
+                      </button>
+                    )}
                     <button
                       className="eb-menu-item"
                       onClick={() => {

@@ -273,6 +273,29 @@ describe('能力徽章（1.3.7 场景 3）', () => {
     const groups = groupSidebar([{ id: 'e', kind: 'docker', capabilityDomains: [] }], [], []);
     expect(groups[0].items[0].capability).toBeUndefined();
   });
+
+  it('1.4.9：集合内工具口径进徽章与 tooltip（在场 M/N + 缺失清单 + 缺 N 标记）', () => {
+    const groups = groupSidebar(
+      [{
+        id: 'e1',
+        kind: 'vm',
+        capabilityDomains: ['binary'],
+        capabilityDerivedAt: '2026-08-29T00:00:00Z',
+        capabilityTools: { total: 9, missing: ['opengrep', 'joern'] },
+      }],
+      [],
+      [],
+    );
+    const cap = groups[0].items[0].capability!;
+    expect(cap.toolsTotal).toBe(9);
+    expect(cap.toolsMissing).toEqual(['opengrep', 'joern']);
+    expect(capabilityBadgeText(cap)).toBe('能力：binary · 缺2');
+    const tip = capabilityTooltip(cap);
+    expect(tip).toContain('工具在场 7/9');
+    expect(tip).toContain('opengrep、joern');
+    // 无缺失 → 徽章不带缺口标记
+    expect(capabilityBadgeText({ domains: ['binary'], toolsTotal: 9, toolsMissing: [] })).toBe('能力：binary');
+  });
 });
 
 

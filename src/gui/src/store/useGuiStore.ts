@@ -194,6 +194,7 @@ export type ModalKind =
   | 'promote'
   | 'env-remove'
   | 'env-down'
+  | 'env-provision'
   | 'env-detail'
   | 'auto-run-start'
   | 'auto-run-stop';
@@ -224,6 +225,8 @@ export interface ModalState {
   envRemove?: EnvRemoveTarget;
   /** 1.3.8 ①：env-down 模态的停止目标（文案见 model/env-down）。 */
   envDown?: EnvDownTarget;
+  /** 1.4.9：env-provision 模态的补齐目标（重放配方安装脚本）。 */
+  envProvision?: { id: string; label: string; missing: string[] };
   /** 1.3.8 多配方：env-detail 模态展示/管理目标（完整登记条目）。 */
   envDetail?: EnvEntry;
 }
@@ -368,6 +371,8 @@ export interface GuiState {
   startEnv(itemKey: string): Promise<void>;
   /** 1.3.7 场景 3：重推环境能力集合（environment/capability-refresh → 刷新侧栏）。 */
   refreshEnvCapability(envId: string): Promise<void>;
+  requestEnvProvision(target: { id: string; label: string; missing: string[] }): void;
+  confirmEnvProvision(): Promise<void>;
   /** 1.3.5 ④：本机发现条目「选中即注册」（environment/add → 入侧栏 → 运行中则切入）。 */
   registerDiscovered(itemKey: string, extras?: RegisterExtras): Promise<void>;
   /** 1.3.7 补口：侧栏「删除」入口——运行中拦截 toast，否则开确认模态。 */
@@ -869,6 +874,41 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       state.showToast(`✓ ${envId} 能力：${domains.join(' · ') || '（无）'}`);
     } catch (err) {
       state.showToast(`能力重推失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  /** 1.4.9 补齐链路：对已有环境重放配方安装脚本（确认模态在
+   *  Modal/EnvProvisionModal——改机器状态的显式动作）。成功后服务端已
+   *  自动重推能力，这里刷新侧栏即可。 */
+  requestEnvProvision(target) {
+    set({ modal: { kind: 'env-provision', envProvision: target } });
+  },
+
+  async confirmEnvProvision() {
+    const c = client;
+    const state = get();
+    const target = state.modal?.envProvision;
+    if (!target) return;
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.environmentSetup(c, { id: target.id });
+      if (!res.success) {
+        const tail = res.data?.results?.find((r) => r.ok === false)?.logTail;
+        // 失败保留模态（可重试/取消），toast 服务端错误原文 + 日志尾部。
+        state.showToast(`补齐失败：${res.error ?? '未知错误'}${tail ? `\n${tail.slice(-300)}` : ''}`);
+        return;
+      }
+      set({ modal: null });
+      void state.refreshSidebar();
+      const missing = res.data?.capabilityMissing;
+      state.showToast(
+        `✓ ${target.label} 补齐完成${missing?.length ? `——探测面仍缺 ${missing.length} 项` : '，探测面全在场'}`,
+      );
+    } catch (err) {
+      state.showToast(`补齐失败：${err instanceof Error ? err.message : String(err)}`);
     }
   },
 
