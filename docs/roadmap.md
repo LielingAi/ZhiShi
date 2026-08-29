@@ -5,6 +5,23 @@
 
 ---
 
+## 1.5.1 —— 注入面瘦身：skills/MCP 层删除 + 专家知识 harness 唯一注入（进行中）
+
+**缘起（2026-08-29 五轮设计迭代定稿，golang 轨迹取证驱动，用户全程拍板）**：①轨迹取证（mta7eilu，1576 条）实锤「能力点没出现」的根因链——域判定**对了**（filterSkillsByDomain 过滤正确，候选集含 whitebox-audit），但 `buildSkillsSection` 预算取舍按 user→bundled 字典序（SKILLS_TOTAL_CAP=12000），whitebox-audit 字典序最后必被挤掉（L841 模型 thinking「6 启用 3 注入 3 因总量上限未注入」铁证）。**预算矛盾是 skills 层的存在性缺陷——排序补丁治标不治本，该解的是设计问题**（用户拍板）。②skills 层删除：它是与专家知识层职能完全重叠的方法论载体，却自带发现/预算/启禁/覆盖/截断一整套复杂度。③MCP 删除：占位已久、对完整系统无好处。④专家知识定位钉死：**判据驱动的决策级知识**（provenance/reviewer/criteria/applicability 必填）；**工具层面知识不入库**（参考级、量大易腐——入库即权威稀释/检索稀释/维护腐化，铲除一个问题又造出新问题）。⑤注入路径五轮收敛：模型主动（1.4.x 实证失败）→ 人触发 /expert（1.5.0）→ 「人不用=没有」→ 推荐条（否：每条都是认知税）→ **harness 确定性决策注入（唯一路径）**（用户拍板：决策归 harness 规则、可见归人、/expert 命令删除——1.5.0 上线即撤；模型侧 expert_search 工具保留做 FTS 脆性兜底，用户拍板「听你的」）。
+
+- [ ] **harness 确定性注入（唯一注入路径）**：每轮用户消息 → expert_search（本地 FTS + 当前会话域先验）→ 分数过阈 + 会话内去重（按条目 id，同条只注一次）→ 注入 1-2 条（criteria 截断 + 总字符硬顶）；**零注入语义**（不过阈静默）；**透明标注**（流内可见「已注入专家知识 #N」，注错人可纠正）；确定性（同输入同输出）；auto loop 同规则（驱动文本即 harness 载体）。
+- [ ] **skills 层删除**：bundled-skills 方法论**策展提炼**为专家条目（每域 5-15 条，判据化补齐 criteria/applicability——提炼不是搬运；**迁移映射表（每条 bundled skill → 专家库/工具侧）为开工前置评审项**）；工具用法内容随工具/配方分布；删除 buildSkillsSection / SKILLS_TOTAL_CAP / filterSkillsByDomain / 启禁管理 / GUI skills 页签（并入专家页签）/ CLI skill 命令；domain.json `skills[]` → 检索域先验；用户库 skills 迁移为用户专家条目（provenance=user）。
+- [ ] **MCP 删除**：GUI MCP 页签、CLI `zhishi mcp`、服务端 mcp 路由、mcp-oauth、config mcp 段、plugin-bridge 资源。开工前置：确认 config.json 无在用 MCP server。
+- [ ] **/expert 命令删除**：slash 注册/路由/执行/单测移除（1.5.0→1.5.1 迭代轨迹写明）；/intel /archive /decide 保留。
+- [ ] **专家库判据化**：入库硬校验（provenance/reviewer/criteria/applicability 四必填，缺一拒绝；草稿区与审定区分层）；检索 top-N + 域先验排序防稀释。
+- [ ] **回归 + 验证**：注入规则单测（阈值/去重/零注入/预算/确定性/域先验）；删除面无残留引用（typecheck + eslint + depcruise）；迁移条数目视评审；全量测试 + 构建；实机（真实会话观察注入块时机/误命中率/auto loop 检查点联动）。
+
+> 取舍记录在案：①模型侧 expert_search 工具保留（FTS 脆性兜底——关键词匹配不到时模型用语义能组织更好查询词；不占人脑、零主动注入；用户拍板「听你的」）。②intel.db 不走自动注入（线索级、噪音风险大于价值，/intel 手动）。③配方 SKILL.md 工作流摘要同步降级为事实面（能力清单段只留「有什么工具」，方法论文本同 skills 一并沉降）。④注入规则败则静默（不过阈不注）——宁可少注不可误注（权威级误命中是最贵失败形态）。
+> 不做（本版）：skills 预算排序补丁（设计问题不是参数问题）、intel 自动注入、/expert 任何形式恢复、蒸馏弧改造（1.5.x 后议）。
+> 验收：全量测试 + 实机（注入时机合理/误命中可纠正/无 skills 残留）+ 用户日常走查。
+
+---
+
 ## 1.5.0 —— 触发权归人：/expert /intel /archive /decide 斜杠命令 + auto loop 确定性检查点 + kernel 瘦身（已完成）
 
 **缘起（2026-08-29 用户深度使用实证 + 轨迹取证定稿）**：三个「模型主动」行为在真实使用中全军覆没——①决策面板全部近期会话 **0 次主动调用**（toolResult 口径，mta7eilu 1427 条消息为 0）；②专家/情报仅 1 个会话主动查过（专家 4 次/情报 7 次，其余会话为 0）；③档案实体全是用户打字「研究档案建立」后模型才写（轨迹 thinking 铁证：「之前我一直在用 research_log，但还没有用 research_archive 建档」）。根因不是「补丁不够」：三个行为都要求模型主动承认「我需要」（承认不确定/承认知识缺口/承认记账义务）——LLM 天性不做这种判断；1.2.1→1.4.8 所有补丁都在加 prompt 教学（kernel 2000→2700 字符），解决「知不知道」不解决「会不会主动」，且补丁通胀稀释注意力。**用户拍板：自动归 auto loop，主动归人；四个动作通吃当前会话上下文（缺省参数时上下文摘要驱动——这样给出的才是有效的）；以 / 斜杠命令形态落地（与产品既有斜杠体系一致）。**
