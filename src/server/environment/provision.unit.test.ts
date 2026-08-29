@@ -73,7 +73,7 @@ describe('纯函数 — 脚本解析 / 包装 / sudo 判定', () => {
   it('wrapProvisionCommand：base64 可还原（中文/多行/引号安全）', () => {
     const script = '#!/usr/bin/env bash\necho "你好 $(whoami)"\nsudo apt-get install -y gdb\n';
     const cmd = wrapProvisionCommand(script);
-    expect(cmd).toContain('base64 -d | bash');
+    expect(cmd).toContain("base64 -d | tr -d '\\r' | bash");
     const b64 = cmd.slice('echo '.length, cmd.indexOf(' | '));
     expect(Buffer.from(b64, 'base64').toString('utf8')).toBe(script);
   });
