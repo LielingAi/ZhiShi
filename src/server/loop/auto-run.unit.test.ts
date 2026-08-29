@@ -216,7 +216,7 @@ describe('buildFirstTurnText / buildNextTurnText', () => {
     // 1.4.6 走查实证：档案纪律教学须进 auto-run 驱动文本(security kernel
     // 不注入 auto-run 场景,驱动文本是唯一的纪律通道——缺它档案采用率随采样漂移)。
     expect(text).toContain('research_archive');
-    expect(text).toContain('V# 证据实体');
+    expect(text).toContain('V# 证据引用');
     expect(text).toContain('falsify/correct');
   });
 
@@ -228,6 +228,20 @@ describe('buildFirstTurnText / buildNextTurnText', () => {
     expect(text).toContain('…(截断)');
     expect(text).toContain('research_archive');
     expect(text.length).toBeLessThan(400);
+  });
+
+  it('1.5.0 确定性档案检查点：每 4 轮一插，非检查点轮不插', () => {
+    // turn 从 0 起：(turn+1) % 4 === 0 → 第 4/8/12… 轮插检查点。
+    expect(buildNextTurnText('目标', '上轮', { turn: 3 })).toContain('【档案检查点】');
+    expect(buildNextTurnText('目标', '上轮', { turn: 7 })).toContain('【档案检查点】');
+    expect(buildNextTurnText('目标', '上轮', { turn: 0 })).not.toContain('【档案检查点】');
+    expect(buildNextTurnText('目标', '上轮', { turn: 1 })).not.toContain('【档案检查点】');
+    expect(buildNextTurnText('目标', '上轮', { turn: 4 })).not.toContain('【档案检查点】');
+    // 不传 turn → 不插（兼容旧调用）。
+    expect(buildNextTurnText('目标', '上轮')).not.toContain('【档案检查点】');
+    // 检查点与 verdictNote 兼容共存。
+    expect(buildNextTurnText('目标', '上轮', { turn: 3, verdictNote: '继续跑' })).toContain('终审反馈');
+    expect(buildNextTurnText('目标', '上轮', { turn: 3, verdictNote: '继续跑' })).toContain('【档案检查点】');
   });
 });
 

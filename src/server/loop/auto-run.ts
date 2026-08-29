@@ -275,26 +275,43 @@ export function buildFirstTurnText(goal: string, criteria: string[]): string {
     '2. 确认全部验收条件已达成且每条都有研究记录证据支撑时,调用 declare_completion 宣布达成(statement 写清哪条条件被哪条证据支撑,evidenceRefs 挂 research_log 返回的事件编号 E#N),然后停下等研究员终审;',
     '3. 方向分歧/关键取舍无把握、且 expert_search 无基准时,用 request_decision 提请人拍板,提请后停等决定注入;平时自主推进,不逐轮请示;',
     '4. 越界动作(写宿主/用本机凭据/改网络策略/销毁环境)会被边界拦截,如实遵守拦截提示;',
-    '5. 研究档案(research_archive 工具)是你的显式研究状态,随研究持续更新、每轮注回你的上下文——基于它继续,不从历史脑补:假设驱动实验(evidence 挂驱动假设引用 H#N,不挂断链进孤儿区);结论必须有证据支撑(finding 的 refs 必须挂已存在的 V# 证据实体并挂回结晶来源假设 H#N,缺证据会被工具拒绝——先 op=evidence 再下结论;有反证用 against 挂反证 V#,不报反证=确认偏误);证伪/纠错走 falsify/correct,不要把证伪写进 finding 文本冒充成立;假设要有终态——实验证实后 resolve(id=H#N) 标已证实,被推翻用 falsify,不追了用 abandon;目标不清立 question;anchor 标注用「env_exec #N / 命令名 / 文件:行号」,不要用「轮」(与 auto loop 轮次撞车)。',
+    '5. 研究档案(research_archive 工具)是你的显式研究状态,随研究持续更新、每轮注回你的上下文——基于它继续,不从历史脑补:假设驱动实验(evidence 挂假设引用);结论必须挂已存在的 V# 证据引用(op=finding refs,有反证挂 against,不报反证=确认偏误);证伪/纠错走 falsify/correct,不要把证伪写进 finding 文本冒充成立;假设要有终态(resolve/falsify/abandon);目标不清立 question;anchor 标注用「env_exec #N / 命令名 / 文件:行号」,不要用「轮」。**每 4 轮有档案检查点(驱动文本会标注「档案检查点」),届时按上列纪律整理**;',
   ].join('\n');
 }
 
 export interface NextTurnTextOptions {
   verdictNote?: string;
   maxChars?: number;
+  /** 当前轮号（0 起）——1.5.0 确定性档案检查点用；不传不插检查点。 */
+  turn?: number;
 }
 
-/** 后续轮驱动文本:「继续推进目标,上一轮结果:<截断>」(可选附人终审反馈)。 */
+/** 1.5.0 确定性档案检查点间隔（每 N 轮一插——「第 N 轮该做」，不是
+ *  「你想起来就做」。触发权归人的配套：auto loop 无人触发，由 harness
+ *  按轮次确定性驱动）。 */
+export const ARCHIVE_CHECKPOINT_INTERVAL = 4;
+
+/** 档案检查点文本（确定轮到时的本轮任务追加）。 */
+export const ARCHIVE_CHECKPOINT_TEXT =
+  '【档案检查点】本轮结束前用 research_archive 整理研究状态：在验假设继续推进实验；'
+  + '已证实/推翻/不追的假设给终态(resolve/falsify/abandon)；新实验结果记 evidence(挂假设引用)；'
+  + '确认的结论 op=finding(refs 挂 V# 证据引用,有反证挂 against)；缺什么立 question。';
+
+/** 后续轮驱动文本:「继续推进目标,上一轮结果:<截断>」(可选附人终审反馈)。
+ *  1.5.0：带 turn 时每 ARCHIVE_CHECKPOINT_INTERVAL 轮追加档案检查点
+ *  （确定性驱动，不靠模型自觉）。 */
 export function buildNextTurnText(goal: string, previousText: string, options: NextTurnTextOptions = {}): string {
   const maxChars = options.maxChars ?? NEXT_TURN_TEXT_MAX_CHARS;
   const clipped = previousText.trim().length > maxChars
     ? `${previousText.trim().slice(0, maxChars)}…(截断)`
     : previousText.trim();
+  const checkpoint = options.turn !== undefined && (options.turn + 1) % ARCHIVE_CHECKPOINT_INTERVAL === 0;
   return [
     `【auto loop 继续】继续推进目标:${goal}`,
     options.verdictNote ? `人终审反馈:${options.verdictNote}` : '',
     `上一轮结果(截断):${clipped || '(无输出)'}`,
     '继续自主推进;关键进展用 research_log 留痕;研究档案(research_archive)持续更新——结论挂 V# 证据引用、证伪走 falsify/correct;全部验收条件达成且有证据时调用 declare_completion;无把握的取舍用 request_decision。',
+    checkpoint ? ARCHIVE_CHECKPOINT_TEXT : '',
   ].filter((line) => line.length > 0).join('\n');
 }
 
@@ -848,7 +865,7 @@ export async function runAutoRunLoop(
     // ---- 1. 驱动文本 + invoke 本轮 ----
     const text = turn === 0
       ? buildFirstTurnText(record.goal, record.criteria)
-      : buildNextTurnText(record.goal, lastText, verdictNote ? { verdictNote } : {});
+      : buildNextTurnText(record.goal, lastText, { ...(verdictNote ? { verdictNote } : {}), turn });
     verdictNote = undefined;
     deps.log(`[auto-run] ${record.id} 第 ${turn + 1} 轮`);
     let result: { text: string; error?: string };

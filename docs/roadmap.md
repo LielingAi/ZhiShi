@@ -9,16 +9,17 @@
 
 **缘起（2026-08-29 用户深度使用实证 + 轨迹取证定稿）**：三个「模型主动」行为在真实使用中全军覆没——①决策面板全部近期会话 **0 次主动调用**（toolResult 口径，mta7eilu 1427 条消息为 0）；②专家/情报仅 1 个会话主动查过（专家 4 次/情报 7 次，其余会话为 0）；③档案实体全是用户打字「研究档案建立」后模型才写（轨迹 thinking 铁证：「之前我一直在用 research_log，但还没有用 research_archive 建档」）。根因不是「补丁不够」：三个行为都要求模型主动承认「我需要」（承认不确定/承认知识缺口/承认记账义务）——LLM 天性不做这种判断；1.2.1→1.4.8 所有补丁都在加 prompt 教学（kernel 2000→2700 字符），解决「知不知道」不解决「会不会主动」，且补丁通胀稀释注意力。**用户拍板：自动归 auto loop，主动归人；四个动作通吃当前会话上下文（缺省参数时上下文摘要驱动——这样给出的才是有效的）；以 / 斜杠命令形态落地（与产品既有斜杠体系一致）。**
 
-- [ ] **斜杠命令四件套（触发权归人）**：
+- [x] **斜杠命令四件套（触发权归人）**：
   - `/expert [query]`——查专家库：query 缺省从当前会话上下文提取（近期消息主题摘要），调 expert_search，结果作为上下文块注入会话流（标注「人请求的专家知识」，与工具结果同席）。
   - `/intel [query]`——查情报库：同上链路，intel_search。
   - `/archive`——整理档案：向模型发固化指令「回顾近期研究进展，用 research_archive 立/更新实体（假设/证据/结论/反证/终态收尾）」——把用户实证有效的手动动作固化成一键。
   - `/decide [议题]`——给我选项：反转 request_decision——模型就当前议题（缺省 = 当前上下文焦点）产选项卡（决策块交互资产复用），人拍板注入。
   - 链路：GUI 斜杠注册（builtin 源）+ 命令帮助/补全 + 服务端执行路径；通吃上下文 = 缺省参数时的上下文摘要注入（与 env_exec 结果同席的上下文块形态）。
-- [ ] **auto loop 确定性检查点**：驱动文本按轮次确定性插入档案检查点（每 N 轮「整理档案/收尾终态」——不是「你想起来就做」，是「第 N 轮该做」）；专家查询保持教学但检查点写明时机。
-- [ ] **kernel 瘦身**：求助时机段/决策点段/档案教学段撤出或压缩（普通对话不再期待模型主动——教学变成「人可通过 /expert /intel /archive /decide 触发，结果会以上下文块给你」的指引）；SECURITY_KERNEL_MAX_CHARS 随内容回降；auto-run brief 档案段改检查点口径。
-- [ ] **回归 + 验证**：斜杠命令单测（上下文缺省提取/注入块形态/四命令执行路径）+ auto-run 检查点单测 + 全量测试 + typecheck + eslint + 构建；实机走查（真实会话四命令逐一验证 + auto loop 检查点观察）。
+- [x] **auto loop 确定性检查点**：驱动文本按轮次确定性插入档案检查点（每 N 轮「整理档案/收尾终态」——不是「你想起来就做」，是「第 N 轮该做」）；专家查询保持教学但检查点写明时机。
+- [x] **kernel 瘦身**：求助时机段/决策点段/档案教学段撤出或压缩（普通对话不再期待模型主动——教学变成「人可通过 /expert /intel /archive /decide 触发，结果会以上下文块给你」的指引）；SECURITY_KERNEL_MAX_CHARS 随内容回降；auto-run brief 档案段改检查点口径。
+- [x] **回归 + 验证**：斜杠命令单测（上下文缺省提取/注入块形态/四命令执行路径）+ auto-run 检查点单测 + 全量测试 + typecheck + eslint + 构建；实机走查（真实会话四命令逐一验证 + auto loop 检查点观察）。
 
+> 实际落地（2026-08-29）：①斜杠四命令——服务端：`intel/search` 新端点（直接驱动 intel_search 工具执行体，本地索引+在线回源同语义）+ `expert/search` 加 `format:'text'`（与 loop 工具同一 formatExpertSearchResult 渲染，GUI 不复刻格式零漂移）；GUI：`model/slash-research.ts` 纯函数层（contextQueryFallback 最近用户消息截 160 / effectiveQuery 显式优先 / 注入文本与固化指令），SLASH_COMMANDS + SLASH_ROUTES 注册（slash-args 模态收可选参数，placeholder 写明「留空 = 吃当前会话上下文」），executeSlash 特判编排（查询 → 拼「人请求的」注入文本 → s.send——正常 turn 语义，闸门/排队/纠偏全复用，零新块类型零服务端会话改动）。②auto loop 确定性检查点——buildNextTurnText 带 turn，每 4 轮（ARCHIVE_CHECKPOINT_INTERVAL）追加「档案检查点」文本（第 N 轮该做，不靠自觉）；首轮 brief 第 5 条同步检查点口径。③kernel 瘦身——求助时机/决策点/档案教学三段重写为「人可用 /expert /intel /archive /decide 触发」指引 + 纪律骨架（反证/终态硬约束保留），模板 2558→2395 字符，SECURITY_KERNEL_MAX_CHARS 2700→2450（补丁通胀回吐，注释记账）。**实机走查**：intel/search（log4j 5 命中含在线回源标注）与 expert/search?format=text（栈溢出 SOP 命中，与 loop 工具同渲染）真库验证；GUI CDP 驱动——锚定 pwn-vm → '/' 面板四命令在列 → /expe 过滤 → Enter → /expert 参数模态（标题/placeholder 正确）截图验证。回归：新增 16 单测（slash-research 9 + auto-run 检查点 1 + prompt 决策点/瘦身 2 修订 + 既有断言按新契约更新）；全量 184 文件 2425 测试绿 + typecheck + eslint + 三构建绿。
 > 取舍记录在案：①模型侧工具不删（research_archive/expert_search/intel_search/request_decision 保留——模型要用照样能用，决策面板「模型主动弹窗」路径保留，只是产品重心不再赌它主动）。②「按钮/命令吃灰」风险记录在案——现状等于没有，做了不亏；人知道自己什么时候要拍板/查证。③「上下文缺省提取」第一版用规则摘要（近 N 条消息主题），不用模型再总结（省一次调用，记录在案——不够用再升级）。
 > 不做（本版）：自动检测「模型说不确定→提示人拍板」的反向信号（又是自动老路）、斜杠命令的自定义扩展（builtin 源即可）、决策面板交互重构（资产复用）。
 > 验收：全量测试 + 四命令实机 + auto loop 检查点实机。

@@ -111,6 +111,8 @@ import {
   type ExpertEntry,
 } from './expert/store';
 import { searchExpertEntries, EXPERT_SEARCH_LIMIT } from './expert/search';
+import { formatExpertSearchResult } from './loop/expert';
+import { createIntelSearchTool } from './loop/intel';
 import { computeContentHash, validateEntry, EXPERT_ENTRY_KINDS, EXPERT_PROVENANCES } from './expert/validate';
 // 1.1.2 情报横切：intel.db 更新/状态（sidecar 进程内直连,不经网络）。
 import { runIntelUpdate, getIntelProgress } from './intel/sync';
@@ -2229,6 +2231,9 @@ function toExpertEntrySummary(entry: ExpertEntry): Record<string, unknown> {
 export async function handleExpertSearch(payload: {
   query?: string;
   domain?: string;
+  /** 1.5.0：'text' → 返回格式化注入文本（/expert 斜杠命令的即注形态，
+   *  与 loop 工具输出同一渲染函数——GUI 不复刻格式，契约零漂移）。 */
+  format?: string;
 }, deps: ExpertAdminDeps = {}): Promise<AdminResponse> {
   const query = typeof payload?.query === 'string' ? payload.query.trim() : '';
   if (!query) return { success: false, error: 'usage: expert/search { query, domain? }' };
@@ -2241,7 +2246,32 @@ export async function handleExpertSearch(payload: {
       limit: EXPERT_SEARCH_LIMIT,
       ...(payload.domain ? { domain: payload.domain } : {}),
     });
+    if (payload.format === 'text') {
+      return { success: true, data: { text: formatExpertSearchResult({ query, hits: results, unavailable: false }) } };
+    }
     return { success: true, data: { results } };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** `intel/search { query, limit? }` — 1.5.0 /intel 斜杠命令的执行面：
+ *  直接驱动 loop 的 intel_search 工具执行体（本地索引 + 在线回源同语义），
+ *  返回格式化注入文本（GUI 不复刻格式）。 */
+export async function handleIntelSearch(payload: {
+  query?: string;
+  limit?: number;
+}): Promise<AdminResponse> {
+  const query = typeof payload?.query === 'string' ? payload.query.trim() : '';
+  if (!query) return { success: false, error: 'usage: intel/search { query, limit? }' };
+  try {
+    const tool = createIntelSearchTool();
+    const result = await tool.execute('admin-intel-search', {
+      query,
+      ...(typeof payload.limit === 'number' ? { limit: payload.limit } : {}),
+    } as never);
+    const text = result.content.find((c) => c.type === 'text')?.text ?? '';
+    return { success: true, data: { text, hitCount: result.details?.hitCount ?? 0 } };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }

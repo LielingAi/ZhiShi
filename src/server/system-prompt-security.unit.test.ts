@@ -567,14 +567,31 @@ describe('buildSecurityKernelSection — intel_search 进内核（1.2.6）', () 
   });
 });
 
-describe('buildSecurityKernelSection — 决策点语义（1.3.2）', () => {
-  it('kernel 段声明 request_decision：分歧/无把握且库无基准才提请；先查 expert_search；提请后暂停', () => {
+describe('buildSecurityKernelSection — 决策点语义（1.5.0 触发权归人后修订）', () => {
+  it('kernel 段声明 request_decision：人 /decide 提请 + 模型侧底线保留（分歧/无把握/库无基准）', () => {
     const section = buildSecurityKernelSection();
     expect(section).toContain('request_decision');
-    expect(section).toContain('库中无基准');
-    expect(section).toContain('先查 expert_search');
-    expect(section).toContain('暂停这条线的执行');
-    expect(section).toContain('user 消息注入回来');
+    expect(section).toContain('/decide');
+    expect(section).toContain('专家库无基准');
+    expect(section).toContain('停等决定注入');
+    expect(section).toContain('不要边等边推进');
+    expect(section.length).toBeLessThanOrEqual(SECURITY_KERNEL_MAX_CHARS);
+  });
+});
+
+describe('buildSecurityKernelSection — 1.5.0 触发权归人（kernel 瘦身）', () => {
+  it('四命令指引进内核（/expert /intel /archive /decide）；「人请求的」上下文块口径', () => {
+    const section = buildSecurityKernelSection();
+    expect(section).toContain('/expert');
+    expect(section).toContain('/intel');
+    expect(section).toContain('/archive');
+    expect(section).toContain('/decide');
+    expect(section).toContain('人请求的');
+    // 档案纪律骨架保留（反证/终态是 1.4.x 硬约束，不随瘦身丢）。
+    expect(section).toContain('against');
+    expect(section).toContain('resolve');
+    expect(section).toContain('abandon');
+    // 瘦身实证：模板总长回降到 2.5K 以下（1.4.8 峰值 2700 的补丁通胀回吐）。
     expect(section.length).toBeLessThanOrEqual(SECURITY_KERNEL_MAX_CHARS);
   });
 });
