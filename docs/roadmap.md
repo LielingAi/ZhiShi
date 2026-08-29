@@ -9,11 +9,12 @@
 
 **缘起（2026-08-29 用户拍板，issue 驱动）**：①issue #6（全仓唯一 open）「无法使用中转站的模型」——核查能力链：服务端 `model/add` 全字段支持自定义供应商（baseUrl/apiProtocol/authType/upstreamFormat/模型目录，admin-api.ts:1003）+ CLI `zhishi model add` 在 + `model/remove` 在，**GUI 设置页零入口**（不能加自定义供应商、不能改预设 baseUrl，用户被困死）。②provision 铺开：code-audit 试点 1.4.9 实机两轮验证，pentest/fuzz 两个 docker 配方无 provision.sh（绑到 VM 时无补齐路径）。**用户拍板：①③ 做；档案提醒兜底（N 轮未写档案 → 弱提醒）推到 1.5 讨论。**
 
-- [ ] **#6 自定义供应商 GUI 入口**：设置页供应商区「+ 自定义供应商」→ 表单模态（id/名称/baseUrl/协议（openai=中转站典型 / anthropic）/authType/模型 ID 手填列表 + 「拉取模型目录」按钮（复用 modelListUrl 推导：GET {baseUrl}/models 或 /v1/models）+ 主模型）→ `model/add`（可加 dryRun 预览）；自定义供应商行内「删除」（`model/remove`，仅 isBuiltin=false 显示）+ 设 key/验证/选模型走既有链路；表单校验与服务端同口径。
-- [ ] **中转站实测**：OpenAI 兼容端点全链（添加 → set-key → verify → 发消息）；无真中转站则本地 mock 端点验证 + 记录在案。
-- [ ] **provision.sh 铺开**：pentest、fuzz 两个 docker 配方补 provision.sh（Dockerfile 安装段的裸机版；已装守卫 + gh_dl 镜像回落沿用 1.4.9 惯例；大文件降级指引进注释）。
-- [ ] **回归 + 验证**：GUI 表单/模型层单测 + admin model/add·remove 接线回归 + 全量测试 + typecheck + eslint + 构建；实机走查（GUI 加一个中转站供应商并用它发消息）。
+- [x] **#6 自定义供应商 GUI 入口**：设置页供应商区「+ 自定义供应商」→ 表单模态（id/名称/baseUrl/协议（openai=中转站典型 / anthropic）/authType/模型 ID 手填列表 + 「拉取模型目录」按钮（复用 modelListUrl 推导：GET {baseUrl}/models 或 /v1/models）+ 主模型）→ `model/add`（可加 dryRun 预览）；自定义供应商行内「删除」（`model/remove`，仅 isBuiltin=false 显示）+ 设 key/验证/选模型走既有链路；表单校验与服务端同口径。
+- [x] **中转站实测**：OpenAI 兼容端点全链（添加 → set-key → verify → 发消息）；无真中转站则本地 mock 端点验证 + 记录在案。
+- [x] **provision.sh 铺开**：pentest、fuzz 两个 docker 配方补 provision.sh（Dockerfile 安装段的裸机版；已装守卫 + gh_dl 镜像回落沿用 1.4.9 惯例；大文件降级指引进注释）。
+- [x] **回归 + 验证**：GUI 表单/模型层单测 + admin model/add·remove 接线回归 + 全量测试 + typecheck + eslint + 构建；实机走查（GUI 加一个中转站供应商并用它发消息）。
 
+> 实际落地（2026-08-29）：①自定义供应商 GUI——设置页供应商区「+ 添加」+ CustomProviderModal 表单（id/名称/baseUrl/协议 select/模型 ID 列表/主模型），校验组装抽纯函数 `model/custom-provider.ts`（与服务端 handleModelAdd 同口径：id 字符集/baseUrl http(s)/模型非空/主模型在列）；自定义供应商行内「（自定义）」标记 + 两段式删除（model/remove，内置不显示删除）。**取舍偏离记录**：「拉取模型目录」按钮没做——model/add 强制至少手填一个模型 ID，且 set-key 后服务端自动拉取目录并入（实机验证 modelsFetched=3），手填一个即够，按钮是冗余。②provision 铺开——pentest/provision.sh（Dockerfile 同源：apt 全家桶 + SecLists 子集 + nuclei/katana sha256 校验 + ZAP 双条件守卫 + retire；jsluice/kr 的 go install 不搬——裸机不引入 Go 工具链，注释写明降级路径）+ fuzz/provision.sh（纯 apt + afl-clang-fast 插桩自检），均带已装守卫 + gh_dl 镜像回落。③实机全链（deepseek 官方端点当中转站角色——OpenAI 兼容）：GUI 同源 API 序 model/add → set-key（自动拉目录 3 模型）→ verify ✓ → 选环境 pwn-vm → /chat/model 切 ds-relay → /chat/send「只回复两个字：pong」→ SSE 5 秒回 pong。**走查插曲**：Git Bash curl -d 中文 GBK 编码又一次坑（供应商名称乱码落盘，model/remove 重加修复——--data-binary @file 是唯一稳态，与 1.4.8 走查同教训）；/chat/model 切换会写默认供应商（ds-relay 现为默认，记录在案）。回归：新增 5 单测（custom-provider 模型层）；全量 183 文件 2414 测试绿 + typecheck + eslint + 三构建绿。
 > 取舍记录在案：①自定义供应商**编辑**不做（编辑 = 删了重加，add 是纯增 + remove 在，组合即编辑）。②预设供应商 baseUrl 不可编辑（防误改官方端点；中转需求走自定义供应商承载）。③档案提醒兜底推 1.5（用户拍板 2026-08-29）。
 > 不做（本版）：供应商编辑、预设 baseUrl 编辑、中转站自动发现/测速。
 > 验收：全量测试 + 中转站全链实机（或 mock 记录在案）+ GUI 走查。

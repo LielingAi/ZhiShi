@@ -23,6 +23,7 @@ import { GUI_VERSION } from '../../../shared/constants';
 import { getSettingsClient, useGuiStore } from '../store/useGuiStore';
 import * as api from '../client/api';
 import type { ExpertDraft, ExpertSummary, ModelProvider, ResearchEventRow, SkillEntity } from '../client/api';
+import { buildCustomProviderPayload } from '../model/custom-provider';
 import {
   buildIntelConfigPatch,
   INTEL_MODES,
@@ -55,6 +56,8 @@ function ModelTab(): React.JSX.Element {
   const [providers, setProviders] = useState<ModelProvider[]>([]);
   const [current, setCurrent] = useState<{ providerId?: string; modelId?: string } | null>(null);
   const [keyProvider, setKeyProvider] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const showToast = useGuiStore((s) => s.showToast);
 
   const reload = useCallback(async () => {
@@ -96,7 +99,7 @@ function ModelTab(): React.JSX.Element {
         {providers.map((p) => (
           <div className="set-row" key={p.id}>
             <div>
-              <div className="sr-label">{p.id}</div>
+              <div className="sr-label">{p.id}{p.isBuiltin === false ? '（自定义）' : ''}</div>
               <div className="sr-desc">
                 {p.name ?? ''} · {p.models.length} 模型
                 {p.status && p.status !== 'not-set' ? ` · ${p.status}` : ''}
@@ -131,10 +134,50 @@ function ModelTab(): React.JSX.Element {
               >
                 验证
               </button>
+              {p.isBuiltin === false && (
+                confirmRemove === p.id ? (
+                  <>
+                    <button
+                      className="btn small danger"
+                      onClick={async () => {
+                        const c = getSettingsClient();
+                        if (!c) return;
+                        const res = await api.modelRemoveProvider(c, p.id);
+                        showToast(res.success ? `✓ 已删除自定义供应商 ${p.id}` : `删除失败：${res.error ?? '未知错误'}`);
+                        setConfirmRemove(null);
+                        void reload();
+                      }}
+                    >
+                      确认删除
+                    </button>
+                    <button className="btn small" onClick={() => setConfirmRemove(null)}>取消</button>
+                  </>
+                ) : (
+                  <button className="btn small" onClick={() => setConfirmRemove(p.id)}>删除</button>
+                )
+              )}
             </div>
           </div>
         ))}
+        <div className="set-row">
+          <div>
+            <div className="sr-label">自定义供应商</div>
+            <div className="sr-desc">中转站 / 自建网关等 OpenAI/Anthropic 兼容端点（baseUrl + key + 模型 ID）</div>
+          </div>
+          <div className="sr-control">
+            <button className="btn small primary" onClick={() => setAddOpen(true)}>+ 添加</button>
+          </div>
+        </div>
       </div>
+      {addOpen && (
+        <CustomProviderModal
+          onClose={() => setAddOpen(false)}
+          onSaved={() => {
+            setAddOpen(false);
+            void reload();
+          }}
+        />
+      )}
       {keyProvider && (
         <KeyConfigModal
           providerId={keyProvider}
@@ -147,6 +190,92 @@ function ModelTab(): React.JSX.Element {
       )}
     </>
   );
+}
+
+/** 1.4.10 #6：自定义供应商（中转站）表单模态——校验/组装在
+ *  model/custom-provider.ts（纯函数），这里只做输入与提交。 */
+function CustomProviderModal({
+  onClose,
+  onSaved,
+}: {
+  onClose: () => void;
+  onSaved: () => void;
+}): React.JSX.Element {
+  const [id, setId] = useState('');
+  const [name, setName] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [protocol, setProtocol] = useState<'openai' | 'anthropic'>('openai');
+  const [modelsRaw, setModelsRaw] = useState('');
+  const [primaryModel, setPrimaryModel] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const showToast = useGuiStore((s) => s.showToast);
+
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal" style={{ width: 'min(520px, 92vw)' }}>
+        <div className="m-head">
+          <span className="m-title">添加自定义供应商</span>
+          <span className="m-sub">model/add · 中转站 / 自建网关</span>
+          <button className="m-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="m-body">
+          <div className="f-label">ID（英文标识，定后不可改——删除重加即编辑）</div>
+          <input className="f-input" autoFocus placeholder="my-relay" value={id} onChange={(e) => setId(e.target.value)} />
+          <div className="f-label">名称（展示用）</div>
+          <input className="f-input" placeholder="XX 中转站" value={name} onChange={(e) => setName(e.target.value)} />
+          <div className="f-label">Base URL（API 端点）</div>
+          <input className="f-input" placeholder="https://relay.example.com/v1" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+          <div className="f-label">协议（中转站典型 = OpenAI 兼容）</div>
+          <select className="f-input" value={protocol} onChange={(e) => setProtocol(e.target.value as 'openai' | 'anthropic')}>
+            <option value="openai">OpenAI 兼容（中转站典型）</option>
+            <option value="anthropic">Anthropic 兼容</option>
+          </select>
+          <div className="f-label">模型 ID 列表（逗号/空格/换行分隔；中转站后台可查）</div>
+          <textarea
+            className="f-input"
+            rows={3}
+            placeholder="gpt-4o, claude-sonnet-4-5, deepseek-v4-pro"
+            value={modelsRaw}
+            onChange={(e) => setModelsRaw(e.target.value)}
+          />
+          <div className="f-label">主模型（缺省 = 列表首个）</div>
+          <input className="f-input" placeholder="（可选）" value={primaryModel} onChange={(e) => setPrimaryModel(e.target.value)} />
+          <div className="m-note">保存后在列表行内「配置 Key」；设 key 后可「验证」并在主界面状态栏选模型。</div>
+          {err && <div className="m-error">✗ {err}</div>}
+          <div className="m-actions">
+            <button className="btn" onClick={onClose}>取消</button>
+            <button className="btn primary" disabled={busy} onClick={() => void save()}>保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  async function save() {
+    const built = buildCustomProviderPayload({ id, name, baseUrl, protocol, modelsRaw, primaryModel });
+    if (!built.ok) {
+      setErr(built.error);
+      return;
+    }
+    setBusy(true);
+    try {
+      const c = getSettingsClient();
+      if (!c) {
+        setErr('未连接 sidecar');
+        return;
+      }
+      const res = await api.modelAddProvider(c, built.provider);
+      if (!res.success) {
+        setErr(res.error ?? '保存失败');
+        return;
+      }
+      showToast(`✓ 自定义供应商 ${id.trim()} 已添加——行内「配置 Key」后可用`);
+      onSaved();
+    } finally {
+      setBusy(false);
+    }
+  }
 }
 
 /** 隐藏输入 key 配置模态（v19 keyconfig 形态）。 */

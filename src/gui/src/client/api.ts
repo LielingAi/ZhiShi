@@ -98,6 +98,8 @@ export interface ModelProvider {
   hasApiKey?: boolean;
   status?: string;
   primaryModel?: string;
+  /** 内置供应商不可删（1.4.10 自定义供应商删除入口的判定依据）。 */
+  isBuiltin?: boolean;
   models: ModelEntity[];
 }
 
@@ -767,6 +769,22 @@ export function modelVerify(
   model?: string,
 ): Promise<{ success: boolean; error?: string; hint?: string }> {
   return client.adminPost('model/verify', { id, model });
+}
+
+/** 1.4.10 #6：自定义供应商（中转站）——model/add（纯增；编辑 = 删了重加）。 */
+export function modelAddProvider(
+  client: GuiSidecarClient,
+  provider: Record<string, unknown>,
+): Promise<{ success: boolean; error?: string; hint?: string }> {
+  return client.adminPost('model/add', { provider });
+}
+
+/** 1.4.10 #6：删除自定义供应商（服务端拒绝内置供应商）。 */
+export function modelRemoveProvider(
+  client: GuiSidecarClient,
+  id: string,
+): Promise<{ success: boolean; error?: string }> {
+  return client.adminPost('model/remove', { id });
 }
 
 // ---------------------------------------------------------------------------
