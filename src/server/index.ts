@@ -455,6 +455,7 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'intel/config-update') return await api.handleIntelConfigUpdate(payload as Parameters<typeof api.handleIntelConfigUpdate>[0]);
   // 专家知识层（1.2.1 骨架期）：expert.db 管理面。
   if (route === 'expert/search') return await api.handleExpertSearch(payload as Parameters<typeof api.handleExpertSearch>[0]);
+  if (route === 'intel/search') return await api.handleIntelSearch(payload as Parameters<typeof api.handleIntelSearch>[0]);
   if (route === 'expert/list') return await api.handleExpertList(payload as Parameters<typeof api.handleExpertList>[0]);
   if (route === 'expert/show') return await api.handleExpertShow(payload as Parameters<typeof api.handleExpertShow>[0]);
   if (route === 'expert/add') return await api.handleExpertAdd(payload as Record<string, unknown>);

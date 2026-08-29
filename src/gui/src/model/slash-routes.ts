@@ -33,7 +33,11 @@ export type SlashCommandName =
   | 'fork'
   | 'queue'
   | 'tasks'
-  | 'export';
+  | 'export'
+  | 'expert'
+  | 'intel'
+  | 'archive'
+  | 'decide';
 
 export type SlashEndpoint =
   | { kind: 'admin'; route: string }
@@ -116,6 +120,39 @@ export const SLASH_ROUTES: Record<SlashCommandName, SlashRoute> = {
     needsArgs: 'optional-name',
     argTitle: '导出研究报告',
     argPlaceholder: 'sanitize（可选——脱敏导出；留空直接导出）',
+  },
+  // ── 1.5.0 触发权归人（研究四命令；执行不走端点直调，runSlashCommand 特判） ──
+  expert: {
+    command: 'expert',
+    endpoint: { kind: 'admin', route: 'expert/search' },
+    needsEnv: false,
+    needsArgs: 'optional-name',
+    argTitle: '查专家库',
+    argPlaceholder: '查询词（留空 = 吃当前会话上下文）',
+  },
+  intel: {
+    command: 'intel',
+    endpoint: { kind: 'admin', route: 'intel/search' },
+    needsEnv: false,
+    needsArgs: 'optional-name',
+    argTitle: '查情报库',
+    argPlaceholder: 'CVE 编号或产品/关键字（留空 = 吃当前会话上下文）',
+  },
+  archive: {
+    command: 'archive',
+    endpoint: { kind: 'http', method: 'POST', path: '/chat/send' },
+    needsEnv: false,
+    needsArgs: 'none',
+    argTitle: '',
+    argPlaceholder: '',
+  },
+  decide: {
+    command: 'decide',
+    endpoint: { kind: 'http', method: 'POST', path: '/chat/send' },
+    needsEnv: false,
+    needsArgs: 'optional-name',
+    argTitle: '给我选项（人拍板）',
+    argPlaceholder: '议题（留空 = 取当前上下文焦点）',
   },
 };
 
@@ -202,6 +239,13 @@ export function slashPayload(
       return { messageId: arg?.trim() ?? '' };
     case 'queue':
     case 'tasks':
+      return {};
+    case 'expert':
+    case 'intel':
+    case 'archive':
+    case 'decide':
+      // 1.5.0 研究四命令：执行不走 slashPayload（查询/注入编排在 store 的
+      // executeSlash 特判），这里仅为穷尽性保底。
       return {};
     case 'export': {
       if (!ctx.workspace) return null;

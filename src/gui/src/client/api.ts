@@ -680,6 +680,22 @@ export function expertSearch(
   return client.adminPost('expert/search', { query });
 }
 
+/** 1.5.0 /expert：返回格式化注入文本（服务端与 loop 工具同一渲染函数）。 */
+export function expertSearchText(
+  client: GuiSidecarClient,
+  query: string,
+): Promise<{ success: boolean; error?: string; data?: { text?: string } }> {
+  return client.adminPost('expert/search', { query, format: 'text' });
+}
+
+/** 1.5.0 /intel：情报检索（服务端直接驱动 intel_search 工具执行体）。 */
+export function intelSearch(
+  client: GuiSidecarClient,
+  query: string,
+): Promise<{ success: boolean; error?: string; data?: { text?: string; hitCount?: number } }> {
+  return client.adminPost('intel/search', { query });
+}
+
 export function expertList(
   client: GuiSidecarClient,
 ): Promise<{ success: boolean; error?: string; data?: { entries?: ExpertSummary[] } }> {
