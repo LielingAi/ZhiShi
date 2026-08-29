@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 修复（1.4.9 实机事故补丁，随下一版发布）
+- 补齐链路 CRLF 免疫：core.autocrlf=true 的 Windows 检出把 30 个 .sh 写成 CRLF 并随打包资源出厂，`base64 -d | bash` 传输后 bash 读到 `set -euo pipefail\r` 炸 `invalid option`（pwn-vm 补齐实机复现）——脚本传输加 `tr -d '\r'` 剥离（任何行尾免疫）+ 新增 `.gitattributes`（*.sh 强制 LF）+ 全仓 .sh 归一化
+
 ## [1.4.9] - 2026-08-29
 
 > **环境元数据可信**：能力探测 MISS 显式化 + 绑定域认多配方 + 已有环境补齐链路。实机事故（模型把配方声明当在场证据）驱动。
