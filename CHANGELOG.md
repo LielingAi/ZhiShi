@@ -18,6 +18,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-08-30
+
+> **注入面瘦身（最大减法版本，净删约 8000 行）**：skills 层、MCP、domain.json skills[] 三层整体删除；专家知识注入收敛为 harness 邻域注入唯一路径。golang 轨迹取证驱动的五轮设计迭代定稿：模型主动失败（决策 0 调用）→ 人触发（1.5.0）→ 人不用=没有 → 推荐条否决（认知税）→ harness 确定性决策。
+
+### 新增
+- **专家知识 harness 邻域注入（唯一注入路径）**：每轮以档案焦点（pending H#/open Q#）+ 最近消息为锚，确定性检索专家库并自动注入（边类型加权：档案边 > 域先验边 ≈ 消息边；阈值 + 会话内去重 + top 2 + 1200 字符硬顶；零注入语义——不过阈静默；透明标注 #id 可纠正）——不用模型想起来、不用人点按钮，相关知识在对的时机自己出现
+- 6 条判据化专家条目（从 5 个域方法论 skill 策展提炼）：白盒审计决策链/不报告清单、二进制利用链/崩溃研判、渗透决策链、AI 安全评估链
+- `seedToolSkills`：工具侧 4 技能（agent-browser/download-anything/zhishi-cli/range-ops）本体窄播种——新装用户开箱即有
+- 判据化硬校验：expert/add 的 reviewer 必填（四必填齐：provenance/reviewer/criteria/applicability）
+
+### 删除
+- **skills 提示词注入层**：注入段/预算/域过滤/启禁管理/GUI SkillsTab/CLI skill 组/管理 API/loop/skills 模块——与专家知识层职能重叠的第三层，预算矛盾是存在性缺陷（whitebox-audit 曾被预算排序永远挤掉）
+- **MCP**：routes/mcp、mcp-oauth、mcp-bridge、GUI/CLI、config 字段族、cron/会话快照全链、plugin-bridge——占位已久、对产品无价值
+- **domain.json skills[] 字段**：注入层删后已无任何消费面
+- **/expert 斜杠命令**（1.5.0 上线即撤）：专家知识注入只有 harness 一条路径（/intel /archive /decide 保留；模型侧 expert_search 工具保留做兜底）
+
+### 修复
+- 工具侧约 30 个文件 CR 污染归一（agent-browser/SKILL.md 曾双回车——shell 脚本带 CR 进环境必炸的同族教训）
+- Rust SYSTEM_SKILLS 收窄为工具侧 4 个 + 版本门 37→38
+
 ## [1.5.0] - 2026-08-29
 
 > **触发权归人**：「模型主动」路线实证失败（决策面板真实使用 0 调用、专家库仅 1 会话主动查、研究档案全靠人打字触发）——根因是这三个行为都要求模型主动承认「我需要」，教学解决「知不知道」不解决「会不会主动」。转向：自动归 auto loop，主动归人。
