@@ -111,6 +111,7 @@ import {
   buildIntelInjectText,
   effectiveQuery,
 } from '../model/slash-research';
+import { acceptsInlineArgs, parseSlashInput, slashNameSegment } from '../model/slash-input';
 import { parseExpertImport } from '../model/expert-import';
 import { pickModelPickerProviders } from '../model/model-picker';
 import { mergeSidebarSnapshot } from '../model/sidebar';
@@ -191,6 +192,9 @@ export interface OverlayState {
   title: string;
   items: OverlayItem[];
   sel: number;
+  /** 1.5.2：slash overlay 的 inline 参数段（/intel CVE-2024-1234 的
+   *  CVE-2024-1234——选中执行时随命令直发，不再丢）。 */
+  slashArgs?: string;
 }
 
 export type ModalKind =
@@ -417,6 +421,11 @@ export interface GuiState {
   submitAdopt(vmx: string, user: string, keyPath: string, password: string): Promise<void>;
   bootEnv(recipeId: string): Promise<void>;
   submitSlashArg(value: string): Promise<void>;
+  /** 1.5.2：输入区直输 / 命令（doSend 的命令解析入口——isKnownCommand 判定
+   *  在调用侧，本 action 只管执行；inlineArgs 可空）。 */
+  execSlashCommand(cmd: string, inlineArgs?: string): Promise<void>;
+  /** 1.5.2：Tab 补全——slash overlay 当前项回填输入框（不执行，继续输参数）。 */
+  completeSlashOverlay(): void;
   pickMessageTarget(id: string): Promise<void>;
   // 1.3.1 ②：boundary
   respondBoundaryAsk(askId: string, approve: boolean, note?: string): Promise<void>;
@@ -1144,13 +1153,17 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   openOverlay(kind, query) {
     const s = get();
     if (kind === 'slash') {
-      const q = query.trim();
-      const items = SLASH_COMMANDS.filter((c) => c.name.startsWith(q)).map((c) => ({
+      // 1.5.2 实锤修复②：过滤只按命令名段（/intel CVE-2024-1234 按 intel
+      // 过滤——此前把参数段一起前缀匹配，带参数输入面板必空）；参数段存进
+      // overlay.slashArgs（选中执行时直发，修复③）。
+      const nameSeg = slashNameSegment(`/${query}`);
+      const slashArgs = parseSlashInput(`/${query}`)?.args ?? '';
+      const items = SLASH_COMMANDS.filter((c) => c.name.startsWith(nameSeg)).map((c) => ({
         name: `/${c.name}`,
         detail: c.detail,
         tag: c.group,
       }));
-      set({ overlay: { kind, title: '命令', items, sel: 0 } });
+      set({ overlay: { kind, title: '命令', items, sel: 0, slashArgs } });
       return;
     }
     if (kind === 'at') {
@@ -1219,7 +1232,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     switch (ov.kind) {
       case 'slash': {
         const cmd = item.name.replace(/^\//, '');
-        void runSlashCommand(get, set, cmd);
+        // 1.5.2 实锤修复③：inline 参数随命令直发 + 清空输入框。
+        set({ inputFill: { text: '', nonce: (s.inputFill?.nonce ?? 0) + 1 } });
+        void runSlashCommand(get, set, cmd, ov.slashArgs);
         break;
       }
       case 'at': {
@@ -1950,6 +1965,24 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     await executeSlash(get, set, command, value);
   },
 
+  /** 1.5.2：doSend 的命令解析出口——/ 开头且匹配已知命令时执行（含 inline
+   *  参数直发），不匹配由调用方按普通文本发送。 */
+  async execSlashCommand(cmd, inlineArgs) {
+    await runSlashCommand(get, set, cmd, inlineArgs);
+  },
+
+  /** Tab 补全：slash overlay 当前项回填「/name 」到输入框（不执行——继续
+   *  输参数，Enter 才执行；inputFill 通道带回焦点）。 */
+  completeSlashOverlay() {
+    const ov = get().overlay;
+    if (!ov || ov.kind !== 'slash') return;
+    const item = ov.items[ov.sel];
+    set({
+      overlay: null,
+      inputFill: { text: item ? `${item.name} ` : '/', nonce: (get().inputFill?.nonce ?? 0) + 1 },
+    });
+  },
+
   async pickMessageTarget(id: string) {
     const state = get();
     const command = state.modal?.command;
@@ -2644,6 +2677,7 @@ async function runSlashCommand(
   get: () => GuiState,
   set: (partial: Partial<GuiState>) => void,
   cmd: string,
+  inlineArgs?: string,
 ): Promise<void> {
   const s = get();
   // 本地命令（不在 server 路由表里）
@@ -2661,6 +2695,12 @@ async function runSlashCommand(
   }
   if (cmd === 'help') {
     s.showToast('/help：Esc 中断（busy）· Ctrl+R 历史 · ↑ 空输入历史 · Enter 发送（运行中发送=纠偏）');
+    return;
+  }
+  // 1.5.2 实锤修复④：可吃 inline 参数的命令带参直发（跳过 slash-args 模态
+  // ——/snapshot myname /intel CVE-2024-1234 选中即执行）。
+  if (inlineArgs?.trim() && acceptsInlineArgs(cmd)) {
+    await executeSlash(get, set, cmd as SlashCommandName, inlineArgs.trim());
     return;
   }
   const route = slashRoute(cmd);

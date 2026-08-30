@@ -16,6 +16,14 @@ import type React from 'react';
 
 import { selectCurrentSession, useGuiStore } from '../store/useGuiStore';
 import { isAutoRunActive } from '../model/auto-run';
+import { isKnownCommand, parseSlashInput } from '../model/slash-input';
+
+/** @ 引用 chip 的类型徽章（1.5.2 可视化——选择后 @ 变成 chip，得让人看见它是什么）。 */
+const REF_TYPE_LABEL: Record<string, string> = {
+  env: '环境',
+  file: '文件',
+  snapshot: '快照',
+};
 
 export function InputArea(): React.JSX.Element {
   const [value, setValue] = useState('');
@@ -28,6 +36,7 @@ export function InputArea(): React.JSX.Element {
   const overlay = useGuiStore((s) => s.overlay);
   const openOverlay = useGuiStore((s) => s.openOverlay);
   const closeOverlay = useGuiStore((s) => s.closeOverlay);
+  const execSlashCommand = useGuiStore((s) => s.execSlashCommand);
   const inputFill = useGuiStore((s) => s.inputFill);
   const mentionApply = useGuiStore((s) => s.mentionApply);
   const envLabel = useGuiStore((s) => (s.currentEnvKey ?? '宿主'));
@@ -57,6 +66,14 @@ export function InputArea(): React.JSX.Element {
   const doSend = () => {
     const text = value.trim();
     if (!text) return;
+    // 1.5.2 实锤修复①：/ 开头先走命令解析——匹配已知命令则执行（含 inline
+    // 参数），不匹配才按普通文本发 LLM（防误吞自然语言）。
+    const parsed = parseSlashInput(text);
+    if (parsed && isKnownCommand(parsed.name)) {
+      setValue('');
+      void execSlashCommand(parsed.name, parsed.args);
+      return;
+    }
     setValue('');
     void send(text);
   };
@@ -103,7 +120,8 @@ export function InputArea(): React.JSX.Element {
       {refs.length > 0 && (
         <div className="input-chips">
           {refs.map((r, i) => (
-            <span className="chip" key={`${r.type}-${'id' in r ? r.id : i}`}>
+            <span className={`chip chip-${r.type}`} key={`${r.type}-${'id' in r ? r.id : i}`} title={`@ 引用（${REF_TYPE_LABEL[r.type] ?? r.type}）——随消息带给模型`}>
+              <span className="chip-type">{REF_TYPE_LABEL[r.type] ?? r.type}</span>
               {'id' in r ? r.id : 'name' in r ? r.name : r.path}
               <span className="x" onClick={() => removeRef(i)}>✕</span>
             </span>

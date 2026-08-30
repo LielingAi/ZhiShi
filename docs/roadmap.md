@@ -9,13 +9,14 @@
 
 **缘起（2026-08-30 用户拍板立项，日常使用痛点驱动）**：①设置页不自适应——`.set-nav` 固定 150px、无响应式（窗口拉窄布局挤压）；②会话滚动操作缺失——返回会话不自动定位到最新消息、无一键到顶/到底（Stream 虚拟滚动只有「接近底部时新块吸附」，切换会话后滚动位置不可预期）；③斜杠命令与 @ 引用是高频入口，操作面需要补齐。现状核查：Stream 已有 virtualizer + stick-to-bottom（96px 阈值）+ `scrollToIndex` 两端跳转的现成能力；`/snapshot` 等命令走 slash-args 模态收参（可选参数也必须开一次模态）；@ 面板已四源合一（envs/agents/tools/files）。
 
-- [ ] **设置页自适应**：窄窗口（<1100px 暂定）侧栏导航塌缩为纯图标列；内容区卡片/表单随宽度重排（供应商行按钮组换行不溢出）；弹窗宽度上限随窗口收敛。
-- [ ] **返回会话自动到最后消息**：切环境/切会话返回时 Stream 定位到最新消息（`scrollToIndex(len-1, 'end')`）；用户手动上翻阅读历史时不强拉（吸附语义不变——只有进入时定位一次）。
-- [ ] **一键最上面 / 一键最下面**：Stream 浮动按钮（非底部时显示「↓ 最新」，点击回底并恢复吸附；顶部附近显示「↑ 顶部」；快捷键候选 Home/End——若与输入框焦点冲突则只做按钮）。
-- [ ] **/ 命令操作面（四根因实锤修复）**：①`doSend` 加命令解析——Enter 时输入以 '/' 开头且匹配已知命令 → 解析「命令名 + inline 参数」执行（不匹配才按普通文本发，防误吞自然语言）；②overlay 过滤改为「命令名段」匹配（/intel CVE 按 intel 过滤，参数段不参与）；③Tab 补全——overlay 开着 Tab = 选中当前项（slash 回填命令名继续输参数，@ 同 Enter）；④overlay 选中执行时把光标后剩余文本作为参数传给命令并清空输入框。
-- [ ] **@ 引用可视化**：chip 加类型徽章（env/file/agent/tool 图标或色签）+ 选择后焦点回输入框；@ 面板与 / 面板交互对齐（前缀过滤 + 分组标签统一）；@ 文件路径补全防抖/缓存体验实机核查（1.3.3 既有机制）。
-- [ ] **回归 + 验证**：滚动定位/按钮逻辑抽纯函数单测（model 层）；slash inline 参数解析单测；全量测试 + typecheck + eslint + 构建；实机走查（设置页拉窗、会话往返定位、inline 参数直输）。
+- [x] **设置页自适应**：窄窗口（<1100px 暂定）侧栏导航塌缩为纯图标列；内容区卡片/表单随宽度重排（供应商行按钮组换行不溢出）；弹窗宽度上限随窗口收敛。
+- [x] **返回会话自动到最后消息**：切环境/切会话返回时 Stream 定位到最新消息（`scrollToIndex(len-1, 'end')`）；用户手动上翻阅读历史时不强拉（吸附语义不变——只有进入时定位一次）。
+- [x] **一键最上面 / 一键最下面**：Stream 浮动按钮（非底部时显示「↓ 最新」，点击回底并恢复吸附；顶部附近显示「↑ 顶部」；快捷键候选 Home/End——若与输入框焦点冲突则只做按钮）。
+- [x] **/ 命令操作面（四根因实锤修复）**：①`doSend` 加命令解析——Enter 时输入以 '/' 开头且匹配已知命令 → 解析「命令名 + inline 参数」执行（不匹配才按普通文本发，防误吞自然语言）；②overlay 过滤改为「命令名段」匹配（/intel CVE 按 intel 过滤，参数段不参与）；③Tab 补全——overlay 开着 Tab = 选中当前项（slash 回填命令名继续输参数，@ 同 Enter）；④overlay 选中执行时把光标后剩余文本作为参数传给命令并清空输入框。
+- [x] **@ 引用可视化**：chip 加类型徽章（env/file/agent/tool 图标或色签）+ 选择后焦点回输入框；@ 面板与 / 面板交互对齐（前缀过滤 + 分组标签统一）；@ 文件路径补全防抖/缓存体验实机核查（1.3.3 既有机制）。
+- [x] **回归 + 验证**：滚动定位/按钮逻辑抽纯函数单测（model 层）；slash inline 参数解析单测；全量测试 + typecheck + eslint + 构建；实机走查（设置页拉窗、会话往返定位、inline 参数直输）。
 
+> 实际落地（2026-08-30）：①**/ 命令四根因修复**——a) `doSend` 加命令解析（parseSlashInput + isKnownCommand：匹配已知命令执行、不匹配按文本发 LLM 防误吞）；b) overlay 过滤改按命令名段（slashNameSegment——/intel CVE 按 intel 过滤，参数段不参与）；c) Tab 补全进 useEsc 全局键处理（slash → completeSlashOverlay 回填「/name 」不执行继续输参数，其余 overlay 等同 Enter）；d) overlay 选中执行带 inline 参数（overlay.slashArgs 随命令直发，acceptsInlineArgs 白名单 snapshot/rollback/extract/intel/decide 跳过模态）+ 执行后清空输入框（inputFill 通道）。解析抽 `model/slash-input.ts` 纯函数（三处共用事实源）。②**@ 引用可视化**——chip 类型徽章（env/file/snapshot 三色签 + title 说明「随消息带给模型」）。③**Stream 滚动**——返回会话自动到最后消息（envKey 变化时 scrollToIndex(len-1,'end') 定位一次，上翻不强拉）+ 一键最上/最下浮动按钮（stream-jump-wrap 相对容器，非底部出「↓ 最新」回底恢复吸附、非顶部出「↑ 顶部」）。④**设置页自适应**——<1100px 媒体查询：导航塌缩 44px 纯图标列（font-size:0 藏文字）、行按钮组 wrap 不溢出、set-group 放宽；modal 本已 min(560px,90vw) 无需动。⑤**实机走查（CDP 驱动）**：/intel CVE 面板按名过滤 ✓、Tab 回填「/intel 」✓、/help 直输执行（toast + 清空、不发 LLM）✓、@pw 选中出「环境」徽章 chip ✓、900px 窄窗导航 44px ✓（截图复核按钮组无溢出）。回归：新增 8 单测（slash-input 解析/过滤段/已知命令/inline 白名单）；全量 182 文件 2394 测试绿 + typecheck + eslint + depcruise 480 模块零违规 + 三构建绿。
 > 不做（本版）：GUI 主题系统、Stream 渲染引擎改动（虚拟滚动已够用）、/ 命令自定义扩展、@ 新数据源（现有四源不动）。
 > 验收：全量测试 + 实机走查（窄窗自适应/返回定位/一键头尾/inline 参数）。
 
