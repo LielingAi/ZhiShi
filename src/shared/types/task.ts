@@ -306,12 +306,6 @@ export interface Task {
 
   runtimeConfig?: RuntimeConfigSnapshot;
 
-  /** Per-task MCP enable list override. `undefined` = follow Agent workspace.
-
-   *  `[]` = explicitly run with no MCP servers. PRD 0.2.4 §需求 4 (4a). */
-
-  mcpEnabledServers?: string[];
-
   /** Set only when the task was created from a Thought (v0.1.69 softened: Thought ↔ Task is loosely coupled). */
 
   sourceThoughtId?: string;
@@ -472,10 +466,6 @@ export interface TaskCreateDirectInput {
 
   runtimeConfig?: RuntimeConfigSnapshot;
 
-  /** Per-task MCP enable list override (PRD 0.2.4 §需求 4). */
-
-  mcpEnabledServers?: string[];
-
   sourceThoughtId?: string;
 
   tags?: string[];
@@ -545,10 +535,6 @@ export interface TaskCreateFromAlignmentInput {
   runtime?: RuntimeType;
 
   runtimeConfig?: RuntimeConfigSnapshot;
-
-  /** Per-task MCP enable list override (PRD 0.2.4 §需求 4). */
-
-  mcpEnabledServers?: string[];
 
   sourceThoughtId?: string;
 
@@ -631,14 +617,6 @@ export interface TaskUpdateInput {
    *  apply path leaves untouched. Symmetric with `clearProviderOverride`. */
 
   clearRuntimeOverride?: boolean;
-
-  /** Per-task MCP enable list override. Empty array clears (= follow
-
-   *  Agent); a populated array snapshots the chosen server ids. Rust
-
-   *  `update_task` normalises an empty vec → None on persistence. */
-
-  mcpEnabledServers?: string[];
 
   tags?: string[];
 

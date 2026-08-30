@@ -13,7 +13,6 @@ function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
     workspacePath: '/tmp/workspace',
     permissionMode: 'fullAgency',
     model: 'claude-sonnet-4-6',
-    mcpEnabledServers: ['fs'],
     channels: [],
     runtime: 'codex',
     runtimeConfig: {

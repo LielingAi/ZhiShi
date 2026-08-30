@@ -1,18 +1,48 @@
 {
   "kind": "binary",
   "name": "二进制",
-  "recipes": ["pwn", "pwn-vm", "fuzz", "fuzz-vm", "rev"],
-  "skills": ["binary-exploit", "vuln-triage", "native-code-loop"],
-  "subagents": ["fuzz-runner", "crash-triager", "vuln-hunter", "hypothesis-tester", "critic"],
+  "recipes": [
+    "pwn",
+    "pwn-vm",
+    "fuzz",
+    "fuzz-vm",
+    "rev"
+  ],
+  "subagents": [
+    "fuzz-runner",
+    "crash-triager",
+    "vuln-hunter",
+    "hypothesis-tester",
+    "critic"
+  ],
   "signals": [
-    { "re": "ROP|shellcode|ret2|栈溢出|堆溢出|use-after-free|UAF|格式化字符串", "label": "利用原语" },
-    { "re": "checksec|NX|Canary|PIE|RELRO|cyclic|ROPgadget|pwntools|pwndbg|gdb|ropper", "label": "利用工具与方法" },
-    { "re": "0day|1day|漏洞复现|exploit|exp(?![a-z])|利用原语|稳定利用|武器化|拿 flag|打靶场", "label": "任务性质" }
+    {
+      "re": "ROP|shellcode|ret2|栈溢出|堆溢出|use-after-free|UAF|格式化字符串",
+      "label": "利用原语"
+    },
+    {
+      "re": "checksec|NX|Canary|PIE|RELRO|cyclic|ROPgadget|pwntools|pwndbg|gdb|ropper",
+      "label": "利用工具与方法"
+    },
+    {
+      "re": "0day|1day|漏洞复现|exploit|exp(?![a-z])|利用原语|稳定利用|武器化|拿 flag|打靶场",
+      "label": "任务性质"
+    }
   ],
   "auxSignals": [
-    { "re": "(SIG(?:SEGV|ABRT|BUS|ILL|FPE|TRAP)(?:[^\\n]*?at\\s*0x[0-9a-fA-F]+)?)", "label": "崩溃信号", "appendMatch": true },
-    { "re": "core dumped", "label": "core dump" },
-    { "re": "flag\\{[^}]*\\}", "label": "flag 命中" }
+    {
+      "re": "(SIG(?:SEGV|ABRT|BUS|ILL|FPE|TRAP)(?:[^\\n]*?at\\s*0x[0-9a-fA-F]+)?)",
+      "label": "崩溃信号",
+      "appendMatch": true
+    },
+    {
+      "re": "core dumped",
+      "label": "core dump"
+    },
+    {
+      "re": "flag\\{[^}]*\\}",
+      "label": "flag 命中"
+    }
   ],
   "acceptance": [
     "ret2win 全流程 dogfood(环境内编译→溢出分析→exp→flag)",

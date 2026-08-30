@@ -101,8 +101,6 @@ export interface SessionMetadata {
     model?: string;
     /** Snapshot permission mode. Undefined → fallback to agent.permissionMode. */
     permissionMode?: string;
-    /** Snapshot MCP enabled list. Undefined → fallback to agent.mcpEnabledServers. */
-    mcpEnabledServers?: string[];
     /** Snapshot providerId. Undefined → fallback to agent.providerId. */
     providerId?: string;
     /** Snapshot provider env JSON (credentials). Undefined → fallback to agent.providerEnvJson. */

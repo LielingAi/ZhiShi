@@ -32,7 +32,6 @@ export type OwnedSessionSnapshot = Pick<
   | 'runtime'
   | 'model'
   | 'permissionMode'
-  | 'mcpEnabledServers'
   | 'providerId'
   | 'providerEnvJson'
 >;
@@ -73,7 +72,6 @@ export function snapshotForOwnedSession(
     runtime,
     model: isExternal ? agent.runtimeConfig?.model : agent.model,
     permissionMode: isExternal ? agent.runtimeConfig?.permissionMode : agent.permissionMode,
-    mcpEnabledServers: agent.mcpEnabledServers ? [...agent.mcpEnabledServers] : undefined,
     providerId: agent.providerId,
     providerEnvJson: agent.providerEnvJson,
     configSnapshotAt: new Date().toISOString(),

@@ -419,8 +419,8 @@ describe('buildResearchMemorySection — 按会话域过滤（1.2.4）', () => {
 
 describe('resolveSessionResearchDomain（1.2.4 域过滤信号源）', () => {
   const MANIFESTS = [
-    { kind: 'binary', name: '二进制', recipes: ['pwn', 'pwn-vm', 'fuzz'], skills: [], subagents: [], signals: [], acceptance: [] },
-    { kind: 'pentest', name: '渗透', recipes: ['pentest'], skills: [], subagents: [], signals: [], acceptance: [] },
+    { kind: 'binary', name: '二进制', recipes: ['pwn', 'pwn-vm', 'fuzz'], subagents: [], signals: [], acceptance: [] },
+    { kind: 'pentest', name: '渗透', recipes: ['pentest'], subagents: [], signals: [], acceptance: [] },
   ];
 
   it('host 现场 / 数据缺失 → undefined（降级全量）', () => {
@@ -580,13 +580,15 @@ describe('buildSecurityKernelSection — 决策点语义（1.5.0 触发权归人
 });
 
 describe('buildSecurityKernelSection — 1.5.0 触发权归人（kernel 瘦身）', () => {
-  it('四命令指引进内核（/expert /intel /archive /decide）；「人请求的」上下文块口径', () => {
+  it('研究命令指引进内核（/intel /archive /decide）；1.5.1 起 /expert 退出（专家知识自动注入）', () => {
     const section = buildSecurityKernelSection();
-    expect(section).toContain('/expert');
+    // 1.5.1：/expert 斜杠命令随注入面瘦身删除——kernel 不再指引它，
+    // 改为声明专家知识由 harness 按焦点自动注入。
+    expect(section).not.toContain('/expert');
+    expect(section).toContain('专家知识自动注入');
     expect(section).toContain('/intel');
     expect(section).toContain('/archive');
     expect(section).toContain('/decide');
-    expect(section).toContain('人请求的');
     // 档案纪律骨架保留（反证/终态是 1.4.x 硬约束，不随瘦身丢）。
     expect(section).toContain('against');
     expect(section).toContain('resolve');
@@ -647,8 +649,8 @@ describe('buildSecurityCapabilitiesSection — 截断顺序（1.2.6）', () => {
 
 describe('buildSecurityCapabilitiesSection — 能力清单段（1.4.3 归位：工具面不按研究域收窄）', () => {
   const CAPS_MANIFESTS: DomainManifest[] = [
-    { kind: 'binary', name: '二进制', recipes: ['pwn', 'fuzz'], skills: [], subagents: [], signals: [], acceptance: [] },
-    { kind: 'pentest', name: '渗透', recipes: ['pentest'], skills: [], subagents: [], signals: [], acceptance: [] },
+    { kind: 'binary', name: '二进制', recipes: ['pwn', 'fuzz'], subagents: [], signals: [], acceptance: [] },
+    { kind: 'pentest', name: '渗透', recipes: ['pentest'], subagents: [], signals: [], acceptance: [] },
   ];
   const PWN_ENV: EnvironmentEntry = { id: 'pwn-box', kind: 'docker', container: 'zhishi-pwn-a3f2', recipeId: 'pwn', createdAt: '' };
   const PENTEST_ENV: EnvironmentEntry = { id: 'pt-box', kind: 'ssh', host: '10.10.0.9', user: 'root', recipeId: 'pentest', createdAt: '' };
@@ -694,7 +696,7 @@ describe('buildSecurityCapabilitiesSection — 能力清单段（1.4.3 归位：
 describe('resolveSessionDomain（1.2.7 配方默认 + 信号动态修正）', () => {
   const SIGNAL_MANIFESTS: DomainManifest[] = [
     {
-      kind: 'binary', name: '二进制', recipes: ['pwn', 'pwn-vm', 'fuzz'], skills: [], subagents: [],
+      kind: 'binary', name: '二进制', recipes: ['pwn', 'pwn-vm', 'fuzz'], subagents: [],
       signals: [
         { re: 'SIGSEGV', label: '崩溃信号' },
         { re: 'core dumped', label: 'core dump' },
@@ -702,7 +704,7 @@ describe('resolveSessionDomain（1.2.7 配方默认 + 信号动态修正）', ()
       acceptance: [],
     },
     {
-      kind: 'pentest', name: '渗透', recipes: ['pentest'], skills: [], subagents: [],
+      kind: 'pentest', name: '渗透', recipes: ['pentest'], subagents: [],
       signals: [
         { re: 'session \\d+ opened', label: '会话已开' },
         { re: '\\[\\+\\]', label: '成功标记' },
@@ -811,8 +813,8 @@ describe('buildSystemPromptAppend — securityResearchDomain 透传（1.4.3 归�
 
 describe('resolveSessionResearchDomain — 能力集合基线优先（1.3.7 场景 3）', () => {
   const MANIFESTS: DomainManifest[] = [
-    { kind: 'binary', name: '二进制', recipes: ['pwn', 'fuzz'], skills: [], subagents: [], signals: [], acceptance: [] },
-    { kind: 'pentest', name: '渗透', recipes: ['pentest'], skills: [], subagents: [], signals: [], acceptance: [] },
+    { kind: 'binary', name: '二进制', recipes: ['pwn', 'fuzz'], subagents: [], signals: [], acceptance: [] },
+    { kind: 'pentest', name: '渗透', recipes: ['pentest'], subagents: [], signals: [], acceptance: [] },
   ];
   // 多能力环境：绑定 pwn（binary 域），探测出 pentest 工具 → 集合 [binary, pentest]。
   const MULTI_ENV: EnvironmentEntry = {
@@ -855,19 +857,19 @@ describe('resolveSessionDomain — 1.4.3 归位：域只由任务内容判定，
   // 1.4.3：signals 重定义为内容特征（任务性质/方法/工具），产物指纹进 auxSignals 不参与裁决。
   const SIGNAL_MANIFESTS: DomainManifest[] = [
     {
-      kind: 'binary', name: '二进制', recipes: ['pwn', 'fuzz'], skills: [], subagents: [],
+      kind: 'binary', name: '二进制', recipes: ['pwn', 'fuzz'], subagents: [],
       signals: [{ re: 'ROP|pwntools|checksec', label: '利用方法' }],
       auxSignals: [{ re: 'SIGSEGV', label: '崩溃信号' }],
       acceptance: [],
     },
     {
-      kind: 'pentest', name: '渗透', recipes: ['pentest'], skills: [], subagents: [],
+      kind: 'pentest', name: '渗透', recipes: ['pentest'], subagents: [],
       signals: [{ re: 'nmap|sqlmap|拿 shell', label: '渗透方法' }],
       auxSignals: [{ re: 'session \\d+ opened', label: '会话已开' }],
       acceptance: [],
     },
     {
-      kind: 'whitebox', name: '白盒审计', recipes: ['code-audit'], skills: [], subagents: [],
+      kind: 'whitebox', name: '白盒审计', recipes: ['code-audit'], subagents: [],
       signals: [{ re: '审计|opengrep|数据流', label: '审计方法' }],
       acceptance: [],
     },
@@ -916,8 +918,8 @@ describe('resolveSessionDomain — 1.4.3 归位：域只由任务内容判定，
 
 describe('buildSecurityCapabilitiesSection — 能力集合呈现（1.3.7 场景 3）', () => {
   const CAP_MANIFESTS: DomainManifest[] = [
-    { kind: 'binary', name: '二进制', recipes: ['pwn', 'fuzz'], skills: [], subagents: [], signals: [], acceptance: [] },
-    { kind: 'pentest', name: '渗透', recipes: ['pentest'], skills: [], subagents: [], signals: [], acceptance: [] },
+    { kind: 'binary', name: '二进制', recipes: ['pwn', 'fuzz'], subagents: [], signals: [], acceptance: [] },
+    { kind: 'pentest', name: '渗透', recipes: ['pentest'], subagents: [], signals: [], acceptance: [] },
   ];
   const MULTI_ENV: EnvironmentEntry = {
     id: 'pwn-box', kind: 'docker', container: 'zhishi-pwn-a3f2', recipeId: 'pwn',

@@ -14,7 +14,6 @@ export interface ResolvedSessionConfig {
   runtime: RuntimeType;
   model: string | undefined;
   permissionMode: string | undefined;
-  mcpEnabledServers: string[] | undefined;
   providerId: string | undefined;
   providerEnvJson: string | undefined;
 }
@@ -75,7 +74,6 @@ export function resolveSessionConfig(
     runtime,
     model,
     permissionMode: meta?.permissionMode ?? (runtime === 'builtin' ? agent.permissionMode : agent.runtimeConfig?.permissionMode),
-    mcpEnabledServers: meta?.mcpEnabledServers ?? agent.mcpEnabledServers,
     providerId: meta?.providerId ?? agent.providerId,
     providerEnvJson: meta?.providerEnvJson ?? agent.providerEnvJson,
   };

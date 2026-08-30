@@ -40,7 +40,7 @@ function recipe(id: string, tools: string[], valid = true): EnvironmentRecipe {
 }
 
 function manifest(kind: string, recipes: string[]): DomainManifest {
-  return { kind, name: kind, recipes, skills: [], subagents: [], signals: [], acceptance: [] };
+  return { kind, name: kind, recipes, subagents: [], signals: [], acceptance: [] };
 }
 
 const RECIPES = [

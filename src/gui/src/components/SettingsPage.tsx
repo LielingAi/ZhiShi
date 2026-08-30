@@ -1,8 +1,6 @@
 /**
  * 设置页（1.3.1 ⑥）：页签接真——
  *   模型     model/list + model/set-key（隐藏输入模态）+ set-default + verify
- *   Skills   skill/list + skill/enable|disable + /api/skill/import-folder
- *   MCP      1.3.5：mcp/list + mcp/list-status + mcp/enable|disable + mcp/reload
  *   情报     intel/status + intel/update（mode 选择）+
  *            intel/config-update（1.3.2：配置部分更新，只改传入字段）
  *   专家知识 expert/search + expert/list + expert/add（JSON/YAML 导入）+
@@ -17,12 +15,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type React from 'react';
 
-import { open } from '@tauri-apps/plugin-dialog';
-
 import { GUI_VERSION } from '../../../shared/constants';
 import { getSettingsClient, useGuiStore } from '../store/useGuiStore';
 import * as api from '../client/api';
-import type { ExpertDraft, ExpertSummary, ModelProvider, ResearchEventRow, SkillEntity } from '../client/api';
+import type { ExpertDraft, ExpertSummary, ModelProvider, ResearchEventRow } from '../client/api';
 import { buildCustomProviderPayload } from '../model/custom-provider';
 import {
   buildIntelConfigPatch,
@@ -33,16 +29,10 @@ import {
   type IntelMode,
   type IntelResolvedConfig,
 } from '../model/intel-config';
-import { isTauriRuntime } from '../model/tauri-env';
 import { StateHint } from './StateHint';
 
 const NAV = [
   { id: 'model', icon: '◇', label: '模型', disabled: false },
-  { id: 'skills', icon: '▤', label: 'Skills', disabled: false },
-  // 1.3.6：MCP 设计未定——置灰占位（页签不可点，McpTab 显示占位文案）。
-  // 1.3.5 的实现与单测保留（model/mcp.ts + mcp.test.ts），后续启用只改
-  // 此处 disabled 与 McpTab 占位。
-  { id: 'mcp', icon: '⇄', label: 'MCP', disabled: true },
   { id: 'intel', icon: '◈', label: '情报', disabled: false },
   { id: 'expert', icon: '◇', label: '专家知识', disabled: false },
   { id: 'research', icon: '✎', label: '研究记录', disabled: false },
@@ -356,179 +346,6 @@ function KeyConfigModal({
   }
 }
 
-// ── Skills 页签 ───────────────────────────────────────────────────────
-
-function SkillsTab(): React.JSX.Element {
-  const [skills, setSkills] = useState<SkillEntity[]>([]);
-  const [importOpen, setImportOpen] = useState(false);
-  const showToast = useGuiStore((s) => s.showToast);
-
-  const reload = useCallback(async () => {
-    const c = getSettingsClient();
-    if (!c) return;
-    try {
-      setSkills(await api.fetchSkillList(c));
-    } catch {
-      // 静默。
-    }
-  }, []);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  return (
-    <div className="set-group">
-      <div className="sg-title">用户级技能 · ~/.zhishi/skills/</div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-        <span className="sr-desc" style={{ alignSelf: 'center' }}>
-          共 {skills.length} 个 · skill enable/disable 即时生效
-        </span>
-        <button className="btn small" style={{ marginLeft: 'auto' }} onClick={() => setImportOpen(true)}>
-          导入技能
-        </button>
-      </div>
-      {skills.length === 0 && <StateHint kind="empty" text="无用户级技能" hint="未连接 sidecar 或 ~/.zhishi/skills/ 为空" />}
-      {skills.map((sk) => (
-        <div className="set-row" key={sk.folderName ?? sk.name}>
-          <div>
-            <div className="sr-label">{sk.name}</div>
-            <div className="sr-desc">{sk.description}</div>
-          </div>
-          <div className="sr-control">
-            <span className={`sr-status ${sk.enabled ? 'ok' : ''}`}>{sk.enabled ? '启用' : '禁用'}</span>
-            <button
-              className="btn small"
-              onClick={async () => {
-                const c = getSettingsClient();
-                if (!c) return;
-                const res = await api.skillToggle(c, sk.folderName ?? sk.name, !sk.enabled);
-                showToast(res.success ? `✓ ${sk.name} 已${res.data?.enabled === false ? '禁用' : '启用'}` : `失败：${res.error ?? '未知错误'}`);
-                void reload();
-              }}
-            >
-              {sk.enabled ? '禁用' : '启用'}
-            </button>
-          </div>
-        </div>
-      ))}
-      {importOpen && <SkillImportModal onClose={() => setImportOpen(false)} onDone={() => { setImportOpen(false); void reload(); }} />}
-    </div>
-  );
-}
-
-function SkillImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }): React.JSX.Element {
-  const [path, setPath] = useState('');
-  const [err, setErr] = useState('');
-  const [busy, setBusy] = useState(false);
-  const showToast = useGuiStore((s) => s.showToast);
-  const dirInputRef = useRef<HTMLInputElement>(null);
-
-  /** 1.3.6：Tauri 走系统目录选择器（dialog），浏览器回落 webkitdirectory。 */
-  const pickDir = async () => {
-    if (isTauriRuntime()) {
-      const picked = await open({
-        directory: true,
-        multiple: false,
-        title: '选择技能目录（需含 SKILL.md）',
-      });
-      if (typeof picked === 'string') {
-        setPath(picked);
-        setErr('');
-      }
-      return;
-    }
-    dirInputRef.current?.click();
-  };
-
-  return (
-    <div className="modal-backdrop open">
-      <div className="modal" style={{ width: 'min(460px, 90vw)' }}>
-        <div className="m-head">
-          <span className="m-title">导入技能</span>
-          <span className="m-sub">目录需含 SKILL.md（frontmatter 声明 name/description）</span>
-          <button className="m-close" onClick={onClose}>✕</button>
-        </div>
-        <div className="m-body">
-          <div className="f-label">技能目录路径（/api/skill/import-folder）</div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input
-              className="f-input"
-              placeholder="D:\skills\my-recon"
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !busy) void doImport();
-              }}
-            />
-            <button className="btn" style={{ flexShrink: 0 }} onClick={() => void pickDir()}>
-              选择目录…
-            </button>
-          </div>
-          <input
-            ref={dirInputRef}
-            type="file"
-            style={{ display: 'none' }}
-            {...({ webkitdirectory: '' } as unknown as React.InputHTMLAttributes<HTMLInputElement>)}
-            onChange={() => {
-              // 浏览器拿不到绝对路径（webkitRelativePath 是相对值）——引导 CLI。
-              showToast('浏览器无法取得目录绝对路径——请手输路径，或走 CLI：zhishi skill import <目录>');
-            }}
-          />
-          {err && <div className="m-error">✗ {err}</div>}
-          <div className="m-actions">
-            <button className="btn" onClick={onClose}>取消</button>
-            <button className="btn primary" disabled={busy} onClick={() => void doImport()}>导入</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  async function doImport() {
-    if (!path.trim()) {
-      setErr('目录路径为空');
-      return;
-    }
-    setBusy(true);
-    try {
-      const c = getSettingsClient();
-      if (!c) {
-        setErr('未连接 sidecar');
-        return;
-      }
-      const res = await api.skillImportFolder(c, path.trim());
-      if (!res.success) {
-        setErr(res.error ?? '导入失败');
-        return;
-      }
-      showToast('✓ 技能已导入');
-      onDone();
-    } finally {
-      setBusy(false);
-    }
-  }
-}
-
-// ── MCP 页签（1.3.6：置灰占位——设计未定） ──────────────────────────────
-// 1.3.5 的接线实现（mcp/list + list-status + enable|disable + reload）与
-// 合成逻辑保留在 model/mcp.ts（+ mcp.test.ts 单测）——后续启用只需恢复
-// 本页签接线 + NAV 的 disabled 位，不动 model 层。
-
-function McpTab(): React.JSX.Element {
-  return (
-    <div className="set-group">
-      <div className="sg-title">MCP 工具服务器</div>
-      <StateHint
-        kind="empty"
-        text="设计待定"
-        hint="MCP 接入方案尚未定稿（桥接/权限/启停交互待设计）。列表与启停实现已保留在 model/mcp.ts，后续版本恢复接线即启用。"
-      />
-    </div>
-  );
-}
-
-// ── 情报页签 ──────────────────────────────────────────────────────────
 
 function IntelTab(): React.JSX.Element {
   const [status, setStatus] = useState<Record<string, unknown> | null>(null);
@@ -1111,8 +928,6 @@ export function SettingsPage(): React.JSX.Element {
         </div>
         <div className="set-content">
           {pg === 'model' && <ModelTab />}
-          {pg === 'skills' && <SkillsTab />}
-          {pg === 'mcp' && <McpTab />}
           {pg === 'intel' && <IntelTab />}
           {pg === 'expert' && <ExpertTab />}
           {pg === 'research' && <ResearchTab />}

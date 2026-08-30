@@ -31,7 +31,6 @@ import { resolveSessionDomain, type SecurityCapabilitiesData } from '../system-p
 import { filterAgentsByDomain } from '../agents/bundled-agents';
 import { compactBySegments, estimateMessagesTokens, segmentContext } from './context-manager';
 import { makeCompactionTransform } from './compaction';
-import { filterSkillsByDomain, type SkillPack } from './skills';
 
 // ---------------------------------------------------------------------------
 // 消息工厂(贴近真实 env_exec 交互形态)
@@ -287,7 +286,7 @@ describe('S5 当前数据误判压缩的边界', () => {
 // ---------------------------------------------------------------------------
 
 describe('S6 域/相位误判下的实际损失', () => {
-  it('域误判(二进制会话混入大量 CWE 文本)→ skills/子代理收窄到错域,但通用保留、压缩存活不受影响', async () => {
+  it('域误判(二进制会话混入大量 CWE 文本)→ 子代理收窄到错域,但通用保留、压缩存活不受影响', async () => {
     const msgs: AgentMessage[] = [user('分析这个 crash 样本')];
     msgs.push(...binaryCrashTurn('b0'));
     // 误判源:正文中大量 CWE 引用(比如粘贴了一份审计报告)
@@ -297,18 +296,10 @@ describe('S6 域/相位误判下的实际损失', () => {
     const domain = resolveSessionDomain(msgs, HOST_CAPS, MANIFESTS);
     console.log(`[S6] 域判定(二进制意图 + CWE 刷屏): ${domain}`);
 
-    const skills: SkillPack[] = [
-      { id: 'binary-exploit', name: 'binary-exploit', description: '', body: '', source: 'bundled' },
-      { id: 'pentest', name: 'pentest', description: '', body: '', source: 'bundled' },
-      { id: 'task-alignment', name: 'task-alignment', description: '', body: '', source: 'bundled' },
-    ];
-    const kept = filterSkillsByDomain(skills, domain, MANIFESTS).map((s) => s.id);
     const agents = filterAgentsByDomain(
       [{ name: 'crash-triager' }, { name: 'vuln-hunter' }, { name: 'critic' }], domain, MANIFESTS,
     ).map((a) => a.name);
-    console.log(`[S6] 误判为 ${domain} 后: skills 保留=${kept.join('/')} 子代理=${agents.join('/')}`);
-    // 误判的实测代价:binary 专属被滤掉,但通用(task-alignment)保留
-    expect(kept).toContain('task-alignment');
+    console.log(`[S6] 误判为 ${domain} 后: 子代理=${agents.join('/')}`);
     // 压缩存活与域判定解耦:crash 事实仍可压缩后得
     const { out } = await runTransform(msgs, 12_000);
     expect(allText(out)).toContain('SIGSEGV');

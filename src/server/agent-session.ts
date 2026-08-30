@@ -41,7 +41,7 @@ import {
 import { join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import type { McpServerDefinition, ModelAliases } from '../shared/config-types';
+import type { ModelAliases } from '../shared/config-types';
 import { getZhiShiDataDir } from './utils/app-dirs';
 import { ensureDirSync, isDirEntry } from './utils/fs-utils';
 import { isSkillBlockedOnPlatform } from './utils/platform';
@@ -81,9 +81,6 @@ export type AgentDefinition = {
   tools?: string[];
   model?: string;
 };
-
-/** 保留常量名(语义已变:M4c 无 SDK,这些名字仅是历史保留字,防止旧配置冲突)。 */
-export const SDK_RESERVED_MCP_NAMES = ['claude-in-chrome', 'computer-use'];
 
 // ---------------------------------------------------------------------------
 // Data dir helper
@@ -171,31 +168,10 @@ export function getInteractionScenario(): InteractionScenario {
 }
 
 // ---------------------------------------------------------------------------
-// MCP servers / sub-agent definitions(进程内配置镜像)
+// Sub-agent definitions(进程内配置镜像)
 // ---------------------------------------------------------------------------
 
-let currentMcpServers: McpServerDefinition[] | null = null;
 let currentAgentDefinitions: Record<string, AgentDefinition> | null = null;
-
-export function setMcpServers(servers: McpServerDefinition[]): void {
-  currentMcpServers = servers;
-}
-
-export function getMcpServers(): McpServerDefinition[] | null {
-  return currentMcpServers;
-}
-
-export function getCurrentMcpServers(): readonly McpServerDefinition[] | null {
-  return currentMcpServers;
-}
-
-/**
- * M4c 裁留:MCP override 只剩「写入进程镜像」——原实现要重启 SDK 会话并
- * 等待 MCP ready;pi 引擎不挂 MCP,无运行时同步对象。
- */
-export async function applyMcpOverrideAndAwaitReady(servers: McpServerDefinition[]): Promise<void> {
-  currentMcpServers = servers;
-}
 
 export function setAgents(agents: Record<string, AgentDefinition>): void {
   currentAgentDefinitions = agents;
@@ -369,7 +345,7 @@ export function getAgentDir(): string {
 }
 
 /**
- * M4c 瘦版初始化:设置工作区、生成会话标识、自解析 provider/model/MCP
+ * M4c 瘦版初始化:设置工作区、生成会话标识、自解析 provider/model
  * 配置镜像(供 distill/cron/admin 读取),不做任何 SDK 会话预热。
  * 聊天会话的初始化由 loop/chat-engine 的 initPiChatEngine 负责(调用方
  * 在 index.ts 启动序列里紧邻其后调用)。
@@ -383,16 +359,12 @@ export async function initializeAgent(
   hasInitialPrompt = Boolean(initialPrompt && initialPrompt.trim());
   activeSessionId = initialSessionId ?? randomUUID();
 
-  // 工作区配置自解析(provider/model/MCP 镜像;会话元数据快照优先的语义
+  // 工作区配置自解析(provider/model 镜像;会话元数据快照优先的语义
   // 在 resolveWorkspaceConfig 内)。失败不致命——pi 引擎每次 send 自行解析。
   try {
     const { resolveWorkspaceConfig } = await import('./utils/admin-config');
     const initMeta = initialSessionId ? getSessionMetadata(initialSessionId) : null;
-    const resolved = resolveWorkspaceConfig(agentDir, initMeta, { includeMcp: true });
-    if (resolved.mcpServers.length > 0) {
-      currentMcpServers = resolved.mcpServers;
-      console.log(`[agent] self-resolved ${resolved.mcpServers.length} MCP server(s)`);
-    }
+    const resolved = resolveWorkspaceConfig(agentDir, initMeta);
     if (resolved.providerEnv) {
       currentProviderEnv = resolved.providerEnv;
       console.log(`[agent] self-resolved provider: ${resolved.providerEnv.baseUrl ?? 'anthropic'}`);

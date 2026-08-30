@@ -111,15 +111,19 @@ vi.mock('./bg-registry', () => ({
   getBgRegistry: () => ({ list: () => bgRegistryListMock(), remove: () => {} }),
 }));
 
-// 1.2.7(§三)域接线断言:skills 采集走真实实现,spy 记录入参(domain)。
-const collectEnabledSkillsSpy = vi.fn();
-vi.mock('./skills', async (importOriginal) => {
-  const orig = await importOriginal<typeof import('./skills')>();
+// 1.2.7(§三)域接线断言:1.5.1 skills 注入层已删——改钉 domain 的现存消费点
+// (buildSystemPromptAppend 的 securityResearchDomain 入参),spy 记录入参。
+const systemPromptAppendSpy = vi.fn();
+vi.mock('../system-prompt', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../system-prompt')>();
   return {
     ...orig,
-    collectEnabledSkills: (opts?: Parameters<typeof orig.collectEnabledSkills>[0]) => {
-      collectEnabledSkillsSpy(opts);
-      return orig.collectEnabledSkills(opts);
+    buildSystemPromptAppend: (
+      scenario: Parameters<typeof orig.buildSystemPromptAppend>[0],
+      opts?: Parameters<typeof orig.buildSystemPromptAppend>[1],
+    ) => {
+      systemPromptAppendSpy(opts);
+      return orig.buildSystemPromptAppend(scenario, opts);
     },
   };
 });
@@ -1446,13 +1450,13 @@ describe('1.2.7 溢出兜底(§四:isContextOverflow → 强制压缩重试,限 
   });
 });
 
-describe('1.2.7 域边界接线(§三:配方默认 + 内容信号动态修正 → skills 分域)', () => {
-  it('锚定 pwn-vm(配方默认)→ binary 域,collectEnabledSkills 按域采集', async () => {
+describe('1.2.7 域边界接线(§三:配方默认 + 内容信号动态修正 → 提示词域入参)', () => {
+  it('锚定 pwn-vm(配方默认)→ binary 域,buildSystemPromptAppend 按域注入', async () => {
     await sendPiChatMessage({ text: 'q' });
     await waitTurnSettled();
-    expect(collectEnabledSkillsSpy).toHaveBeenCalled();
-    const arg = collectEnabledSkillsSpy.mock.calls.at(-1)![0] as { domain?: string };
-    expect(arg.domain).toBe('binary');
+    expect(systemPromptAppendSpy).toHaveBeenCalled();
+    const arg = systemPromptAppendSpy.mock.calls.at(-1)![0] as { securityResearchDomain?: string };
+    expect(arg.securityResearchDomain).toBe('binary');
   });
 
   it('内容信号强改判:binary 基线 + pentest 内容信号 ≥3 → pentest 域', async () => {
@@ -1468,8 +1472,8 @@ describe('1.2.7 域边界接线(§三:配方默认 + 内容信号动态修正 �
     });
     await sendPiChatMessage({ text: 'q' });
     await waitTurnSettled();
-    const arg = collectEnabledSkillsSpy.mock.calls.at(-1)![0] as { domain?: string };
-    expect(arg.domain).toBe('pentest');
+    const arg = systemPromptAppendSpy.mock.calls.at(-1)![0] as { securityResearchDomain?: string };
+    expect(arg.securityResearchDomain).toBe('pentest');
   });
 
   it('host 现场无基线且无信号 → undefined(全量注入,宁多勿缺)', async () => {
@@ -1479,8 +1483,8 @@ describe('1.2.7 域边界接线(§三:配方默认 + 内容信号动态修正 �
     });
     await sendPiChatMessage({ text: 'q' });
     await waitTurnSettled();
-    const arg = collectEnabledSkillsSpy.mock.calls.at(-1)![0] as { domain?: string };
-    expect(arg.domain).toBeUndefined();
+    const arg = systemPromptAppendSpy.mock.calls.at(-1)![0] as { securityResearchDomain?: string };
+    expect(arg.securityResearchDomain).toBeUndefined();
   });
 });
 

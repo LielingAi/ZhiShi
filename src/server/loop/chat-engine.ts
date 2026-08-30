@@ -102,7 +102,6 @@ import { getInteractionScenario, setActiveSessionId } from '../agent-session';
 import { makeBoundaryHook } from './boundary';
 import { makeCompactionTransform } from './compaction';
 import { runLoop } from './loop';
-import { buildMcpTools } from './mcp-bridge';
 import { makeOutputGuardHook } from './output-guard';
 import { parseChatRefs, resolveChatRefs } from './refs';
 import { firePostTurnTitleHook } from '../turn-hooks';
@@ -118,9 +117,9 @@ import {
 } from './session';
 import { mapLoopEventToSse, toolResultText, type SseOut } from './sse-adapter';
 import { createDelegateTaskTool, DELEGATE_TASK_TOOL_NAME } from './subagent';
-import { collectEnabledSkills } from './skills';
 import { createEnvBgTool, createEnvExecTool, createResearchLogTool, createArchiveTool, ENV_EXEC_TOOL_NAME, RESEARCH_LOG_TOOL_NAME, RESEARCH_ARCHIVE_TOOL_NAME } from './tools';
 import { loadArchive, type ArchiveSnapshot } from './archive';
+import { collectExpertInjection, lastUserTextOf } from './expert-inject';
 import { createIntelSearchTool, INTEL_SEARCH_TOOL_NAME } from './intel';
 import { createExpertDraftTool, createExpertSearchTool, EXPERT_DRAFT_TOOL_NAME, EXPERT_SEARCH_TOOL_NAME } from './expert';
 import { createDecisionTool, formatDecisionInjectionContent, REQUEST_DECISION_TOOL_NAME, type DecisionMeta } from './decision';
@@ -708,8 +707,8 @@ class ChatEngine {
           : undefined;
       // 1.2.7 域边界：配方默认 + 内容信号动态修正；无可靠信号 → undefined
       // 降级全量（域过滤是预算优化，不是正确性闸门，宁多勿缺）。domain 同时
-      // 驱动 skills 分域注入、能力清单分域收窄、子代理分域（buildTurnStack）
-      // 与研究记忆过滤（1.2.4）。
+      // 驱动能力清单分域收窄、子代理分域（buildTurnStack）与研究记忆过滤
+      // （1.2.4）。
       const domain = precomputed
         ? precomputed.domain
         : caps ? resolveSessionDomain(historyMessages, caps) : undefined;
@@ -725,16 +724,27 @@ class ChatEngine {
           console.warn('[pi-engine] 研究档案装载失败,按零注入:', err instanceof Error ? err.message : String(err));
         }
       }
+      // 1.5.1 专家知识邻域投影（唯一注入路径）：以档案焦点（pending H#/open
+      // Q#）+ 最近用户消息为锚，harness 确定性检索注入——零注入语义、会话
+      // 内去重、透明标注。security/auto-run 同规则（驱动文本即 harness 载体）。
+      const expertKnowledge = scenario.type === 'security' || scenario.type === 'auto-run'
+        ? collectExpertInjection({
+            archive: researchArchive,
+            lastUserText: lastUserTextOf(historyMessages),
+            domain,
+            sessionId: archiveSession,
+          })
+        : undefined;
       const append = buildSystemPromptAppend(scenario, {
         runtime: 'builtin',
         distilledMemory: loadDistilledMemoryForPrompt(),
-        skills: collectEnabledSkills({ domain }),
         securityCapabilities: caps,
         securityResearchMemory: scenario.type === 'security'
           ? collectResearchMemory()
           : undefined,
         securityResearchDomain: domain,
         researchArchive,
+        expertKnowledge,
         // 1.2.6 批次 C：pi 无宿主 shell——CLI 附录只保留不依赖 shell 的段
         // （cron + aiCanExit 时的 [CRON_TASK_COMPLETE] 自退标记），task CRUD /
         // memory search / panel 等依赖 zhishi CLI 的段不注入（cliHostShell:false）。
@@ -1095,13 +1105,8 @@ class ChatEngine {
           : {}),
       }));
     }
-    // M4d — MCP 工具(宿主侧能力,不依赖 env)。tools 数组每 turn 重建,
-    // mcp/reload 重连后下一 turn 自动用新工具集(热重载零成本)。
-    const mcpTools = buildMcpTools();
-    tools.push(...mcpTools);
-    // 结构性白名单同步扩进 MCP 工具名——否则 boundary 会把真实 MCP 工具
-    // 当幻觉工具 deny(缺口埋点逻辑同样据此区分)。
-    const effectiveToolNames = [...toolNames, ...mcpTools.map((t) => t.name)];
+    // 结构性白名单——boundary 据此把幻觉工具(白名单外)拦下并记入缺口埋点。
+    const effectiveToolNames = toolNames;
     const baseBoundary = makeBoundaryHook(env, { allowedTools: effectiveToolNames });
     // 包装 boundary:记录幻觉工具(白名单外被拦)供 turn 完成点的缺口埋点。
     const blockedToolNames: string[] = [];

@@ -28,7 +28,7 @@
 
 
 
-- `src/server/` — Node.js 后端 Sidecar（esbuild 打包成 `server-dist.js`）。入口 `index.ts` 只做启动/路由分发（1.1.7 绞杀拆分后 ~3.8k 行）；崩溃日志 `crash-log.ts`、skills 配置 `skills-config.ts`、cron 路由 `cron/`、sessions/mcp 路由 `routes/`、admin-api.ts admin handler 包、`report/` 报告导出（1.2.0：骨架组装 + 证据回收 + LLM 填肉 + 落盘，设计见 `docs/design/1.2.0-design.md`）
+- `src/server/` — Node.js 后端 Sidecar（esbuild 打包成 `server-dist.js`）。入口 `index.ts` 只做启动/路由分发（1.1.7 绞杀拆分后 ~3.8k 行）；崩溃日志 `crash-log.ts`、环境配方 seed `skills-config.ts`、cron 路由 `cron/`、sessions 路由 `routes/`、admin-api.ts admin handler 包、`report/` 报告导出（1.2.0：骨架组装 + 证据回收 + LLM 填肉 + 落盘，设计见 `docs/design/1.2.0-design.md`）
 
 - `src/server/intel/` — 情报检索（1.1.2）：`intel.db`（NVD CVE + exploit-db 索引，FTS5）+ `zhishi intel update/status` + loop 工具 `intel_search`（宿主侧认知供给，与 research_log 同层）
 
@@ -91,8 +91,6 @@
 - 跨模块 / 跨进程 / 新通信模式的功能
 
 - 涉及 SSE / HTTP 代理 / 引擎交互的改动
-
-- 新增 MCP server
 
 - 你不确定某个功能"应该走哪条已有路径"
 
@@ -235,11 +233,7 @@ sidecar 的 HTTP 访问经 Rust 代理（`local_http` 模块，reqwest）。loca
 
 ### Pre-warm 机制
 
-MCP / Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**不**触发。持久 Session 中 pre-warm 即最终 session，用户消息通过 `wakeGenerator()` 注入。**任何 `!preWarm` 守卫都可能在持久模式下永远不执行。**
-
-
-
-**MCP 配置权威来源 = 磁盘**：CLI `zhishi mcp` 写盘，sidecar self-resolve 从磁盘读。混用 / 不一致会导致 fingerprint 差异 → abort → 30s 重启循环。
+Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**不**触发。持久 Session 中 pre-warm 即最终 session，用户消息通过 `wakeGenerator()` 注入。**任何 `!preWarm` 守卫都可能在持久模式下永远不执行。**
 
 
 
@@ -248,7 +242,6 @@ MCP / Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**
 - 内置 8 家：`anthropic-api`、`deepseek`（anthropic 兼容端点）、`openai`、`moonshot`（Kimi，OpenAI 格式）、`dashscope`（通义）、`zhipu`（智谱）、`siliconflow`（硅基流动聚合）、`kimi`（pi 内置 kimi-coding，合成条目）。定义在 `src/shared/config-types.ts::PRESET_PROVIDERS`——新供应商照此结构加（`apiProtocol: 'openai'` 即走 OpenAI completions；pi 按 `Model.api` 显式选协议，不做 baseUrl 探测）。
 - 模型列表拉取：`src/server/utils/provider-models.ts`——`modelListUrl` 优先（set-key 后自动拉取，`parseProviderModelsResponse` 兼容 OpenAI/anthropic 双形状，上限 200 条）；失败降级不阻塞。发现模型写 `config.presetCustomModels`。
 - 配置入口：CLI `zhishi model set-key/list/verify/set-default`；GUI 设置页（模型/供应商管理——选模型只显示已配置供应商，`/chat/model` 带 providerId 防跨供应商撞名）。
-- MCP 开关：CLI `zhishi mcp enable|disable <id>`（复用 mcp/enable、mcp/disable + 桥热重载）；GUI 设置页 MCP 页签置灰占位（设计待定）；add/remove 仍走 CLI。
 
 - `intel.db`（`~/.zhishi/`，better-sqlite3，WAL）：NVD CVE（窗口分级 minimal/window/full，默认 minimal）+ exploit-db 索引（只存 CSV 索引行，PoC 文件不落盘）+ nuclei 模板索引（1.1.4：`nuclei_templates(cve_id, template_path)`，只存目录不存正文——模板内容给 GitHub 链接）。FTS5 全文检索，查询按需直查库、不做启动预载。
 - 更新：`zhishi intel update [--mode minimal|window|full] [--nuclei-file <本地 cves.json>]`（走 sidecar admin API）。NVD 走 API 2.0 增量（lastModStartDate 水位）+ 断点续传；exploit-db 拉 GitLab CSV 整体替换（解析层按 id 首行去重——真实 CSV 有重复行）。**网络错误/超时/响应体读取失败都进指数退避重试**（NVD 单页 6.4MB，慢网络实测 90s+，超时 120s）；`maxSizeMb` 超限删最旧。
@@ -595,7 +588,7 @@ CI（`.github/workflows/test.yml`）在 PR + push 到 `dev/*`/`main` 时自动�
 
 - 修改 `bundled-skills/` 中 system skill（清单见 `SYSTEM_SKILLS`） → MUST bump `SYSTEM_SKILLS_VERSION`
 
-- 新增 system skill：(1) 放入 `bundled-skills/<name>/`；(2) 加入 Rust `SYSTEM_SKILLS` 和 Node `src/server/index.ts::SYSTEM_SKILLS` 两个清单；(3) bump 版本
+- 新增 system skill：(1) 放入 `bundled-skills/<name>/`；(2) 加入 Rust `SYSTEM_SKILLS`（1.5.1 起 Node 侧镜像清单已随 skills 管理面删除，只剩 Rust 一处）；(3) bump 版本
 
 - **utility skill vs system skill**：清单内 = system（强制更新）；其它 = utility（首次 seed 后归用户）
 
@@ -633,7 +626,7 @@ Team Hub 服务端（`zhishi-hub/`）从未随本仓库分发，且已被确认�
 
 - **想法（thought）全家**：thought.rs、management_api thought 路由、CLI thought 命令、system-prompt 注入。
 
-- **技能市场 / 安装管线**：`src/server/skills/` 整目录、CLI `skill add` / `skill sync`（`skill list/info/remove/enable/disable` 保留，list 只列用户级 `~/.zhishi/skills/`）；bundled-skills 从 13 减到 7（删 docx / pdf / pptx / xlsx / capability-forge / skill-creator）。
+- **技能市场 / 安装管线**：`src/server/skills/` 整目录、CLI `skill add` / `skill sync`；bundled-skills 从 13 减到 7（删 docx / pdf / pptx / xlsx / capability-forge / skill-creator）。（1.5.1 追记：保留的 `skill list/info/remove/enable/disable` 管理与提示词注入层已随注入面瘦身整体删除。）
 
 - **内置工具 gemini-image / edge-tts** 及其 media 附件链（`builtinMediaResult.ts`、`builtin-media-attachments.ts`；通用 ToolAttachment 类型保留，D20 后无服务端生产者）。
 
@@ -641,7 +634,7 @@ Team Hub 服务端（`zhishi-hub/`）从未随本仓库分发，且已被确认�
 
 
 
-保留核心能力：MCP enable 管线、memory 全套、task / cron 系统、CLI、panel_api.rs（term / 端口发现）/ terminal.rs、provider-probe / verify。（browser.rs 已在 W6 减法删除；openai-bridge 已随 D25/M4c 删除，OpenAI 协议 provider 由 pi 原生直连。）
+保留核心能力：memory 全套、task / cron 系统、CLI、panel_api.rs（term / 端口发现）/ terminal.rs、provider-probe / verify。（browser.rs 已在 W6 减法删除；openai-bridge 已随 D25/M4c 删除，OpenAI 协议 provider 由 pi 原生直连。1.5.1 追记：MCP enable 管线与 MCP 面整体删除——含 routes/mcp、mcp-oauth、loop/mcp-bridge、config-types 的 mcp 配置段与 PRESET_MCP_SERVERS。）
 
 
 
