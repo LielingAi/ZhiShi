@@ -148,6 +148,16 @@ kbd {
   white-space: nowrap; max-width: 40vw;
 }
 .stream-wrap { flex: 1; display: flex; min-height: 0; }
+.stream-jump-wrap { flex: 1; display: flex; min-height: 0; position: relative; }
+/* 1.5.2 一键最上/最下浮动按钮 */
+.stream-jump {
+  position: absolute; right: 18px; z-index: 5; padding: 3px 10px; font-size: 11px;
+  color: var(--text-dim); background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 12px; cursor: pointer; opacity: .85; transition: opacity .12s, background .12s;
+}
+.stream-jump:hover { opacity: 1; background: var(--panel-3); color: var(--text); }
+.stream-jump-top { top: 10px; }
+.stream-jump-bottom { bottom: 10px; }
 
 /* ===== 会话流（虚拟化） ===== */
 .stream { flex: 1; min-width: 0; overflow-y: auto; padding: 16px 26px 20px; }
@@ -251,6 +261,11 @@ kbd {
 .chip:hover { color: var(--cyan); background: rgba(53,195,226,.08); border-color: var(--cyan-dim); }
 .chip::before { content: "@"; opacity: .7; }
 .chip .x { cursor: pointer; margin-left: 2px; opacity: .7; }
+/* 1.5.2 @ 引用 chip 类型徽章（选择后让人看见它是什么）。 */
+.chip-type { font-size: 10px; padding: 0 3px; border-radius: 3px; background: rgba(88,166,255,.14); color: #58a6ff; font-family: inherit; }
+.chip-env .chip-type { background: rgba(63,185,80,.14); color: #3fb950; }
+.chip-file .chip-type { background: rgba(88,166,255,.14); color: #58a6ff; }
+.chip-snapshot .chip-type { background: rgba(210,153,34,.16); color: #d29922; }
 
 .bottom-area { border-top: 1px solid var(--border); background: var(--panel); }
 .statusbar {
@@ -382,6 +397,17 @@ mark.h-search { background: rgba(232,163,61,.3); color: var(--text); border-radi
 .set-row .sr-status.ok { color: var(--green); }
 /* 1.3.5：MCP 页签 failed 状态红色（与 StateHint error 同色口径） */
 .set-row .sr-status.bad { color: var(--red); }
+.set-group { width: 100%; }
+
+/* 1.5.2 设置页自适应：窄窗口导航塌缩为纯图标列 + 行按钮组允许换行收缩。 */
+@media (max-width: 1100px) {
+  .set-nav { width: 44px; padding: 10px 4px; }
+  .set-nav-item { justify-content: center; font-size: 0; }
+  .set-nav-item .sn-ic { font-size: 14px; margin: 0; }
+  .set-row { flex-wrap: wrap; }
+  .set-row .sr-control { flex-shrink: 1; flex-wrap: wrap; row-gap: 4px; justify-content: flex-end; }
+  .set-group { max-width: none; }
+}
 .sr-status.mono { font-family: var(--mono); }
 
 /* ===== attach 视图 ===== */

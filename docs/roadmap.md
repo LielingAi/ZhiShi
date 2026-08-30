@@ -5,6 +5,23 @@
 
 ---
 
+## 1.5.2 —— GUI 体验优化：设置页自适应 + 会话滚动操作 + 斜杠/@ 操作面（进行中）
+
+**缘起（2026-08-30 用户拍板立项，日常使用痛点驱动）**：①设置页不自适应——`.set-nav` 固定 150px、无响应式（窗口拉窄布局挤压）；②会话滚动操作缺失——返回会话不自动定位到最新消息、无一键到顶/到底（Stream 虚拟滚动只有「接近底部时新块吸附」，切换会话后滚动位置不可预期）；③斜杠命令与 @ 引用是高频入口，操作面需要补齐。现状核查：Stream 已有 virtualizer + stick-to-bottom（96px 阈值）+ `scrollToIndex` 两端跳转的现成能力；`/snapshot` 等命令走 slash-args 模态收参（可选参数也必须开一次模态）；@ 面板已四源合一（envs/agents/tools/files）。
+
+- [x] **设置页自适应**：窄窗口（<1100px 暂定）侧栏导航塌缩为纯图标列；内容区卡片/表单随宽度重排（供应商行按钮组换行不溢出）；弹窗宽度上限随窗口收敛。
+- [x] **返回会话自动到最后消息**：切环境/切会话返回时 Stream 定位到最新消息（`scrollToIndex(len-1, 'end')`）；用户手动上翻阅读历史时不强拉（吸附语义不变——只有进入时定位一次）。
+- [x] **一键最上面 / 一键最下面**：Stream 浮动按钮（非底部时显示「↓ 最新」，点击回底并恢复吸附；顶部附近显示「↑ 顶部」；快捷键候选 Home/End——若与输入框焦点冲突则只做按钮）。
+- [x] **/ 命令操作面（四根因实锤修复）**：①`doSend` 加命令解析——Enter 时输入以 '/' 开头且匹配已知命令 → 解析「命令名 + inline 参数」执行（不匹配才按普通文本发，防误吞自然语言）；②overlay 过滤改为「命令名段」匹配（/intel CVE 按 intel 过滤，参数段不参与）；③Tab 补全——overlay 开着 Tab = 选中当前项（slash 回填命令名继续输参数，@ 同 Enter）；④overlay 选中执行时把光标后剩余文本作为参数传给命令并清空输入框。
+- [x] **@ 引用可视化**：chip 加类型徽章（env/file/agent/tool 图标或色签）+ 选择后焦点回输入框；@ 面板与 / 面板交互对齐（前缀过滤 + 分组标签统一）；@ 文件路径补全防抖/缓存体验实机核查（1.3.3 既有机制）。
+- [x] **回归 + 验证**：滚动定位/按钮逻辑抽纯函数单测（model 层）；slash inline 参数解析单测；全量测试 + typecheck + eslint + 构建；实机走查（设置页拉窗、会话往返定位、inline 参数直输）。
+
+> 实际落地（2026-08-30）：①**/ 命令四根因修复**——a) `doSend` 加命令解析（parseSlashInput + isKnownCommand：匹配已知命令执行、不匹配按文本发 LLM 防误吞）；b) overlay 过滤改按命令名段（slashNameSegment——/intel CVE 按 intel 过滤，参数段不参与）；c) Tab 补全进 useEsc 全局键处理（slash → completeSlashOverlay 回填「/name 」不执行继续输参数，其余 overlay 等同 Enter）；d) overlay 选中执行带 inline 参数（overlay.slashArgs 随命令直发，acceptsInlineArgs 白名单 snapshot/rollback/extract/intel/decide 跳过模态）+ 执行后清空输入框（inputFill 通道）。解析抽 `model/slash-input.ts` 纯函数（三处共用事实源）。②**@ 引用可视化**——chip 类型徽章（env/file/snapshot 三色签 + title 说明「随消息带给模型」）。③**Stream 滚动**——返回会话自动到最后消息（envKey 变化时 scrollToIndex(len-1,'end') 定位一次，上翻不强拉）+ 一键最上/最下浮动按钮（stream-jump-wrap 相对容器，非底部出「↓ 最新」回底恢复吸附、非顶部出「↑ 顶部」）。④**设置页自适应**——<1100px 媒体查询：导航塌缩 44px 纯图标列（font-size:0 藏文字）、行按钮组 wrap 不溢出、set-group 放宽；modal 本已 min(560px,90vw) 无需动。⑤**实机走查（CDP 驱动）**：/intel CVE 面板按名过滤 ✓、Tab 回填「/intel 」✓、/help 直输执行（toast + 清空、不发 LLM）✓、@pw 选中出「环境」徽章 chip ✓、900px 窄窗导航 44px ✓（截图复核按钮组无溢出）。回归：新增 8 单测（slash-input 解析/过滤段/已知命令/inline 白名单）；全量 182 文件 2394 测试绿 + typecheck + eslint + depcruise 480 模块零违规 + 三构建绿。
+> 不做（本版）：GUI 主题系统、Stream 渲染引擎改动（虚拟滚动已够用）、/ 命令自定义扩展、@ 新数据源（现有四源不动）。
+> 验收：全量测试 + 实机走查（窄窗自适应/返回定位/一键头尾/inline 参数）。
+
+---
+
 ## 1.5.1 —— 注入面瘦身：skills/MCP 层删除 + 专家知识 harness 唯一注入（已完成）
 
 **缘起（2026-08-29 五轮设计迭代定稿，golang 轨迹取证驱动，用户全程拍板）**：①轨迹取证（mta7eilu，1576 条）实锤「能力点没出现」的根因链——域判定**对了**（filterSkillsByDomain 过滤正确，候选集含 whitebox-audit），但 `buildSkillsSection` 预算取舍按 user→bundled 字典序（SKILLS_TOTAL_CAP=12000），whitebox-audit 字典序最后必被挤掉（L841 模型 thinking「6 启用 3 注入 3 因总量上限未注入」铁证）。**预算矛盾是 skills 层的存在性缺陷——排序补丁治标不治本，该解的是设计问题**（用户拍板）。②skills 层删除：它是与专家知识层职能完全重叠的方法论载体，却自带发现/预算/启禁/覆盖/截断一整套复杂度。③MCP 删除：占位已久、对完整系统无好处。④专家知识定位钉死：**判据驱动的决策级知识**（provenance/reviewer/criteria/applicability 必填）；**工具层面知识不入库**（参考级、量大易腐——入库即权威稀释/检索稀释/维护腐化，铲除一个问题又造出新问题）。⑤注入路径五轮收敛：模型主动（1.4.x 实证失败）→ 人触发 /expert（1.5.0）→ 「人不用=没有」→ 推荐条（否：每条都是认知税）→ **harness 确定性决策注入（唯一路径）**（用户拍板：决策归 harness 规则、可见归人、/expert 命令删除——1.5.0 上线即撤；模型侧 expert_search 工具保留做 FTS 脆性兜底，用户拍板「听你的」）。

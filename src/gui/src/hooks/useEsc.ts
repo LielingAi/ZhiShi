@@ -15,6 +15,7 @@ export function useEsc(): void {
   const esc = useGuiStore((s) => s.esc);
   const moveOverlay = useGuiStore((s) => s.moveOverlay);
   const pickOverlay = useGuiStore((s) => s.pickOverlay);
+  const completeSlashOverlay = useGuiStore((s) => s.completeSlashOverlay);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -30,6 +31,12 @@ export function useEsc(): void {
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
         moveOverlay(-1);
+      } else if (e.key === 'Tab') {
+        // 1.5.2 实锤修复③（Tab 未接）：slash → 补全回填命令名继续输参数；
+        // 其余 overlay → 等同 Enter 选中。
+        e.preventDefault();
+        if (overlay.kind === 'slash') completeSlashOverlay();
+        else pickOverlay(overlay.sel);
       } else if (e.key === 'Enter') {
         e.preventDefault();
         pickOverlay(overlay.sel);
@@ -37,5 +44,5 @@ export function useEsc(): void {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [overlay, esc, moveOverlay, pickOverlay]);
+  }, [overlay, esc, moveOverlay, pickOverlay, completeSlashOverlay]);
 }
