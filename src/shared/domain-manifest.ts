@@ -41,7 +41,9 @@ export interface DomainManifest {
   name: string;
   /** 引用 bundled-environments 的配方 id。 */
   recipes: string[];
-  /** 引用 bundled-skills 的 skill 文件夹名。 */
+  /** 检索域先验（1.5.1 语义重定义）：skills 提示词注入层已删——方法论
+   *  沉专家库（expert.db），域 → 专家条目的映射走条目自身的 domain 字段，
+   *  本字段不再驱动任何注入/过滤，保留为空数组占位（清单结构兼容）。 */
   skills: string[];
   /** 引用 bundled-agents 的 subagent 名。 */
   subagents: string[];

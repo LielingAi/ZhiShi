@@ -105,3 +105,49 @@ describe('syncEnvironmentRecipes（内容哈希同步，1.2.5「配」）', () =
     expect(existsSync(join(root, 'README.md'))).toBe(false);
   });
 });
+
+// 1.5.1 — 工具侧技能本体分发：hash 幂等同步（一致 no-op / 不一致覆盖）。
+describe('syncToolSkills（1.5.1 工具侧技能分发）', () => {
+  let bundled: string;
+  let root: string;
+
+  const writeSkill = (base: string, name: string, content: string) => {
+    const p = join(base, name, 'SKILL.md');
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, content);
+  };
+
+  beforeEach(() => {
+    bundled = join(dir, 'bundled-skills');
+    root = join(dir, 'skills');
+    // 造 4 个工具侧技能源（agent-browser/download-anything/zhishi-cli/range-ops）。
+    for (const name of ['agent-browser', 'download-anything', 'zhishi-cli', 'range-ops']) {
+      writeSkill(bundled, name, `# ${name} v1`);
+    }
+  });
+
+  it('dst 缺失 → 4 个全 synced 落盘；再跑一遍 → 全 kept（幂等）', async () => {
+    const { syncToolSkills } = await import('./skills-config');
+    const first = syncToolSkills(bundled, root);
+    expect(first).toHaveLength(4);
+    expect(first.every((o) => o.action === 'synced')).toBe(true);
+    expect(existsSync(join(root, 'download-anything', 'SKILL.md'))).toBe(true);
+    const second = syncToolSkills(bundled, root);
+    expect(second.every((o) => o.action === 'kept')).toBe(true);
+  });
+
+  it('dst 内容过旧 → 强制覆盖为 bundled 新版', async () => {
+    const { syncToolSkills } = await import('./skills-config');
+    writeSkill(root, 'range-ops', '# range-ops OLD');
+    const outcomes = syncToolSkills(bundled, root);
+    expect(outcomes.find((o) => o.id === 'range-ops')?.action).toBe('synced');
+    expect(readFileSync(join(root, 'range-ops', 'SKILL.md'), 'utf-8')).toBe('# range-ops v1');
+  });
+
+  it('方法论类不在分发清单（whitebox-audit 不落地）', async () => {
+    const { syncToolSkills } = await import('./skills-config');
+    writeSkill(bundled, 'whitebox-audit', '# whitebox-audit');
+    syncToolSkills(bundled, root);
+    expect(existsSync(join(root, 'whitebox-audit'))).toBe(false);
+  });
+});

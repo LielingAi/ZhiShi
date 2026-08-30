@@ -9,11 +9,12 @@
 
 import { createHash } from 'crypto';
 
-import { cpSync, existsSync, readdirSync, readFileSync, readlinkSync, renameSync, unlinkSync } from 'fs';
+import { cpSync, existsSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, unlinkSync } from 'fs';
 
 import { join } from 'path';
 
 import { ensureDirSync } from './utils/fs-utils';
+import { getZhiShiDataDir } from './utils/app-dirs';
 
 import { getHomeDirOrNull } from './utils/platform';
 
@@ -104,6 +105,73 @@ function nextRecipeBackupPath(root: string, name: string): string {
     candidate = join(root, `${name}.bak-${stamp}-${n}`);
   }
   return candidate;
+}
+
+// ---------------------------------------------------------------------------
+// 1.5.1 — 工具侧技能本体分发（注入层已删，本体分发通道不能死）
+// ---------------------------------------------------------------------------
+
+/**
+ * 工具侧技能（随工具分布的本体——带脚本/模板/文档，供 slash 命令发现与
+ * .claude 兼容同步消费）。方法论类（whitebox-audit/binary-exploit/pentest/
+ * ai-security/vuln-triage）已策展沉专家库，task-alignment/task-implement/
+ * native-code-loop 已删，均不在此列——它们的目录也不再随包分发。
+ */
+const TOOL_SIDE_SKILLS: readonly string[] = [
+  'agent-browser',
+  'download-anything',
+  'zhishi-cli',
+  'range-ops',
+];
+
+/**
+ * 工具侧技能播种（sidecar 启动挂在 seedEnvironmentRecipes 后）：hash 幂等
+ * 同步 TOOL_SIDE_SKILLS 到 ~/.zhishi/skills/（一致 no-op，不一致强制覆盖
+ * 为 bundled 新版）。单技能失败记日志不阻塞其余。
+ *
+ * 与已删的 seedBundledSkills 的区别：只分发工具侧 4 个（方法论已迁专家
+ * 库——那是知识不是本体）；不清理用户目录里的退役残留（不替用户扔东
+ * 西——退役目录只是休眠文件，文档指引手动删）。
+ */
+export function seedToolSkills(): void {
+  try {
+    const bundledDir = resolveBundledDir('bundled-skills');
+    if (!bundledDir) return;
+    syncToolSkills(bundledDir, join(getZhiShiDataDir(), 'skills'));
+  } catch (err) {
+    console.warn('[seed] tool skills seeding failed (non-fatal):', err);
+  }
+}
+
+/**
+ * seedToolSkills 的核心（目录可注入，便于单测）。返回每个技能的处置结果；
+ * 单技能失败记 failed 并继续，不阻塞其余。
+ */
+export function syncToolSkills(
+  bundledDir: string,
+  userSkillsDir: string,
+): Array<{ id: string; action: 'synced' | 'kept' | 'failed' }> {
+  const outcomes: Array<{ id: string; action: 'synced' | 'kept' | 'failed' }> = [];
+  ensureDirSync(userSkillsDir);
+  for (const name of TOOL_SIDE_SKILLS) {
+    const src = join(bundledDir, name);
+    if (!existsSync(join(src, 'SKILL.md'))) continue; // 打包缺陷源，跳过
+    const dst = join(userSkillsDir, name);
+    try {
+      const srcHash = hashDirTree(src);
+      if (srcHash !== null && srcHash === hashDirTree(dst)) {
+        outcomes.push({ id: name, action: 'kept' }); // 一致 no-op
+        continue;
+      }
+      rmSync(dst, { recursive: true, force: true });
+      cpSync(src, dst, { recursive: true });
+      outcomes.push({ id: name, action: 'synced' });
+    } catch (err) {
+      console.warn(`[seed] tool skill sync failed for ${name} (non-fatal):`, err);
+      outcomes.push({ id: name, action: 'failed' });
+    }
+  }
+  return outcomes;
 }
 
 /**

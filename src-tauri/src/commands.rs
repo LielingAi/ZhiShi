@@ -36,14 +36,18 @@ use crate::{ulog_info, ulog_warn};
 // matching exclusion list in src/server/skills-config.ts MUST be kept
 // in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "37";
+const SYSTEM_SKILLS_VERSION: &str = "38";
 
 /// Skills that ship with the app and MUST stay at the bundled version —
 /// the app's flows depend on them, users are not meant to customise.
 /// Keep in sync with the exclusion list in Node `src/server/skills-config.ts`.
+/// v38（1.5.1 注入面瘦身）：skills 提示词注入层整体删除——方法论类
+/// （task-alignment/task-implement/native-code-loop/binary-exploit/
+/// vuln-triage/pentest/whitebox-audit/ai-security）策展沉专家库或删除，
+/// 目录不再随包分发；本清单只剩 4 个工具侧技能（本体随工具分布，
+/// 带脚本/模板/文档）。已 seed 的老目录留在 ~/.zhishi/skills/ 由用户
+/// 自处（无孤儿清理逻辑，同 v10/v29 惯例）。
 const SYSTEM_SKILLS: &[&str] = &[
-    "task-alignment",
-    "task-implement",
     // v10: ultra-research removed — not generic enough to ship as system
     // skill. Existing installs retain the dir at ~/.zhishi/skills/
     // ultra-research/ until the user deletes it (no orphan cleanup logic).
@@ -59,33 +63,13 @@ const SYSTEM_SKILLS: &[&str] = &[
     // v9: zhishi-cli promoted from helper-bundled skill (now removed)
     // to a global system skill. Every AI session inside ZhiShi — Chat / IM Bot
     // / Cron — should be able to drive the product's own
-    // capabilities (cron, task center, MCP, Provider, channels,
-    // skills, widgets) through the CLI. SKILL.md changes track CLI surface
+    // capabilities (cron, task center, Provider, channels,
+    // widgets) through the CLI. SKILL.md changes track CLI surface
     // changes, so it must force-overwrite on version bumps.
     "zhishi-cli",
-    // v36: app-automation 随 1.2.3 AppCraft 退役移除——录制/回放/自愈链路与其
-    // sidecar 二进制（cuse / terminator-mcp-agent）整体切除。已 seed 的老目录
-    // 留在 ~/.zhishi/skills/app-automation/ 由用户自处（无孤儿清理逻辑，同 v10/v29 惯例）。
-    // v29: capability-forge 与通用生产力 skills（docx/pdf/pptx/xlsx/
-    // skill-creator）随安全研究员版减法删除（设计 docs/
-    // security_researcher_agent_design.md §9）。已 seed 的老目录留在
-    // ~/.zhishi/skills/ 由用户自处（无孤儿清理逻辑，同 v10 惯例）。
-    // 注：plugin-assistant 随加密插件体系整体移除而删除。
-    // v30: 安全研究员版 P1 S2 —— 首批 4 个安全方法 skills
-    // （技术方案 docs/spec/security_researcher_agent_tech_plan.md §2.2）：
-    // native-code-loop（编译-运行-调试闭环）、binary-exploit（二进制利用实战）、
-    // vuln-triage（崩溃研判 → bug_class）、range-ops（靶场连接规范）。
+    // v30: 安全研究员版 P1 S2 —— range-ops（靶场连接规范）。
     // 全平台可用，无需 platform block。
-    "native-code-loop",
-    "binary-exploit",
-    "vuln-triage",
     "range-ops",
-    // v35: 1.1.8 三域实战验证修正落盘——pentest / whitebox-audit /
-    // ai-security 升 system（与 binary-exploit 同待遇：方法论由产品维护、
-    // 随版本强制覆盖；此前非 system 时 seed-once 导致修正无法触达老安装）。
-    "pentest",
-    "whitebox-audit",
-    "ai-security",
 ];
 
 /// Skills unavailable on certain platforms due to upstream bugs.

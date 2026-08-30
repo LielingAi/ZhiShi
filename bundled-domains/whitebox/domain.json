@@ -1,14 +1,32 @@
 {
   "kind": "whitebox",
   "name": "白盒审计",
-  "recipes": ["code-audit"],
-  "skills": ["whitebox-audit"],
-  "subagents": ["vuln-hunter", "hypothesis-tester", "critic"],
+  "recipes": [
+    "code-audit"
+  ],
+  "skills": [],
+  "subagents": [
+    "vuln-hunter",
+    "hypothesis-tester",
+    "critic"
+  ],
   "signals": [
-    { "re": "审计|audit|源码级|漏洞挖掘|白盒", "label": "任务性质" },
-    { "re": "数据流|污点|taint|攻击面|输入面|入口文件|漏洞类型分布|告警分级", "label": "审计方法" },
-    { "re": "opengrep|joern|semgrep|codeql|bandit|severity|findings?|CWE-\\d+", "label": "审计工具与产出" },
-    { "re": "编译器|compiler|lowering|误编译|miscompil|codegen|类型检查器|type checker", "label": "编译器/源码深研" }
+    {
+      "re": "审计|audit|源码级|漏洞挖掘|白盒",
+      "label": "任务性质"
+    },
+    {
+      "re": "数据流|污点|taint|攻击面|输入面|入口文件|漏洞类型分布|告警分级",
+      "label": "审计方法"
+    },
+    {
+      "re": "opengrep|joern|semgrep|codeql|bandit|severity|findings?|CWE-\\d+",
+      "label": "审计工具与产出"
+    },
+    {
+      "re": "编译器|compiler|lowering|误编译|miscompil|codegen|类型检查器|type checker",
+      "label": "编译器/源码深研"
+    }
   ],
   "auxSignals": [],
   "acceptance": [

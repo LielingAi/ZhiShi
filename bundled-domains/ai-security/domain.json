@@ -1,16 +1,32 @@
 {
   "kind": "ai-security",
   "name": "AI 安全",
-  "recipes": ["ai-security"],
-  "skills": ["ai-security"],
+  "recipes": [
+    "ai-security"
+  ],
+  "skills": [],
   "subagents": [],
   "signals": [
-    { "re": "提示注入|prompt injection|越狱|jailbreak|模型安全|LLM 安全|大模型", "label": "任务性质" },
-    { "re": "garak|promptfoo|探针|probe|eval|红队", "label": "工具与方法" }
+    {
+      "re": "提示注入|prompt injection|越狱|jailbreak|模型安全|LLM 安全|大模型",
+      "label": "任务性质"
+    },
+    {
+      "re": "garak|promptfoo|探针|probe|eval|红队",
+      "label": "工具与方法"
+    }
   ],
   "auxSignals": [
-    { "re": "\"entry_type\"\\s*:\\s*\"eval\"[^\\n]*?\"probe\"\\s*:\\s*\"([^\"]+)\"[^\\n]*?\"fails\"\\s*:\\s*[1-9]", "label": "garak 探针检出失败样本", "appendMatch": true },
-    { "re": "attack success rate:\\s*([\\d.]+%)", "label": "garak 攻击成功率", "appendMatch": true }
+    {
+      "re": "\"entry_type\"\\s*:\\s*\"eval\"[^\\n]*?\"probe\"\\s*:\\s*\"([^\"]+)\"[^\\n]*?\"fails\"\\s*:\\s*[1-9]",
+      "label": "garak 探针检出失败样本",
+      "appendMatch": true
+    },
+    {
+      "re": "attack success rate:\\s*([\\d.]+%)",
+      "label": "garak 攻击成功率",
+      "appendMatch": true
+    }
   ],
   "acceptance": [
     "对自有/授权模型端点跑 garak 扫描 + promptfoo 自定义 eval,产出风险分级报告",

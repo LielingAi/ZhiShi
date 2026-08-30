@@ -258,7 +258,7 @@ async function ensureAgentDir(dir: string): Promise<string> {
 // Extracted to ./skills-config (1.1.7 ③)；1.5.1 起只剩环境配方 seed 与
 // Playwright 锁清理（skills seed/配置写侧随注入面瘦身删除）。
 // ============= END SKILLS CONFIG & SEED =============
-import { cleanupStalePlaywrightProfile, seedEnvironmentRecipes } from './skills-config';
+import { cleanupStalePlaywrightProfile, seedEnvironmentRecipes, seedToolSkills } from './skills-config';
 import { seedBundledExpert } from './expert/seed';
 /**
  * Validate that the agent directory is safe to access.
@@ -3291,6 +3291,14 @@ currentInitPhase = 'skill-seed';
       initPhaseStarted = nowMs();
       seedEnvironmentRecipes();
       console.log('[startup] seedEnvironmentRecipes done');
+      // 1.5.1：工具侧技能本体分发（agent-browser/download-anything/zhishi-cli/
+      // range-ops——注入层已删，本体分发通道保留）。失败不阻塞启动。
+      try {
+        seedToolSkills();
+        console.log('[startup] seedToolSkills done');
+      } catch (err) {
+        console.warn('[startup] seedToolSkills failed (non-fatal):', err);
+      }
 // 1.2.1 专家知识层：bundled-expert 幂等导入 expert.db（按 content_hash；
       // 内置条目强制覆盖，user/promoted 条目绝不动）。失败不阻塞启动。
       try {
