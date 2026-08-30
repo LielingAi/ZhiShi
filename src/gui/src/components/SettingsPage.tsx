@@ -572,6 +572,7 @@ function ExpertTab(): React.JSX.Element {
   const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [drafts, setDrafts] = useState<ExpertDraft[]>([]);
+  const [reviewer, setReviewer] = useState(() => localStorage.getItem('zhishi.expert.reviewer') ?? '');
   const showToast = useGuiStore((s) => s.showToast);
 
   const reloadList = useCallback(async () => {
@@ -676,6 +677,23 @@ function ExpertTab(): React.JSX.Element {
             <span className="sr-status">{drafts.length} 条待审</span>
           </div>
         </div>
+        {drafts.length > 0 && (
+          <div className="set-row">
+            <div>
+              <div className="sr-label">审定人</div>
+              <div className="sr-desc">必填——权威性的来源是人审这个动作（记一次，下次预填）</div>
+            </div>
+            <div className="sr-control">
+              <input
+                className="f-input"
+                style={{ width: 140 }}
+                placeholder="你的名字"
+                value={reviewer}
+                onChange={(e) => setReviewer(e.target.value)}
+              />
+            </div>
+          </div>
+        )}
         {drafts.map((d) => (
           <div className="set-row" key={d.id}>
             <div>
@@ -690,7 +708,16 @@ function ExpertTab(): React.JSX.Element {
                 onClick={async () => {
                   const c = getSettingsClient();
                   if (!c) return;
-                  const res = await api.expertReview(c, { draftId: d.id, action: 'approve' });
+                  if (!reviewer.trim()) {
+                    showToast('先填审定人——权威性的来源是人审');
+                    return;
+                  }
+                  localStorage.setItem('zhishi.expert.reviewer', reviewer.trim());
+                  const res = await api.expertReview(c, {
+                    draftId: d.id,
+                    action: 'approve',
+                    edited: { reviewer: reviewer.trim() },
+                  });
                   showToast(res.success ? `✓ 草稿 #${d.id} 已批准入库` : `✗ ${res.error ?? '审定失败'}`);
                   void reloadDrafts();
                   void reloadList();
