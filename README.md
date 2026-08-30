@@ -119,11 +119,11 @@ ZhiShi 是给安全研究员的工作台：二进制利用、渗透测试、白�
 | 研究档案 | 研究 = 过程 + 成果：实体三要素（来源锚 + 状态 + 链接）全程举证、可推论/反推论/可纠正；每轮注回模型上下文；报告从同一档案派生（成果章节带证据锚、证伪与纠正独立成节） |
 | auto loop | 目标式研究循环：预算三选一（轮次/token/时间）、暂停点两层（模型提请 + harness 空转/反复失败检测）、验收包（条件 × 证据）人终审、达成自动出报告 |
 | 认知内核 | 第一性原理五层认知（深度理解 → 对抗共情 → 溯因推理 → 认识论谦卑 → 远距类比）+ 置信度校准锚点（< 0.60 不报告）+ 硬排除清单 |
-| 专家知识 | `expert.db`——权威知识层（思路/技术/SOP，人审定才进库）：卡住了 LLM 无把握时的最后落脚点，`expert_search` 检索；留痕可挂 `expert_refs` 追溯「决策依据 E#N」；现成 JSON/YAML 直接 `zhishi expert import` 批量入库（见导入指南） |
+| 专家知识 | `expert.db`——判据化的权威知识层（SOP/判定链/方法论，人审定才进库）：**harness 邻域注入**——每轮以档案焦点（假设/问题）+ 最近消息为锚自动检索注入（零注入语义、去重、透明可纠正），相关知识在对的时机自己出现；`expert_search` 检索兜底；留痕可挂 `expert_refs` 追溯「决策依据 E#N」；现成 JSON/YAML 直接 `zhishi expert import` 批量入库（见导入指南） |
 | 研究报告 | `/export` 一键出报告目录（report.md + evidence/ PoC 本体）：骨架事实钉死 + LLM 填肉、按域模板、敏感项清单知情、显式脱敏可选 |
-| 能力包 | skills 提示词注入（binary-exploit / vuln-triage / native-code-loop / range-ops / pentest / whitebox-audit / ai-security + 用户库 `~/.zhishi/skills/`） |
+| 工具侧技能 | 4 个工具本体随包分发（agent-browser / download-anything / zhishi-cli / range-ops——带脚本/模板/文档，slash 命令发现 + .claude 兼容同步） |
 | 子代理 | bundled-agents：fuzz-runner / crash-triager / vuln-hunter / hypothesis-tester / critic；`/tasks` 面板看工作现场与完整 transcript |
-| 域包 | `bundled-domains/<域>/domain.json` —— 域 = 研究知识维度（skills / 子代理 / 研究记忆注入），只由任务内容判定（配方默认 + 内容信号动态修正）；`zhishi domain check` 就绪自检 |
+| 域包 | `bundled-domains/<域>/domain.json` —— 域 = 研究知识维度（子代理 / 研究记忆注入 + 专家知识域先验），只由任务内容判定（配方默认 + 内容信号动态修正）；`zhishi domain check` 就绪自检 |
 | 模型 | 8 家内置供应商端点（kimi / deepseek / openai / moonshot / 通义 / 智谱 / 硅基流动…），`zhishi model set-key <id> <key>` 后自动拉模型列表，GUI 状态栏切换（只显示已配置供应商） |
 
 ## 快速开始
@@ -166,11 +166,12 @@ zhishi model verify deepseek
 zhishi model set-default deepseek
 ```
 
-### Skills 与域包
+### 专家知识与域包
 
 ```bash
-zhishi skill list              # 用户库
-zhishi skill disable docx      # 禁用（内置同名也生效）
+zhishi expert list             # 专家库清单
+zhishi expert search "栈溢出"   # 检索专家知识
+zhishi expert import <file>    # JSON/YAML 批量入库
 zhishi domain list             # 域包清单
 zhishi domain check binary     # 就绪自检（引用完整 + 工具漂移 + 验收清单）
 ```
@@ -224,8 +225,8 @@ flowchart LR
 | 环境层（引擎探测 / 环境类型 / 生命周期 / 纳管） | `src/server/environment/` |
 | admin API（sidecar HTTP 面） | `src/server/admin-api.ts`、`src/server/index.ts` |
 | GUI（React + zustand + xterm；会话/环境/决策/历史） | `src/gui/` |
-| CLI 统一入口（子命令：mcp/model/env/expert/term/…） | `src/cli/zhishi.ts` |
-| 内置环境类型 / 技能 / 域包 / 子代理 | `bundled-environments/`、`bundled-skills/`、`bundled-domains/`、`bundled-agents/` |
+| CLI 统一入口（子命令：model/env/expert/term/…） | `src/cli/zhishi.ts` |
+| 内置环境类型 / 工具侧技能 / 域包 / 子代理 / 专家条目 | `bundled-environments/`、`bundled-skills/`、`bundled-domains/`、`bundled-agents/`、`bundled-expert/` |
 
 ## 验证状态
 
