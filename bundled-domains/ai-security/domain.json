@@ -4,7 +4,6 @@
   "recipes": [
     "ai-security"
   ],
-  "skills": [],
   "subagents": [],
   "signals": [
     {

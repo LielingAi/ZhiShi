@@ -28,7 +28,6 @@ const VALID = {
   kind: 'pentest',
   name: '渗透',
   recipes: ['pentest'],
-  skills: ['pentest'],
   subagents: ['scan-runner'],
   signals: [{ re: 'Session (\\d+) opened', label: 'session 已开', appendMatch: true }],
   acceptance: ['recon 到 shell'],
@@ -74,7 +73,6 @@ describe('loadDomainManifests', () => {
 describe('validateDomainManifest', () => {
   const ctx: DomainCheckContext = {
     recipeIds: new Set(['pentest']),
-    skillIds: new Set(['pentest']),
     subagentIds: new Set(['scan-runner']),
   };
 
@@ -88,13 +86,13 @@ describe('validateDomainManifest', () => {
   it('缺失引用/非法正则/空验收 → 对应 issue', () => {
     writeManifest('broken', {
       kind: 'broken', name: '坏',
-      recipes: ['ghost-recipe'], skills: ['ghost-skill'], subagents: ['ghost-agent'],
+      recipes: ['ghost-recipe'], subagents: ['ghost-agent'],
       signals: [{ re: '([', label: 'x' }],
       acceptance: [],
     });
     const m = loadDomainManifest(join(root, 'broken'))!;
     const issues = validateDomainManifest(m, ctx);
-    expect(issues.filter((i) => i.level === 'error')).toHaveLength(4); // 3 引用 + 1 正则
+    expect(issues.filter((i) => i.level === 'error')).toHaveLength(3); // 2 引用 + 1 正则（1.5.1：skill 引用校验随字段删除）
     expect(issues.some((i) => i.level === 'warn' && i.message.includes('验收'))).toBe(true);
   });
 });

@@ -60,7 +60,6 @@ import {
   validateDomainManifest,
   type DomainCheckContext,
 } from './domains/manifest';
-import { resolveBundledSkillsDir } from './loop/skills';
 import { augmentedProcessEnv, resolveCommand } from './utils/env-utils';
 import { resolve } from 'path';
 import { connect } from 'net';
@@ -2614,7 +2613,6 @@ export function handleDomainList(): AdminResponse {
         kind: m.kind,
         name: m.name,
         recipes: m.recipes,
-        skills: m.skills,
         subagents: m.subagents,
         signalCount: m.signals.length,
         acceptance: m.acceptance,
@@ -2689,18 +2687,9 @@ export async function handleDomainCheck(payload: { id?: string }): Promise<Admin
   for (const m of manifests) results.push(await checkOne(m));
   return { success: true, data: { domains: results } };
 }
-/** domain check 的引用上下文:现有配方 id + skill 文件夹名(bundled+用户库)
- *  + subagent 目录名。 */
+/** domain check 的引用上下文:现有配方 id + subagent 目录名。 */
 function buildDomainCheckContext(): DomainCheckContext {
   const recipeIds = new Set(scanRecipes(defaultRecipesRoot()).map((r) => r.id));
-  const skillIds = new Set<string>();
-  const skillsDirs = [resolveBundledSkillsDir(), join(getZhiShiDataDir(), 'skills')];
-  for (const d of skillsDirs) {
-    if (!d || !existsSync(d)) continue;
-    for (const f of readdirSync(d, { withFileTypes: true })) {
-      if (f.isDirectory()) skillIds.add(f.name);
-    }
-  }
   const subagentIds = new Set<string>();
   const agentsDir = resolveBundledDir('bundled-agents');
   if (agentsDir && existsSync(agentsDir)) {
@@ -2708,7 +2697,7 @@ function buildDomainCheckContext(): DomainCheckContext {
       if (f.isDirectory()) subagentIds.add(f.name);
     }
   }
-  return { recipeIds, skillIds, subagentIds };
+  return { recipeIds, subagentIds };
 }
 /** `environment/snapshot` — W1(design-spec §6.4 `/snapshot [名]`):对登记
  * vm 环境的 vmx 打 vmrun snapshot,名称缺省 zhishi-<ts>。 */

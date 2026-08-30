@@ -8,7 +8,6 @@
     "fuzz-vm",
     "rev"
   ],
-  "skills": [],
   "subagents": [
     "fuzz-runner",
     "crash-triager",

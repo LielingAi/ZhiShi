@@ -41,10 +41,6 @@ export interface DomainManifest {
   name: string;
   /** 引用 bundled-environments 的配方 id。 */
   recipes: string[];
-  /** 检索域先验（1.5.1 语义重定义）：skills 提示词注入层已删——方法论
-   *  沉专家库（expert.db），域 → 专家条目的映射走条目自身的 domain 字段，
-   *  本字段不再驱动任何注入/过滤，保留为空数组占位（清单结构兼容）。 */
-  skills: string[];
   /** 引用 bundled-agents 的 subagent 名。 */
   subagents: string[];
   /** 域级内容信号（1.4.3 重定义）：任务性质词/方法特征/工具使用模式——
@@ -92,7 +88,6 @@ export function loadDomainManifest(dir: string): DomainManifest | null {
       kind: raw.kind,
       name: raw.name,
       recipes: Array.isArray(raw.recipes) ? raw.recipes : [],
-      skills: Array.isArray(raw.skills) ? raw.skills : [],
       subagents: Array.isArray(raw.subagents) ? raw.subagents : [],
       signals: Array.isArray(raw.signals) ? raw.signals : [],
       auxSignals: Array.isArray(raw.auxSignals) ? raw.auxSignals : [],
@@ -131,8 +126,6 @@ export function loadDomainManifests(root?: string | null): DomainManifest[] {
 export interface DomainCheckContext {
   /** 存在的配方 id 集合。 */
   recipeIds: Set<string>;
-  /** 存在的 skill 文件夹名集合(bundled + 用户库)。 */
-  skillIds: Set<string>;
   /** 存在的 subagent 名集合。 */
   subagentIds: Set<string>;
 }
@@ -147,9 +140,6 @@ export function validateDomainManifest(m: DomainManifest, ctx: DomainCheckContex
   const issues: DomainCheckIssue[] = [];
   for (const r of m.recipes) {
     if (!ctx.recipeIds.has(r)) issues.push({ level: 'error', message: `配方 "${r}" 不存在` });
-  }
-  for (const s of m.skills) {
-    if (!ctx.skillIds.has(s)) issues.push({ level: 'error', message: `skill "${s}" 不存在` });
   }
   for (const a of m.subagents) {
     if (!ctx.subagentIds.has(a)) issues.push({ level: 'error', message: `subagent "${a}" 不存在` });

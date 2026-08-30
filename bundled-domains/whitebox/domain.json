@@ -4,7 +4,6 @@
   "recipes": [
     "code-audit"
   ],
-  "skills": [],
   "subagents": [
     "vuln-hunter",
     "hypothesis-tester",
