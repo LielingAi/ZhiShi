@@ -6945,7 +6945,7 @@ dependencies = [
 
 [[package]]
 name = "zhishi"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "axum",
  "chrono",
