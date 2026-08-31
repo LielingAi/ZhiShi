@@ -18,6 +18,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-08-31
+
+> **全面代码质量审查**：六面并行审计 161 条发现（`docs/design/1.5.4-audit.md`），用户逐组拍板后全量处置——172 文件，净删 1.1 万行。
+
+### 修复（真 bug 20 条，均带回归测试）
+- **1.5.3 校准自伤**：`markLoopSessionCompacted` 每次压缩把学习到的校准系数抹掉——压缩后判定回落纯启发式，正是最容易误判的阶段
+- **invoke 污染单例**：`invokePiSession` 偷写引擎单例的档案锚字段，并发时交互轮锚点被清空
+- **指针卡缺行区间**：recall 链路断一环（注释承诺的 jsonl 行区间不在卡上），已补齐
+- **CLI `--port` 冲突**：`zhishi env add --kind ssh --port 2222` 的 ssh 端口被全局旗标抢走导致必失败
+- 校准学习分子/分母口径对齐；专家注入锚点当轮化（此前滞后一轮）；子 loop stub 不再指引不存在的 recall 工具；决策跨线应答加 120s 超时（不再挂起分钟级）；Drawer 搜索不再产出破 HTML；`expert review --json` 契约修复等
+
+### 新增
+- **refs 大值外溢恢复真实生效**（CLAUDE.md 红线）：SSE 出口统一过闸，payload >256KB 落盘换引用（fail-closed + 在飞事件尾链不抢跑）
+- **GUI 专家条目删除入口**：专家页签每条加删除按钮 + 二次确认，builtin 条目置灰（与服务端拒删对齐）
+
+### 删除（死代码/无效链路）
+- **30+ 条死路由**（SDK/IM/browser-dev 时代残留，index.ts 3403→1390 行）
+- **14 个僵尸模块**（只有自身单测在引用的 M4c 决策核残余：watchdog/plan-mode-gate/fork-remap 等）
+- **shared 14 个死文件 + ~750 行死链**（runtime/config-types 的权限模式链与诊断链、CUSTOM_EVENTS 死事件桥）
+- **sharp 依赖全链清零**（package/lock/tauri/三平台构建脚本/NSIS/文档）
+- **plan 权限模式全链撤除**（存量配置自动落 auto 兜底）
+- GUI 12 死导出 + 7 组死字段；`config:changed` 无消费者广播链
+
+### 其他
+- 注释与实现漂移 30+ 处修正（SDK/MCP/skills/renderer 残留措辞、usage 锚描述等）
+
 ## [1.5.3] - 2026-08-31
 
 > **治本：流/状态/指针三层分离 + 压缩中枢改造**——golang 会话（1.14M tokens）事故全案的设计级修复：估算偏低 3.3 倍致阈值形同虚设、截断标记被模型当语料复现雪崩、用户指令被裁「遗忘」。治本 = 状态外化。
