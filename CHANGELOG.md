@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.5] - 2026-08-31
+
+### 修复
+- **joern 下载地址（issue #7）**：joern v4.x 起 release 资产改平台分包（`joern-cli-linux-x86_64.zip` / `-linux-arm64.zip`），裸 `joern-cli.zip` 已 404——code-audit 环境的 provision.sh 与 Dockerfile 按 `uname -m` 选包；包内顶层目录仍为 `joern-cli/`（上游 `topLevelDirectory = packageName` 核实），解压布局不变
+
 ## [1.5.4] - 2026-08-31
 
 > **全面代码质量审查**：六面并行审计 161 条发现（`docs/design/1.5.4-audit.md`），用户逐组拍板后全量处置——172 文件，净删 1.1 万行。

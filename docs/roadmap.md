@@ -5,6 +5,12 @@
 
 ---
 
+## 1.5.5 —— joern 下载地址热修（issue #7，已完成）
+
+- [x] joern v4.x 起 release 资产改平台分包（裸 `joern-cli.zip` 404）——code-audit provision.sh + Dockerfile 按 `uname -m` 选 `joern-cli-linux-x86_64/arm64.zip`；包内顶层目录 `joern-cli/` 不变（上游 `topLevelDirectory = packageName` 核实）
+
+---
+
 ## 1.5.4 —— 全面代码质量审查（已完成）
 
 **缘起（2026-08-31 用户拍板）**：1.5.x 三连发（触发权归人 → 注入面瘦身 → 治本）叠加 1.3/1.4 的密集功能面后，做一次全仓质量审查——死代码、代码逻辑、无效链路、注释与实现漂移，确认一个铲一个，不打补丁式乱动。**用户全程审计拍板：先出报告（`docs/design/1.5.4-audit.md`，161 条）逐组确认后才动手；refs 链路拍板「要」（修复非删除）、plan 权限模式拍板「不需要」（撤除）、expertRm 拍板「GUI 补」、BoundaryAskKind 拍板「留+标注」。**

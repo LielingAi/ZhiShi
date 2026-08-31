@@ -36,10 +36,17 @@ else
 fi
 
 # Joern（污点传播主力，多语言 CPG）。绕开 joern-install.sh 交互提示，
-# 直接取 release 的 joern-cli.zip 解到 /opt/joern。
+# 直接取 release 的 joern-cli 平台包解到 /opt/joern。
+# 1.5.5（issue #7）：joern v4.x 起 release 资产改平台分包
+# （joern-cli-<os>-<arch>.zip），裸 joern-cli.zip 已不存在（404）——
+# 按 uname -m 选包。
 if ! command -v joern >/dev/null 2>&1; then
   echo "[code-audit/provision] installing joern..."
-  gh_dl https://github.com/joernio/joern/releases/latest/download/joern-cli.zip /tmp/joern-cli.zip 900 \
+  case "$(uname -m)" in
+    aarch64|arm64) JOERN_ASSET=joern-cli-linux-arm64.zip ;;
+    *)             JOERN_ASSET=joern-cli-linux-x86_64.zip ;;
+  esac
+  gh_dl "https://github.com/joernio/joern/releases/latest/download/$JOERN_ASSET" /tmp/joern-cli.zip 900 \
     && sudo rm -rf /opt/joern/joern-cli \
     && sudo unzip -q /tmp/joern-cli.zip -d /opt/joern \
     && rm -f /tmp/joern-cli.zip \

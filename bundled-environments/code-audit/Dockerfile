@@ -19,8 +19,14 @@ RUN curl -sSfL https://github.com/opengrep/opengrep/releases/latest/download/ope
  && chmod +x /usr/local/bin/opengrep
 
 # Joern（污点传播主力,多语言 CPG）。绕开 joern-install.sh 的交互提示,
-# 直接取 release 的 joern-cli.zip 解到 /opt/joern。
-RUN curl -sSfL https://github.com/joernio/joern/releases/latest/download/joern-cli.zip \
+# 直接取 release 的 joern-cli 平台包解到 /opt/joern。
+# 1.5.5（issue #7）：joern v4.x 起资产改平台分包（joern-cli-<os>-<arch>.zip）,
+# 裸 joern-cli.zip 已 404——按 uname -m 选包。
+RUN case "$(uname -m)" in \
+      aarch64|arm64) JOERN_ASSET=joern-cli-linux-arm64.zip ;; \
+      *)             JOERN_ASSET=joern-cli-linux-x86_64.zip ;; \
+    esac \
+ && curl -sSfL "https://github.com/joernio/joern/releases/latest/download/$JOERN_ASSET" \
       -o /tmp/joern-cli.zip \
  && unzip -q /tmp/joern-cli.zip -d /opt/joern \
  && rm -f /tmp/joern-cli.zip \
