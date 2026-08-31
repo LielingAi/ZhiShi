@@ -84,17 +84,15 @@ describe('evaluateCompaction(未裁首判,保留 usage 锚)', () => {
     expect(r.tokens).toBeGreaterThan(1000 - 10);
   });
 
-  it('usage 锚(API 实测)参与首判:旧 assistant 的大 usage 直接推过阈值', () => {
-    const withUsage = {
-      role: 'assistant',
-      content: [{ type: 'text', text: '短' }],
-      stopReason: 'stop',
-      usage: { input: 90_000, output: 10_000, cacheRead: 0, cacheWrite: 0, totalTokens: 100_000 },
-      timestamp: 2,
-    } as unknown as AgentMessage;
-    const r = evaluateCompaction([user('任务'), withUsage], { contextWindow: 1000, thresholdRatio: 0.5 });
-    expect(r.compact).toBe(true);
-    expect(r.tokens).toBeGreaterThanOrEqual(100_000);
+  it('1.5.3 校准系数：meta 持久化的 calibration 直接乘进判定值（锚失真修复）', () => {
+    // 启发式全量 ≈241 tokens；真实 API 体量是其 3.3 倍（golang 事故比率）。
+    const msgs = [user('任务' + 'x'.repeat(596))]; // 启发式 ≈ 241 tokens
+    const base = evaluateCompaction(msgs, { contextWindow: 1000, thresholdRatio: 0.5 });
+    expect(base.compact).toBe(false); // 未校准：241 < 500 不压
+    const calibrated = evaluateCompaction(msgs, { contextWindow: 1000, thresholdRatio: 0.5, calibration: 3.3 });
+    expect(calibrated.compact).toBe(true); // 校准后：~795 > 500 压
+    expect(calibrated.tokens).toBeGreaterThan(700);
+    expect(calibrated.tokens).toBeLessThan(900);
   });
 });
 
@@ -135,13 +133,18 @@ describe('makeCompactionTransform — 段级采样锚定压缩(1.2.7)', () => {
     expect(infos).toHaveLength(1);
     expect(infos[0].stillOverThreshold).toBe(false);
     expect(infos[0].stubbedSegments).toBe(2);
-    expect(infos[0].prunedCount).toBe(4);
+    // 1.5.3：用户指令永不裁——被 stub 段内的 user 消息原文保留，prunedCount
+    // 是净裁口径（段体量 − 保留的 user 消息数；1.2.7 旧口径 4 = 全量计入）。
+    expect(infos[0].prunedCount).toBe(2);
     // 压后纯估算达标
     expect(estimateMessagesTokens(out)).toBeLessThanOrEqual(500);
     // anchor 在头;key 段死路原文存活;当前阶段(execution)在尾
     expect(out[0]).toBe(msgs[0]);
     expect(out.some((m) => messageText(m).includes('exit=1\n目标文件不存在'))).toBe(true);
     expect(out[out.length - 1]).toBe(msgs[8]);
+    // 1.5.3：被 stub 段的用户指令原文存活（「grep 审计源码找漏洞」「写 payload 脚本」）
+    expect(out.some((m) => m.role === 'user' && messageText(m).includes('grep 审计源码找漏洞'))).toBe(true);
+    expect(out.some((m) => m.role === 'user' && messageText(m).includes('写 payload 脚本'))).toBe(true);
     // stub 是合法 user 消息,带段号/phase/存档指针
     const stubs = out.filter((m) => messageText(m).startsWith('[段#'));
     expect(stubs).toHaveLength(2);
@@ -183,9 +186,10 @@ describe('makeCompactionTransform — 段级采样锚定压缩(1.2.7)', () => {
     expect(estimateMessagesTokens(out)).toBeLessThanOrEqual(500);
   });
 
-  it('第二档:必保集本身超阈值 → 逐条正文截断,仍超则 stillOverThreshold 上报', async () => {
+  it('第二档:必保集本身超阈值 → 逐条正文截断（user 永不裁）,仍超则 stillOverThreshold 上报', async () => {
     // 全部命中关键标记(error:)且体积巨大 → 段级 stub 无可压
-    const msgs = Array.from({ length: 6 }, (_, i) => user(`error: 第${i}条 ${'x'.repeat(800)}`));
+    // 1.5.3：user 消息永不截断——改由 assistant 长文本承载截断断言。
+    const msgs = Array.from({ length: 6 }, (_, i) => assistant(`error: 第${i}条 ${'x'.repeat(800)}`));
     const infos: Array<{ stillOverThreshold?: boolean }> = [];
     const transform = makeCompactionTransform(
       { contextWindow: 200, thresholdRatio: 0.5 }, // 阈值 100 tokens ≈ 400 字符
@@ -195,8 +199,8 @@ describe('makeCompactionTransform — 段级采样锚定压缩(1.2.7)', () => {
     // 结构还在(key 段不丢),但每条体积被压到均摊预算内
     expect(out).toHaveLength(6);
     for (const m of out) {
-      expect(messageText(m).length).toBeLessThanOrEqual(220);
-      expect(messageText(m)).toContain('[已截断]');
+      expect(messageText(m).length).toBeLessThanOrEqual(240);
+      expect(messageText(m)).toContain('⟦系统注记');
     }
     // 6 × 200 字符 ≈ 300 tokens 仍超 100 → 明确上报,不留 API 400 无升级路径
     expect(infos).toHaveLength(1);
@@ -211,10 +215,15 @@ describe('makeCompactionTransform — 段级采样锚定压缩(1.2.7)', () => {
   });
 });
 
-describe('truncateMessageText(第二档 b 原语义保留)', () => {
-  it('string content 与 text 块截断;toolCall 块不动', () => {
+describe('truncateMessageText（1.5.3 新契约：⟦⟧ 标记 + user 永不截断）', () => {
+  it('user 消息永不截断（用户指令必保）', () => {
     const m = user('x'.repeat(500));
-    expect(messageText(truncateMessageText(m, 100))).toContain('[已截断]');
+    expect(messageText(truncateMessageText(m, 100))).toBe('x'.repeat(500));
+  });
+
+  it('assistant string content 与 text 块截断（⟦⟧ 新标记）;toolCall 块不动', () => {
+    const a = assistant('x'.repeat(500));
+    expect(messageText(truncateMessageText(a, 100))).toContain('⟦系统注记');
     const call = {
       role: 'assistant',
       content: [{ type: 'toolCall', id: 't', name: 'env_exec', arguments: { command: 'y'.repeat(500) } }],

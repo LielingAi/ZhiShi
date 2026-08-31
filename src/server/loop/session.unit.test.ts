@@ -97,6 +97,26 @@ describe('normalizeMessagesForPersist', () => {
     const out = normalizeMessagesForPersist([user('u'), custom, assistant('a'), toolResult]);
     expect(out.map((m) => m.role)).toEqual(['user', 'assistant', 'toolResult']);
   });
+
+  it('1.5.3 截断标记剥离:新 ⟦⟧ 与旧 …[已截断] 两种形态都剥(含模型复现到正文中间的——断雪崩环)', () => {
+    const legacy = assistant('正文前半…[已截断]');
+    const midText = assistant('模型复现:输出像 foo…[已截断] 这样结尾'); // 正文中间的复现
+    const current = assistant('正文前半\n⟦系统注记：以下内容已省略，勿复现⟧');
+    const thinking = {
+      role: 'assistant',
+      content: [{ type: 'thinking', thinking: '推理过程\n⟦系统注记：以下内容已省略，勿复现⟧' }],
+      timestamp: 2,
+    } as unknown as AgentMessage;
+    const clean = assistant('没有标记的正文');
+    const strMsg = { role: 'user', content: '用户消息…[已截断]', timestamp: 1 } as AgentMessage;
+    const out = normalizeMessagesForPersist([legacy, midText, current, thinking, clean, strMsg]);
+    expect(JSON.stringify(out)).not.toContain('已截断');
+    expect(JSON.stringify(out)).not.toContain('⟦系统注记');
+    expect(JSON.stringify(out)).toContain('正文前半');
+    expect(JSON.stringify(out)).toContain('模型复现:输出像 foo 这样结尾');
+    expect(JSON.stringify(out)).toContain('推理过程');
+    expect(JSON.stringify(out)).toContain('用户消息');
+  });
 });
 
 describe('append / load(真临时目录)', () => {
@@ -113,6 +133,16 @@ describe('append / load(真临时目录)', () => {
     expect(s.meta?.model).toBe('k3');
     expect(s.meta?.createdAt).toBeTruthy();
     expect(s.meta?.updatedAt).toBeTruthy();
+  });
+
+  it('1.5.3 tokenCalibration:写入可读回;后续追加不带校准时保留既有值', async () => {
+    const id = newLoopSessionId();
+    await appendLoopMessages(id, [user('q1')], { tokenCalibration: 3.3 }, { dir: DIR });
+    expect(loadLoopSession(id, { dir: DIR }).meta?.tokenCalibration).toBe(3.3);
+    await appendLoopMessages(id, [assistant('a1')], undefined, { dir: DIR });
+    expect(loadLoopSession(id, { dir: DIR }).meta?.tokenCalibration).toBe(3.3); // ?? 语义:不覆盖
+    await appendLoopMessages(id, [assistant('a2')], { tokenCalibration: 2.1 }, { dir: DIR });
+    expect(loadLoopSession(id, { dir: DIR }).meta?.tokenCalibration).toBe(2.1); // 显式新值生效
   });
 
   it('二次追加:消息累加、createdAt 保留、updatedAt 刷新、model 不覆盖', async () => {
@@ -157,5 +187,19 @@ describe('append / load(真临时目录)', () => {
     const s = loadLoopSession(id, { dir: DIR });
     expect(s.messages).toHaveLength(2);
     expect(s.meta).not.toBeNull();
+  });
+
+  it('1.5.3 读侧剥离:盘上烤进去的旧标记(含正文中间的复现)load 时不进上下文', async () => {
+    const id = newLoopSessionId();
+    // 绕过 normalize(直写盘)模拟事故期落盘的标记
+    writeFileSync(
+      loopSessionFile(id, DIR),
+      JSON.stringify({ kind: 'meta', createdAt: 'x', updatedAt: 'x' }) + '\n'
+        + JSON.stringify(user('指令…[已截断]')) + '\n'
+        + JSON.stringify(assistant('输出像 foo…[已截断] 这样')) + '\n',
+    );
+    const s = loadLoopSession(id, { dir: DIR });
+    expect(JSON.stringify(s.messages)).not.toContain('已截断');
+    expect(s.messages).toHaveLength(2);
   });
 });

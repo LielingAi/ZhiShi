@@ -23,6 +23,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
 import { getZhiShiDataDir } from '../utils/app-dirs';
 import { withFileLock, writeFileAtomic } from '../utils/file-lock';
+import { TRUNCATION_MARKER_CURRENT, TRUNCATION_MARKER_LEGACY } from './compaction';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,6 +36,10 @@ export interface LoopSessionMeta {
   updatedAt: string;
   /** M3:最近一次压缩触发时间(只打标记;jsonl 永远保留全量消息)。 */
   compactedAt?: string;
+  /** 1.5.3:token 校准系数（真实 API usage ÷ 启发式估算,每轮未压缩时
+   *  学习并持久化——压缩过的轮次不学习（锚被污染）;evaluateCompaction
+   *  判定值 = 全量启发式 × 本系数）。 */
+  tokenCalibration?: number;
 }
 
 export interface LoopSession {
@@ -68,12 +73,48 @@ export function loopSessionFile(id: string, dir: string): string {
 /**
  * 归一化:只保留标准 LLM 消息(user/assistant/toolResult)。pi 自定义
  * 消息类型在此过滤(与 M1 convertToLlm 同一集合),返回新数组。
+ *
+ * 1.5.3:剥离截断标记（新 ⟦⟧ 与旧 …[已截断] 两种形态）——标记是
+ * harness 元数据不是研究内容,落盘后会被下次注入当语料复现（golang
+ * 会话雪崩实证:L1393 模型自产标记）。只剥块末尾的标记后缀,
+ * 正文原样。
  */
 export function normalizeMessagesForPersist(messages: AgentMessage[]): AgentMessage[] {
-  return messages.filter(
-    (m): m is AgentMessage =>
-      !!m && typeof m === 'object' && VALID_ROLES.has((m as { role?: string }).role ?? ''),
-  );
+  return messages
+    .filter(
+      (m): m is AgentMessage =>
+        !!m && typeof m === 'object' && VALID_ROLES.has((m as { role?: string }).role ?? ''),
+    )
+    .map(stripTruncationMarkers);
+}
+
+/** 剥块内的截断标记（text/thinking 字符串与 string content；无标记原样返回）。
+ *  全量替换而非只剥末尾:golang 会话实证模型会把标记当语料**复现到正文
+ *  中间**(雪崩),只剥末尾断不了环。 */
+function stripTruncationMarkers(message: AgentMessage): AgentMessage {
+  const strip = (s: string): string =>
+    s.split(TRUNCATION_MARKER_CURRENT).join('').split(TRUNCATION_MARKER_LEGACY).join('');
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === 'string') {
+    const stripped = strip(content);
+    return stripped === content ? message : ({ ...message, content: stripped } as AgentMessage);
+  }
+  if (!Array.isArray(content)) return message;
+  let changed = false;
+  const blocks = content.map((block) => {
+    if (!block || typeof block !== 'object') return block;
+    const b = block as Record<string, unknown>;
+    if (typeof b.text === 'string') {
+      const stripped = strip(b.text);
+      if (stripped !== b.text) { changed = true; return { ...b, text: stripped }; }
+    }
+    if (typeof b.thinking === 'string') {
+      const stripped = strip(b.thinking);
+      if (stripped !== b.thinking) { changed = true; return { ...b, thinking: stripped }; }
+    }
+    return block;
+  });
+  return changed ? ({ ...message, content: blocks } as AgentMessage) : message;
 }
 
 /** 解析一行为 meta 或 message;坏行/非法 role → null(容错跳过)。 */
@@ -97,6 +138,7 @@ export function parseLoopSessionLine(line: string): { kind: 'meta'; meta: LoopSe
         createdAt: typeof rec.createdAt === 'string' ? rec.createdAt : '',
         updatedAt: typeof rec.updatedAt === 'string' ? rec.updatedAt : '',
         compactedAt: typeof rec.compactedAt === 'string' ? rec.compactedAt : undefined,
+        tokenCalibration: typeof rec.tokenCalibration === 'number' ? rec.tokenCalibration : undefined,
       },
     };
   }
@@ -141,7 +183,9 @@ function storeDir(options?: LoopSessionStoreOptions): string {
   return options?.dir ?? defaultLoopSessionDir();
 }
 
-/** 加载会话;不存在/损坏 → 空会话(messages:[], meta:null)。 */
+/** 加载会话;不存在/损坏 → 空会话(messages:[], meta:null)。
+ *  1.5.3:读侧同样剥截断标记——旧会话盘上带着事故期烤进去的标记
+ *  (含模型复现到正文中间的),不剥会在下次注入时继续喂雪崩语料。 */
 export function loadLoopSession(id: string, options?: LoopSessionStoreOptions): LoopSession {
   const file = loopSessionFile(id, storeDir(options));
   if (!existsSync(file)) return { messages: [], meta: null };
@@ -151,7 +195,8 @@ export function loadLoopSession(id: string, options?: LoopSessionStoreOptions): 
   } catch {
     return { messages: [], meta: null };
   }
-  return parseLoopSession(content);
+  const parsed = parseLoopSession(content);
+  return { messages: parsed.messages.map(stripTruncationMarkers), meta: parsed.meta };
 }
 
 /**
@@ -161,7 +206,7 @@ export function loadLoopSession(id: string, options?: LoopSessionStoreOptions): 
 export async function appendLoopMessages(
   id: string,
   messages: AgentMessage[],
-  meta?: { model?: string; providerId?: string; compactedAt?: string },
+  meta?: { model?: string; providerId?: string; compactedAt?: string; tokenCalibration?: number },
   options?: LoopSessionStoreOptions,
 ): Promise<void> {
   const dir = storeDir(options);
@@ -177,6 +222,7 @@ export async function appendLoopMessages(
       createdAt: existing.meta?.createdAt || now,
       updatedAt: now,
       compactedAt: meta?.compactedAt ?? existing.meta?.compactedAt,
+      tokenCalibration: meta?.tokenCalibration ?? existing.meta?.tokenCalibration,
     };
     const merged = [...existing.messages, ...normalizeMessagesForPersist(messages)];
     writeFileAtomic(file, serializeLoopSession(nextMeta, merged));
@@ -208,6 +254,7 @@ export async function forkLoopSession(
       createdAt: now,
       updatedAt: now,
       compactedAt: existing.meta?.compactedAt,
+      tokenCalibration: existing.meta?.tokenCalibration,
     };
     const kept = existing.messages.slice(0, Math.max(0, keepCount));
     writeFileAtomic(dstFile, serializeLoopSession(meta, kept));
@@ -238,6 +285,7 @@ export async function truncateLoopSession(
       createdAt: existing.meta?.createdAt || now,
       updatedAt: now,
       compactedAt: existing.meta?.compactedAt,
+      tokenCalibration: existing.meta?.tokenCalibration,
     };
     const kept = existing.messages.slice(0, Math.max(0, keepCount));
     writeFileAtomic(file, serializeLoopSession(nextMeta, kept));

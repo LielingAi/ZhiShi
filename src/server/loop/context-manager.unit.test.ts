@@ -275,11 +275,12 @@ describe('compactBySegments — 采样锚定', () => {
 
     // anchor 原文在头
     expect(r.messages[0]).toBe(msgs[0]);
-    // 可压缩段(seg1/seg3)被 stub 化:原文消失,stub 居中按段序
-    expect(r.messages).not.toContain(msgs[1]);
-    expect(r.messages).not.toContain(msgs[2]);
-    expect(r.messages).not.toContain(msgs[5]);
-    expect(r.messages).not.toContain(msgs[6]);
+    // 可压缩段(seg1/seg3)被 stub 化:非 user 原文消失,stub 居中按段序;
+    // 1.5.3:段内 user 消息原文必保(用户指令永不裁)
+    expect(r.messages).toContain(msgs[1]); // seg1 的 user 原文存活
+    expect(r.messages).not.toContain(msgs[2]); // seg1 的 toolResult 被裁
+    expect(r.messages).toContain(msgs[5]); // seg3 的 user 原文存活
+    expect(r.messages).not.toContain(msgs[6]); // seg3 的 assistant 被裁
     const stubs = r.messages.filter((m) => messageText(m).startsWith('[段#'));
     expect(stubs.map((m) => messageText(m))).toEqual([
       expect.stringContaining('[段#1 recon 已压缩]'),
@@ -293,18 +294,23 @@ describe('compactBySegments — 采样锚定', () => {
     expect(r.messages[r.messages.length - 1]).toBe(msgs[8]);
     // stub 全是合法 user 消息
     for (const s of stubs) expect(s.role).toBe('user');
-    // prunedCount = 被 stub 段的原消息数
-    expect(r.prunedCount).toBe(4);
+    // prunedCount = 净裁数(1.5.3:user 原文保留,净裁 = 段体量 - user 消息)
+    expect(r.prunedCount).toBe(2);
     expect(r.stubbedSegments).toBe(2);
   });
 
   it('削减量 Δ 达标即停:不从最老段起无差别全 stub', () => {
     const msgs = sampleSession();
     const segs = segmentContext(msgs);
-    // 目标宽松到只需 stub 最老的 seg1 即达标(seg3 原文保留)
-    const seg1Tokens = segs[1].tokens;
+    // 目标宽松到只需 stub 最老的 seg1 即达标(seg3 原文保留)。
+    // 1.5.3:stub 后段内 user 原文保留——实际削减 = 段 tokens - user 原文
+    // - stub 卡,目标按此口径算(不是整段消失的旧口径)。
+    const seg1Savings =
+      segs[1].tokens
+      - estimateMessageTokens(msgs[1]) // user 原文保留
+      - estimateMessageTokens(buildSegmentStub(segs[1]));
     const total = estimateMessagesTokens(msgs);
-    const target = total - seg1Tokens + 50;
+    const target = total - seg1Savings + 50;
     const r = compactBySegments(msgs, segs, target);
     expect(r.stubbedSegments).toBe(1);
     expect(r.messages).toContain(msgs[5]); // seg3 原文还在
@@ -338,7 +344,9 @@ describe('compactBySegments — 采样锚定', () => {
     const r = compactBySegments(msgs, segs, 50); // 目标极小:可压的只有 seg1
     expect(r.messages).toContain(msgs[3]); // seg2 execution 必保
     expect(r.messages).toContain(msgs[5]); // seg3 继承 execution 同样必保
-    expect(r.messages).not.toContain(msgs[1]); // seg1 被 stub
+    // 1.5.3:seg1 被 stub——user 原文必保,toolResult 被裁
+    expect(r.messages).toContain(msgs[1]);
+    expect(r.messages).not.toContain(msgs[2]);
   });
 });
 

@@ -5,19 +5,21 @@
 
 ---
 
-## 1.5.3 —— 治本：流/状态/指针三层分离 + 压缩中枢改造（进行中）
+## 1.5.3 —— 治本：流/状态/指针三层分离 + 压缩中枢改造（已完成）
 
 **缘起（2026-08-30 用户拍板治本 + 两轮代码/轨迹取证定稿）**：golang 会话（mta7eilu，1.14M tokens）事故全案——①**token 估算偏低 3.3 倍**（日志实锤：估算 348K vs API 实际 1137187；盲区 = 工具 schema + 系统提示低估 + CJK 比率）→ 正常压缩阈值（1M×0.8=800K）形同虚设 → 会话真实涨到 1.14M → API 400 → 0.25 激进重试（1395 条截到 ~358 字符）；②标记「…[已截断]」进模型上下文被当语料复现（L1393 铁证：thinking 完好 text 带标记 = 模型自产，非 harness 截断）→ 持久化 → 雪崩（08-29 7 处 → 08-30 25 处）；③「遗忘」真相 = 可见空回复（thinking-only 无 text 块）+ 用户指令被裁（必保集不含用户消息）。**本质（用户三连追问定稿）：模型无记忆（每次全靠重发）+ 窗口有上限（发超就死）= 状态寄生在流上，流一裁状态陪葬。治本 = 状态外化：流/状态/指针三层分离。**用户拍板：1.5.3 就做治本，方案审核后开工。
 
-- [ ] **估算校准（P0，事故元凶）**：压缩判定锚定真实值——上一轮 API 真实 usage（input + cacheRead）+ 新消息增量估算（增量用现有启发式），替代纯 chars 启发式（盲区：工具 schema/系统提示/CJK 比率一次性全覆盖）；校准用例：golang 会话尾部重放，估算 vs 真实误差 < 20%。
-- [ ] **收割（harvest）**：段被裁前的确定性提取（零模型调用）——toolResult 段提取命令+exit code+关键行（flag/CVE/错误形态/文件路径）进收割落盘；assistant 结论段取首句/结论标记。**收割落点 = 会话侧车 `<sessionId>.harvest.jsonl`**（与 archive 同目录同锁纪律——**不借 refs**：TTL 1h + 60s GC 会蒸发指针目标，取证实锤）。
-- [ ] **指针卡替代 stub**：被裁段从「省略了」变「[段 #N：相位，M 条消息，工具名录，结论已入 harvest #K，全文 jsonl Lx-Ly——需要时 recall]」；行号映射已核实（jsonl 无杂行，行 = 消息下标 + 2）。
-- [ ] **用户指令必保（硬钉死）**：mustKeep 集加入「全部 user 消息段」——当前 isKeyMessage 只认 flag/CVE/错误信号，用户指令无保护（本次「遗忘」的结构性根因之一）。
-- [ ] **recall 取回工具**：`recall({ lines: 'x-y' })` 读 jsonl 行区间 + `recall({ ref: 'K#n' })` 读 harvest 收割物；注入段教学写明用法（指针卡上印着，不靠纪律赌）；取回结果带预算截断防滥用。
-- [ ] **逐条截断改造**：截断前全文先进 harvest（长文不丢）；标记换形态 `⟦系统注记：以上内容已省略，勿复现⟧`；分级 cap（thinking 先裁、工具输出头尾采样、用户/结论消息后裁）。
-- [ ] **溢出档改造**：0.25 一刀切改为「焦点段全保 + 其余收割 + 指针」——溢出与常态压缩同一套收割流程，只是预算更紧。
-- [ ] **卫生修复（事故直接补丁）**：持久化剥离标记（normalizeMessagesForPersist 剥 ⟦⟧ 与旧 …[已截断] 形态——雪崩环断掉）；空可见回复占位（thinking-only 轮次 GUI 显示「思考/执行中」）；isContextOverflow 的 length 判定评审（不误伤）。
-- [ ] **回归 + 验证**：收割规则/指针卡/必保集/recall/估算校准单测；1.2.7 六场景回归保留跑绿；实机压测（重放 golang 会话尾段 1.1M tokens：收割 → 指针 → recall 取回 → 无雪崩 → 用户指令零裁剪）；全量 + typecheck + eslint + 三构建。
+- [x] **估算校准（P0，事故元凶）**：压缩判定锚定真实值——上一轮 API 真实 usage（input + cacheRead）+ 新消息增量估算（增量用现有启发式），替代纯 chars 启发式（盲区：工具 schema/系统提示/CJK 比率一次性全覆盖）；校准用例：golang 会话尾部重放，估算 vs 真实误差 < 20%。
+- [x] **收割（harvest）**：段被裁前的确定性提取（零模型调用）——toolResult 段提取命令+exit code+关键行（flag/CVE/错误形态/文件路径）进收割落盘；assistant 结论段取首句/结论标记。**收割落点 = 会话侧车 `<sessionId>.harvest.jsonl`**（与 archive 同目录同锁纪律——**不借 refs**：TTL 1h + 60s GC 会蒸发指针目标，取证实锤）。
+- [x] **指针卡替代 stub**：被裁段从「省略了」变「[段 #N：相位，M 条消息，工具名录，结论已入 harvest #K，全文 jsonl Lx-Ly——需要时 recall]」；行号映射已核实（jsonl 无杂行，行 = 消息下标 + 2）。
+- [x] **用户指令必保（硬钉死）**：mustKeep 集加入「全部 user 消息段」——当前 isKeyMessage 只认 flag/CVE/错误信号，用户指令无保护（本次「遗忘」的结构性根因之一）。
+- [x] **recall 取回工具**：`recall({ lines: 'x-y' })` 读 jsonl 行区间 + `recall({ ref: 'K#n' })` 读 harvest 收割物；注入段教学写明用法（指针卡上印着，不靠纪律赌）；取回结果带预算截断防滥用。
+- [x] **逐条截断改造**：截断前全文先进 harvest（长文不丢）；标记换形态 `⟦系统注记：以下内容已省略，勿复现⟧`；分级 cap（thinking 先裁、工具输出头尾采样、用户/结论消息后裁）。
+- [x] **溢出档改造**：0.25 一刀切改为「焦点段全保 + 其余收割 + 指针」——溢出与常态压缩同一套收割流程，只是预算更紧。
+- [x] **卫生修复（事故直接补丁）**：持久化剥离标记（normalizeMessagesForPersist 剥 ⟦⟧ 与旧 …[已截断] 形态——雪崩环断掉）；空可见回复占位（thinking-only 轮次 GUI 显示「思考/执行中」）；isContextOverflow 的 length 判定评审（不误伤）。
+- [x] **回归 + 验证**：收割规则/指针卡/必保集/recall/估算校准单测；1.2.7 六场景回归保留跑绿；实机压测（重放 golang 会话尾段 1.1M tokens：收割 → 指针 → recall 取回 → 无雪崩 → 用户指令零裁剪）；全量 + typecheck + eslint + 三构建。
+
+> 实际落地（2026-08-31）：①**校准中枢**——`evaluateCompaction` 重写为「全量启发式 × meta 持久化校准系数」（usage 锚函数删除：锚失真实锤——压缩轮的锚是裁后体量，锚+增量≠全量）；学习写入侧在 chat-engine 交互/invoke 双路径 turn 收尾（真实 usage ÷ 当轮起跑启发式，钳 [0.8,6]，**压缩轮次不学**——锚被污染；经 appendLoopMessages meta 落盘，parse/fork/truncate 全链透传 tokenCalibration）。②**收割**——新模块 `loop/harvest.ts`（规则收割零模型调用：toolResult 关键行 flag/CVE/exit/路径、assistant 首句摘要、user 原文必保；K#N 编号；侧车 `<sessionId>.harvest.jsonl` withFileLock + writeFileAtomic，不借 refs）。③**指针卡**——`selectSegmentsToStub`/`applySegmentStubs` 从 compactBySegments 拆出（transform 先收割再落卡；卡含段号/相位/关键命中/工具名录/K#N 引用/行区间/recall 用法；被 stub 段内 **user 原文就地保留**）。④**recall 工具**——新模块 `loop/recall.ts`（lines 行区间取原文带行号渲染 + ref 取收割物；跨度上限 200 行 + 单次 6000 字符预算截断；读侧全容错不 throw）；双路径无条件注册。⑤**截断改造**——user 角色永不截断（两档同纪律）；标记换 `⟦系统注记：以下内容已省略，勿复现⟧`；tier-2 截断前全文进收割物（phase='tier2-fulltext'）；溢出档（FORCE 0.25）与常态档同一收割流程（同 options 透传）。⑥**卫生**——normalizeMessagesForPersist **读侧+写侧双剥**两种标记形态（全量替换非末尾——压测发现模型复现的标记在正文中间，只剥末尾断不了环）；GUI thinking-only 轮次占位分级（有细节显示「本轮仅思考/执行」，真空轮才「模型空回复」）；isContextOverflow 评审结论：三 case（错误正则带限流排除 / 静默 usage 超窗 / length+output=0+≥99% 窗口）判定面窄、非溢出有排除表，不误伤，不动。⑦**实机压测**——golang 会话（2264 条/5.6MB）重放：user 原文 139→139 全保（+107 指针卡）、收割物 108 条落侧车、legacy 标记零残留、recall ref/lines 双形态取回真实内容成功。回归：新增 22 单测（harvest 6 + recall 5 + session 剥离/校准 3 + compaction 校准/新契约改写 + context-manager 三用例按新契约改写）；全量 184 文件 2409 测试绿 + typecheck + eslint + depcruise 484 模块零违规 + 三构建绿。
 
 > 边界（不做）：模型摘要式收割（第一版规则收割，确定性优先——不赌模型主动）；embedding/语义检索（图论轻实现既定）；jsonl 全量保留不动（历史真相）；跨会话档案（蒸馏弧职责）。
 > 复用面（不重建）：segmentContext/compactBySegments 骨架、相位体系、采样锚定、阈值机制、档案注入段、邻域注入、检查点——治本版是把「裁掉就丢」换成「裁掉先沉淀 + 留指针」，骨架一根不动。

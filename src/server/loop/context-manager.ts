@@ -415,11 +415,11 @@ export function estimateMessagesTokens(messages: AgentMessage[], systemPromptCha
   return total;
 }
 
-/**
- * 段 stub:合法 user 消息,不伪造 assistant 发言。带段号/phase/关键
+/** 段 stub:合法 user 消息,不伪造 assistant 发言。带段号/phase/关键
  * 信息(命中行原文摘录)/工具名录/「全文在会话存档」指针——矮,放在
  * 布局中段把「去中间」损耗最小化。
- */
+ * 1.5.3：stub 升级为指针卡（buildPointerCard，含收割引用 + jsonl 行区间
+ * + recall 用法）——本函数保留为无收割时的兜底形态。 */
 export function buildSegmentStub(segment: ContextSegment): AgentMessage {
   const keys = segment.keyHits.length > 0 ? segment.keyHits.map((l) => `「${l}」`).join(' ') : '无关键命中';
   const tools = segment.toolNames.length > 0 ? segment.toolNames.join('/') : '无工具调用';
@@ -427,7 +427,7 @@ export function buildSegmentStub(segment: ContextSegment): AgentMessage {
     role: 'user',
     content:
       `[段#${segment.index} ${segment.phase} 已压缩] 关键信息:${keys};` +
-      `工具:${tools};全文在会话存档(jsonl 全量未动,需要时按段号回查)。`,
+      `工具:${tools};全文在会话存档(jsonl 全量未动,需要时用 recall 工具按行区间取回)。`,
     timestamp: Date.now(),
   } as AgentMessage;
 }
@@ -452,23 +452,18 @@ export interface SegmentCompactionResult {
 export const KEEP_CURRENT_PHASE_SEGMENTS = 8;
 
 /**
- * 采样锚定压缩:必保 = anchor 段 ∪ 最近 N 段当前阶段段 ∪ key 段;可压缩
- * 集从最老段起逐个 stub 化直到纯估算 ≤ 目标。布局产物:[头] anchor 原文
- * → [中] stub/key 段按段序 → [尾] 最近当前阶段段原文。整段取舍,
- * tool_use/tool_result 配对不拆(配对闭包由段原子性保证)。
+ * 选段（1.5.3 拆分——transform 需要先知道哪些段会被 stub，才能先收割再
+ * 落指针卡）：可压缩集从最老段起逐个 stub 化直到纯估算 ≤ 目标。
+ * 必保 = anchor 段 ∪ 最近 N 段当前阶段段 ∪ key 段（采样锚定不变）。
  */
-export function compactBySegments(
+export function selectSegmentsToStub(
   messages: AgentMessage[],
   segments: ContextSegment[],
   targetTokens: number,
   systemPromptChars = 0,
-): SegmentCompactionResult {
-  if (segments.length === 0) {
-    return { messages, stubbedSegments: 0, prunedCount: 0, reachedTarget: true };
-  }
+): Set<number> {
+  if (segments.length === 0) return new Set();
   const currentPhase = segments[segments.length - 1].phase;
-  // 当前阶段的最近 N 段(从尾往前数):全量保留并布局到尾部;更老的同
-  // 相位段不享必保(可 stub,stub 留在中段)。
   const keepCurrentFull = new Set<number>();
   for (let i = segments.length - 1; i >= 0 && keepCurrentFull.size < KEEP_CURRENT_PHASE_SEGMENTS; i--) {
     if (segments[i].phase === currentPhase) keepCurrentFull.add(i);
@@ -476,30 +471,63 @@ export function compactBySegments(
   const mustKeep = (seg: ContextSegment): boolean =>
     seg.index === 0 || keepCurrentFull.has(seg.index) || seg.hasKey;
 
-  // 采样锚定:需要削减量 Δ 由内容构成决定,从最老段起逐个 stub 化。
   let total = estimateMessagesTokens(messages, systemPromptChars);
-  const stubs = new Map<number, AgentMessage>();
+  const stubIdx = new Set<number>();
   for (const seg of segments) {
     if (total <= targetTokens) break;
     if (mustKeep(seg)) continue;
-    const stub = buildSegmentStub(seg);
-    stubs.set(seg.index, stub);
-    total = total - seg.tokens + estimateMessageTokens(stub);
+    stubIdx.add(seg.index);
+    total = total - seg.tokens + estimateMessageTokens(buildSegmentStub(seg));
+  }
+  return stubIdx;
+}
+
+/**
+ * 落 stub（1.5.3 拆分）：布局产物 [头] anchor 原文 → [中] stub/key 段按
+ * 段序 → [尾] 最近当前阶段段原文。**被 stub 的段：段内 user 消息原文保留
+ * （用户指令永不裁——1.5.3 硬钉死）+ 指针卡**（stubTextFn 可注入收割引用，
+ * 缺省 buildSegmentStub 兜底形态）。tool_use/tool_result 配对不拆（配对
+ * 闭包由段原子性保证）。
+ */
+export function applySegmentStubs(
+  messages: AgentMessage[],
+  segments: ContextSegment[],
+  stubIdx: ReadonlySet<number>,
+  stubTextFn: (seg: ContextSegment) => string = (seg) => String((buildSegmentStub(seg) as { content?: unknown }).content ?? ''),
+): SegmentCompactionResult {
+  if (segments.length === 0) {
+    return { messages, stubbedSegments: 0, prunedCount: 0, reachedTarget: true };
+  }
+  const currentPhase = segments[segments.length - 1].phase;
+  const keepCurrentFull = new Set<number>();
+  for (let i = segments.length - 1; i >= 0 && keepCurrentFull.size < KEEP_CURRENT_PHASE_SEGMENTS; i--) {
+    if (segments[i].phase === currentPhase) keepCurrentFull.add(i);
   }
 
-  // 布局:头 anchor → 中 stub/key 段(段序) → 尾最近当前阶段段原文。
   const out: AgentMessage[] = [];
   const pushOriginal = (seg: ContextSegment): void => {
     out.push(...messages.slice(seg.start, seg.end));
   };
+  // 被 stub 段的 user 消息原文（用户指令永不裁——1.5.3 硬钉死）。
+  const pushStubbed = (seg: ContextSegment): void => {
+    for (let i = seg.start; i < seg.end && i < messages.length; i++) {
+      if (messages[i].role === 'user') out.push(messages[i]);
+    }
+    out.push({
+      role: 'user',
+      content: stubTextFn(seg),
+      timestamp: Date.now(),
+    } as AgentMessage);
+  };
   pushOriginal(segments[0]);
   let prunedCount = 0;
+  let stubbedSegments = 0;
   for (const seg of segments.slice(1)) {
     if (keepCurrentFull.has(seg.index)) continue; // 尾段统一在最后按序追加
-    const stub = stubs.get(seg.index);
-    if (stub) {
-      out.push(stub);
-      prunedCount += seg.end - seg.start;
+    if (stubIdx.has(seg.index)) {
+      pushStubbed(seg);
+      stubbedSegments++;
+      prunedCount += seg.end - seg.start - 1; // user 原文保留,净裁 = 段体量 - user 消息
     } else {
       pushOriginal(seg);
     }
@@ -510,8 +538,30 @@ export function compactBySegments(
 
   return {
     messages: out,
-    stubbedSegments: stubs.size,
+    stubbedSegments,
     prunedCount,
-    reachedTarget: total <= targetTokens,
+    reachedTarget: true, // 由调用方按阈值判定（兼容旧返回形状）
   };
+}
+
+/**
+ * 采样锚定压缩:必保 = anchor 段 ∪ 最近 N 段当前阶段段 ∪ key 段;可压缩
+ * 集从最老段起逐个 stub 化直到纯估算 ≤ 目标。布局产物:[头] anchor 原文
+ * → [中] stub/key 段按段序 → [尾] 最近当前阶段段原文。整段取舍,
+ * tool_use/tool_result 配对不拆(配对闭包由段原子性保证)。
+ * 1.5.3：实现拆为 selectSegmentsToStub + applySegmentStubs（transform 层
+ * 需要先收割再落指针卡）；本函数保持旧契约（兼容既有测试与调用方）。
+ */
+export function compactBySegments(
+  messages: AgentMessage[],
+  segments: ContextSegment[],
+  targetTokens: number,
+  systemPromptChars = 0,
+): SegmentCompactionResult {
+  if (segments.length === 0) {
+    return { messages, stubbedSegments: 0, prunedCount: 0, reachedTarget: true };
+  }
+  const stubIdx = selectSegmentsToStub(messages, segments, targetTokens, systemPromptChars);
+  const applied = applySegmentStubs(messages, segments, stubIdx);
+  return { ...applied, reachedTarget: estimateMessagesTokens(applied.messages, systemPromptChars) <= targetTokens };
 }

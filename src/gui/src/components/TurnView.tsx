@@ -128,6 +128,10 @@ export function TurnView({ turn }: { turn: TurnBlock }): React.JSX.Element {
   );
 
   const hasConclusion = turn.conclusion.length > 0;
+  // 1.5.3:空回复分级占位——thinking-only 轮次（有思考/工具细节但无可见
+  // 文本）不再笼统显示「空回复」（golang 会话「遗忘」观感事故的 GUI 侧
+  // 修复:模型其实在思考/执行,只是没产出可见文本）;真·空轮才保留旧文案。
+  const hasDetails = turn.details.length > 0;
   const emptyReply = turn.status === 'complete' && !hasConclusion;
 
   return (
@@ -172,7 +176,13 @@ export function TurnView({ turn }: { turn: TurnBlock }): React.JSX.Element {
           {turn.conclusionStreaming && <span className="cursor">▌</span>}
         </div>
       )}
-      {emptyReply && <div className="empty-reply">（模型空回复）</div>}
+      {emptyReply && (
+        <div className="empty-reply">
+          {hasDetails
+            ? '（本轮仅思考/执行，无可见回复——展开下方细节查看过程）'
+            : '（模型空回复）'}
+        </div>
+      )}
 
       {/* 徽标行（定格态折叠入口） */}
       {(turn.details.length > 0 || turn.meta !== undefined) && (

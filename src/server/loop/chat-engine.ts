@@ -101,8 +101,10 @@ import { getInteractionScenario, setActiveSessionId } from '../agent-session';
 
 import { makeBoundaryHook } from './boundary';
 import { makeCompactionTransform } from './compaction';
+import { estimateMessagesTokens } from './context-manager';
 import { runLoop } from './loop';
 import { makeOutputGuardHook } from './output-guard';
+import { createRecallTool, RECALL_TOOL_NAME } from './recall';
 import { parseChatRefs, resolveChatRefs } from './refs';
 import { firePostTurnTitleHook } from '../turn-hooks';
 import { resolveLoopModel, resolveLoopModelFromEnv, type LoopModelResolution } from './pi-provider';
@@ -835,6 +837,8 @@ class ChatEngine {
       // 1.4.1 达成宣布：declare_completion 无条件注册（auto loop 验收信号；
       // 交互 turn 无 runner 消费，注册为全场景同一工具集，声明按线分桶不串）。
       DECLARE_COMPLETION_TOOL_NAME,
+      // 1.5.3 指针取回：recall 无条件注册（指针卡的配套取回面,宿主原生）。
+      RECALL_TOOL_NAME,
     ];
     if (!this.systemInitInfo) {
       this.systemInitInfo = {
@@ -1034,6 +1038,9 @@ class ChatEngine {
       // 1.4.1 达成宣布：declare_completion 无条件注册；归属线 = 本 turn 快照线
       // （auto-run runner 按 loopSessionId 取走声明，交互线声明无人消费即无害）。
       createDeclareCompletionTool({ getSessionId: () => sessionId }),
+      // 1.5.3 指针取回：recall 无条件注册——压缩指针卡的配套取回面
+      // （归属线 = 本 turn 快照线,与收割侧车同目录）。
+      createRecallTool({ getSessionId: () => sessionId }),
     ];
     if (env) {
       // W1(design-spec §8)— delegate_task 接回生产路径。深度限 1 由 subagent
@@ -1142,7 +1149,8 @@ class ChatEngine {
     // grounding(W1 @ 注入)只进 loop prompt,不进用户气泡(气泡显示原文)。
     const text = input.text.trim();
     const promptText = grounding ? `${grounding}\n\n${text}` : text;
-    const history = loadLoopSession(turnSessionId).messages;
+    const stored = loadLoopSession(turnSessionId);
+    const history = stored.messages;
 
     // 1.2.7(域补丁):域判定一次算出,系统提示(skills/caps/研究记忆)与
     // 执行栈(子代理清单按域收窄)共用同一 domain——同一 turn 内域只有
@@ -1158,9 +1166,19 @@ class ChatEngine {
     // 字符数经同一 chars/4 启发式折算进阈值（compaction 侧向后兼容）。
     const systemPrompt = await this.assemblePiSystemPrompt(env, scenario, history, { caps, domain }, turnSessionId);
     const contextWindow = resolution.model.contextWindow || 200_000;
+    // 1.5.3:校准系数从会话 meta 读（真实 API ÷ 启发式,上轮学习落盘）;
+    // 本轮是否触发过压缩由 onCompact 闭包打标——压缩过的轮次不学习
+    // (锚被污染:压缩轮 usage 是裁后体量,学进去系数会塌)。
+    let compactedThisTurn = false;
+    const onCompactMark = () => {
+      compactedThisTurn = true;
+      void markLoopSessionCompacted(turnSessionId).catch(() => {});
+    };
+    const transformOptions = { sessionId: turnSessionId };
     const transformContext = makeCompactionTransform(
-      { contextWindow, systemPromptChars: systemPrompt.length },
-      () => { void markLoopSessionCompacted(turnSessionId).catch(() => {}); },
+      { contextWindow, systemPromptChars: systemPrompt.length, calibration: stored.meta?.tokenCalibration },
+      onCompactMark,
+      transformOptions,
     );
 
     // 图片输入:pi user 消息的 image 块(与文本同一条消息)。
@@ -1204,9 +1222,11 @@ class ChatEngine {
         ? makeCompactionTransform(
             // 强制压缩重试:ratio 0.25(活体实测修正——0 会把上下文压到
             // 几千 tok 的残渣,模型只剩 stub 可读;0.25 是「激进取舍但
-            // 留出真实工作上下文」的预算)。
+            // 留出真实工作上下文」的预算)。1.5.3:溢出档与阈值档同一收割
+            // 流程(同 options),裁掉的内容一样进侧车。
             { contextWindow, systemPromptChars: systemPrompt.length, thresholdRatio: FORCE_COMPACTION_RATIO },
-            () => { void markLoopSessionCompacted(turnSessionId).catch(() => {}); },
+            onCompactMark,
+            transformOptions,
           )
         : transformContext;
       for await (const event of runLoop({
@@ -1273,11 +1293,23 @@ class ChatEngine {
     // 落终态:assistant 气泡内容 + 会话续存(done.messages 只含新增,无重复)。
     // B3:续存目标 = 起跑快照线,不是 this.sessionId(中途换线不串线)。
     assistantMessage.content = fullText;
+    // 1.5.3 校准学习:仅未压缩轮次(压缩轮 usage 是裁后体量,学进去系数
+    // 会塌)。真实 API usage ÷ 当轮起跑启发式全量,钳 [0.8, 6] 防离群,
+    // 经 appendLoopMessages meta 落盘供下轮 evaluateCompaction 乘用。
+    let learnedCalibration: number | undefined;
+    if (lastUsage && !compactedThisTurn) {
+      const heuristic = estimateMessagesTokens(history, systemPrompt.length);
+      const real = lastUsage.input + lastUsage.cacheRead + lastUsage.cacheWrite;
+      if (heuristic > 0 && real > 0) {
+        const c = real / heuristic;
+        if (Number.isFinite(c)) learnedCalibration = Math.min(6, Math.max(0.8, c));
+      }
+    }
     if (doneMessages.length > 0) {
       await appendLoopMessages(
         turnSessionId,
         doneMessages,
-        { model: resolution.modelId, providerId: resolution.providerId },
+        { model: resolution.modelId, providerId: resolution.providerId, tokenCalibration: learnedCalibration },
       ).catch((err) => console.warn('[pi-engine] 会话续存失败:', err));
     }
 
@@ -1463,8 +1495,10 @@ class ChatEngine {
       EXPERT_DRAFT_TOOL_NAME,
       REQUEST_DECISION_TOOL_NAME,
       DECLARE_COMPLETION_TOOL_NAME,
+      RECALL_TOOL_NAME,
     ];
-    const history = loadLoopSession(loopSessionId).messages;
+    const storedInvoke = loadLoopSession(loopSessionId);
+    const history = storedInvoke.messages;
     // 1.4.4 研究档案来源锚：headless 线无 wire user 消息——锚点置空。
     this.currentTurnUserMessageId = undefined;
     // 1.2.7(域补丁):与交互 turn 同——域判定一次算出,执行栈与系统提示共用。
@@ -1477,9 +1511,18 @@ class ChatEngine {
       this.buildTurnStack(env, resolution, toolNames, false, loopSessionId, domain);
     const systemPrompt = await this.assemblePiSystemPrompt(env, scenario, history, { caps, domain }, loopSessionId);
     const contextWindow = resolution.model.contextWindow || 200_000;
+    // 1.5.3:与交互 turn 同一接线——meta 校准系数 + 收割 options;压缩
+    // 轮次由 onCompactMark 打标,不学习(锚被污染)。
+    let compactedThisTurn = false;
+    const onCompactMark = () => {
+      compactedThisTurn = true;
+      void markLoopSessionCompacted(loopSessionId).catch(() => {});
+    };
+    const transformOptions = { sessionId: loopSessionId };
     const transformContext = makeCompactionTransform(
-      { contextWindow, systemPromptChars: systemPrompt.length },
-      () => { void markLoopSessionCompacted(loopSessionId).catch(() => {}); },
+      { contextWindow, systemPromptChars: systemPrompt.length, calibration: storedInvoke.meta?.tokenCalibration },
+      onCompactMark,
+      transformOptions,
     );
 
     const run = async (): Promise<{ text: string; error?: string }> => {
@@ -1496,7 +1539,8 @@ class ChatEngine {
         const attemptTransform = overflowRetried
           ? makeCompactionTransform(
               { contextWindow, systemPromptChars: systemPrompt.length, thresholdRatio: FORCE_COMPACTION_RATIO },
-              () => { void markLoopSessionCompacted(loopSessionId).catch(() => {}); },
+              onCompactMark,
+              transformOptions,
             )
           : transformContext;
         for await (const event of runLoop({
@@ -1525,11 +1569,23 @@ class ChatEngine {
         overflowRetried = true;
         console.warn(`[pi-engine] invoke 上下文溢出(${failed ?? 'unknown'}),强制压缩后重试本 turn(限 1 次)`);
       }
+      // 1.5.3 校准学习（与交互 turn 同口径）：未压缩轮次才学,钳 [0.8, 6]。
+      let learnedCalibration: number | undefined;
+      const lastUsageMsg = [...doneMessages].reverse().find((m) => m.role === 'assistant');
+      if (lastUsageMsg?.usage && !compactedThisTurn) {
+        const heuristic = estimateMessagesTokens(history, systemPrompt.length);
+        const u = lastUsageMsg.usage;
+        const real = u.input + u.cacheRead + u.cacheWrite;
+        if (heuristic > 0 && real > 0) {
+          const c = real / heuristic;
+          if (Number.isFinite(c)) learnedCalibration = Math.min(6, Math.max(0.8, c));
+        }
+      }
       if (doneMessages.length > 0) {
         await appendLoopMessages(
           loopSessionId,
           doneMessages,
-          { model: resolution.modelId, providerId: resolution.providerId },
+          { model: resolution.modelId, providerId: resolution.providerId, tokenCalibration: learnedCalibration },
         ).catch((err) => console.warn('[pi-engine] invoke 续存失败:', err));
       }
       // 与单例 turn 收尾同款的挂点(缺口埋点/bg 回收),目标都是本条线。
