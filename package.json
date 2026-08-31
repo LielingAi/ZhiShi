@@ -2,7 +2,7 @@
   "name": "zhishi",
   "description": "安全研究员专属智能体：GUI 交互会话 + zhishi CLI + 研究环境编排（1.3.9 起 TUI 退役，交互面=GUI）",
   "type": "module",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "license": "AGPL-3.0",
   "packageManager": "npm@10.8.2",
   "engines": {
