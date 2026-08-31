@@ -208,3 +208,4 @@ output/zhishi-landing.zip
 # IDE/agent 本地私有配置
 .codebuddy/
 .workbuddy/
+__pycache__/
