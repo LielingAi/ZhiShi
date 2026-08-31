@@ -435,13 +435,11 @@ export interface CorrectInput {
   id: string;
   by: CorrectionBy;
   reason: string;
-  /** 纠正的同时把状态翻到指定值（缺省按 CORRECTED_STATUS 表）。 */
-  statusOverride?: string;
 }
 
 /**
  * 纠正（一等操作，append-only）：
- *   - 目标实体状态翻转（缺省按类型表）；人纠正（by=human）后打
+ *   - 目标实体状态按类型表翻转（CORRECTED_STATUS）；人纠正（by=human）后打
  *     humanCorrected——模型再纠正被拒（权威序：人 > 专家 > 模型）；
  *   - 追加 R#n 纠正条目；引用该实体的下游打 needsReview（不连坐）。
  */
@@ -459,7 +457,7 @@ export async function correctEntity(
       throw new Error(`实体 ${input.id} 已被人纠正过——人纠正的实体模型不得再纠正`);
     }
     const now = freshTimestamp();
-    target.status = input.statusOverride ?? CORRECTED_STATUS[target.kind] ?? target.status;
+    target.status = CORRECTED_STATUS[target.kind] ?? target.status;
     target.updatedAt = now;
     if (input.by === 'human') target.humanCorrected = true;
     // 人纠正 = 终局：清掉遗留的待复核标记（人对结果负责，不再等复核）。

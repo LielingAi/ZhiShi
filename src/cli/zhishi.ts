@@ -29,7 +29,7 @@ import {
   RESEARCH_TASK_KINDS,
 } from '../shared/research-kinds';
 import { INTEL_POLL_INTERVAL_MS, startIntelProgressPolling } from './intel-progress';
-import { parseArgs } from './cli-args';
+import { isSidecarPortOverride, parseArgs } from './cli-args';
 import { buildExpertDoc, expertEditRoundTrip, parseExpertDoc } from './expert-edit';
 import { importExpertEntries, parseExpertImport } from './expert-import';
 import { EXPERT_ENTRY_KINDS, EXPERT_PROVENANCES, validateEntry, type ValidateResult } from '../shared/expert-validate';
@@ -43,10 +43,9 @@ let BASE = '';
 // Argument parsing
 // ---------------------------------------------------------------------------
 const rawArgs = process.argv.slice(2);
-/** Parse CLI arguments into structured flags and positional args */
 /**
  * Reject flags that arrived without a value (parser fell back to `true`
- * when the next token was another `--flag`). Surfaces a clear, exit-1
+ * when the next token was another `--flag`). Surfaces a clear, exit(2)
  * CLI error BEFORE any HTTP call — prevents the downstream handler from
  * seeing a bool where it expected a string and returning an opaque
  * "transport/parse failed" error to the AI caller.
@@ -99,6 +98,7 @@ Commands:
   task      Manage Task Center tasks (list/get/update-status/run/rerun ...)
   research  Research outcome signals (log/list) — security researcher edition
   intel     Intel index (update/status) — NVD + exploit-db 本地情报索引（1.1.2）
+  memory    长期记忆检索（search）——distill 蒸馏产物 + 主动沉淀的记忆，按需想起
   expert    专家知识库（list/show/new/edit/rm/search/review/promote/import）——专家审定，决策级依据（1.2.1）
 term      Drive embedded terminal (open/write/read/close)
   widget    Generative UI widget design guidelines (readme)
@@ -110,7 +110,7 @@ Global flags:
   --help      Show help for any command
   --json      Output as JSON
   --dry-run   Preview changes without applying
-  --port NUM  Override Sidecar port (default: $ZHISHI_PORT)
+  --port NUM  Override Sidecar port (default: $ZHISHI_PORT；env add 的 --port 是目标主机端口，不在此列)
 Examples:
   zhishi model list
   zhishi model set-key deepseek sk-xxx
@@ -466,8 +466,10 @@ if (!result.success) {
       }
       for (const d of domains) {
         const recipes = Array.isArray(d.recipes) ? (d.recipes as string[]).join(',') : '';
-        const skills = Array.isArray(d.skills) ? (d.skills as string[]).join(',') : '';
-        console.log(`- ${String(d.kind)}（${String(d.name)}）  类型:${recipes || '无'}  skills:${skills || '无'}  信号:${String(d.signalCount ?? 0)} 条`);
+        // 服务端 1.5.1 起返回 kind/name/recipes/subagents/signalCount/acceptance
+        // （skills 字段已删）——读 subagents，不是 skills。
+        const subagents = Array.isArray(d.subagents) ? (d.subagents as string[]).join(',') : '';
+        console.log(`- ${String(d.kind)}（${String(d.name)}）  类型:${recipes || '无'}  subagents:${subagents || '无'}  信号:${String(d.signalCount ?? 0)} 条`);
       }
       return;
     }
@@ -1245,6 +1247,9 @@ async function runExpertCommand(
       : []) as Array<Record<string, unknown>>;
     // 非 TTY：列草稿 + 给非交互用法（交互逐条审批需要终端）。
     if (!process.stdin.isTTY) {
+      // --json 契约在非 TTY 路径同样成立：原样输出 drafts 响应的 JSON 形态，
+      // 不混人类可读的草稿行/用法提示（1.5.4 审计 A2-9）。
+      if (jsonMode) return printExpertApiResult(draftsRes, jsonMode, () => {});
       printExpertDraftRows(drafts);
       if (drafts.length > 0) {
         console.log('非交互用法：zhishi expert review --approve <draftId> --reviewer <审定人> / --discard <draftId>');
@@ -1399,7 +1404,12 @@ async function main(): Promise<void> {
 // Resolve port: --port flag overrides env; 1.4.0 起 ZHISHI_PORT 未设时回落
 // sidecar.port 文件（应用启动即写，`~/.zhishi/sidecar.port`）——PATH 安装的
 // zhishi 在应用运行时独立可用，不用手动设端口。文件缺失/损坏 → 保持原报错。
-  PORT = (flags.port as string) || PORT;
+// 例外：`env add --kind ssh --port N` 的 --port 是目标主机端口（进请求体），
+// 不做 sidecar 覆盖（1.5.4 审计 A1-4：曾无条件覆盖导致该用法必然
+// ECONNREFUSED）。
+  if (isSidecarPortOverride(positional)) {
+    PORT = (flags.port as string) || PORT;
+  }
   if (!PORT) {
     try {
       const portFile = join(getZhiShiDataDir(), 'sidecar.port');
@@ -1612,10 +1622,6 @@ function buildRoute(group: string, action: string, _rest: string[]): string {
   }
   return `${group}/${action}`;
 }
-// Read a --*-file flag payload (term write --data-file).
-// Same 1 MB cap + NUL check as the other --*-file flags.// + actionable error. These flags exist to bypass Windows shell-quoting
-// losses — the AI writes the payload to disk and passes a path instead of an
-// inline arg that may get mangled/dropped.
 /**
  * 隐藏输入读取（env adopt 的 guest 密码）。不回显；非 TTY 返回空串，
  * 调用方按「未提供密码」处理。密码只活在内存里传给本次 API 调用。
@@ -1635,6 +1641,9 @@ function promptHiddenInput(question: string): Promise<string> {
     });
   });
 }
+// Read a --*-file flag payload (term write --data-file)：1 MB 上限 + NUL
+// 检查 + actionable error。这类旗标为绕过 Windows shell-quoting 丢失而存在
+// ——AI 把负载写盘后传路径，而不是可能被改写/丢弃的内联参数。
 function readTextFileFlag(flagName: string, filePath: string): string {
   try {
     // Lazy-require keeps cold path short for non-term commands.

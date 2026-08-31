@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildRegisterPayload, capabilityBadgeText, capabilityTooltip, groupSidebar, isDiscoveredRunning, isSwitchable, matchRegisteredEnv, psRowMatchesEntry, resolveEnvState } from './envs';
+import { buildRegisterPayload, capabilityBadgeText, capabilityTooltip, groupSidebar, isDiscoveredRunning, matchRegisteredEnv, psRowMatchesEntry, resolveEnvState } from './envs';
 
 const envs = [
   { id: 'pwn@docker', kind: 'docker', name: 'pwn@docker' },
@@ -35,13 +35,6 @@ describe('groupSidebar', () => {
   it('运行中实例用登记名回退', () => {
     const groups = groupSidebar([], [{ id: 'c1', name: '容器一', status: 'running', driver: 'docker' }], []);
     expect(groups[0].items[0].label).toBe('容器一');
-  });
-});
-
-describe('isSwitchable', () => {
-  it('unreg 组不可切换（未登记）', () => {
-    expect(isSwitchable({ key: 'x', label: 'x', group: 'unreg', detail: '', kind: 'docker', warn: false, startable: false })).toBe(false);
-    expect(isSwitchable({ key: 'x', label: 'x', group: 'run', detail: '', kind: 'docker', warn: false, startable: false })).toBe(true);
   });
 });
 

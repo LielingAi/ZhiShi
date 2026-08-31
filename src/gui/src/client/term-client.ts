@@ -29,10 +29,6 @@ export type TermServerMessage =
   | { type: 'error'; message: string }
   | { type: 'pong' };
 
-/** 关闭码（对齐 term-pty.ts）。 */
-export const TERM_CLOSE_SUPERSEDED = 4001;
-export const TERM_CLOSE_ATTACH_FAILED = 1011;
-
 /** 初始 80×24（服务端 DEFAULT_COLS/ROWS 同口径）。 */
 export const TERM_DEFAULT_COLS = 80;
 export const TERM_DEFAULT_ROWS = 24;

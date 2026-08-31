@@ -88,8 +88,6 @@ import {
 
   appendUnifiedLog,
 
-  appendUnifiedLogBatch,
-
   _flushUnifiedLogForTests,
 
   _getDroppedCount,
@@ -222,11 +220,7 @@ describe('UnifiedLogger — bounded queue + drop counter', () => {
 
     const startDropped = _getDroppedCount();
 
-    const entries: LogEntry[] = [];
-
-    for (let i = 0; i < burstSize; i++) entries.push(makeEntry(i));
-
-    appendUnifiedLogBatch(entries);
+    for (let i = 0; i < burstSize; i++) appendUnifiedLog(makeEntry(i));
 
 
 
@@ -236,7 +230,7 @@ describe('UnifiedLogger — bounded queue + drop counter', () => {
 
     // didn't flush concurrently). Allow some slack if the timer flusher
 
-    // fires during the batch loop.
+    // fires during the burst loop.
 
     expect(dropped).toBeGreaterThan(0);
 

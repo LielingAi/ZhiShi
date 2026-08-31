@@ -573,6 +573,9 @@ function ExpertTab(): React.JSX.Element {
   const [importOpen, setImportOpen] = useState(false);
   const [drafts, setDrafts] = useState<ExpertDraft[]>([]);
   const [reviewer, setReviewer] = useState(() => localStorage.getItem('zhishi.expert.reviewer') ?? '');
+  // 删除二次确认目标（expert/rm 有损操作——确认模态后再真删）。
+  const [rmTarget, setRmTarget] = useState<ExpertSummary | null>(null);
+  const [rmBusy, setRmBusy] = useState(false);
   const showToast = useGuiStore((s) => s.showToast);
 
   const reloadList = useCallback(async () => {
@@ -615,6 +618,25 @@ function ExpertTab(): React.JSX.Element {
     else showToast(`搜索失败：${res.error ?? '未知错误'}`);
   };
 
+  const confirmRm = async () => {
+    const c = getSettingsClient();
+    const target = rmTarget;
+    if (!c || !target) return;
+    setRmBusy(true);
+    try {
+      const res = await api.expertRm(c, target.id);
+      showToast(res.success ? `✓ 已删除条目 #${target.id}` : `✗ ${res.error ?? '删除失败'}`);
+      if (res.success) {
+        setRmTarget(null);
+        // 详情面板展示的正是被删条目时一并收起。
+        if (detail && detail.id === target.id) setDetail(null);
+        void reloadList();
+      }
+    } finally {
+      setRmBusy(false);
+    }
+  };
+
   return (
     <>
       <div className="set-group">
@@ -653,6 +675,17 @@ function ExpertTab(): React.JSX.Element {
               >
                 查看
               </button>
+              {/* builtin 条目随包分发，服务端拒删（admin-api.ts handleExpertRm）
+                  ——前端置灰并提示，不发请求。 */}
+              {e.provenance === 'builtin' ? (
+                <button className="btn small" disabled title="builtin 条目随包分发，不可删除">
+                  删除
+                </button>
+              ) : (
+                <button className="btn small danger" title="删除该专家条目" onClick={() => setRmTarget(e)}>
+                  删除
+                </button>
+              )}
             </div>
           </div>
         ))}
@@ -741,6 +774,30 @@ function ExpertTab(): React.JSX.Element {
           </div>
         ))}
       </div>
+      {rmTarget && (
+        <div className="modal-backdrop open">
+          <div className="modal">
+            <div className="m-head">
+              <span className="m-title">
+                删除专家条目 <b className="m-env-name">#{rmTarget.id} {rmTarget.title ?? ''}</b>
+              </span>
+              <span className="m-sub">expert/rm · {rmTarget.domain ?? '—'} · {rmTarget.kind ?? '—'}</span>
+              <button className="m-close" onClick={() => setRmTarget(null)} disabled={rmBusy}>✕</button>
+            </div>
+            <div className="m-body">
+              <div className="m-danger">
+                删除不可恢复——条目将从 expert.db 移除，不再注入后续会话。
+              </div>
+              <div className="m-actions">
+                <button className="btn" onClick={() => setRmTarget(null)} disabled={rmBusy}>取消</button>
+                <button className="btn danger" disabled={rmBusy} onClick={() => void confirmRm()}>
+                  确认删除
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {importOpen && (
         <ExpertImportModal
           onClose={() => setImportOpen(false)}

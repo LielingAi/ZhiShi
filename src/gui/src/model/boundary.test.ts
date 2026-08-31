@@ -7,7 +7,6 @@ import { describe, expect, it } from 'vitest';
 import {
   BOUNDARY_KIND_META,
   boundaryAskMeta,
-  hasBoundaryAsk,
   removeBoundaryAsk,
   upsertBoundaryAsk,
 } from './boundary';
@@ -51,11 +50,5 @@ describe('upsertBoundaryAsk / removeBoundaryAsk', () => {
     expect(removeBoundaryAsk(list, 'ask-1')).toEqual([]);
     expect(removeBoundaryAsk(list, 'ask-9')).toEqual(list);
     expect(removeBoundaryAsk(list, undefined)).toEqual(list);
-  });
-
-  it('hasBoundaryAsk 守卫', () => {
-    const list = upsertBoundaryAsk([], { askId: 'ask-1', kind: 'host-write' });
-    expect(hasBoundaryAsk(list, 'ask-1')).toBe(true);
-    expect(hasBoundaryAsk(list, 'ask-2')).toBe(false);
   });
 });

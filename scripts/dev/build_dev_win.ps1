@@ -237,11 +237,9 @@ foreach ($dir in $dirsToClean) {
 # 在构建期间生成；不需要额外占位文件。
 
 
-#   - sharp-runtime/ : sharp 在 dev 走 walk-up 加载，目录只是 bundler 的资源指针
-
 #   - cli/ : 仅占位，CLI bundle 由 esbuild-bundle.mjs 的 post-build hook 写入
 
-foreach ($subdir in @("sharp-runtime", "tsx-runtime", "cli")) {
+foreach ($subdir in @("tsx-runtime", "cli")) {
 
     $d = Join-Path $PROJECT_DIR "src-tauri/resources/$subdir"
 
@@ -250,14 +248,6 @@ foreach ($subdir in @("sharp-runtime", "tsx-runtime", "cli")) {
         New-Item -ItemType Directory -Path $d -Force | Out-Null
 
     }
-
-}
-
-$sharpPlaceholder = Join-Path $PROJECT_DIR "src-tauri/resources/sharp-runtime/.dev-placeholder"
-
-if (-not (Test-Path $sharpPlaceholder)) {
-
-    "dev mode: sharp loads from top-level node_modules/sharp; this dir is prod-only" | Out-File -FilePath $sharpPlaceholder -Encoding UTF8
 
 }
 

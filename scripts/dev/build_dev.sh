@@ -81,10 +81,6 @@ rm -rf "${PROJECT_DIR}/dist"
 # beforeBuildCommand 通过 `npm run build:server/cli` 在构建期间生成，
 # 不需要额外占位文件。
 # M4c: claude-agent-sdk 资源目录已删除。
-mkdir -p "${PROJECT_DIR}/src-tauri/resources/sharp-runtime"
-[ -f "${PROJECT_DIR}/src-tauri/resources/sharp-runtime/.dev-placeholder" ] || \
-    echo "dev mode: sharp loads from top-level node_modules/sharp; this dir is prod-only" \
-    > "${PROJECT_DIR}/src-tauri/resources/sharp-runtime/.dev-placeholder"
 
 # 填充 tsx-runtime（dev 模式 bridge.rs::find_tsx_runtime_loader 优先 fallback
 # 到项目根 node_modules/tsx，但 Tauri bundler 仍要求资源目录存在；填一个最小

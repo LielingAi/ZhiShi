@@ -28,7 +28,6 @@ Tauri v2 在 Windows 上打包 `bundle.resources` 时会尊重 `.gitignore`。�
 ### 3.1 由 NSIS 宏负责复制的资源
 
 - `server-dist.js`
-- `sharp-runtime/`
 - `sqlite-runtime/`
 - `tsx-runtime/`
 - `nodejs/`
@@ -97,7 +96,6 @@ $exe = "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/ZhiShi_1.0.0
 检查安装目录是否包含：
 
 - [ ] `nodejs/`
-- [ ] `sharp-runtime/`
 - [ ] `sqlite-runtime/`
 - [ ] `tsx-runtime/`
 - [ ] `cli/`

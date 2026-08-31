@@ -9,7 +9,7 @@
 
 import { createHash } from 'crypto';
 
-import { cpSync, existsSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, unlinkSync } from 'fs';
+import { cpSync, existsSync, readdirSync, readFileSync, readlinkSync, renameSync, unlinkSync } from 'fs';
 
 import { join } from 'path';
 
@@ -126,8 +126,8 @@ const TOOL_SIDE_SKILLS: readonly string[] = [
 
 /**
  * 工具侧技能播种（sidecar 启动挂在 seedEnvironmentRecipes 后）：hash 幂等
- * 同步 TOOL_SIDE_SKILLS 到 ~/.zhishi/skills/（一致 no-op，不一致强制覆盖
- * 为 bundled 新版）。单技能失败记日志不阻塞其余。
+ * 同步 TOOL_SIDE_SKILLS 到 ~/.zhishi/skills/（一致 no-op，不一致备份旧版 +
+ * 强制覆盖为 bundled 新版；覆盖失败回滚备份）。单技能失败记日志不阻塞其余。
  *
  * 与已删的 seedBundledSkills 的区别：只分发工具侧 4 个（方法论已迁专家
  * 库——那是知识不是本体）；不清理用户目录里的退役残留（不替用户扔东
@@ -163,8 +163,21 @@ export function syncToolSkills(
         outcomes.push({ id: name, action: 'kept' }); // 一致 no-op
         continue;
       }
-      rmSync(dst, { recursive: true, force: true });
-      cpSync(src, dst, { recursive: true });
+      // 覆盖前先备份旧版，cp 失败回滚——宁可留旧版也不留空位（与
+      // syncEnvironmentRecipes 同一纪律，A3-4 修复）。
+      let backup: string | null = null;
+      if (existsSync(dst)) {
+        backup = nextRecipeBackupPath(userSkillsDir, name);
+        renameSync(dst, backup);
+      }
+      try {
+        cpSync(src, dst, { recursive: true });
+      } catch (err) {
+        if (backup) {
+          try { renameSync(backup, dst); } catch { /* 已尽力，备份仍在 */ }
+        }
+        throw err;
+      }
       outcomes.push({ id: name, action: 'synced' });
     } catch (err) {
       console.warn(`[seed] tool skill sync failed for ${name} (non-fatal):`, err);

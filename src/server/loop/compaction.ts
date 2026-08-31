@@ -12,35 +12,25 @@
  * 仍不达标(key 段本身超阈值)→ 对保留消息做逐条正文截断(沿用 1.2.6
  * 第二档 b)→ 最终仍超则明确日志引导 /reset。
  *
- * 裁后重估口径(§2.6):裁后一律纯字符估算(estimateMessagesTokens),
- * 不吃旧 assistant 的 usage 锚——usage 锚只在未裁判定
- * ({@link evaluateCompaction} 首判)时用(API 实测最准);1.2.6 的
- * 「usage 锚定使裁后重估失效」由此修复。
+ * 阈值判定与裁后重估口径(§2.6):一律纯字符估算(estimateMessagesTokens)
+ * ——1.5.3 起未裁首判也不吃旧 assistant 的 usage 锚(锚失真:压缩轮的
+ * usage 是裁后体量,锚+增量 ≠ 全量历史,golang 会话事故实锤),改用
+ * 「全量启发式 × meta 持久化校准系数」({@link evaluateCompaction});
+ * 裁后重估同为纯估算。
  *
  * 压缩只影响**当次 LLM 上下文**(经 runLoop 的 transformContext 透传,
  * pi 在 convertToLlm 前应用);jsonl 持久化保留全量(语义不动),触发
  * 时由调用方经 markLoopSessionCompacted 在 meta 行打 compactedAt 标记。
  *
  * 存活契约(KEY_MESSAGE_PATTERNS/hasErrorSignal/isKeyMessage 等)与
- * tool 配对闭包(expandToolPairs)实现已迁到 context-manager.ts(叶子
- * 模块,no-circular 红线),此处转发导出保持既有引用兼容。
+ * tool 配对闭包(expandToolPairs)实现在 context-manager.ts(叶子
+ * 模块,no-circular 红线),消费方直接从那里 import。
  */
 
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
-import { estimateMessagesTokens, compactBySegments, segmentContext, selectSegmentsToStub, applySegmentStubs, buildSegmentStub, messageText, type ContextSegment } from './context-manager';
+import { estimateMessagesTokens, segmentContext, selectSegmentsToStub, applySegmentStubs, buildSegmentStub, messageText, type ContextSegment } from './context-manager';
 import { appendHarvestEntries, buildPointerCard, harvestSegment } from './harvest';
-
-export {
-  KEY_MESSAGE_PATTERNS,
-  expandToolPairs,
-  hasConstrainedFact,
-  hasErrorSignal,
-  isKeyMessage,
-  messageText,
-  toolCallIdsOf,
-  toolResultCallId,
-} from './context-manager';
 
 // ---------------------------------------------------------------------------
 // Policy & 阈值判定(纯函数)
@@ -55,8 +45,7 @@ export interface CompactionPolicy {
    * 系统提示长度(字符,1.2.6)——纳入阈值估算。pi 的字符启发式
    * (estimateTokens,chars/4)只算消息数组,系统提示是上下文的大头
    * (安全场景五段+skills)却不在其中,纯估算路径会系统性低估。
-   * 仅在纯估算路径计入:usageTokens>0 时 tokens 来自 API 实测 input
-   * (已含系统提示),再加会重复计数。可选,缺省 0(向后兼容)。
+   * 可选,缺省 0(向后兼容)。
    */
   systemPromptChars?: number;
   /** 1.5.3:token 校准系数（会话 meta 持久化；缺省 1 = 纯启发式）。
@@ -114,6 +103,9 @@ export interface CompactionTransformOptions {
   sessionId?: string;
   /** 收割目录（测试注入临时目录；缺省 loop-sessions）。 */
   harvestDir?: string;
+  /** 1.5.4(A2-3)：调用方上下文是否有 recall 工具（缺省 true——主 loop
+   *  恒注册；子 loop 无 recall,传 false 让兜底 stub 不印取回指引）。 */
+  hasRecall?: boolean;
 }
 
 /** 1.5.3 标记形态：方头括号 + 「勿复现」指令——旧形态「…[已截断]」被模型
@@ -171,10 +163,11 @@ async function harvestStubbedSegments(
     const stubbed = segments.filter((s) => stubIdx.has(s.index));
     const entries = stubbed.map((seg) => harvestSegment(seg, messages));
     const assigned = await appendHarvestEntries(options.sessionId, entries, { dir: options.harvestDir });
-    const byIndex = new Map(assigned.map((e) => [e.segmentIndex, e.id]));
+    const byIndex = new Map(assigned.map((e) => [e.segmentIndex, e]));
     return (seg) => {
-      const id = byIndex.get(seg.index);
-      return id ? buildPointerCard(seg, id) : String((buildSegmentStub(seg) as { content?: unknown }).content ?? '');
+      const entry = byIndex.get(seg.index);
+      // 指针卡带 jsonl 行区间（A1-3）——模型可直接 recall({lines}) 取原文。
+      return entry ? buildPointerCard(seg, entry.id, entry) : String((buildSegmentStub(seg) as { content?: unknown }).content ?? '');
     };
   } catch (err) {
     console.warn(`[compaction] 收割失败,回退兜底 stub:${err instanceof Error ? err.message : String(err)}`);
@@ -247,12 +240,15 @@ export function makeCompactionTransform(
 
       const systemPromptChars = policy.systemPromptChars ?? 0;
       const segments = segmentContext(messages);
-      // 1.5.3：先选段 → 收割 → 指针卡（不再直接 compactBySegments 的旧 stub）。
+      // 1.5.3：先选段 → 收割 → 指针卡（无收割面时回退兜底 stub 文案;
+      // A2-3:兜底文案按 options.hasRecall 分形态——子 loop 无 recall 工具,
+      // 不印取回指引。stubIdx 已按同参数选好,与旧 compactBySegments 路径
+      // 等价——后者只是同参重跑 select+apply）。
       const stubIdx = selectSegmentsToStub(messages, segments, evaluation.threshold, systemPromptChars);
-      const stubTextFn = await harvestStubbedSegments(messages, segments, stubIdx, options);
-      const compacted = stubTextFn
-        ? applySegmentStubs(messages, segments, stubIdx, stubTextFn)
-        : compactBySegments(messages, segments, evaluation.threshold, systemPromptChars);
+      const harvestedStubFn = await harvestStubbedSegments(messages, segments, stubIdx, options);
+      const stubTextFn = harvestedStubFn
+        ?? ((seg: ContextSegment) => String((buildSegmentStub(seg, { hasRecall: options?.hasRecall }) as { content?: unknown }).content ?? ''));
+      const compacted = applySegmentStubs(messages, segments, stubIdx, stubTextFn);
       let pruned = compacted.messages;
       let after = estimateMessagesTokens(pruned, systemPromptChars);
       if (after > evaluation.threshold) {

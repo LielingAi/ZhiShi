@@ -363,7 +363,3 @@ export function writeResearchDistilled(d: ResearchDistilledMemory, baseDir: stri
     console.warn('[research-distill] memory store write failed:', err instanceof Error ? err.message : err);
   }
 }
-
-export function hasResearchDistilledContent(d: ResearchDistilledMemory): boolean {
-  return Boolean(d.successPaths.trim() || d.failureRoots.trim() || d.toolCombos.trim());
-}

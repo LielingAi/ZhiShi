@@ -5,16 +5,18 @@
 
 ---
 
-## 1.5.4 —— 全面代码质量审查（进行中）
+## 1.5.4 —— 全面代码质量审查（已完成）
 
-**缘起（2026-08-31 用户拍板）**：1.5.x 三连发（触发权归人 → 注入面瘦身 → 治本）叠加 1.3/1.4 的密集功能面后，做一次全仓质量审查——死代码、代码逻辑、无效链路、注释与实现漂移，确认一个铲一个，不打补丁式乱动。
+**缘起（2026-08-31 用户拍板）**：1.5.x 三连发（触发权归人 → 注入面瘦身 → 治本）叠加 1.3/1.4 的密集功能面后，做一次全仓质量审查——死代码、代码逻辑、无效链路、注释与实现漂移，确认一个铲一个，不打补丁式乱动。**用户全程审计拍板：先出报告（`docs/design/1.5.4-audit.md`，161 条）逐组确认后才动手；refs 链路拍板「要」（修复非删除）、plan 权限模式拍板「不需要」（撤除）、expertRm 拍板「GUI 补」、BoundaryAskKind 拍板「留+标注」。**
 
-- [ ] **死代码清扫**：未引用导出/函数/模块（1.5.1 skills/MCP 删除与 1.5.3 usage 锚删除的残余面优先）；knockout 口径——每个删除点先证无引用（grep 全仓 + depcruise 图）
-- [ ] **无效链路核查**：注册但无消费者的 API 路由/事件/工具；广播了但无监听的事件；写了但无人读的存储
-- [ ] **代码逻辑审查**：重点模块（loop 引擎/压缩中枢/auto-run/环境元数据/档案）的逻辑正确性走查——边界条件、错误吞没、状态不一致
-- [ ] **注释与实现漂移**：1.5.3 后的注释准确性复查（改了实现没改注释的地方）
-- [ ] **回归 + 验证**：全量测试 + typecheck + eslint + depcruise + 三构建
+- [x] **死代码清扫**：未引用导出/函数/模块（1.5.1 skills/MCP 删除与 1.5.3 usage 锚删除的残余面优先）；knockout 口径——每个删除点先证无引用（grep 全仓 + depcruise 图）
+- [x] **无效链路核查**：注册但无消费者的 API 路由/事件/工具；广播了但无监听的事件；写了但无人读的存储
+- [x] **代码逻辑审查**：重点模块（loop 引擎/压缩中枢/auto-run/环境元数据/档案）的逻辑正确性走查——边界条件、错误吞没、状态不一致
+- [x] **注释与实现漂移**：1.5.3 后的注释准确性复查（改了实现没改注释的地方）
+- [x] **回归 + 验证**：全量测试 + typecheck + eslint + depcruise + 三构建
 
+> 实际落地（2026-08-31，六面并行 + 两轮跨批收尾）：①**真 bug 20 条全修**——A1-1 markLoopSessionCompacted 抹校准系数（1.5.3 自伤）；A1-2 invokePiSession 偷写引擎单例锚（改 buildTurnStack 尾参传锚，不碰单例）；A1-3 指针卡补 jsonl 行区间（recall 链路闭环）；A1-4 CLI --port 与 env add ssh 端口冲突（isSidecarPortOverride 纯函数 + spawn 级回归）；A1-5 domain list 改读 subagents；A1-6 npm version 钩子补 git add constants.ts；A2 组（校准分子分母口径对齐、专家注入锚点当轮化、子 loop stub 按 hasRecall 分形态、决策应答 120s 超时不再挂起、maxOutputTokensParamName 死字段、verdict refs 恒空、Drawer 搜索纯文本定位、restoreEnvSelection 不覆盖会话槽、expert review --json 契约）+ A3 组 8 条。②**refs 大值外溢修复**（用户拍板「要」，CLAUDE.md:380 红线恢复真实生效）：sse.ts 新增 dispatchWithSpillGuard——broadcast 出口统一过闸，>256KB 经 maybeSpill 落盘换引用，spill 在飞时后续事件尾链排队不抢跑，spill 失败 fail-closed；/refs/:id + startRefsGc 保留；消费端（GUI fetchRef）暂无，注释标明待接。③**死代码大清扫**：index.ts 3403→1390 行（30+ 死路由：cron 残留/sessions 残留/SDK 时代/browser dev-mode/IM 桩/rules+commands+agents 文件管理面 ~1000 行/零散端点）；server utils 14 个僵尸模块连测试删除（watchdog/plan-mode-gate/fork-remap 等 M4c 残余）；shared 14 个死文件 + runtime.ts/config-types.ts ~750 行死链 + CUSTOM_EVENTS 死事件桥；GUI 12 死导出 + 7 组死字段 + 死样式；loop 死代码（getPiLogLines/sendPiChatMessageAndWait/compaction 转发导出块）；config:changed 广播链删除。④**sharp 依赖全链清零**（imageResize 死模块牵出）：package.json 依赖 + 8 个 @img optionalDeps + lockfile 520 行 + tauri.conf 资源 + 三平台构建脚本 staging + patch_nsis + dev 占位 + 文档，grep 全仓零残留。⑤**plan 权限模式撤除**（用户拍板）：plan-mode-gate 删除、PermissionMode 联合撤 'plan'、BUILTIN_PERMISSION_MODES 收窄（存量自动落 auto）、迁移集合保留历史值（注释标注）。⑥**expertRm GUI 入口补齐**（用户拍板「GUI 补」）：专家页签每条加删除按钮 + 二次确认，builtin 置灰（与服务端拒删对齐）。⑦**注释漂移 30+ 处随修**（SDK/MCP/skills/renderer 残留措辞、usage 锚描述、组杀冲突、协议幻指等）。回归：新增/改写测试随各批（含 sse-large-payload-spill 3 例、CLI spawn 级 4 例、drawer-highlight 8 例、verdictModalOpen 4 例）；全量 170 文件 2206 测试绿 + tsc + eslint + depcruise 438 模块零违规。
+> 取舍记录在案：BoundaryAskKind 后三类留作 D14 规划占位（注释标注）；refs 消费端（GUI fetchRef）待接——写链路先真实生效；FIFO 队列入口（/chat/queue）删除后 this.queue 恒空，queue/status+cancel 面向 GUI 保留（注释标注形态）；archive 'doubtful' 状态无写路径（低置信，留）；expandToolPairs 生产零调用但注释已改实（留作配对闭包校验工具）。
 > 边界（不做）：风格性重构（不改手感只铲真问题）；god file 再拆（1.1.7 已绞杀式推进，本版不单列）；功能新增。
 > 验收：每个删除/修复点有证据（无引用证明或复现路径）；全量测试绿。
 

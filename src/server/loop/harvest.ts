@@ -122,16 +122,19 @@ export function harvestSegment(
   };
 }
 
-/** 指针卡文本（stub 的 1.5.3 形态——含收割引用 + jsonl 行区间 + recall 用法）。 */
+/** 指针卡文本（stub 的 1.5.3 形态——含收割引用 + jsonl 行区间 + recall 用法）。
+ *  行区间直接印在卡上：模型可不等 ref 取回、直接 recall({lines:"x-y"}) 拿原文（A1-3）。 */
 export function buildPointerCard(
   seg: Pick<ContextSegment, 'index' | 'phase' | 'toolNames' | 'keyHits'>,
   harvestId: string,
+  lines: { lineStart: number; lineEnd: number },
 ): string {
   const keys = seg.keyHits.length > 0 ? seg.keyHits.map((l) => `「${l}」`).join(' ') : '无关键命中';
   const tools = seg.toolNames.length > 0 ? seg.toolNames.join('/') : '无工具调用';
   return (
     `[段#${seg.index} ${seg.phase} 已沉淀] 关键信息:${keys};工具:${tools};` +
-    `全文在会话存档 jsonl（需要时用 recall 工具：lines 按行区间取回原文）；` +
+    `全文在会话存档 jsonl 第 ${lines.lineStart}-${lines.lineEnd} 行` +
+    `（recall({lines:"${lines.lineStart}-${lines.lineEnd}"}) 按行区间取回原文）；` +
     `收割物:${harvestId}（recall({ref:"${harvestId}"}) 取回摘要与关键行）。`
   );
 }

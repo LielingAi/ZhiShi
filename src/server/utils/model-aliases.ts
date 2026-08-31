@@ -25,20 +25,3 @@ export function resolveSessionModelAliases(
   if (aliases.haiku === model) return aliases;
   return { sonnet: model, opus: model, haiku: model };
 }
-
-function modelAliasesEqual(a: ModelAliases | undefined, b: ModelAliases | undefined): boolean {
-  return (a?.sonnet ?? undefined) === (b?.sonnet ?? undefined)
-    && (a?.opus ?? undefined) === (b?.opus ?? undefined)
-    && (a?.haiku ?? undefined) === (b?.haiku ?? undefined);
-}
-
-export function modelAliasEnvChangesForModel(
-  aliases: ModelAliases | undefined,
-  oldModel: string | undefined,
-  newModel: string | undefined,
-): boolean {
-  return !modelAliasesEqual(
-    resolveSessionModelAliases(aliases, oldModel),
-    resolveSessionModelAliases(aliases, newModel),
-  );
-}

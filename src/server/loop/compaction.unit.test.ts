@@ -1,11 +1,11 @@
 /**
  * M3 → 1.2.7(A)— compaction(loop/compaction.ts)unit tests。
  *
- * 1.2.7 重写为段级压缩(消费 context-manager.ts):阈值首判(usage 锚)
- * 、采样锚定压缩(anchor/当前阶段/key 段存活,stub 居中)、裁后纯估算
- * 重估(不吃 usage 锚)、第二档正文截断与 /reset 引导、transform 异常
- * 透传、持久层不受影响(jsonl 全量 + meta compactedAt 标记)。持久层用
- * 真临时目录。切分/相位/标注/stub/存活契约新族的细粒度用例在
+ * 1.2.7 重写为段级压缩(消费 context-manager.ts):阈值首判(全量启发式
+ * × meta 校准系数,1.5.3;usage 锚已删)、采样锚定压缩(anchor/当前阶段/
+ * key 段存活,stub 居中)、裁后纯估算重估、第二档正文截断与 /reset 引导、
+ * transform 异常透传、持久层不受影响(jsonl 全量 + meta compactedAt 标记)。
+ * 持久层用真临时目录。切分/相位/标注/stub/存活契约新族的细粒度用例在
  * context-manager.unit.test.ts。
  */
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -18,12 +18,10 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
 import {
   evaluateCompaction,
-  isKeyMessage,
   makeCompactionTransform,
-  messageText,
   truncateMessageText,
 } from './compaction';
-import { estimateMessagesTokens } from './context-manager';
+import { estimateMessagesTokens, isKeyMessage, messageText } from './context-manager';
 import {
   appendLoopMessages,
   loadLoopSession,
@@ -154,9 +152,29 @@ describe('makeCompactionTransform — 段级采样锚定压缩(1.2.7)', () => {
     }
   });
 
-  it('裁后重估纯字符口径:usage 锚不把裁掉的量加回来(1.2.6 失真修复)', async () => {
-    // anchor 段内的旧 assistant 带大 usage(压缩前全量实测值)——首判靠它
-    // 触发压缩;裁后若再吃 usage 锚会误判仍超阈值,纯估算口径下达标。
+  it('A2-3:hasRecall=false(子 loop 形态)兜底 stub 不印 recall 取回指引', async () => {
+    const msgs = bigSession();
+    const transform = makeCompactionTransform(
+      { contextWindow: 1000, thresholdRatio: 0.5 },
+      undefined,
+      { hasRecall: false }, // 无 sessionId → 无收割,走兜底 stub;子 loop 无 recall 工具
+    );
+    const out = await transform(msgs);
+    const stubs = out.filter((m) => messageText(m).startsWith('[段#'));
+    expect(stubs.length).toBeGreaterThan(0);
+    for (const s of stubs) {
+      expect(messageText(s)).not.toContain('recall');
+      expect(messageText(s)).toContain('无取回工具');
+    }
+    // 对照:缺省(主 loop)仍印 recall 指引
+    const outDefault = await makeCompactionTransform({ contextWindow: 1000, thresholdRatio: 0.5 })(msgs);
+    const defaultStubs = outDefault.filter((m) => messageText(m).startsWith('[段#'));
+    expect(defaultStubs.some((m) => messageText(m).includes('recall 工具按行区间取回'))).toBe(true);
+  });
+
+  it('裁后重估纯字符口径:usage 字段不参与估算(1.5.3 起 usage 锚已删)', async () => {
+    // anchor 段内的旧 assistant 带大 usage(压缩前全量实测值)——1.5.3 起
+    // 判定/重估一律纯估算,usage 字段完全不读;首判由启发式体量触发压缩。
     const withUsage = {
       role: 'assistant',
       content: [{ type: 'text', text: '先看版本' }],
@@ -180,7 +198,7 @@ describe('makeCompactionTransform — 段级采样锚定压缩(1.2.7)', () => {
     const out = await transform(msgs);
     expect(infos).toHaveLength(1);
     expect(infos[0].stubbedSegments).toBe(1);
-    // 保留的旧 assistant 仍带 500K usage 锚,但裁后纯估算不达标误报
+    // 保留的旧 assistant 仍带 500K usage 字段,纯估算口径下不误报超阈值
     expect(out).toContain(withUsage);
     expect(infos[0].stillOverThreshold).toBe(false);
     expect(estimateMessagesTokens(out)).toBeLessThanOrEqual(500);

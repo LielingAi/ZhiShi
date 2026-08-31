@@ -56,8 +56,6 @@ vi.mock('../UnifiedLogger', () => ({
 
   appendUnifiedLog: () => {},
 
-  appendUnifiedLogBatch: () => {},
-
   _flushUnifiedLogForTests: () => {},
 
   _getDroppedCount: () => 0,

@@ -9,7 +9,6 @@ import {
   effectiveScore,
   findByContent,
   listActive,
-  listArchive,
   listUnsettledRecalls,
   listWrongMemories,
   logRecallEvents,
@@ -81,7 +80,6 @@ describe('putEntry / listActive', () => {
     }
     const list = listActive('reminder', dir, NOW + 100);
     expect(list.length).toBe(60);
-    expect(listArchive(dir).length).toBe(5);
   });
 
   it('持久化：重开后状态仍在', () => {

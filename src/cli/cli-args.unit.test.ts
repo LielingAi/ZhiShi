@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { camelCase, parseArgs } from './cli-args';
+import { camelCase, isSidecarPortOverride, parseArgs } from './cli-args';
 
 describe('parseArgs（CLI 边界解析）', () => {
   it('位置参数 + 长 flag(--key value / --key=value) + 布尔旗标', () => {
@@ -16,17 +16,20 @@ describe('parseArgs（CLI 边界解析）', () => {
     expect(r.flags.limit).toBe('5');
   });
 
-  it('可重复 flag 累积数组（--args 重复出现）', () => {
-    const r = parseArgs(['mcp', 'add', 'x', '--args', 'a', '--args', '--stdio', '--args=c']);
-    expect(r.flags.args).toEqual(['a', '--stdio', 'c']);
+  it('可重复 flag 累积数组（--models 重复出现）', () => {
+    const r = parseArgs(['agent', 'set', 'x', '--models', 'a', '--models', '--weird', '--models=c']);
+    expect(r.flags.models).toEqual(['a', '--weird', 'c']);
   });
 
-  it('短 flag -p → prompt;缺值/下一个仍是 flag → true（不吞下一个 flag）', () => {
+  it('审计 A3-6 回归：--env 非 repeatable，重复传后者覆盖前者（不再拼成数组）', () => {
+    const r = parseArgs(['term', 'open', '--env', 'host', '--env', 'docker:c1']);
+    expect(r.flags.env).toBe('docker:c1');
+  });
+
+  it('短旗标 `-p` 已删除（零消费方）——裸 `-x` 一律按位置参数处理', () => {
     const r = parseArgs(['agent', 'send', '-p', '你好']);
-    expect(r.flags.prompt).toBe('你好');
-    const r2 = parseArgs(['x', '-p', '--help']);
-    expect(r2.flags.prompt).toBe(true);
-    expect(r2.flags.help).toBe(true);
+    expect(r.positional).toEqual(['agent', 'send', '-p', '你好']);
+    expect(r.flags.prompt).toBeUndefined();
   });
 
   it('kebab-case key → camelCase（--task-id → taskId）', () => {
@@ -44,5 +47,15 @@ describe('camelCase', () => {
     expect(camelCase('task-id')).toBe('taskId');
     expect(camelCase('env')).toBe('env');
     expect(camelCase('a-b-c')).toBe('aBC');
+  });
+});
+
+describe('isSidecarPortOverride（审计 A1-4：env add --port 是 ssh 端口，不覆盖 sidecar 端口）', () => {
+  it('env add → false；其余命令 → true', () => {
+    expect(isSidecarPortOverride(['env', 'add'])).toBe(false);
+    expect(isSidecarPortOverride(['env', 'list'])).toBe(true);
+    expect(isSidecarPortOverride(['env', 'open', 'dev-box'])).toBe(true);
+    expect(isSidecarPortOverride(['status'])).toBe(true);
+    expect(isSidecarPortOverride([])).toBe(true);
   });
 });

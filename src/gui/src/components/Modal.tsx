@@ -56,7 +56,8 @@ function BootModalInner({ recipeId }: { recipeId: string }): React.JSX.Element {
 
   const stages = useMemo(() => bootStages(recipe.base), [recipe.base]);
 
-  // 挂载即发起真实 up（幂等：重复打开重跑；store.bootEnv 内部去抖）。
+  // 挂载即发起真实 up（重复打开会重发请求；幂等兜底在服务端 environment/up，
+  // store 层无去抖）。
   useEffect(() => {
     void bootEnv(recipeId);
   }, [recipeId, bootEnv]);

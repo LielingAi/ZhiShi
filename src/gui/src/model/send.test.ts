@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildSendBody, classifySendResponse, steeringToast } from './send';
+import { buildSendBody, classifySendResponse } from './send';
 
 describe('buildSendBody', () => {
   it('trim 文本；空 refs 不带字段（服务端 additive 语义）', () => {
@@ -36,13 +36,5 @@ describe('classifySendResponse（服务端裁决的 steering 契约）', () => {
 
   it('缺省视为 started（服务端正常回包形状）', () => {
     expect(classifySendResponse({})).toBe('started');
-  });
-});
-
-describe('steeringToast', () => {
-  it('截断到 120 字符', () => {
-    const t = steeringToast('x'.repeat(300));
-    expect(t.length).toBeLessThanOrEqual(120);
-    expect(t).toContain('纠偏');
   });
 });

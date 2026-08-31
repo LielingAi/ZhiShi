@@ -7,7 +7,9 @@
  * 的映射集中在 {@link mapAgentEvent}（纯函数，单测直接断言）。
  *
  * 契约：
- * - convertToLlm 恒等（M1 只有标准 LLM 消息；自定义消息类型留给 M2+）。
+ * - convertToLlm 是白名单过滤（只放行 user/assistant/toolResult 三类标准
+ *   LLM 消息；pi 的自定义消息类型——如 BashExecutionMessage——在此滤掉,
+ *   见 runLoop 内 convertToLlm 注释）。
  * - getApiKey 由调用方注入（每次 LLM 调用前动态解析，pi 契约）。
  * - beforeToolCall 原样透传给 pi——M2 的边界规则挂在这里，本层不加料。
  * - pi 的 assistant 错误（stopReason "error"/"aborted"）归一化为末尾的
@@ -168,7 +170,7 @@ export async function* runLoop(options: RunLoopOptions): AsyncIterable<LoopEvent
     },
     {
       model: options.model,
-      // 恒等转换（M1 只有标准 LLM 消息；pi 的自定义消息类型——如
+      // 白名单过滤（只放行标准 LLM 消息；pi 的自定义消息类型——如
       // BashExecutionMessage——在此过滤，契约见 AgentLoopConfig.convertToLlm）。
       convertToLlm: (messages) => messages.filter(
         (m): m is Extract<AgentMessage, { role: 'user' | 'assistant' | 'toolResult' }> =>

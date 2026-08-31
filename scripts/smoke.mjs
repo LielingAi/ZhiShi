@@ -64,10 +64,28 @@ function normalizeName(name) {
 function parseArgs(argv) {
   const opts = { only: null };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--only" || argv[i] === "-o") opts.only = argv[++i];
-    else if (argv[i].startsWith("--only="))
-      opts.only = argv[i].slice("--only=".length);
-    else {
+    if (argv[i] === "--only" || argv[i] === "-o") {
+      const value = argv[i + 1];
+      // --only 缺值（或后随另一旗标）必须报错退出——静默跑全量会让用户
+      // 误以为只跑了一个套件（A3-8）。
+      if (value === undefined || value.startsWith("-")) {
+        console.error(
+          `--only 需要一个套件名参数\n用法: node scripts/smoke.mjs [--only <name>]`,
+        );
+        process.exit(2);
+      }
+      opts.only = value;
+      i++;
+    } else if (argv[i].startsWith("--only=")) {
+      const value = argv[i].slice("--only=".length);
+      if (!value) {
+        console.error(
+          `--only= 需要一个套件名参数\n用法: node scripts/smoke.mjs [--only <name>]`,
+        );
+        process.exit(2);
+      }
+      opts.only = value;
+    } else {
       console.error(
         `未知参数: ${argv[i]}\n用法: node scripts/smoke.mjs [--only <name>]`,
       );

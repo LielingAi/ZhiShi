@@ -548,40 +548,6 @@ export function appendUnifiedLog(entry: LogEntry): void {
 
 /**
 
- * Append multiple log entries (batch enqueue). Same overflow semantics.
-
- */
-
-export function appendUnifiedLogBatch(entries: LogEntry[]): void {
-
-  if (entries.length === 0) return;
-
-  for (const entry of entries) {
-
-    const line = formatLogEntry(entry) + '\n';
-
-    rememberRecent(line);
-
-    if (queue.length >= QUEUE_MAX_ENTRIES) {
-
-      dropped++;
-
-      continue;
-
-    }
-
-    queue.push(line);
-
-  }
-
-  ensureFlusher();
-
-}
-
-
-
-/**
-
  * Internal-test hook: drain the queue synchronously. Tests use this to
 
  * avoid waiting on the 100ms timer.

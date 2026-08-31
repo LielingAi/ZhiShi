@@ -58,9 +58,6 @@ def main():
   ; server-dist.js
   SetOutPath "$INSTDIR"
   File /nonfatal "{r}\\src-tauri\\resources\\server-dist.js"
-  ; sharp-runtime
-  SetOutPath "$INSTDIR\\sharp-runtime"
-  File /nonfatal /r "{r}\\src-tauri\\resources\\sharp-runtime\\*.*"
   ; sqlite-runtime（记忆库引擎，better-sqlite3 内置 Node ABI）
   SetOutPath "$INSTDIR\\sqlite-runtime"
   File /nonfatal /r "{r}\\src-tauri\\resources\\sqlite-runtime\\*.*"
@@ -129,7 +126,6 @@ def main():
   Delete "$INSTDIR\\server-dist.js"
   Delete "$INSTDIR\\vcruntime140.dll"
   Delete "$INSTDIR\\vcruntime140_1.dll"
-  RMDir /r "$INSTDIR\\sharp-runtime"
   RMDir /r "$INSTDIR\\sqlite-runtime"
   RMDir /r "$INSTDIR\\pty-runtime"
   RMDir /r "$INSTDIR\\tsx-runtime"

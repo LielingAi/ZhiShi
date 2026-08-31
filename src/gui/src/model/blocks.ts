@@ -34,7 +34,6 @@ export interface ThinkingDetail {
   streaming: boolean;
   /** thinking-complete 携带的秒数（可选）。 */
   seconds?: number;
-  startedAt: number;
 }
 
 /** 工具卡细节行（细节区的一员）。id = 服务端 toolUseId（与 wire 消息 id 同源）。 */
@@ -45,7 +44,6 @@ export interface ToolDetail {
   argsSummary: string;
   state: ToolState;
   output: string;
-  startedAt: number;
   elapsedMs?: number;
   exitCode?: number;
   /** 从工具名+输出提取的关键信号（如 "flag 已读取" / "SIGSEGV at 0x…"）。 */
@@ -58,7 +56,6 @@ export type DetailItem = ThinkingDetail | ToolDetail;
 
 /** message-complete 的 usage 聚合（状态栏累计用）。 */
 export interface TurnMeta {
-  model?: string;
   inputTokens: number;
   outputTokens: number;
   toolCount: number;
@@ -123,22 +120,13 @@ export interface ErrorItem {
   text: string;
 }
 
-/** 系统提示行（就绪行 / 切环境提示，本地产生）。 */
-export interface SysItem {
-  kind: 'sys';
-  id: string;
-  seq: number;
-  text: string;
-}
-
-export type StreamItem = TurnBlock | DividerItem | ErrorItem | SysItem;
+export type StreamItem = TurnBlock | DividerItem | ErrorItem;
 
 /** 引擎队列条目（statusbar 队列计数）。 */
 export interface QueueItem {
   id: string;
   text: string;
   kind: 'steering' | 'fifo';
-  addedAt: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -213,11 +201,6 @@ export function buildBadgeSummary(details: DetailItem[]): BadgeSummary {
     else histogram.push({ name: d.name, count: 1 });
   }
   return { toolCount, thinkingSeconds, histogram };
-}
-
-/** thinking 合计秒数（⏵ 段）。 */
-export function thinkingTotalSeconds(details: DetailItem[]): number {
-  return buildBadgeSummary(details).thinkingSeconds;
 }
 
 /**

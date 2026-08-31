@@ -123,7 +123,7 @@ export class GuiSidecarClient {
     return this.parseJson<T>(res);
   }
 
-  /** 1.3.3 会话管理：PATCH（title/favorite/pinned/archived 部分更新）。 */
+  /** 1.3.3 会话管理：PATCH（title/pinned/archived 部分更新）。 */
   async patchJson<T = Record<string, unknown>>(path: string, body: unknown): Promise<T> {
     let res: GuiFetchResponse;
     try {

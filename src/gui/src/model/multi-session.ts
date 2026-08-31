@@ -56,8 +56,3 @@ export function planSwitch(
     changed: true,
   };
 }
-
-/** 已激活的会话线键（当前 env 锚 → 会话键）。 */
-export function activeSessionKey(currentEnvKey: string | null | undefined): string {
-  return sessionKey(currentEnvKey);
-}

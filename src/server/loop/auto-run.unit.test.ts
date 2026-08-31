@@ -507,6 +507,38 @@ describe('runAutoRunLoop(预算耗尽 → 续命恢复)', () => {
     await loop;
     expect(record.status).toBe('stopped');
   });
+
+  it('A3-1 回归:续命恢复 running 立即 persist(下一轮 invoke 还在跑,盘上已是 running)', async () => {
+    const record = makeRecord({ budget: { kind: 'turns', limit: 1, spent: 0 } });
+    let gate: (() => void) | undefined;
+    let blocked = false;
+    const fake = makeFakeDeps({
+      invoke: async () => {
+        fake.invokeCount += 1;
+        // 第 2 轮起挂住 invoke——制造「续命后、下一轮完成前」的观察窗口。
+        if (fake.invokeCount >= 2 && !blocked) {
+          blocked = true;
+          await new Promise<void>((r) => { gate = r; });
+        }
+        return { text: 'x', loopSessionId: 'ls-1' };
+      },
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+
+    await waitFor(() => fake.sent.some((s) => s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'budget'));
+    expect(ctl.renewBudget(5).ok).toBe(true);
+    // 续命分支的 persist 先于下一轮 invoke——invokeCount>=2 时盘上必已有 running 快照。
+    await waitFor(() => fake.invokeCount >= 2);
+    expect(fake.saved.some((r) => r.status === 'running' && r.budget.limit === 5)).toBe(true);
+
+    ctl.requestStop();
+    gate?.();
+    await done;
+    await loop;
+    expect(record.status).toBe('stopped');
+  });
 });
 
 describe('runAutoRunLoop(Esc 终止)', () => {
@@ -543,10 +575,11 @@ describe('verdictRequestOfRecord（1.4.6 dogfood 实证：list 归一化）', ()
   it('verdictPackage → 对外 verdict（evidence/partial → hasEvidence）', () => {
     const v = verdictRequestOfRecord(record)!;
     expect(v.statement).toBe('全部达成');
+    // A2-6(1.5.4):criteriaPrecheck 无 refs 数据——字段缺席,不再硬填空数组。
     expect(v.criteria).toEqual([
-      { text: '条件一', hasEvidence: true, refs: [] },
-      { text: '条件二', hasEvidence: true, refs: [] },
-      { text: '条件三', hasEvidence: false, refs: [] },
+      { text: '条件一', hasEvidence: true },
+      { text: '条件二', hasEvidence: true },
+      { text: '条件三', hasEvidence: false },
     ]);
   });
 

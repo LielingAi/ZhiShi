@@ -81,7 +81,7 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   // events instead, so this whitelist no longer needs the entry.)
   // Logs / telemetry — droppable.
   'chat:log': 'droppable',
-  'chat:logs': 'droppable',
+  // ('chat:logs' 已随 1.5.4 B3 删除——getPiLogLines 恒空壳退役,全链无消费者)
   // Critical — never drop or coalesce. Includes block-boundary / start
   // markers, completion / error events, status updates, queue lifecycle,
   // and client-driven request/response gates. These fire in tight bursts
@@ -131,7 +131,6 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   'auto-run:budget-warning': 'critical',
   'auto-run:completed': 'critical',
   'auto-run:verdict-requested': 'critical',
-  'config:changed': 'critical',
   'queue:added': 'critical',
   'queue:cancelled': 'critical',
   // ('cron:task-exit-requested' removed — emitter retired with exit_cron_task in v0.2.11)
@@ -167,7 +166,7 @@ const COALESCE_HIGH_WATER = 256;
 /** OOM defense — beyond this, even critical events get the slow client
  *  force-closed rather than enqueued. PRD §2.3.2 contract: critical never
  *  drops on the normal path, but a wedged renderer + buggy plugin emitting
- *  many `chat:status` / `config:changed` (both critical) must not be allowed
+ *  many `chat:status` (critical) must not be allowed
  *  to grow Node memory unboundedly. 10x MAX_QUEUE_PER_CLIENT gives plenty of
  *  headroom for a recoverable burst while bounding the worst case. */
 const MAX_QUEUE_HARD_LIMIT = 10 * MAX_QUEUE_PER_CLIENT;
@@ -500,7 +499,7 @@ function flushCoalescedChunk(event: string): void {
   if (!entry) return;
   chunkBuffers.delete(event);
   clearTimeout(entry.timer);
-  broadcastImmediate(event, entry.merged);
+  dispatchWithSpillGuard(event, entry.merged);
 }
 
 function flushAllCoalesced(): void {
@@ -548,6 +547,91 @@ export function broadcast(event: string, data: unknown): void {
   // pass through without disturbing the in-flight coalesce window.
   if (chunkBuffers.size > 0 && !NON_FLUSHING_EVENTS.has(event)) {
     flushAllCoalesced();
+  }
+  dispatchWithSpillGuard(event, data);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// 1.5.4 ① refs 大值外溢（CLAUDE.md 红线：>256KB payload 不直接进 SSE/IPC JSON）。
+//
+// broadcast 出口统一过 spill 闸：payload JSON 超过阈值时经 maybeSpill 落盘
+// （~/.zhishi/refs/<id>），线上改发 {kind:'ref', id, preview, ...} 占位引用，
+// 全量体由消费端走 GET /refs/:id 取回。
+//
+// 消费端待接（刻意记录）：当前 GUI/CLI 尚无 fetchRef / {kind:'ref'} 解析端——
+// 服务端写链路（落盘 + /refs/:id + startRefsGc）真实生效；消费端接上前，客户
+// 端在超大 payload 处会看到 ref 占位而非全量 JSON。这正是红线的取舍：宁可占位
+// 也不让 MB 级 JSON 进 IPC 桥拖死 sidecar。
+//
+// spill 是异步落盘；SSE 消费端是结构化状态机（tool-result 必须先于
+// message-complete 等），故 spill 在飞期间到达的后续事件经 spillTail 串行
+// 尾链排队，保住严格时序。
+// ──────────────────────────────────────────────────────────────────────────
+const SPILL_INLINE_MAX_BYTES = 256 * 1024;
+
+/** spill 串行尾链。不重置为 resolved 初值以外的状态——resolved 链上的 then
+ *  只是一次微任务，换来「spill 在飞时后续事件绝不抢跑」的时序保证。 */
+let spillTail: Promise<void> = Promise.resolve();
+/** 在飞的 spill 数（>0 时普通事件排到尾链后广播）。 */
+let spillInFlight = 0;
+
+function enqueueBehindSpillTail(step: () => void | Promise<void>): void {
+  spillTail = spillTail.then(step, step);
+}
+
+function measurePayloadBytes(data: unknown): number {
+  if (typeof data === 'string') {
+    return Buffer.byteLength(data, 'utf-8');
+  }
+  try {
+    return Buffer.byteLength(JSON.stringify(data), 'utf-8');
+  } catch {
+    // 不可序列化 → formatSse 的 safeJsonStringify 会发错误占位，按内联放行。
+    return 0;
+  }
+}
+
+function dispatchWithSpillGuard(event: string, data: unknown): void {
+  const sizeBytes = measurePayloadBytes(data);
+  if (sizeBytes > SPILL_INLINE_MAX_BYTES) {
+    spillInFlight++;
+    enqueueBehindSpillTail(async () => {
+      try {
+        // 动态 import：spill 是冷路径，不为它把 large-value-store 拉进
+        // sse 的静态依赖图（sse 被 logger 等底层模块引用）。
+        const { maybeSpill } = await import('./utils/large-value-store');
+        const json = typeof data === 'string' ? data : JSON.stringify(data);
+        const spilled = await maybeSpill(json, {
+          mimetype: 'application/json',
+          inlineMaxBytes: SPILL_INLINE_MAX_BYTES,
+        });
+        if ('inline' in spilled) {
+          // 防御分支：按字节数已超阈值，maybeSpill 恒走落盘；此分支不可达。
+          broadcastImmediate(event, data);
+        } else {
+          console.warn(
+            `[sse] 大 payload 外溢 event=${event} sizeBytes=${spilled.sizeBytes} → ref=${spilled.id}（全文走 GET /refs/${spilled.id}）`,
+          );
+          broadcastImmediate(event, spilled);
+        }
+      } catch (err) {
+        // fail closed：外溢失败绝不回退内联（红线即防此刻的 MB 级泛洪）——
+        // 改发小型错误占位，日志留证。
+        console.warn(
+          `[sse] 大 payload 外溢失败 event=${event} sizeBytes=${sizeBytes}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+        broadcastImmediate(event, { error: 'large_payload_spill_failed', sizeBytes });
+      } finally {
+        spillInFlight--;
+      }
+    });
+    return;
+  }
+  if (spillInFlight > 0) {
+    // spill 在飞——排到串行尾链之后广播，保住事件时序。
+    enqueueBehindSpillTail(() => broadcastImmediate(event, data));
+    return;
   }
   broadcastImmediate(event, data);
 }
@@ -696,7 +780,7 @@ export function createSseClient(onClose: (client: SseClient) => void): {
     //
     // Fix #6 (review-by-cc + review-by-codex): critical events used to bypass
     // MAX_QUEUE_PER_CLIENT *unboundedly* — a wedged renderer + buggy plugin
-    // emitting many critical events (e.g. chat:status / config:changed) could
+    // emitting many critical events (e.g. chat:status) could
     // grow the queue forever, OOMing the sidecar. We now apply a secondary
     // hard cap MAX_QUEUE_HARD_LIMIT (10x the soft cap). Beyond that, even
     // critical events trigger a force-close on the slow client — better to

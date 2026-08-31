@@ -120,6 +120,8 @@ export async function spawnSubLoop(options: SpawnSubLoopOptions): Promise<SubLoo
     // B8(1.2.6):子 loop 挂主 loop 同款压缩策略(compaction.ts,保守裁剪);
     // 压缩只影响当次 LLM 上下文,持久化全量不动,触发时在子线 meta 打
     // compactedAt 标记(仅持久化开启时——无 storeDir 没有 meta 可标)。
+    // A2-3(1.5.4):子 loop 工具集无 recall——兜底 stub 文案不印取回指引
+    // (hasRecall:false),防模型照 stub 指引幻觉调用 recall 被 boundary 拦。
     transformContext: makeCompactionTransform(
       { contextWindow: options.resolution.model.contextWindow || 200_000 },
       () => {
@@ -127,6 +129,7 @@ export async function spawnSubLoop(options: SpawnSubLoopOptions): Promise<SubLoo
           void markLoopSessionCompacted(sessionId, { dir: options.storeDir }).catch(() => {});
         }
       },
+      { hasRecall: false },
     ),
     maxTokens: options.maxTokens,
   })) {

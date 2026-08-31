@@ -45,8 +45,3 @@ export function classifySendResponse(res: {
   if (res.queued === true) return 'fifo-queued';
   return 'started';
 }
-
-/** 发送成功后的用户可见提示文案（steering 时）。 */
-export function steeringToast(text: string): string {
-  return `↳ 已插入纠偏：${text}`.slice(0, 120);
-}

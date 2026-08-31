@@ -72,7 +72,6 @@ $ResourceItems = @(
     "server-dist.js",
     "server-dist.js.map",
     "shared",
-    "sharp-runtime",
     "tsx-runtime",
     "zh-Hans.lproj"
 )

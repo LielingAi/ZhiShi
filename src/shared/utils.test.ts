@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { compareVersions, isWindowsReservedName, sanitizeFolderName, stripBom } from './utils';
+import { isWindowsReservedName, sanitizeFolderName, stripBom } from './utils';
 
 describe('isWindowsReservedName', () => {
   it('matches reserved device names case-insensitively, including with an extension', () => {
@@ -53,23 +53,5 @@ describe('stripBom', () => {
     expect(stripBom('')).toBe('');
     // Only a LEADING BOM is stripped — a mid-string U+FEFF is preserved.
     expect(stripBom('a﻿b')).toBe('a﻿b');
-  });
-});
-
-describe('compareVersions', () => {
-  it('compares numerically, not lexically (1.2.10 > 1.2.3)', () => {
-    // The classic bug this prevents: string compare would rank "10" < "3".
-    expect(compareVersions('1.2.10', '1.2.3')).toBe(1);
-    expect(compareVersions('1.2.3', '1.2.10')).toBe(-1);
-  });
-
-  it('returns 0 for equal versions and ignores trailing-zero length differences', () => {
-    expect(compareVersions('1.2.3', '1.2.3')).toBe(0);
-    expect(compareVersions('1.2', '1.2.0')).toBe(0); // missing parts default to 0
-  });
-
-  it('orders major/minor before patch', () => {
-    expect(compareVersions('2.0.0', '1.9.9')).toBe(1);
-    expect(compareVersions('0.2.20', '0.2.21')).toBe(-1);
   });
 });

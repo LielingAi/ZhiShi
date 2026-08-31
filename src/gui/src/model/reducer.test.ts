@@ -174,9 +174,17 @@ describe('reduceSseEvent — turn 终结', () => {
     const t = lastTurn(s);
     expect(t.status).toBe('complete');
     expect(t.conclusionStreaming).toBe(false);
-    expect(t.meta).toMatchObject({ model: 'deepseek-v4-pro', inputTokens: 10, outputTokens: 20, toolCount: 2, durationMs: 1200 });
+    expect(t.meta).toMatchObject({ inputTokens: 10, outputTokens: 20, toolCount: 2, durationMs: 1200 });
     expect(s.phase).toBe('idle');
     expect(s.streamingTurnId).toBeNull();
+  });
+
+  it('message-complete 无当前块（A3-3 窄窗口）：相位与流指针照常落定', () => {
+    const running = { ...emptySession(), phase: 'running' as const };
+    const s = reduceSseEvent(running, ev('chat:message-complete', { sessionState: 'idle' })).session;
+    expect(s.phase).toBe('idle');
+    expect(s.streamingTurnId).toBeNull();
+    expect(s.items).toHaveLength(0); // 不造空块
   });
 
   it('message-stopped 落流级分隔（payload null 安全）+ 相位 interrupted', () => {

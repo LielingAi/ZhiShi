@@ -4,15 +4,15 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildBadgeSummary, summarizeSignal, toolStepChar, thinkingTotalSeconds } from './blocks';
+import { buildBadgeSummary, summarizeSignal, toolStepChar } from './blocks';
 import type { DetailItem } from './blocks';
 
 function th(seconds?: number, streaming = false): DetailItem {
-  return { kind: 'thinking', id: 'th', text: 'x', streaming, seconds, startedAt: 0 };
+  return { kind: 'thinking', id: 'th', text: 'x', streaming, seconds };
 }
 
 function tool(name: string, id: string): DetailItem {
-  return { kind: 'tool', id, name, argsSummary: '', state: 'done', output: '', startedAt: 0, step: 1 };
+  return { kind: 'tool', id, name, argsSummary: '', state: 'done', output: '', step: 1 };
 }
 
 describe('buildBadgeSummary（⎿ ⚙ N · ⏵ Ns · ⛁ name×N）', () => {
@@ -35,7 +35,7 @@ describe('buildBadgeSummary（⎿ ⚙ N · ⏵ Ns · ⛁ name×N）', () => {
   });
 
   it('流式 thinking 不计秒数', () => {
-    expect(thinkingTotalSeconds([th(undefined, true)])).toBe(0);
+    expect(buildBadgeSummary([th(undefined, true)]).thinkingSeconds).toBe(0);
   });
 });
 

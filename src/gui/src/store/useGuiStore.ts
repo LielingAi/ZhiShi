@@ -66,7 +66,7 @@ import {
   INPUT_HISTORY_OVERLAY_LIMIT,
 } from '../model/input-history';
 import { buildMentionItems, fileCacheKey, fileDirOf, MENTION_DEBOUNCE_MS, parseMentionQuery } from '../model/mention';
-import { planSwitch, sessionKey } from '../model/multi-session';
+import { ensureSessionSlot, planSwitch, sessionKey } from '../model/multi-session';
 import {
   applyAutoRunEvent,
   buildAutoRunStartPayload,
@@ -76,6 +76,7 @@ import {
   validateAutoRunForm,
   activeAutoRunOf,
   parseAutoRunList,
+  verdictModalOpen,
   type AutoRunEntry,
   type AutoRunFormView,
 } from '../model/auto-run';
@@ -251,7 +252,6 @@ export interface DrawerState {
   state: 'done' | 'fail' | 'running';
   exitCode?: number;
   elapsedMs?: number;
-  signal?: string;
   search: string;
 }
 
@@ -326,7 +326,8 @@ export interface GuiState {
   archive: ArchiveSnapshot | null;
   /** 看板高亮实体（流内「→V3」徽章点进来的定位;null = 无高亮）。 */
   archiveHighlightId: string | null;
-  /** 跳流目标：档案锚 → 流内 user 消息 id（Stream 消费后即清）。 */
+  /** 跳流目标：档案锚 → 流内 user 消息 id（一次性信号——Stream 按 nonce
+   *  消费触发滚动，store 侧只写不清；重复跳同一锚靠 nonce 递增再触发）。 */
   archiveJumpTarget: { messageId: string; nonce: number } | null;
   /** 分屏比例（流宽占比,默认 0.6;拖动更新 + localStorage 持久化）。 */
   archivePaneRatio: number;
@@ -1628,7 +1629,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     set({ archiveHighlightId: id });
   },
 
-  /** 档案锚 → 流跳转（Stream 消费 archiveJumpTarget 后即清）。 */
+  /** 档案锚 → 流跳转（只写不清：nonce 递增驱动 Stream 滚动消费）。 */
   jumpToArchiveAnchor(messageId: string) {
     set({
       archiveJumpTarget: { messageId, nonce: (get().archiveJumpTarget?.nonce ?? 0) + 1 },
@@ -2022,7 +2023,6 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         state: detail.state,
         exitCode: detail.exitCode,
         elapsedMs: detail.elapsedMs,
-        signal: detail.signal,
         search: '',
       },
     });
@@ -2133,7 +2133,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         s.historySessions
           ? {
               historySessions: s.historySessions.map((r) =>
-                r.id === id ? { ...r, title: t, titleSource: 'user' as const } : r,
+                r.id === id ? { ...r, title: t } : r,
               ),
             }
           : {},
@@ -2274,8 +2274,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       queueOpen: s.queueOpen,
       boundaryOpen: s.boundaryAsks.length > 0,
       decisionOpen: s.decisions.length > 0 && s.activeDecisionId !== null,
-      // 1.4.1：验收包模态（autoRun.verdict 存在且未收起）。
-      verdictOpen: s.autoRun?.verdict !== undefined && !s.verdictDismissed,
+      // 1.4.1：验收包模态（判定收口 verdictModalOpen，与 AutoRunVerdictModal
+      // 渲染条件同一口径：verdict 存在 + 未收起 + status==='awaiting-verdict'）。
+      verdictOpen: verdictModalOpen(s.autoRun, s.verdictDismissed),
       modalOpen: s.modal !== null,
       drawerOpen: s.drawer !== null,
       pageOpen: s.page !== 'chat',
@@ -2503,7 +2504,8 @@ async function restoreEnvSelection(
     if (key !== get().currentEnvKey) {
       set({
         currentEnvKey: key,
-        sessions: { ...get().sessions, [key ?? 'host']: emptySession() },
+        // A2-8：与锚路径（applyInitEnvAnchor）同口径——只补缺槽，不覆盖既有会话槽。
+        sessions: ensureSessionSlot(get().sessions, key ?? 'host'),
       });
       get().reconnect();
     }

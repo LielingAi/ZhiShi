@@ -496,13 +496,12 @@ export function fetchSessions(client: GuiSidecarClient): Promise<unknown[]> {
 
 export type SessionMetaPatch = {
   title?: string;
-  favorite?: boolean;
   pinned?: boolean;
   archived?: boolean;
 };
 
 /**
- * PATCH /sessions/:id（部分更新：title/favorite/pinned/archived）。
+ * PATCH /sessions/:id（部分更新：title/pinned/archived）。
  * 服务端布尔字段只持久化 true（false 存 undefined）；返回更新后的 meta。
  */
 export function patchSessionMeta(

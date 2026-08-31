@@ -34,23 +34,27 @@ tauriConf.version = version;
 writeFileSync(tauriConfPath, JSON.stringify(tauriConf, null, 2) + '\n', 'utf-8');
 console.log('  ✓ src-tauri/tauri.conf.json');
 
-// 更新 Cargo.toml
+// 更新 Cargo.toml（正则失配必须报错退出——静默 ✓ 会让发版版本号漂移，1.4.8/1.4.9 教训）
 const cargoPath = join(rootDir, 'src-tauri/Cargo.toml');
 let cargoContent = readFileSync(cargoPath, 'utf-8');
-cargoContent = cargoContent.replace(
-    /^version = "[0-9]+\.[0-9]+\.[0-9]+"/m,
-    `version = "${version}"`
-);
+const cargoVersionRe = /^version = "[0-9]+\.[0-9]+\.[0-9]+"/m;
+if (!cargoVersionRe.test(cargoContent)) {
+    console.error('错误: src-tauri/Cargo.toml 中未匹配到 version = "x.y.z"，未做替换');
+    process.exit(1);
+}
+cargoContent = cargoContent.replace(cargoVersionRe, `version = "${version}"`);
 writeFileSync(cargoPath, cargoContent, 'utf-8');
 console.log('  ✓ src-tauri/Cargo.toml');
 
 // 更新 GUI_VERSION（src/shared/constants.ts——GUI 关于页版本号）
 const constantsPath = join(rootDir, 'src/shared/constants.ts');
 let constantsContent = readFileSync(constantsPath, 'utf-8');
-constantsContent = constantsContent.replace(
-    /export const GUI_VERSION = '[0-9]+\.[0-9]+\.[0-9]+'/,
-    `export const GUI_VERSION = '${version}'`
-);
+const guiVersionRe = /export const GUI_VERSION = '[0-9]+\.[0-9]+\.[0-9]+'/;
+if (!guiVersionRe.test(constantsContent)) {
+    console.error("错误: src/shared/constants.ts 中未匹配到 export const GUI_VERSION = 'x.y.z'，未做替换");
+    process.exit(1);
+}
+constantsContent = constantsContent.replace(guiVersionRe, `export const GUI_VERSION = '${version}'`);
 writeFileSync(constantsPath, constantsContent, 'utf-8');
 console.log('  ✓ src/shared/constants.ts (GUI_VERSION)');
 

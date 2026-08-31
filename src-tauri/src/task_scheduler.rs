@@ -702,8 +702,7 @@ fn truncate_run_file_if_needed(path: &Path, max: usize) {
 
 /// Renderer-facing view of a scheduled Task (new IPC surface, phase 3b §15).
 /// Composed from the Task row (config) + its runtime entry (execution state).
-///
-/// TS mirror lives in `src/shared/types/task.ts` (`ScheduledTaskView`).
+/// (TS mirror `src/shared/types/task.ts` 已随 1.5.4 删除——renderer 侧已无消费者。)
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScheduledTaskView {
@@ -2932,8 +2931,8 @@ async fn try_recover_single_task(handle: &AppHandle, ta: &Task) -> Result<(u16, 
 
 // ============ Tauri Commands (phase 3b §15 — Task-semantics IPC) ============
 //
-// Payload shapes consumed by the renderer phase; TS mirrors live in
-// `src/shared/types/task.ts`:
+// Payload shapes for the IPC surface (原 TS mirror `src/shared/types/task.ts`
+// 已随 1.5.4 删除,wire 形状以此处为准):
 //
 //   ScheduledTaskView { taskId, name, workspacePath, sessionId,
 //     status: 'running'|'stopped', currentlyExecuting,

@@ -15,18 +15,13 @@
  *   - 会话模型/provider env 状态(distill/cron/title 读取)
  *   - MCP server / sub-agent 定义的进程内存储(admin CRUD 的状态镜像;
  *     注:M4c 后无运行时消费者——pi 引擎不挂 MCP,保留为配置面)
- *   - 代理/SOCKS5 bridge(setProxyConfig/initSocksBridgeFromEnv——影响
+ *   - 代理/SOCKS5 bridge(initSocksBridgeFromEnv——影响
  *     进程级 fetch 出网,pi 与探针共用)
  *   - syncProjectUserConfig(skills/commands 软链同步)
  *   - cron 派发互斥锁(withCronDispatchLock)
  *   - initializeAgent(瘦版:工作区配置自解析 + 状态初始化,无 SDK 预热)
  *   - getSessionId/setActiveSessionId(当前会话标识,pi 引擎绑定时写入)
- *   - waitForSessionIdle(等 pi 引擎空闲,cron 同步派发用)
  *   - getHistoricalSessionMessages(会话历史读取,SessionStore/loop  backed)
- *
- * 依赖方向:本文件不 import loop/chat-engine(等待语义经轮询
- * chat-engine 暴露的状态,由 index.ts 注入 avoid cycle——见
- * waitForSessionIdle 的 idleProbe 参数)。
  */
 
 import {
@@ -55,8 +50,8 @@ export type { InteractionScenario };
 // Shared types
 // ---------------------------------------------------------------------------
 
-// Permission mode types - UI values
-export type PermissionMode = 'auto' | 'plan' | 'fullAgency' | 'custom';
+// Permission mode types - UI values(plan 模式 1.5.4 撤除)
+export type PermissionMode = 'auto' | 'fullAgency' | 'custom';
 
 /** Provider environment for a model call(一次性调用与会话解析共用)。 */
 export type ProviderEnv = {
@@ -140,10 +135,6 @@ export function getSessionModel(): string | undefined {
   return currentModel;
 }
 
-export function setSessionProviderEnv(providerEnv: ProviderEnv | undefined): void {
-  currentProviderEnv = providerEnv;
-}
-
 export function getSessionProviderEnv(): ProviderEnv | undefined {
   return currentProviderEnv;
 }
@@ -188,23 +179,6 @@ export function getAgents(): Record<string, AgentDefinition> | null {
 /** Shared NO_PROXY value — comprehensive list of localhost addresses to bypass proxy */
 const PROXY_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]';
 
-const PROXY_VARS_LIST = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
-                         'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy'] as const;
-
-// Capture system proxy state at sidecar startup (before any setProxyConfig call),
-// so setProxyConfig(disabled) restores the inherited state instead of force-clearing.
-const proxyWasInjectedByRust = process.env.ZHISHI_PROXY_INJECTED === '1';
-delete process.env.ZHISHI_PROXY_INJECTED;
-
-const inheritedProxySnapshot: Record<string, string | undefined> = {};
-if (!proxyWasInjectedByRust) {
-  for (const v of PROXY_VARS_LIST) {
-    inheritedProxySnapshot[v] = process.env[v];
-  }
-}
-
-let proxyConfigGeneration = 0; // Guards against stale async SOCKS5 callbacks
-
 function applyProxyEnvVars(proxyUrl: string, noProxyVal: string): void {
   process.env.HTTP_PROXY = proxyUrl;
   process.env.HTTPS_PROXY = proxyUrl;
@@ -214,58 +188,6 @@ function applyProxyEnvVars(proxyUrl: string, noProxyVal: string): void {
   process.env.no_proxy = noProxyVal;
   delete process.env.ALL_PROXY;
   delete process.env.all_proxy;
-}
-
-export function setProxyConfig(proxySettings: {
-  enabled: boolean;
-  protocol?: string;
-  host?: string;
-  port?: number;
-} | null): void {
-  const PROXY_VARS = [...PROXY_VARS_LIST];
-  const generation = ++proxyConfigGeneration;
-  const oldProxyUrl = process.env.HTTP_PROXY || '';
-  const rawProxyUrl = proxySettings?.enabled
-    ? `${proxySettings.protocol || 'http'}://${proxySettings.host || '127.0.0.1'}:${proxySettings.port || 7890}`
-    : '';
-  const isSocks5 = proxySettings?.protocol === 'socks5';
-
-  if (proxySettings?.enabled) {
-    if (isSocks5) {
-      // SOCKS5: start bridge asynchronously, set env vars after bridge is ready
-      const host = proxySettings.host || '127.0.0.1';
-      const port = proxySettings.port || 7890;
-      startSocksBridge(host, port).then((bridgePort) => {
-        if (generation !== proxyConfigGeneration) return;
-        const bridgeUrl = `http://127.0.0.1:${bridgePort}`;
-        applyProxyEnvVars(bridgeUrl, PROXY_NO_PROXY_VAL);
-        console.log(`[agent] SOCKS5 bridge active: ${rawProxyUrl} → ${bridgeUrl}`);
-      }).catch((err) => {
-        console.error('[agent] Failed to start SOCKS5 bridge:', err);
-      });
-      // Optimistically set ALL_PROXY so immediate traffic attempts SOCKS
-      for (const v of PROXY_VARS) delete process.env[v];
-      process.env.ALL_PROXY = rawProxyUrl;
-      process.env.all_proxy = rawProxyUrl;
-    } else {
-      applyProxyEnvVars(rawProxyUrl, PROXY_NO_PROXY_VAL);
-    }
-  } else {
-    // Disabled: restore inherited snapshot (or clear when Rust injected)
-    for (const v of PROXY_VARS) {
-      if (proxyWasInjectedByRust) {
-        delete process.env[v];
-      } else {
-        const inherited = inheritedProxySnapshot[v];
-        if (inherited === undefined) delete process.env[v];
-        else process.env[v] = inherited;
-      }
-    }
-  }
-
-  if (oldProxyUrl !== rawProxyUrl) {
-    console.log(`[agent] Proxy config changed: ${oldProxyUrl || 'none'} → ${rawProxyUrl || 'none'}`);
-  }
 }
 
 export async function initSocksBridgeFromEnv(): Promise<void> {
@@ -308,41 +230,8 @@ export async function withCronDispatchLock<T>(fn: () => Promise<T>): Promise<T> 
 }
 
 // ---------------------------------------------------------------------------
-// waitForSessionIdle(cron 同步派发;idleProbe 由调用方注入——M4c 后由
-// index.ts 注入 pi 引擎的空闲探针,避免本文件反向依赖 chat-engine)
-// ---------------------------------------------------------------------------
-
-export async function waitForSessionIdle(
-  timeoutMs: number = 600000,
-  pollIntervalMs: number = 500,
-  idleProbe?: () => boolean,
-): Promise<boolean> {
-  const startTime = Date.now();
-  const isIdle = idleProbe ?? (() => true);
-
-  // Brief wait to allow async operations to start (prevents false early return)
-  await new Promise((r) => setTimeout(r, Math.min(pollIntervalMs, 500)));
-
-  while (!isIdle()) {
-    if (Date.now() - startTime > timeoutMs) {
-      console.warn(`[agent] waitForSessionIdle: timeout after ${timeoutMs}ms`);
-      return false;
-    }
-    await new Promise((r) => setTimeout(r, pollIntervalMs));
-  }
-  return true;
-}
-
-// ---------------------------------------------------------------------------
 // initializeAgent(M4c 瘦版:工作区配置自解析 + 状态初始化,无 SDK 预热)
 // ---------------------------------------------------------------------------
-
-let agentDir = '';
-let hasInitialPrompt = false;
-
-export function getAgentDir(): string {
-  return agentDir;
-}
 
 /**
  * M4c 瘦版初始化:设置工作区、生成会话标识、自解析 provider/model
@@ -355,8 +244,7 @@ export async function initializeAgent(
   initialPrompt?: string | null,
   initialSessionId?: string,
 ): Promise<void> {
-  agentDir = nextAgentDir;
-  hasInitialPrompt = Boolean(initialPrompt && initialPrompt.trim());
+  const hasInitialPrompt = Boolean(initialPrompt && initialPrompt.trim());
   activeSessionId = initialSessionId ?? randomUUID();
 
   // 工作区配置自解析(provider/model 镜像;会话元数据快照优先的语义
@@ -364,7 +252,7 @@ export async function initializeAgent(
   try {
     const { resolveWorkspaceConfig } = await import('./utils/admin-config');
     const initMeta = initialSessionId ? getSessionMetadata(initialSessionId) : null;
-    const resolved = resolveWorkspaceConfig(agentDir, initMeta);
+    const resolved = resolveWorkspaceConfig(nextAgentDir, initMeta);
     if (resolved.providerEnv) {
       currentProviderEnv = resolved.providerEnv;
       console.log(`[agent] self-resolved provider: ${resolved.providerEnv.baseUrl ?? 'anthropic'}`);
@@ -377,11 +265,7 @@ export async function initializeAgent(
     console.warn('[agent] initializeAgent: workspace config self-resolve failed (non-fatal):', err instanceof Error ? err.message : err);
   }
 
-  console.log(`[agent] init dir=${agentDir} initialPrompt=${hasInitialPrompt ? 'yes' : 'no'} sessionId=${activeSessionId} (pi engine)`);
-}
-
-export function hasInitialPromptSet(): boolean {
-  return hasInitialPrompt;
+  console.log(`[agent] init dir=${nextAgentDir} initialPrompt=${hasInitialPrompt ? 'yes' : 'no'} sessionId=${activeSessionId} (pi engine)`);
 }
 
 // ---------------------------------------------------------------------------

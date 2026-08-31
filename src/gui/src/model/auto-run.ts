@@ -54,8 +54,12 @@ export type AutoRunPauseReason = 'stall' | 'repeated-failures' | 'budget';
 export interface VerdictCriterion {
   text: string;
   hasEvidence: boolean;
-  /** 研究记录引用（E#N 口径，同决策块 expertRefs 风格）。 */
-  refs: string[];
+  /**
+   * 研究记录引用（E#N 口径，同决策块 expertRefs 风格）。A2-6 配套判空：
+   * 断线恢复路径（verdictPackage→criteriaPrecheck）无 refs 数据，字段可缺席，
+   * 渲染方按 undefined → [] 处理。
+   */
+  refs?: string[];
 }
 
 /** 验收包（verdict-requested 归约结果）。 */
@@ -451,6 +455,15 @@ export function isAutoRunActive(entry: AutoRunEntry | null): boolean {
     entry.status === 'paused' ||
     entry.status === 'awaiting-verdict'
   );
+}
+
+/**
+ * 终审弹窗可见口径（A3-2：Esc 链与 AutoRunVerdictModal 渲染共用单点）——
+ * verdict 存在 + 未收起 + loop 仍在 awaiting-verdict。孤儿记录（sidecar
+ * 重启后 runner 消亡、verdictPackage 残留）不算「开」，Esc 不再被静默吞。
+ */
+export function verdictModalOpen(entry: AutoRunEntry | null | undefined, dismissed: boolean): boolean {
+  return entry?.verdict !== undefined && !dismissed && entry.status === 'awaiting-verdict';
 }
 
 // ---------------------------------------------------------------------------

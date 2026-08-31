@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env pwsh
+#!/usr/bin/env pwsh
 
 # ZhiShi Windows 正式发布构建脚本
 
@@ -991,90 +991,6 @@ try {
 
 
 
-    # 预装 sharp 图像处理（替代 jimp，libvips 原生）
-
-    Write-Host "  预装 sharp 图像处理（libvips 原生）..." -ForegroundColor Cyan
-
-    $sharpDir = Join-Path $ProjectDir "src-tauri\resources\sharp-runtime"
-
-    if (Test-Path $sharpDir) {
-
-        Remove-Item -Recurse -Force $sharpDir
-
-    }
-
-    New-Item -ItemType Directory -Path $sharpDir -Force | Out-Null
-
-    $sharpPkgJson = @"
-
-{
-
-  "name": "sharp-runtime",
-
-  "private": true,
-
-  "version": "1.0.0",
-
-  "dependencies": { "sharp": "0.34.5" }
-
-}
-
-"@
-
-    Set-Content -Path (Join-Path $sharpDir "package.json") -Value $sharpPkgJson -Encoding utf8
-
-    Push-Location $sharpDir
-
-    $ErrorActionPreference = "Continue"
-    $null = & npm.cmd install --no-audit --no-fund --no-save --ignore-scripts 2>$null
-
-    Pop-Location
-
-    if ($LASTEXITCODE -ne 0) {
-
-        throw "sharp 主包预装失败"
-
-    }
-
-    # Windows 只装 x64 变体（arm64 Windows 用户少且 sharp 0.34 也支持，可按需扩展）
-
-    $sharpWinArch = if ($Target -match "aarch64") { "arm64" } else { "x64" }
-
-    Push-Location $sharpDir
-
-    $null = & npm.cmd install --no-save --force --no-audit --no-fund --ignore-scripts "@img/sharp-win32-$sharpWinArch@0.34.5" 2>$null
-    $ErrorActionPreference = "Stop"
-
-    Pop-Location
-
-    if ($LASTEXITCODE -ne 0) {
-
-        throw "sharp Windows 平台包安装失败"
-
-    }
-
-    $sharpNode = Join-Path $sharpDir "node_modules\@img\sharp-win32-$sharpWinArch\lib\sharp-win32-$sharpWinArch.node"
-
-    if (-not (Test-Path $sharpNode)) {
-
-        throw "sharp-win32-$sharpWinArch.node 缺失"
-
-    }
-
-    # 删除非 win32 变体（节省 NSIS 安装包大小）
-
-    $imgDir = Join-Path $sharpDir "node_modules\@img"
-
-    Get-ChildItem -Path $imgDir -Directory -ErrorAction SilentlyContinue |
-
-        Where-Object { $_.Name -like "sharp-darwin*" -or $_.Name -like "sharp-linux*" -or $_.Name -like "sharp-libvips-darwin*" -or $_.Name -like "sharp-libvips-linux*" -or $_.Name -eq "sharp-wasm32" } |
-
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-
-    Write-Host "    OK - sharp 预装完成 (win32-$sharpWinArch)" -ForegroundColor Green
-
-
-
     # 预装 better-sqlite3（记忆库 memory.db 引擎）
 
     # 原生 addon 必须匹配内置 Node 的 ABI（v24.x = ABI 137），而构建机的
@@ -1385,7 +1301,6 @@ try {
             # shipped exe+DLLs only and died at runtime.
             $resourceItems = @(
                 @{ Src = "src-tauri\resources\server-dist.js"; Dst = "server-dist.js"; Dir = $false },
-                @{ Src = "src-tauri\resources\sharp-runtime"; Dst = "sharp-runtime"; Dir = $true },
                 @{ Src = "src-tauri\resources\sqlite-runtime"; Dst = "sqlite-runtime"; Dir = $true },
                 @{ Src = "src-tauri\resources\tsx-runtime"; Dst = "tsx-runtime"; Dir = $true },
                 @{ Src = "src-tauri\resources\nodejs"; Dst = "nodejs"; Dir = $true },

@@ -156,16 +156,42 @@ vi.mock('./refs', () => ({
   resolveChatRefs: (...args: unknown[]) => resolveChatRefsMock(...args),
 }));
 
+// A1-2(1.5.4)回归:档案锚 getAnchor 闭包按 turn 上下文取值——spy 捕获每次
+// buildTurnStack 注入的取值闭包(工具本体仍走真实实现,只记录不执行)。
+const archiveToolOptsSpy = vi.fn();
+vi.mock('./tools', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./tools')>();
+  return {
+    ...orig,
+    createArchiveTool: (opts: { getAnchor: () => { messageId?: string } }) => {
+      archiveToolOptsSpy(opts);
+      return orig.createArchiveTool(opts as Parameters<typeof orig.createArchiveTool>[0]);
+    },
+  };
+});
+
+// A2-2(1.5.4)回归:专家注入锚——spy 捕获 collectExpertInjection 入参
+// (返回 undefined 零注入,不碰真实专家库)。
+const collectExpertInjectionSpy = vi.fn();
+vi.mock('./expert-inject', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./expert-inject')>();
+  return {
+    ...orig,
+    collectExpertInjection: (args: { lastUserText: string }) => {
+      collectExpertInjectionSpy(args);
+      return undefined;
+    },
+  };
+});
+
 import {
   cancelPiQueueItem,
   chatSendErrorStatus,
   ensureMetaLoopLine,
   envSwitchBlocker,
-  forcePiQueueItem,
   getPiAgentState,
   getPiCurrentSessionRef,
   getPiMessages,
-  getPiQueueSnapshotEvents,
   getPiQueueStatus,
   getPiSystemInitInfo,
   initPiChatEngine,
@@ -173,20 +199,20 @@ import {
   invokePiSession,
   isPiEngine,
   PI_NO_PROVIDER_ERROR,
-  queuePiChatMessage,
   resetPiChat,
   resolveLoopEngine,
   resolveSessionEnv,
   rewindPiChat,
   forkPiChat,
   sendPiChatMessage,
-  sendPiChatMessageAndWait,
   stopPiChat,
   switchEnvSession,
   switchPiSession,
 } from './chat-engine';
 // A1:标题钩子槽(真实现,单测里手动装 spy——invoke 线必须不触发)。
 import { setPostTurnTitleHook } from '../turn-hooks';
+// A2-1(1.5.4)回归:用真实估算函数算校准期望值(与实现同一口径)。
+import { estimateMessagesTokens } from './context-manager';
 // B10(1.2.6)回归:配置面会话标识的真实读取口(chat-engine 不经 mock 写它)。
 import { getSessionId } from '../agent-session';
 
@@ -378,114 +404,6 @@ describe('send 流程(基础)', () => {
     expect(content[1]).toEqual({ type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' });
     const wire = getPiMessages().find((m) => m.role === 'user');
     expect(wire?.attachments?.[0]).toMatchObject({ name: 'shot.png', isImage: true });
-  });
-});
-
-describe('队列语义(M4b FIFO,经 /chat/queue 入口 queuePiChatMessage)', () => {
-  it('busy → 排队(queue:added isInFlight:false + queueId)', async () => {
-    const release = gateFirstTurn();
-    const first = await queuePiChatMessage({ text: 'one' });
-    expect(first.isInFlight).toBe(true);
-    const second = await queuePiChatMessage({ text: 'two' });
-    expect(second.queued).toBe(true);
-    expect(second.queueId).toBeTruthy();
-    expect(second.isInFlight).toBe(false);
-    const added = broadcastMock.mock.calls.find(
-      (c) => c[0] === 'queue:added' && (c[1] as { isInFlight: boolean }).isInFlight === false,
-    );
-    expect(added).toBeDefined();
-    expect((added![1] as { queueId: string }).queueId).toBe(second.queueId);
-    release();
-    await waitTurnSettled();
-  });
-
-  it('done 后自动接下一条(queue:added isInFlight:true,依序两 turn)', async () => {
-    const release = gateFirstTurn();
-    await queuePiChatMessage({ text: 'one' });
-    const second = await queuePiChatMessage({ text: 'two' });
-    expect(getPiQueueStatus()).toEqual([{ id: second.queueId, messagePreview: 'two', kind: 'fifo' }]);
-    release();
-    await vi.waitFor(() => expect(runLoopMock).toHaveBeenCalledTimes(2), { timeout: 3000, interval: 10 });
-    await waitTurnSettled();
-    const promoted = broadcastMock.mock.calls.find(
-      (c) => c[0] === 'queue:added' && (c[1] as { isInFlight: boolean }).isInFlight === true,
-    );
-    expect((promoted![1] as { queueId: string }).queueId).toBe(second.queueId);
-    // FIFO:第二 turn 的 prompt 是 'two'
-    const secondCall = runLoopMock.mock.calls[1][0] as { prompt?: string };
-    expect(secondCall.prompt).toBe('two');
-    expect(getPiQueueStatus()).toEqual([]);
-  });
-
-  it('1.2.8(M4)重连对账:队列快照逐条 queue:added 同形(isInFlight:false + kind)', async () => {
-    const release = gateFirstTurn();
-    await queuePiChatMessage({ text: 'one' });
-    const fifo = await queuePiChatMessage({ text: 'two' });
-    // busy 时 /chat/send 进 steering 队列——快照必须带 kind 区分。
-    const steer = await sendPiChatMessage({ text: '改方向' });
-    expect(steer.queued).toBe(true);
-    expect(getPiQueueSnapshotEvents()).toEqual([
-      { event: 'queue:added', data: { queueId: fifo.queueId, messageText: 'two', isInFlight: false, kind: 'fifo' } },
-      { event: 'queue:added', data: { queueId: steer.queueId, messageText: '改方向', isInFlight: false, kind: 'steering' } },
-    ]);
-    release();
-    await waitTurnSettled();
-    // turn 收尾后队列清空(steering 孤儿转 FIFO 续跑),快照随之为空。
-    expect(getPiQueueSnapshotEvents()).toEqual([]);
-  });
-
-  it('stop:清空队列(逐条 queue:cancelled)+ abort,不再自动接', async () => {
-    const release = gateFirstTurn();
-    await queuePiChatMessage({ text: 'one' });
-    const q2 = await queuePiChatMessage({ text: 'two' });
-    const q3 = await queuePiChatMessage({ text: 'three' });
-    expect(stopPiChat()).toBe(true);
-    const cancelled = broadcastMock.mock.calls
-      .filter((c) => c[0] === 'queue:cancelled')
-      .map((c) => (c[1] as { queueId: string }).queueId);
-    expect(cancelled).toEqual(expect.arrayContaining([q2.queueId, q3.queueId]));
-    expect(getPiQueueStatus()).toEqual([]);
-    release();
-    await waitTurnSettled();
-    // 队列已清空:gate 释放后不再有新 turn
-    expect(runLoopMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('cancelPiQueueItem:移除并广播;不存在 → null', async () => {
-    const release = gateFirstTurn();
-    await queuePiChatMessage({ text: 'one' });
-    const q2 = await queuePiChatMessage({ text: 'two' });
-    expect(cancelPiQueueItem(q2.queueId!)).toBe('two');
-    expect(getPiQueueStatus()).toEqual([]);
-    expect(cancelPiQueueItem('nope')).toBeNull();
-    release();
-    await waitTurnSettled();
-    expect(runLoopMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('forcePiQueueItem:中断当前,改跑指定项', async () => {
-    let firstSignal: AbortSignal | undefined;
-    let releaseFirst!: () => void;
-    const gate = new Promise<void>((r) => { releaseFirst = r; });
-    let call = 0;
-    runLoopMock.mockImplementation(async function* (opts: { signal?: AbortSignal }) {
-      call++;
-      if (call === 1) {
-        firstSignal = opts.signal;
-        await Promise.race([gate, new Promise<void>((r) => opts.signal?.addEventListener('abort', () => r()))]);
-        if (opts.signal?.aborted) return;
-      }
-      for (const e of doneEvents('forced')) yield e;
-    });
-    await sendPiChatMessage({ text: 'one' });
-    const q2 = await queuePiChatMessage({ text: 'urgent' });
-    const ok = await forcePiQueueItem(q2.queueId!);
-    expect(ok).toBe(true);
-    expect(firstSignal?.aborted).toBe(true);
-    await waitTurnSettled();
-    const urgentCall = runLoopMock.mock.calls[call - 1][0] as { prompt?: string };
-    expect(urgentCall.prompt).toBe('urgent');
-    releaseFirst();
   });
 });
 
@@ -1175,54 +1093,7 @@ describe('1.2.6 批次B 回归(B2 cron invoke 通道 / B4 force 单起点 / B5 s
     });
   });
 
-  describe('B4:force 塞回队首 + promote 统一接管(无双 turn 并发)', () => {
-    it('两项排队 force 其一:abort 当前后由 promote 依序接起,全程 maxActive=1', async () => {
-      let active = 0;
-      let maxActive = 0;
-      let releaseFirst!: () => void;
-      const gate = new Promise<void>((r) => { releaseFirst = r; });
-      let call = 0;
-      runLoopMock.mockImplementation(async function* (opts: { prompt?: string; signal?: AbortSignal }) {
-        call++;
-        active++;
-        maxActive = Math.max(maxActive, active);
-        try {
-          if (call === 1) {
-            await Promise.race([gate, new Promise<void>((r) => opts.signal?.addEventListener('abort', () => r()))]);
-            if (opts.signal?.aborted) return;
-          }
-          for (const e of doneEvents(`ans-${call}`)) yield e;
-        } finally {
-          active--;
-        }
-      });
-      await sendPiChatMessage({ text: 'one' });
-      const qa = await queuePiChatMessage({ text: 'A' });
-      const qb = await queuePiChatMessage({ text: 'B' });
-      expect(qb.queueId).toBeTruthy();
-      expect(await forcePiQueueItem(qa.queueId!)).toBe(true);
-      releaseFirst();
-      await waitTurnSettled();
-      // turn1 被 abort(无产出);promote 依序跑 A、B——force 不自起,
-      // 旧实现的「轮询超上限后无视 busy 再 startResolvedTurn」双 turn 不再可能。
-      expect(runLoopMock).toHaveBeenCalledTimes(3);
-      expect((runLoopMock.mock.calls[1][0] as { prompt?: string }).prompt).toBe('A');
-      expect((runLoopMock.mock.calls[2][0] as { prompt?: string }).prompt).toBe('B');
-      expect(maxActive).toBe(1);
-      expect(getPiQueueStatus()).toEqual([]);
-      // isInFlight:true 的 queue:added 只由 promote 发(A、B 各一次),force 自己不重发
-      const promotedAdds = broadcastMock.mock.calls.filter(
-        (c) => c[0] === 'queue:added' && (c[1] as { isInFlight: boolean }).isInFlight === true,
-      );
-      expect(promotedAdds).toHaveLength(2);
-    });
-
-    it('force 不存在的项 → false(语义不变)', async () => {
-      expect(await forcePiQueueItem('nope')).toBe(false);
-    });
-  });
-
-  describe('B5:steering 孤儿 drain + send-and-wait 归属', () => {
+  describe('B5:steering 孤儿 drain', () => {
     it('turn done 时残留 steering 转 FIFO 队首续跑(不被注入别人的 turn)', async () => {
       let call = 0;
       let releaseFirst!: () => void;
@@ -1249,75 +1120,6 @@ describe('1.2.6 批次B 回归(B2 cron invoke 通道 / B4 force 单起点 / B5 s
       expect(getPiQueueStatus()).toEqual([]);
     });
 
-    it('孤儿转队首:先于更早排队的 FIFO 项开跑(steering 的「尽快送达」语义)', async () => {
-      let call = 0;
-      let releaseFirst!: () => void;
-      const gate = new Promise<void>((r) => { releaseFirst = r; });
-      runLoopMock.mockImplementation(async function* (_opts: { prompt?: string }) {
-        call++;
-        if (call === 1) await gate;
-        for (const e of doneEvents(`ans-${call}`)) yield e;
-      });
-      await sendPiChatMessage({ text: 'one' });
-      const fifo = await queuePiChatMessage({ text: 'fifo-old' });
-      expect(fifo.queued).toBe(true);
-      await sendPiChatMessage({ text: 'steer-new' }); // busy → steering
-      releaseFirst();
-      await vi.waitFor(() => expect(runLoopMock).toHaveBeenCalledTimes(3), { timeout: 3000, interval: 10 });
-      await waitTurnSettled();
-      const prompts = runLoopMock.mock.calls.map((c) => (c[0] as { prompt?: string }).prompt);
-      expect(prompts).toEqual(['one', 'steer-new', 'fifo-old']);
-    });
-
-    it('send-and-wait 按 queueId 归属:等待期间别人的 turn 完成也不错拿答案', async () => {
-      let call = 0;
-      let releaseFirst!: () => void;
-      const gate = new Promise<void>((r) => { releaseFirst = r; });
-      runLoopMock.mockImplementation(async function* (opts: { prompt?: string }) {
-        call++;
-        if (call === 1) await gate;
-        for (const e of doneEvents(`answer-of-${opts.prompt}`)) yield e;
-      });
-      await sendPiChatMessage({ text: 'user-turn' }); // turn1 gated
-      // busy → cron-q 进 steering;turn1 不注入它(done 后孤儿转队首跑 turn2)。
-      // 旧实现:turn1 收尾推进 turnSeq + 队列空 → 立即返回 turn1 的答案(错归因)。
-      const waitPromise = sendPiChatMessageAndWait({ text: 'cron-q' }, 5000);
-      releaseFirst();
-      const r = await waitPromise;
-      expect(r.error).toBeUndefined();
-      expect(r.text).toBe('answer-of-cron-q');
-      expect(runLoopMock).toHaveBeenCalledTimes(2);
-    });
-
-    it('send-and-wait:steering 被运行中 turn 注入时,拿消费 turn 的答案', async () => {
-      // 第一(唯一)turn 等 steering 就位后轮询注入,done 产出合并答案。
-      runLoopMock.mockImplementation(async function* (opts: { getSteeringMessages?: () => Promise<AgentMessage[]> }) {
-        await vi.waitFor(() => {
-          expect(getPiQueueStatus().some((q) => q.kind === 'steering')).toBe(true);
-        }, { timeout: 3000, interval: 10 });
-        const injected = await opts.getSteeringMessages!();
-        expect(injected).toHaveLength(1);
-        for (const e of doneEvents('合并后的答案')) yield e;
-      });
-      await sendPiChatMessage({ text: 'user-turn' });
-      const r = await sendPiChatMessageAndWait({ text: 'cron-q' }, 5000);
-      expect(r.error).toBeUndefined();
-      expect(r.text).toBe('合并后的答案');
-      expect(runLoopMock).toHaveBeenCalledTimes(1);
-    });
-
-    it('send-and-wait 超时仍报错且不中断:turn 跑完后孤儿照常续跑', async () => {
-      const release = gateFirstTurn();
-      await sendPiChatMessage({ text: 'one' });
-      const waitPromise = sendPiChatMessageAndWait({ text: 'cron-q' }, 300);
-      const r = await waitPromise;
-      expect(r.error).toContain('超时');
-      release();
-      await waitTurnSettled();
-      // 超时不取消:turn1 收尾后孤儿 cron-q 转队首续跑(共 2 次 loop)
-      expect(runLoopMock).toHaveBeenCalledTimes(2);
-      expect((runLoopMock.mock.calls[1][0] as { prompt?: string }).prompt).toBe('cron-q');
-    });
   });
 
   describe('B6:steering 注入补 wire + replay(rewind/fork 序数 1:1)', () => {
@@ -1653,5 +1455,64 @@ describe('1.3.2 环境锚进 chat:init(getPiAgentState.environment)', () => {
     expect(getPiAgentState().environment).toEqual({
       kind: 'recipe', id: 'zhishi-pwn-a3f2', name: 'zhishi-pwn-a3f2', type: 'pwn',
     });
+  });
+});
+
+describe('1.5.4 回归(A1-2 档案锚 / A2-1 校准口径 / A2-2 注入锚)', () => {
+  it('A1-2:invokePiSession 不碰单例档案锚——invoke 的 getAnchor 恒 undefined,交互轮的锚不被清空', async () => {
+    // 交互 turn 落地:锚 = 该轮 wire user 消息 id(buildTurnStack 每 turn 重建工具栈)。
+    await sendPiChatMessage({ text: '交互轮' });
+    await waitTurnSettled();
+    const interactiveGetAnchor = archiveToolOptsSpy.mock.calls.at(-1)![0].getAnchor;
+    const anchoredId = interactiveGetAnchor().messageId;
+    expect(anchoredId).toBeTruthy();
+
+    // headless invoke:自己的锚恒 undefined(无 wire user 消息)……
+    const r = await invokePiSession({ text: 'cron 任务' }, { loopSessionId: 'ls-a12' });
+    expect(r.error).toBeUndefined();
+    const invokeGetAnchor = archiveToolOptsSpy.mock.calls.at(-1)![0].getAnchor;
+    expect(invokeGetAnchor().messageId).toBeUndefined();
+    // ……且不清空交互线的锚(旧实现直接写 this.currentTurnUserMessageId = undefined)。
+    expect(interactiveGetAnchor().messageId).toBe(anchoredId);
+  });
+
+  it('A2-1:校准分母 = history + 当轮新增消息(与分子同内容相比)', async () => {
+    // 语料做大,系统提示折算项不足以把两种口径压到同一钳位值。
+    const history = [userMsg('h'.repeat(80_000))];
+    loadLoopSessionMock.mockReturnValue({ messages: history, meta: null });
+    const doneMessages = [
+      userMsg('本轮问题'),
+      {
+        ...assistantMsg('a'.repeat(80_000)),
+        usage: { input: 100_000, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 100_100, cost: {} },
+      } as unknown as AgentMessage,
+    ];
+    runLoopMock.mockImplementation(async function* () {
+      yield { type: 'text-delta', delta: 'x' };
+      yield { type: 'done', messages: doneMessages };
+    });
+    await sendPiChatMessage({ text: 'q' });
+    await waitTurnSettled();
+
+    const sysChars = (runLoopMock.mock.calls[0][0] as { systemPrompt: string }).systemPrompt.length;
+    const real = 100_000;
+    const withDone = Math.min(6, Math.max(0.8, real / estimateMessagesTokens([...history, ...doneMessages], sysChars)));
+    const withoutDone = Math.min(6, Math.max(0.8, real / estimateMessagesTokens(history, sysChars)));
+    expect(withDone).not.toBe(withoutDone); // 场景可分辨(不撞钳位同值)
+    const meta = appendLoopMessagesMock.mock.calls[0][2] as { tokenCalibration?: number };
+    expect(meta.tokenCalibration).toBeCloseTo(withDone, 6);
+  });
+
+  it('A2-2:专家注入锚 = 当前轮用户消息(交互 + invoke 双路径,不再滞后一轮)', async () => {
+    // 空 history:旧实现锚取上一条用户消息 → 首轮恒空;修复后当轮即参与打分。
+    await sendPiChatMessage({ text: '交互轮话题 alpha-anchor' });
+    await waitTurnSettled();
+    let lastArg = collectExpertInjectionSpy.mock.calls.at(-1)![0] as { lastUserText: string };
+    expect(lastArg.lastUserText).toContain('alpha-anchor');
+
+    const r = await invokePiSession({ text: 'invoke 轮话题 beta-anchor' }, { loopSessionId: 'ls-a22' });
+    expect(r.error).toBeUndefined();
+    lastArg = collectExpertInjectionSpy.mock.calls.at(-1)![0] as { lastUserText: string };
+    expect(lastArg.lastUserText).toContain('beta-anchor');
   });
 });

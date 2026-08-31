@@ -16,9 +16,6 @@
 // 类型
 // ---------------------------------------------------------------------------
 
-/** 服务端 BoundaryAskView 的 kind 枚举。 */
-export type BoundaryAskKind = 'host-write' | 'local-cred' | 'net-policy' | 'destroy-env';
-
 export interface BoundaryAsk {
   askId: string;
   kind: string;
@@ -126,9 +123,4 @@ export function upsertBoundaryAsk(
 export function removeBoundaryAsk(asks: BoundaryAsk[], askId: unknown): BoundaryAsk[] {
   if (typeof askId !== 'string' || !askId) return asks;
   return asks.filter((a) => a.askId !== askId);
-}
-
-/** 待答列表是否包含某 askId（应答幂等守卫）。 */
-export function hasBoundaryAsk(asks: BoundaryAsk[], askId: unknown): boolean {
-  return typeof askId === 'string' && asks.some((a) => a.askId === askId);
 }

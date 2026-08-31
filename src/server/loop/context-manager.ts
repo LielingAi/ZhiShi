@@ -144,8 +144,8 @@ export function keyHitLines(text: string): string[] {
  * filler 历史):估算 226K tok,API 实报 521878 tok,偏差 2.3 倍,第一
  * 次调用直接撞 400(由溢出兜底接住)。按字符类分档校准:CJK/全角 ≈
  * 1 tok/字符,其余 ≈ 2.5 字符/tok(hex/符号密集的安全输出比英文散文
- * 费 token)。仍是启发式:阈值 0.8 的 20% 余量吸收残余偏差;usage 锚
- * (API 实测)路径不经过这里。
+ * 费 token)。仍是启发式:阈值 0.8 的 20% 余量吸收残余偏差(1.5.3 起
+ * 判定侧再叠 meta 持久化校准系数,见 compaction.evaluateCompaction)。
  */
 const CJK_CHAR = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3000-\u303F\uFF00-\uFFEF]/gu;
 
@@ -210,8 +210,8 @@ export function toolResultCallId(message: AgentMessage): string | undefined {
  * 不动点:kept toolResult ⇒ 其 toolCall 所在 assistant 也 keep;
  * kept toolCall ⇒ 其 toolResult 也 keep。
  *
- * 段级压缩整段取舍,结构上天然不拆对;本函数保留给调用方做闭包校验
- * 与消息级场景复用。
+ * 段级压缩整段取舍,结构上天然不拆对——生产路径不调用本函数;当前
+ * 仅单测用它对压缩产物做闭包不动点校验(配对不拆的回归证据)。
  */
 export function expandToolPairs(messages: AgentMessage[], keep: Set<number>): Set<number> {
   const result = new Set(keep);
@@ -404,9 +404,10 @@ export function segmentContext(messages: AgentMessage[]): ContextSegment[] {
 
 /**
  * 裁后重估口径(设计 §2.6):一律纯估算(estimateMessageTokens 求和 +
- * 系统提示折算),不吃旧 assistant 的 usage 锚——usage 锚只在「未裁」
- * 判定(compaction.evaluateCompaction 首判)时用。系统提示是字符数
- * 入参,按中英混合保守口径 chars/2 折算(1.2.7 活体校准,见
+ * 系统提示折算)——1.5.3 起未裁首判也不吃旧 assistant 的 usage 锚
+ * (锚失真:压缩轮的 usage 是裁后体量;判定改用「全量启发式 × meta
+ * 持久化校准系数」,见 compaction.evaluateCompaction)。系统提示是
+ * 字符数入参,按中英混合保守口径 chars/2 折算(1.2.7 活体校准,见
  * estimateTextTokens 注释)。
  */
 export function estimateMessagesTokens(messages: AgentMessage[], systemPromptChars = 0): number {
@@ -419,15 +420,24 @@ export function estimateMessagesTokens(messages: AgentMessage[], systemPromptCha
  * 信息(命中行原文摘录)/工具名录/「全文在会话存档」指针——矮,放在
  * 布局中段把「去中间」损耗最小化。
  * 1.5.3：stub 升级为指针卡（buildPointerCard，含收割引用 + jsonl 行区间
- * + recall 用法）——本函数保留为无收割时的兜底形态。 */
-export function buildSegmentStub(segment: ContextSegment): AgentMessage {
+ * + recall 用法）——本函数保留为无收割时的兜底形态。
+ * 1.5.4(A2-3)：兜底文案按「调用方是否有 recall 工具」分形态——子 loop
+ * 无 recall,不印取回指引(印了模型照做即幻觉调用,被 boundary 拦)。 */
+export function buildSegmentStub(
+  segment: ContextSegment,
+  options?: { /** 调用方上下文里是否有 recall 工具(缺省 true——主 loop 恒注册)。 */
+    hasRecall?: boolean },
+): AgentMessage {
   const keys = segment.keyHits.length > 0 ? segment.keyHits.map((l) => `「${l}」`).join(' ') : '无关键命中';
   const tools = segment.toolNames.length > 0 ? segment.toolNames.join('/') : '无工具调用';
+  const pointer = options?.hasRecall === false
+    ? '全文在会话存档(jsonl 全量未动;本上下文无取回工具,关键信息以本卡摘录为准)'
+    : '全文在会话存档(jsonl 全量未动,需要时用 recall 工具按行区间取回)';
   return {
     role: 'user',
     content:
       `[段#${segment.index} ${segment.phase} 已压缩] 关键信息:${keys};` +
-      `工具:${tools};全文在会话存档(jsonl 全量未动,需要时用 recall 工具按行区间取回)。`,
+      `工具:${tools};${pointer}。`,
     timestamp: Date.now(),
   } as AgentMessage;
 }

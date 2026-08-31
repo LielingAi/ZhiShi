@@ -139,8 +139,7 @@ let detectedTerminalProxyEnv: TerminalProxyEnv | null = null;
  *     TCP accept during sidecar startup — measured 4-5s hang on slow .zshrc)
  *
  * Call `warmupShellPath()` once at process startup to kick off the async
- * interactive-shell detection. Callers that need the *detected* PATH (not just
- * fallback) and can wait should use `ensureShellPath()`.
+ * interactive-shell detection.
  */
 export function getShellPath(): string {
     if (cachedPath && detectedUserPath === null) {
@@ -170,18 +169,6 @@ export function getShellEnv(): Record<string, string> {
     return env;
 }
 
-/**
- * Awaitable PATH getter — waits for the interactive-shell detection if it's
- * still in flight, then returns the enriched PATH. Falls back to the sync
- * PATH on Windows or if detection failed.
- *
- * Use this from async user-initiated flows (e.g. MCP verify) where we'd rather
- * wait ~1-3s for a complete PATH than miss a user-installed binary.
- */
-export async function ensureShellPath(): Promise<string> {
-    if (warmupInFlight) await warmupInFlight;
-    return getShellPath();
-}
 
 /**
  * Kick off interactive-shell PATH detection in the background.

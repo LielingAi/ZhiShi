@@ -123,7 +123,13 @@ export interface VerdictPackage {
  * 恢复路径的终审弹窗按它渲染）。
  */
 export interface VerdictRequestShape {
-  criteria: Array<{ text: string; hasEvidence: boolean; refs: string[] }>;
+  criteria: Array<{
+    text: string;
+    hasEvidence: boolean;
+    /** A2-6(1.5.4):criteriaPrecheck 不带 refs 数据,恢复路径没有可渲染的
+     *  引用——字段可缺席(不再硬填空数组),渲染方判空。 */
+    refs?: string[];
+  }>;
   statement: string;
 }
 
@@ -139,7 +145,7 @@ export function verdictRequestOfRecord(record: AutoRunRecord): VerdictRequestSha
     .map((c) => ({
       text: c.text.trim(),
       hasEvidence: c.status === 'evidence' || c.status === 'partial',
-      refs: [] as string[],
+      // A2-6:criteriaPrecheck 无 refs 数据——不硬填空数组,字段缺席由渲染方判空。
     }))
     .filter((c) => c.text !== '');
   if (criteria.length === 0) return undefined;
@@ -1104,6 +1110,10 @@ export async function runAutoRunLoop(
       if (!alive) break;
       record.status = 'running';
       record.pauseReason = undefined;
+      // A3-1(1.5.4):续命恢复 running 也要落盘(对齐其余四个恢复分支)——
+      // 否则崩溃窗口内盘上仍是 paused,恢复路径误判。
+      record.updatedAt = new Date(deps.now()).toISOString();
+      persist();
       deps.log(`[auto-run] ${record.id} 预算续命到 ${record.budget.limit}(${record.budget.kind})`);
       budgetWarned = false;
       continue;

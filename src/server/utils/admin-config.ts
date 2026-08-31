@@ -34,8 +34,6 @@ import {
 
   closeSync,
 
-  unlinkSync,
-
 } from 'fs';
 
 import { resolve } from 'path';
@@ -484,36 +482,6 @@ export function loadProjects(): ProjectSlim[] {
 }
 
 
-
-export function saveProjects(projects: ProjectSlim[]): void {
-
-  const path = getProjectsPath();
-
-  const tmpPath = path + '.tmp';
-
-  writeFileSync(tmpPath, JSON.stringify(projects, null, 2), 'utf-8');
-
-  // Pattern 5 fix #13: if rename fails (e.g. permission denied, target on a
-
-  // different filesystem), the .tmp file used to persist forever. Wrap so a
-
-  // failure cleans up the artifact before rethrowing.
-
-  try {
-
-    renameSync(tmpPath, path);
-
-  } catch (err) {
-
-    try { unlinkSync(tmpPath); } catch { /* ignore — tmp may not exist */ }
-
-    throw err;
-
-  }
-
-}
-
-
 // ---------------------------------------------------------------------------
 
 // Provider helpers
@@ -953,7 +921,7 @@ export interface WorkspaceResolvedConfig {
 
 
 
-const BUILTIN_PERMISSION_MODES = new Set(['auto', 'plan', 'fullAgency', 'custom']);
+const BUILTIN_PERMISSION_MODES = new Set(['auto', 'fullAgency', 'custom']);
 
 
 
@@ -1129,21 +1097,15 @@ export function resolveWorkspaceConfig(
 
   // session snapshot → Agent → Project → global default. Pre-warm uses this
 
-  // before the first user message, so plan/fullAgency cannot rely on a later
+  // before the first user message, so fullAgency cannot rely on a later
 
   // in-place SDK mode switch.
 
-  // Deliberate divergence from the renderer's UI fallback (which defaults a
+  // Headless pre-warm for IM/cron sessions defaults to 'auto' (classify,
 
-  // missing defaultPermissionMode to 'plan'): headless pre-warm for IM/cron
+  // non-blocking). Only reachable on a brand-new empty config; once the UI
 
-  // sessions must default to 'auto' (classify, non-blocking), NOT 'plan'
-
-  // (read-only) — defaulting headless sessions to plan would make them refuse
-
-  // every write before the first user message. Only reachable on a brand-new
-
-  // empty config; once the UI has run, config.defaultPermissionMode is set.
+  // has run, config.defaultPermissionMode is set.
 
   const permissionMode = asBuiltinPermissionMode(sessionMeta?.permissionMode)
 

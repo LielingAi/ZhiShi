@@ -11,15 +11,7 @@
  *     onAbort: (reason) => console.warn('[my-tool] aborted', reason),
  *   });
  *
- *   const merged = anySignal([signalA, signalB]);
- *
- *   await cancellableDelay(500, signal);
- *
- *   const x = await withBoundedTimeout(somePromise, 5_000, () => console.warn('timed out'));
- *
- * Composes with `killWithEscalation` (subprocess kill) — these helpers handle
- * everything that isn't a child process: HTTP fetches, SSE streams, pending
- * promises, timers.
+ * 处理子进程以外的可取消资源：HTTP fetch、SSE 流、pending promise、定时器。
  *
  * Logging convention: callers should log the cancel reason via `console.warn`
  * with a `[Module]` prefix; Pattern 6's `withLogContext` will auto-inject
@@ -117,129 +109,6 @@ export function withAbortSignal<T>(
 }
 
 /**
- * Compose multiple AbortSignals into a single signal that aborts when ANY of
- * the inputs aborts. `undefined` entries are ignored. If all inputs are
- * already aborted, returns a pre-aborted signal.
- *
- * Prefer `AbortSignal.any` when available (Node 24+); this wrapper accepts
- * `undefined` entries which the native API rejects.
- */
-export function anySignal(signals: (AbortSignal | undefined)[]): AbortSignal {
-  const real = signals.filter((s): s is AbortSignal => s !== undefined);
-  if (real.length === 0) {
-    // No parents → return a never-aborting signal.
-    return new AbortController().signal;
-  }
-  if (real.length === 1) {
-    return real[0];
-  }
-  // Use native AbortSignal.any when present (Node 20.3+).
-  if (typeof (AbortSignal as { any?: (s: AbortSignal[]) => AbortSignal }).any === 'function') {
-    return (AbortSignal as unknown as { any: (s: AbortSignal[]) => AbortSignal }).any(real);
-  }
-  // Fallback: hand-rolled fan-in.
-  const ctrl = new AbortController();
-  const onAbort = (): void => {
-    if (ctrl.signal.aborted) return;
-    try {
-      ctrl.abort();
-    } catch {
-      /* ignore */
-    }
-    for (const s of real) {
-      s.removeEventListener('abort', onAbort);
-    }
-  };
-  for (const s of real) {
-    if (s.aborted) {
-      onAbort();
-      break;
-    }
-    s.addEventListener('abort', onAbort, { once: true });
-  }
-  return ctrl.signal;
-}
-
-/**
- * `setTimeout(ms)` that respects an `AbortSignal`. Resolves after `ms` if no
- * abort; rejects with `AbortError` (DOMException-shaped) if the signal aborts
- * before the timeout. Already-aborted signal rejects synchronously (next tick).
- */
-export function cancellableDelay(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(makeAbortError(signal));
-      return;
-    }
-    const timer = setTimeout(() => {
-      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    timer.unref?.();
-    let onAbort: (() => void) | undefined;
-    if (signal) {
-      onAbort = (): void => {
-        clearTimeout(timer);
-        reject(makeAbortError(signal));
-      };
-      signal.addEventListener('abort', onAbort, { once: true });
-    }
-  });
-}
-
-/**
- * Bound a Promise's wait time. If `p` settles within `timeoutMs`, the resolved
- * value is returned. If it doesn't, `onTimeout()` is invoked exactly once and
- * the wrapper resolves to `undefined`. **Never rejects** — the underlying
- * promise's outcome (success or failure) after timeout is silently dropped
- * (caller is responsible for any needed side-effect logging in `onTimeout`).
- *
- * Useful when waiting on a resource that *should* release but might hang
- * forever (e.g. a stuck SDK subprocess after SIGTERM).
- */
-export function withBoundedTimeout<T>(
-  p: Promise<T>,
-  timeoutMs: number,
-  onTimeout: () => void,
-): Promise<T | undefined> {
-  let settled = false;
-  // Fix #16: `p.then(success, failure)` already consumes p's outcome — both
-  // arms exist, so a late rejection after timeout doesn't surface as
-  // unhandledRejection. We attach an extra `.catch(() => {})` here as a
-  // defense-in-depth so any future refactor (e.g. someone removing the
-  // failure arm) doesn't silently regress the "never rejects" contract.
-  void p.catch(() => undefined);
-  return new Promise<T | undefined>((resolve) => {
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      try {
-        onTimeout();
-      } catch {
-        /* swallow — never propagate */
-      }
-      resolve(undefined);
-    }, timeoutMs);
-    timer.unref?.();
-    p.then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(value);
-      },
-      () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        // Translate rejection to undefined per spec ("never rejects").
-        resolve(undefined);
-      },
-    );
-  });
-}
-
-/**
  * Convenience wrapper for the common shape: fetch() with bounded time and
  * optional parent signal. Returns the Response (caller still owns the body).
  *
@@ -261,13 +130,4 @@ export async function cancellableFetch(
     (signal) => fetch(url, { ...(init ?? {}), signal }),
     { timeoutMs },
   );
-}
-
-function makeAbortError(signal?: AbortSignal): Error {
-  // Prefer AbortSignal.reason when present (Node 18+).
-  const reason = signal?.reason;
-  if (reason instanceof Error) return reason;
-  const err = new Error(typeof reason === 'string' ? reason : 'aborted');
-  err.name = 'AbortError';
-  return err;
 }

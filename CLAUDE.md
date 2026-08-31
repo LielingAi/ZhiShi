@@ -381,7 +381,7 @@ W6 减法：内嵌浏览器（`browser.rs` + panel_api `/browser/*` 路由 + `zh
 
 | 同步 busy-wait（`Atomics.wait` / spin / `while Date.now()`） | 阻塞 event loop / Sidecar 停止 drain 引擎消息 / pegs CPU | 异步 polling / 现成 helper（`setTimeout` / `withFileLock`） | eslint (`Atomics.wait`) |
 
-| readiness 等同 liveness | 客户端假就绪 | `/health/{live,ready,functional}` 三分；客户端挂 `/health/ready` | — (语义检查) |
+| readiness 等同 liveness | 客户端假就绪 | `/health`（liveness，TCP bind 成功）与 `/health/ready`（deferred init 完成，未就绪回 503+phase）两分；客户端挂 `/health/ready`（1.5.4：`/health/live` 与 `/health/functional` 已删，Rust 只用这两条） | — (语义检查) |
 
 | `src/server/tools/*.ts` 顶层 import SDK / zod | builtin MCP 懒加载失效，冷启动每次税 ~500–1000ms（6 tools = ~3–6s） | factory 内部 `await import(...)` | eslint |
 

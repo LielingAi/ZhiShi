@@ -139,7 +139,7 @@ export interface AgentConfig {
   providerId?: string;
   model?: string;
   providerEnvJson?: string;
-  permissionMode: string;  // 'plan' | 'auto' | 'fullAgency'
+  permissionMode: string;  // 'auto' | 'fullAgency'（1.5.4 起撤除 'plan'）
 
   // Heartbeat (Agent-level, shared across channels)
   heartbeat?: HeartbeatConfig;
@@ -156,21 +156,4 @@ export interface AgentConfig {
 
   // Runtime
   setupCompleted?: boolean;
-}
-
-/**
- * Resolve effective config for a channel by merging Agent defaults with Channel overrides
- */
-export function resolveEffectiveConfig(agent: AgentConfig, channel: ChannelConfig) {
-  return {
-    providerId: channel.overrides?.providerId ?? agent.providerId,
-    providerEnvJson: channel.overrides?.providerEnvJson ?? agent.providerEnvJson,
-    model: channel.overrides?.model ?? agent.model,
-    permissionMode: channel.overrides?.permissionMode ?? agent.permissionMode,
-    toolsDeny: channel.overrides?.toolsDeny ?? [],
-    workspacePath: agent.workspacePath,               // Always Agent's
-    heartbeat: agent.heartbeat,                       // Always Agent's
-    runtime: agent.runtime ?? 'builtin',
-    runtimeConfig: agent.runtimeConfig,
-  };
 }

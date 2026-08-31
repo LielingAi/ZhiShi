@@ -28,8 +28,6 @@ export interface BgTaskEntry {
   commandPreview?: string;
   status: 'running' | 'finished';
   exitCode?: number;
-  startedAt: number;
-  finishedAt?: number;
 }
 
 export type BgEvent =
@@ -37,7 +35,7 @@ export type BgEvent =
   | { kind: 'finished'; tag: string; status: string; exitCode?: number };
 
 /** chat:bg-started / chat:bg-finished → 后台任务登记表（按 tag 归并）。 */
-export function applyBgEvent(list: BgTaskEntry[], ev: BgEvent, now = Date.now()): BgTaskEntry[] {
+export function applyBgEvent(list: BgTaskEntry[], ev: BgEvent): BgTaskEntry[] {
   if (!ev.tag) return list;
   const existing = list.find((t) => t.tag === ev.tag);
   if (ev.kind === 'started') {
@@ -46,7 +44,6 @@ export function applyBgEvent(list: BgTaskEntry[], ev: BgEvent, now = Date.now())
       pid: ev.pid,
       commandPreview: ev.commandPreview,
       status: 'running',
-      startedAt: existing?.startedAt ?? now,
     };
     return existing ? list.map((t) => (t.tag === ev.tag ? entry : t)) : [...list, entry];
   }
@@ -57,7 +54,6 @@ export function applyBgEvent(list: BgTaskEntry[], ev: BgEvent, now = Date.now())
           ...t,
           status: 'finished',
           exitCode: ev.exitCode,
-          finishedAt: now,
         }
       : t,
   );
@@ -71,8 +67,6 @@ export interface SubagentEntry {
   error?: string;
   loopSessionId?: string;
   toolCount: number;
-  startedAt: number;
-  finishedAt?: number;
 }
 
 export type SubagentEvent =
@@ -92,7 +86,6 @@ export type SubagentEvent =
 export function applySubagentEvent(
   list: SubagentEntry[],
   ev: SubagentEvent,
-  now = Date.now(),
 ): SubagentEntry[] {
   const taskId = ev.kind === 'tool-use' ? ev.taskId : ev.taskId;
   if (!taskId) return list;
@@ -103,7 +96,6 @@ export function applySubagentEvent(
       description: ev.description,
       status: 'running',
       toolCount: existing?.toolCount ?? 0,
-      startedAt: existing?.startedAt ?? now,
     };
     return existing ? list.map((s) => (s.taskId === taskId ? entry : s)) : [...list, entry];
   }
@@ -123,8 +115,6 @@ export function applySubagentEvent(
         error: ev.error,
         loopSessionId: ev.loopSessionId,
         toolCount: 0,
-        startedAt: now,
-        finishedAt: now,
       },
     ];
   }
@@ -137,7 +127,6 @@ export function applySubagentEvent(
           summary: ev.summary,
           error: ev.error,
           loopSessionId: ev.loopSessionId,
-          finishedAt: now,
         }
       : s,
   );

@@ -26,6 +26,7 @@ import {
   parseVerdictRequest,
   pauseReasonOf,
   validateAutoRunForm,
+  verdictModalOpen,
   type AutoRunEntry,
   type AutoRunFormView,
 } from './auto-run';
@@ -520,5 +521,30 @@ describe('turnProgressOf（1.4.7 观察卡轮内进度）', () => {
     expect(turnProgressOf(paused!)).toBeNull();
     const fresh = autoRunEntryOf({ id: 'r', status: 'running', updatedAt: 1000 });
     expect(turnProgressOf(fresh!, 2500)).toEqual({ turn: 1, elapsedSec: 2 });
+  });
+});
+
+describe('verdictModalOpen（A3-2：Esc 链与终审弹窗渲染同一口径）', () => {
+  const awaiting = autoRunEntryOf({
+    id: 'ar-1', status: 'awaiting-verdict',
+    verdict: { criteria: [{ text: 'c1', hasEvidence: true }], evidence: 's' },
+  })!;
+
+  it('verdict 存在 + 未收起 + awaiting-verdict → 开', () => {
+    expect(verdictModalOpen(awaiting, false)).toBe(true);
+  });
+
+  it('已收起 → 关（观察卡「待终审」可重开）', () => {
+    expect(verdictModalOpen(awaiting, true)).toBe(false);
+  });
+
+  it('孤儿记录（status 非 awaiting-verdict，verdict 残留）→ 关——Esc 不再被静默吞', () => {
+    const orphan = { ...awaiting, status: 'stopped' as const };
+    expect(verdictModalOpen(orphan, false)).toBe(false);
+  });
+
+  it('无 loop / 无 verdict → 关', () => {
+    expect(verdictModalOpen(null, false)).toBe(false);
+    expect(verdictModalOpen(autoRunEntryOf({ id: 'ar-2', status: 'running' })!, false)).toBe(false);
   });
 });

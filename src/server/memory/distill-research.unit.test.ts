@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   applyResearchDistillResult,
   buildResearchDistillPrompt,
-  hasResearchDistilledContent,
   isResearchDistillArcPrompt,
   readResearchDistilled,
   writeResearchDistilled,
@@ -24,7 +23,6 @@ import {
   latestKeyedDistilledEntry,
   keyedDistilledEntryJudgedWrong,
   listActive,
-  listArchive,
   listUndistilledResearchEvents,
   listUnsettledRecalls,
   logRecallEvents,
@@ -177,13 +175,12 @@ describe('D3：applyResearchDistillResult 容错合并', () => {
 });
 
 describe('D3：蒸馏产物存取（SQLite，keyed 权威覆盖）', () => {
-  it('写入 → 读回；重写 → 新版本取代旧版本（旧版进 archive）', () => {
-    expect(hasResearchDistilledContent(readResearchDistilled(dir))).toBe(false);
+  it('写入 → 读回；重写 → 新版本取代旧版本', () => {
+    expect(readResearchDistilled(dir)).toEqual(EMPTY);
 
     writeResearchDistilled(EXISTING, dir);
     const first = readResearchDistilled(dir);
     expect(first).toEqual(EXISTING);
-    expect(hasResearchDistilledContent(first)).toBe(true);
 
     // 成功路径与失败根因都落在 vuln-pattern（不同 key 并存），工具组合落 tool-combo。
     expect(listActive('vuln-pattern', dir, NOW)).toHaveLength(2);
@@ -193,9 +190,8 @@ describe('D3：蒸馏产物存取（SQLite，keyed 权威覆盖）', () => {
     const second = readResearchDistilled(dir);
     expect(second.successPaths).toContain('新路径');
     expect(second.failureRoots).toBe(EXISTING.failureRoots);
-    // 同 key 恒 1 条权威：vuln-pattern 仍 2 条活跃，旧版进 archive。
+    // 同 key 恒 1 条权威：vuln-pattern 仍 2 条活跃。
     expect(listActive('vuln-pattern', dir, NOW)).toHaveLength(2);
-    expect(listArchive(dir).some((e) => e.content.includes('tcache dup'))).toBe(true);
   });
 
   it('空节不写入（零产出语义）；全空不写任何条目', () => {

@@ -4,9 +4,6 @@
  * Covers:
  *  (a) withAbortSignal aborts inner op when outer signal fires; outer signal preserved
  *  (b) withAbortSignal enforces timeoutMs even if op never settles
- *  (c) cancellableDelay rejects with AbortError on signal
- *  (d) anySignal aborts when any input signal aborts; doesn't abort others
- *  (e) withBoundedTimeout calls onTimeout and resolves to undefined; doesn't reject
  *
  * NOTE: the "/chat/stream last consumer disconnect → grace → interrupt" flow that
  * an earlier revision of this comment referenced has been REMOVED. SSE disconnect
@@ -17,12 +14,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import {
-  anySignal,
-  cancellableDelay,
-  withAbortSignal,
-  withBoundedTimeout,
-} from '../utils/cancellation';
+import { withAbortSignal } from '../utils/cancellation';
 
 describe('withAbortSignal', () => {
   it('aborts inner op when outer signal fires; outer signal preserved', async () => {
@@ -103,81 +95,5 @@ describe('withAbortSignal', () => {
       }),
     ).rejects.toThrow('n/a');
     expect(innerAborted).toBe(true);
-  });
-});
-
-describe('cancellableDelay', () => {
-  it('resolves after ms with no signal', async () => {
-    const start = Date.now();
-    await cancellableDelay(40);
-    expect(Date.now() - start).toBeGreaterThanOrEqual(30);
-  });
-
-  it('rejects with AbortError on signal', async () => {
-    const ctrl = new AbortController();
-    setTimeout(() => ctrl.abort(), 10);
-    await expect(cancellableDelay(10_000, ctrl.signal)).rejects.toMatchObject({ name: 'AbortError' });
-  });
-
-  it('rejects synchronously when signal already aborted', async () => {
-    const ctrl = new AbortController();
-    ctrl.abort();
-    await expect(cancellableDelay(10_000, ctrl.signal)).rejects.toMatchObject({ name: 'AbortError' });
-  });
-});
-
-describe('anySignal', () => {
-  it('aborts when any input signal aborts; the others are unaffected', () => {
-    const a = new AbortController();
-    const b = new AbortController();
-    const merged = anySignal([a.signal, b.signal]);
-    expect(merged.aborted).toBe(false);
-
-    a.abort();
-    expect(merged.aborted).toBe(true);
-    expect(b.signal.aborted).toBe(false);
-  });
-
-  it('returns a never-aborting signal when all inputs are undefined', () => {
-    const merged = anySignal([undefined, undefined]);
-    expect(merged.aborted).toBe(false);
-  });
-
-  it('returns the single input as-is when only one provided', () => {
-    const a = new AbortController();
-    const merged = anySignal([undefined, a.signal, undefined]);
-    expect(merged).toBe(a.signal);
-  });
-
-  it('is already aborted if any input is already aborted', () => {
-    const a = new AbortController();
-    a.abort();
-    const b = new AbortController();
-    const merged = anySignal([a.signal, b.signal]);
-    expect(merged.aborted).toBe(true);
-  });
-});
-
-describe('withBoundedTimeout', () => {
-  it('returns undefined and calls onTimeout after deadline; never rejects', async () => {
-    let onTimeoutCalls = 0;
-    const stuck = new Promise<string>(() => { /* never settles */ });
-    const result = await withBoundedTimeout(stuck, 30, () => { onTimeoutCalls++; });
-    expect(result).toBeUndefined();
-    expect(onTimeoutCalls).toBe(1);
-  });
-
-  it('returns the inner value when it resolves before timeout', async () => {
-    const fast = Promise.resolve('hello');
-    const result = await withBoundedTimeout(fast, 1000, () => { throw new Error('should not fire'); });
-    expect(result).toBe('hello');
-  });
-
-  it('translates inner rejection to undefined silently (never rejects)', async () => {
-    const failing = Promise.reject(new Error('inner failed'));
-    let onTimeoutCalls = 0;
-    const result = await withBoundedTimeout(failing, 1000, () => { onTimeoutCalls++; });
-    expect(result).toBeUndefined();
-    expect(onTimeoutCalls).toBe(0);
   });
 });

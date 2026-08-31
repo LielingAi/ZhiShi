@@ -195,6 +195,8 @@ zhishi env exec <env-id> [--guest-user U] -- <cmd>    # 断网隔离 VM 的一�
 zhishi env list                                       # 具名环境（ssh/docker/vm 条目）
 
 zhishi env add --kind ssh --id dev --host H [--port N] [--user U] [--key-path K]
+                                                  # --port 是目标主机 ssh 端口（进环境条目）；
+                                                  # 1.5.4 起它不再被全局 --port（sidecar 端口覆盖）抢走
 
 zhishi env open <id>                                  # 嵌终端接入环境（ssh / docker exec / vm ssh）
 

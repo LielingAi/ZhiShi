@@ -81,6 +81,7 @@ export function modelLooksLikeRuntime(model: string, runtime: RuntimeType): bool
 }
 
 const PERMISSION_MODE_FAMILIES: Record<RuntimeType, ReadonlySet<string>> = {
+  // 'plan' 为历史合法值（1.5.4 起撤除），迁移集合保留以正确清洗存量配置。
   builtin: new Set(['auto', 'plan', 'fullAgency', 'custom']),
   'claude-code': new Set(['default', 'plan', 'acceptEdits', 'bypassPermissions']),
   codex: new Set(['suggest', 'auto-edit', 'full-auto', 'no-restrictions']),

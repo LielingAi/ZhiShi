@@ -313,6 +313,7 @@ export async function markLoopSessionCompacted(
       createdAt: existing.meta?.createdAt || now,
       updatedAt: existing.meta?.updatedAt || now,
       compactedAt: now,
+      tokenCalibration: existing.meta?.tokenCalibration,
     };
     writeFileAtomic(file, serializeLoopSession(nextMeta, existing.messages));
   });

@@ -1,12 +1,11 @@
 /**
  * Pattern 4 — Readiness state machine for the Sidecar's deferred init.
  *
- * Splits the single "healthy" signal into three orthogonal probes:
- *  - /health/live      — process bound to TCP, route handler running
- *  - /health/ready     — deferred init (migrations / skill seed / SDK init / ...) done
- *  - /health/functional — core feature can actually serve a request (sidecar mirrors live)
+ * 探针两分（1.5.4 起；live/functional 已随死路由清理删除）：
+ *  - /health       — 进程存活（handler running，liveness 隐含）
+ *  - /health/ready — deferred init（migrations / skill seed / ...）完成
  *
- * Liveness is implicit (handler running). This module owns Readiness.
+ * This module owns Readiness.
  *
  * Why a state machine and not just a Promise?
  *  - The bare Promise lets callers `await` for "ready" but tells you nothing

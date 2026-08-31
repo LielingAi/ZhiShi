@@ -58,23 +58,3 @@ export function sanitizeFolderName(name: string): string {
 export function stripBom(content: string): string {
     return content.charCodeAt(0) === 0xFEFF ? content.slice(1) : content;
 }
-
-/**
- * Semantic version comparison
- * @param a - First version string (e.g., "1.2.3")
- * @param b - Second version string (e.g., "1.2.10")
- * @returns -1 if a < b, 0 if equal, 1 if a > b
- */
-export function compareVersions(a: string, b: string): number {
-    const partsA = a.split('.').map(Number);
-    const partsB = b.split('.').map(Number);
-    const maxLen = Math.max(partsA.length, partsB.length);
-
-    for (let i = 0; i < maxLen; i++) {
-        const numA = partsA[i] || 0;
-        const numB = partsB[i] || 0;
-        if (numA < numB) return -1;
-        if (numA > numB) return 1;
-    }
-    return 0;
-}

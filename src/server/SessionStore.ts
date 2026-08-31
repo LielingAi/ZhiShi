@@ -459,36 +459,6 @@ export function calculateSessionStats(messages: SessionMessage[]): SessionStats 
 }
 
 /**
- * Append a single message to session (O(1) operation).
- * Serialized against `saveSessionMessages` and `rewindMessages` via the
- * per-session JSONL lock (Pattern 5 §5.3.3).
- */
-export async function appendSessionMessage(sessionId: string, message: SessionMessage): Promise<void> {
-    ensureStorageDir();
-
-    const filePath = getSessionFilePath(sessionId);
-
-    try {
-        await withSessionFileLock(sessionId, async () => {
-            const line = JSON.stringify(message) + '\n';
-            const start = nowMs();
-            appendFileSync(filePath, line, 'utf-8');
-            emitPerfTrace({
-                trace: 'storage_io',
-                phase: 'session_jsonl_append',
-                sessionId,
-                durationMs: elapsedMs(start),
-                sizeBytes: Buffer.byteLength(line, 'utf-8'),
-                count: 1,
-                status: 'ok',
-            });
-        });
-    } catch (error) {
-        console.error('[SessionStore] Failed to append message:', error);
-    }
-}
-
-/**
  * Save session messages using incremental append.
  * Only appends new messages and updates stats incrementally for performance.
  *
@@ -733,42 +703,6 @@ export async function updateSessionTitleFromMessage(sessionId: string, message: 
 
     const title = generateSessionTitle(message);
     await updateSessionMetadata(sessionId, { title, titleSource: 'default' });
-}
-
-/**
- * Save attachment data to disk
- * @returns Relative path to the attachment
- */
-export function saveAttachment(
-    sessionId: string,
-    attachmentId: string,
-    fileName: string,
-    base64Data: string,
-    mimeType: string
-): string {
-    ensureStorageDir();
-
-    // Create session-specific attachments directory
-    const sessionAttachmentsDir = join(ATTACHMENTS_DIR, sessionId);
-    if (!existsSync(sessionAttachmentsDir)) {
-        ensureDirSync(sessionAttachmentsDir);
-    }
-
-    // Determine file extension
-    const ext = mimeType.split('/')[1] || 'bin';
-    const safeFileName = `${attachmentId}.${ext}`;
-    const filePath = join(sessionAttachmentsDir, safeFileName);
-
-    // Decode base64 and write to file
-    try {
-        const buffer = Buffer.from(base64Data, 'base64');
-        writeFileSync(filePath, buffer);
-        console.log(`[SessionStore] Saved attachment: ${filePath}`);
-        return `${sessionId}/${safeFileName}`;
-    } catch (error) {
-        console.error('[SessionStore] Failed to save attachment:', error);
-        throw error;
-    }
 }
 
 /**

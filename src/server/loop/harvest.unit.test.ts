@@ -74,16 +74,20 @@ describe('harvestSegment(确定性提取)', () => {
 });
 
 describe('buildPointerCard(指针卡)', () => {
-  it('含段号/相位/收割引用/recall 用法', () => {
+  it('含段号/相位/收割引用/jsonl 行区间/recall 用法', () => {
     const card = buildPointerCard(
       { index: 2, phase: 'recon', toolNames: ['env_exec'], keyHits: ['flag{x}'] },
       'K#7',
+      { lineStart: 12, lineEnd: 40 },
     );
     expect(card).toContain('段#2');
     expect(card).toContain('recon');
     expect(card).toContain('K#7');
     expect(card).toContain('recall');
     expect(card).toContain('flag{x}');
+    // A1-3:行区间直接印在卡上,模型可不等 ref 直接按行取回
+    expect(card).toContain('12-40');
+    expect(card).toContain('recall({lines:"12-40"})');
   });
 });
 

@@ -10,8 +10,8 @@
  * Lifecycle:
  *   - Each ref has a TTL (default 1h) and a `sessionId` tag.
  *   - `clearExpiredRefs()` runs periodically (60s) to evict TTL-expired entries.
- *   - `clearSessionRefs(sessionId)` is called on session-end / reset to release
- *     refs owned by that session early.
+ *   - `clearSessionRefs(sessionId)` 可提前释放某会话的 refs（当前无调用方，
+ *     仅作为生命周期 API 保留；实际清理靠 TTL + 定期 clearExpiredRefs）。
  *
  * On-disk layout (under `~/.zhishi/refs/`):
  *   <id>            — the actual bytes (Uint8Array | utf-8 text)

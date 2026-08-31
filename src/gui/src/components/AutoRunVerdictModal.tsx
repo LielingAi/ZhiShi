@@ -14,6 +14,7 @@ import { useState } from 'react';
 import type React from 'react';
 
 import { useGuiStore } from '../store/useGuiStore';
+import { verdictModalOpen } from '../model/auto-run';
 
 export function AutoRunVerdictModal(): React.JSX.Element | null {
   const autoRun = useGuiStore((s) => s.autoRun);
@@ -25,7 +26,8 @@ export function AutoRunVerdictModal(): React.JSX.Element | null {
   const verdict = autoRun?.verdict;
   // 1.4.6 走查实证：弹窗只在 awaiting-verdict 态出——sidecar 重启后内存
   // runner 消亡的孤儿记录（verdictPackage 残留盘上）不再弹「答不了」的窗。
-  if (!verdict || verdictDismissed || autoRun?.status !== 'awaiting-verdict') return null;
+  // A3-2：判定收口到 verdictModalOpen，与 Esc 链 verdictOpen 同一口径。
+  if (!verdict || !verdictModalOpen(autoRun, verdictDismissed)) return null;
 
   const respond = (v: 'pass' | 'fail' | 'continue') => {
     setBusy(true);
@@ -54,7 +56,8 @@ export function AutoRunVerdictModal(): React.JSX.Element | null {
                 <span className="vc-mark">{c.hasEvidence ? '✓' : '✗'}</span>
                 <span className="vc-crit-text">{c.text}</span>
                 <span className="vc-crit-tag">{c.hasEvidence ? '有证据' : '无证据'}</span>
-                {c.refs.map((r) => (
+                {/* A2-6 配套：refs 可缺席（断线恢复路径无引用数据），按 [] 渲染。 */}
+                {(c.refs ?? []).map((r) => (
                   <span className="dc-badge" key={r}>{r}</span>
                 ))}
               </div>

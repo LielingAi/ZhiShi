@@ -8,7 +8,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   effectiveScore,
   listActive,
-  listArchive,
   MEMORY_KINDS,
   putEntry,
   resetMemoryStoreForTest,
@@ -58,9 +57,8 @@ describe('D2：cap 挤兑（残差守恒——被挤掉的进 archive）', () =>
     }
     const active = listActive('vuln-pattern', dir, NOW + 100);
     expect(active).toHaveLength(20);
-    // salience 最低的 vp-000 被挤进 archive。
+    // salience 最低的 vp-000 被挤出活跃集。
     expect(active.some((e) => e.content === 'vp-000')).toBe(false);
-    expect(listArchive(dir).some((e) => e.content === 'vp-000' && e.kind === 'vuln-pattern')).toBe(true);
   });
 
   it('tool-combo cap 20：第 21 条挤掉最低分', () => {
@@ -68,7 +66,6 @@ describe('D2：cap 挤兑（残差守恒——被挤掉的进 archive）', () =>
       putEntry({ kind: 'tool-combo', content: `tc-${String(i).padStart(3, '0')}`, salience: i / 100 }, dir, NOW + i);
     }
     expect(listActive('tool-combo', dir, NOW + 100)).toHaveLength(20);
-    expect(listArchive(dir).some((e) => e.content === 'tc-000' && e.kind === 'tool-combo')).toBe(true);
   });
 
   it('research-log cap 60：第 61 条挤掉最低分', () => {
@@ -76,7 +73,6 @@ describe('D2：cap 挤兑（残差守恒——被挤掉的进 archive）', () =>
       putEntry({ kind: 'research-log', content: `rl-${String(i).padStart(3, '0')}`, salience: i / 100 }, dir, NOW + i);
     }
     expect(listActive('research-log', dir, NOW + 100)).toHaveLength(60);
-    expect(listArchive(dir).some((e) => e.content === 'rl-000' && e.kind === 'research-log')).toBe(true);
   });
 });
 

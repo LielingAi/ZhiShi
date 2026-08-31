@@ -72,8 +72,6 @@ function ViewerItem({ item }: { item: StreamItem }): React.JSX.Element {
           <span className="err-mark">✗</span> {item.text}
         </div>
       );
-    case 'sys':
-      return <div className="sys-line">{item.text}</div>;
   }
 }
 

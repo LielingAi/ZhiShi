@@ -255,6 +255,18 @@ describe('buildSegmentStub — stub 形态', () => {
     expect(text).toContain('无关键命中');
     expect(text).toContain('无工具调用');
   });
+
+  it('A2-3:hasRecall=false(子 loop 无 recall 工具)不印 recall 取回指引', () => {
+    const seg: ContextSegment = {
+      index: 1, start: 0, end: 0, phase: 'analysis', tokens: 10,
+      toolNames: [], keyHits: [], hasKey: false, age: 2,
+    };
+    const noRecall = messageText(buildSegmentStub(seg, { hasRecall: false }));
+    expect(noRecall).not.toContain('recall'); // 工具名都不出现——防幻觉调用
+    expect(noRecall).toContain('无取回工具');
+    // 缺省(主 loop 恒注册 recall)仍印取回指引
+    expect(messageText(buildSegmentStub(seg))).toContain('recall 工具按行区间取回');
+  });
 });
 
 // ---------------------------------------------------------------------------

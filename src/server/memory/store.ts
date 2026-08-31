@@ -668,11 +668,6 @@ export function listActive(kind: MemoryKind, baseDir: string = getZhiShiDataDir(
   return rows.map(toEntry).sort((a, b) => effectiveScore(b, now) - effectiveScore(a, now));
 }
 
-export function getEntry(id: string, baseDir: string = getZhiShiDataDir()): MemoryEntry | undefined {
-  const row = db(baseDir).prepare('SELECT * FROM memories WHERE id = ? LIMIT 1').get(id) as Row | undefined;
-  return row ? toEntry(row) : undefined;
-}
-
 /**
  * 取蒸馏物（user-model / self-model / routines）的当前权威条目。
  *
@@ -770,12 +765,6 @@ export function retainReminders(keys: Set<string>, baseDir: string = getZhiShiDa
 /** 全量快照（迁移/调试）。 */
 export function allEntries(baseDir: string = getZhiShiDataDir()): MemoryEntry[] {
   const rows = db(baseDir).prepare('SELECT * FROM memories').all() as Row[];
-  return rows.map(toEntry);
-}
-
-/** 被挤出的条目（残差守恒的证据——遗忘是压缩，压缩的东西在这）。 */
-export function listArchive(baseDir: string = getZhiShiDataDir()): MemoryEntry[] {
-  const rows = db(baseDir).prepare('SELECT * FROM archive').all() as Row[];
   return rows.map(toEntry);
 }
 

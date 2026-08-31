@@ -225,9 +225,10 @@ export function buildBgKillRemote(tag: string, family: OsFamily = 'linux'): stri
  *
  * 与用户主动 env_bg kill（buildBgKillRemote，按 .pid 现场取值）的区别：
  * 回收是异步清场，杀的对象是登记时刻的 pid，绝不能误杀复用 tag 的新
- * 进程。杀主进程 + linux 附带 pkill -P 直接子进程（sh -c 的孩子——
- * fuzz 本体通常是它）；不做进程组杀（后台进程与 ssh 会话同组，组杀会
- * 波及其它正在执行的命令）。Windows 用 taskkill /T /F 树杀。
+ * 进程。linux 组杀优先（setsid 启动后登记 pid 即进程组长,
+ * `kill -- -$p` 杀全组,孙进程不漏;组杀命中不到——旧 nohup 残留的
+ * 非组长进程——则 pkill 直接子进程 + kill 自身兜底）。Windows 用
+ * taskkill /T /F 树杀。
  */
 export function buildBgReapRemote(tag: string, pid: number, family: OsFamily = 'linux'): string {
   if (family === 'windows') {

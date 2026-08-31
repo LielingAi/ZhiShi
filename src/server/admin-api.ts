@@ -76,7 +76,6 @@ import { KIMI_CODING_MODELS } from '@earendil-works/pi-ai/providers/kimi-coding.
 import { loadEnabledAgents } from './agents/agent-loader';
 import { getZhiShiDataDir } from './utils/app-dirs';
 import { join } from 'path';
-import { broadcast } from './sse';
 import { buildReadMeContent } from './tools/generative-ui-tool';
 import { WIDGET_TRIGGER_GUIDANCE } from './system-prompt-cli-tools';
 import { parseActiveReminders, parseReminderMeta, readDistilled } from './memory/distill';
@@ -387,7 +386,6 @@ await atomicModifyConfig(c => ({
     ...c,
     providerApiKeys: { ...(c.providerApiKeys || {}), [id]: apiKey },
   }));
-broadcast('config:changed', { section: 'model', action: 'set-key', id });
 // M4d 多模型接入：填 key 后自动拉取模型目录（显式 modelListUrl 或 OpenAI 协议
   // provider）并入 presetCustomModels（source: 'discovered'）。拉取失败只降级
   // 提示——key 已保存，verify / set-default / 会话链路不受影响。
@@ -432,7 +430,6 @@ await atomicModifyConfig(c => ({
     ...c,
     defaultProviderId: id,
   }));
-broadcast('config:changed', { section: 'model', action: 'set-default', id });
   return { success: true, data: { id }, hint: `Default provider set to ${id}.` };
 }
 export async function handleModelVerify(payload: { id: string; model?: string }): Promise<AdminResponse> {
@@ -472,7 +469,6 @@ if (result.success) {
           [id]: { status: 'valid', verifiedAt: new Date().toISOString() },
         },
       }));
-      broadcast('config:changed', { section: 'model', action: 'verify', id });
       return { success: true, data: { id, model: verifyModel }, hint: 'Verification successful.' };
     }
 return { success: false, error: result.error ?? 'Verification failed', data: { id, detail: result.detail } };
@@ -540,7 +536,6 @@ if (dryRun) {
   }
 // Write to ~/.zhishi/providers/{id}.json
   saveCustomProviderFile(providerObj);
-  broadcast('config:changed', { section: 'model', action: 'add', id: providerObj.id });
   return {
     success: true,
     data: { id: providerObj.id, name: providerObj.name, models: modelIds },
@@ -581,7 +576,6 @@ export async function handleModelRemove(payload: { id: string }): Promise<AdminR
       disabledProviderIds: disabledProviderIds && disabledProviderIds.length > 0 ? disabledProviderIds : undefined,
     };
   });
-broadcast('config:changed', { section: 'model', action: 'remove', id });
   return { success: true, data: { id }, hint: 'Provider removed.' };
 }
 // ---------------------------------------------------------------------------
@@ -606,11 +600,11 @@ export function handleAgentList(): AdminResponse {
 }
 export async function handleAgentEnable(payload: { id: string }): Promise<AdminResponse> {
   const { id } = payload;
-  return modifyAgent(id, agent => ({ ...agent, enabled: true }), 'enable');
+  return modifyAgent(id, agent => ({ ...agent, enabled: true }));
 }
 export async function handleAgentDisable(payload: { id: string }): Promise<AdminResponse> {
   const { id } = payload;
-  return modifyAgent(id, agent => ({ ...agent, enabled: false }), 'disable');
+  return modifyAgent(id, agent => ({ ...agent, enabled: false }));
 }
 export async function handleAgentSet(payload: { id: string; key: string; value: unknown }): Promise<AdminResponse> {
   const { id, key, value } = payload;
@@ -647,10 +641,9 @@ export async function handleAgentSet(payload: { id: string; key: string; value: 
         );
         return { ...agent, runtime: patch.runtime, runtimeConfig: patch.runtimeConfig };
       },
-      'set',
     );
   }
-return modifyAgent(id, agent => ({ ...agent, [key]: value }), 'set');
+return modifyAgent(id, agent => ({ ...agent, [key]: value }));
 }
 // ---------------------------------------------------------------------------
 // Config Handlers
@@ -684,7 +677,6 @@ if (dryRun) {
     return { success: true, dryRun: true, preview: { key, value } };
   }
 await atomicModifyConfig(c => setNestedValue(c, key, value));
-  broadcast('config:changed', { section: 'config', action: 'set', key });
   return { success: true, data: { key }, hint: `Config '${key}' updated.` };
 }
 // ---------------------------------------------------------------------------
@@ -707,7 +699,7 @@ export function handleReload(workspacePath?: string): AdminResponse {
   const effectiveWorkspace = workspacePath || getCurrentWorkspacePath();
 // Sub-agent reload: re-scan the .md files on disk so edits to frontmatter
   // (model, description, tools) take effect without restarting the app.
-  // Mirror /api/agents/enabled's resolution — project dir (if any) + user dir.
+  // Resolution: project dir (if any) + user dir.
   const userAgentsBaseDir = join(getZhiShiDataDir(), 'agents');
   const projAgentsDir = effectiveWorkspace ? join(effectiveWorkspace, '.claude', 'agents') : '';
   let agents: ReturnType<typeof loadEnabledAgents>;
@@ -725,10 +717,9 @@ export function handleReload(workspacePath?: string): AdminResponse {
   setAgents(agents);
   const agentCount = Object.keys(agents).length;
 // M4c: pi 引擎每 turn 读最新配置,无需 SDK 会话重载(原 forceReloadActiveSession)。
-broadcast('config:changed', { section: 'all', action: 'reload' });
   return {
     success: true,
-    hint: `Configuration reloaded (sub-agents: ${agentCount}). The session will restart on the next turn to apply changes.`,
+    hint: `Configuration reloaded (sub-agents: ${agentCount}). pi 引擎每 turn 现读最新配置,无需重载会话即生效.`,
   };
 }
 // ---------------------------------------------------------------------------
@@ -1139,9 +1130,9 @@ export async function handleTaskUpdateStatus(
   // Infer actor/source if caller omitted them:
   //   Inside an AI subprocess → ZHISHI_PORT is set → actor=agent, source=cli.
   //   Otherwise (user ran `zhishi` in their terminal) → actor=user, source=cli.
-  // `ZHISHI_PORT` is injected by `buildClaudeSessionEnv()` into SDK subproc
-  // env (see cli_architecture.md); the user's own shell does NOT have it set
-  // (the user's CLI binary reads `~/.zhishi/sidecar.port` instead).
+  // `ZHISHI_PORT` 由 sidecar 启动时 setSidecarPort 写入本进程 env
+  // (agent-session.ts),经环境继承进 AI 子进程;用户自己的 shell 没有它
+  // (用户的 CLI 读 `~/.zhishi/sidecar.port`)。
   if (payload.actor === undefined) {
     payload.actor = process.env.ZHISHI_PORT ? 'agent' : 'user';
   }
@@ -1203,17 +1194,6 @@ export async function handleTaskWriteDoc(payload: {
   const resp = await managementApi('/api/task/write-doc', 'POST', payload);
   return wrapMgmtResponse(resp);
 }
-// ---------------------------------------------------------------------------
-// Session-scoped capabilities for the zhishi CLI (v0.1.67)
-//
-// These handlers expose Pattern 1 (context-injected) MCP tools to the `zhishi`
-// CLI so the AI can reach ZhiShi-specific capabilities through plain shell
-// tool calls instead of a Claude-Agent-SDK-only MCP protocol. See prd_0.1.67.
-//
-// Authorization model: Sidecar is session-scoped (1 Sidecar = 1 session), so
-// the ambient session context (cron context) is already
-// correctly bound to the calling Sidecar — no ZHISHI_SESSION_ID plumbing.
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Tool readme lookups — progressive disclosure (v0.1.67)
 //
@@ -2227,27 +2207,6 @@ export async function handleEnvironmentUp(payload: {
     console.warn(`[environment/up] docker 已启动但 env 条目回写失败：${err instanceof Error ? err.message : String(err)}`);
   }
   return { success: true, data: { instance: result.instance } };
-}
-/** 配方工具自检(env up 构建后 + domain check 用):按条目 kind 选通道
- *  ——docker 走 docker exec,vm/ssh 走 ssh(env-exec 统一分派),逐个探测
- *  声明工具。通道失败(容器死了/ssh 不通/VM 未就绪)→ null(降级为无自检)。 */
-export async function runRecipeToolCheck(
-  entry: EnvironmentEntry,
-  tools: string[],
-): Promise<{ toolCheck?: { ok: boolean; missing: string[]; checkedAt: string } }> {
-  if (tools.length === 0) return {};
-  try {
-    const r = await execInEnvironment(
-      entry,
-      buildToolCheckScript(tools),
-      { timeoutMs: 30_000 },
-    );
-    if (!r.ok) return {};
-    const result = parseToolCheckOutput(r.stdout, tools);
-    return { toolCheck: { ...result, checkedAt: new Date().toISOString() } };
-  } catch {
-    return {};
-  }
 }
 // ---------------------------------------------------------------------------
 // 1.3.7 场景 3 — 能力集合现场推导（B 方案：配方绑定域 ∪ 工具探测域）
@@ -3656,7 +3615,6 @@ function getCurrentWorkspacePath(): string | undefined {
 async function modifyAgent(
   id: string,
   modifier: (agent: AgentConfigSlim) => AgentConfigSlim,
-  action: string,
 ): Promise<AdminResponse> {
   // Pre-check existence (fast-fail before acquiring write)
   const config = loadConfig();
@@ -3671,7 +3629,6 @@ async function modifyAgent(
     updated[freshIdx] = modifier(updated[freshIdx]);
     return { ...c, agents: updated };
   });
-broadcast('config:changed', { section: 'agent', action, id });
   return { success: true, data: { id } };
 }
 /** Keys and patterns that contain secrets and must be redacted in config get */

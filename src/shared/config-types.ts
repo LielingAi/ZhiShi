@@ -4,11 +4,11 @@
 
 /**
 
- * Permission mode for agent behavior
+ * Permission mode for agent behavior（1.5.4 起撤除 'plan'——无拦截实现，见 B7 决策）
 
  */
 
-export type PermissionMode = 'auto' | 'plan' | 'fullAgency';
+export type PermissionMode = 'auto' | 'fullAgency';
 
 
 
@@ -27,74 +27,6 @@ export type PermissionMode = 'auto' | 'plan' | 'fullAgency';
  */
 
 export type BackgroundAgentPermissionMode = 'inherit' | 'fullAgency';
-
-
-
-/**
-
- * Permission mode display configuration
-
- * Based on PRD 0.0.17 mode definitions
-
- */
-
-export const PERMISSION_MODES: {
-
-  value: PermissionMode;
-
-  label: string;
-
-  icon: string;
-
-  description: string;
-
-  sdkValue: string;
-
-}[] = [
-
-    {
-
-      value: 'auto',
-
-      label: '行动',
-
-      icon: '⚡',
-
-      description: 'Agent 在工作区内行动，使用工具需确认',
-
-      sdkValue: 'acceptEdits',
-
-    },
-
-    {
-
-      value: 'plan',
-
-      label: '规划',
-
-      icon: '📋',
-
-      description: 'Agent 仅研究信息并与您讨论规划',
-
-      sdkValue: 'plan',
-
-    },
-
-    {
-
-      value: 'fullAgency',
-
-      label: '自主行动',
-
-      icon: '🚀',
-
-      description: 'Agent 拥有完全自主权限，无需人工确认',
-
-      sdkValue: 'bypassPermissions',
-
-    },
-
-  ];
 
 
 
@@ -293,64 +225,6 @@ export function applyProviderEnablementAndOrder<T extends ProviderOrderable>(
 export function isProviderEnabled(provider: { enabled?: unknown } | null | undefined): boolean {
 
   return provider?.enabled !== false;
-
-}
-
-
-
-/**
-
- * Get the display name for a model
-
- */
-
-export function getModelDisplayName(provider: Provider, modelId: string): string {
-
-  const model = provider.models?.find(m => m.model === modelId);
-
-  return model?.modelName ?? modelId;
-
-}
-
-
-
-/**
-
- * Get available models for a provider
-
- */
-
-export function getProviderModels(provider: Provider): ModelEntity[] {
-
-  return provider.models ?? [];
-
-}
-
-
-
-/**
-
- * Get effective primary model (user override > preset default)
-
- */
-
-export function getEffectivePrimaryModel(
-
-  provider: Provider,
-
-  providerPrimaryModels?: Record<string, string>,
-
-): string {
-
-  const userOverride = providerPrimaryModels?.[provider.id];
-
-  if (userOverride && provider.models?.some(m => m.model === userOverride)) {
-
-    return userOverride;
-
-  }
-
-  return provider.primaryModel;
 
 }
 
@@ -595,38 +469,6 @@ export interface ProviderVerifyStatus {
 
 
 
-/** Verification expiry in days */
-
-export const VERIFY_EXPIRY_DAYS = 30;
-
-
-
-
-
-/** Check if verification has expired */
-
-export function isVerifyExpired(verifiedAt: string): boolean {
-
-  const verifiedDate = new Date(verifiedAt);
-
-  // Invalid date string returns NaN, treat as expired to trigger re-verification
-
-  if (isNaN(verifiedDate.getTime())) {
-
-    return true;
-
-  }
-
-  const now = new Date();
-
-  const daysDiff = (now.getTime() - verifiedDate.getTime()) / (1000 * 60 * 60 * 24);
-
-  return daysDiff > VERIFY_EXPIRY_DAYS;
-
-}
-
-
-
 /**
 
  * Network proxy protocol type
@@ -634,42 +476,6 @@ export function isVerifyExpired(verifiedAt: string): boolean {
  */
 
 export type ProxyProtocol = 'http' | 'socks5';
-
-
-
-/**
-
- * Network proxy default values
-
- */
-
-export const PROXY_DEFAULTS = {
-
-  protocol: 'http' as ProxyProtocol,
-
-  host: '127.0.0.1',
-
-  port: 7897,
-
-} as const;
-
-
-
-/**
-
- * Validate proxy host (localhost, IP address, or hostname)
-
- */
-
-export function isValidProxyHost(host: string): boolean {
-
-  if (!host || host.length > 253) return false;
-
-  // localhost, IPv4, or valid hostname
-
-  return /^(localhost|(\d{1,3}\.){3}\d{1,3}|[a-zA-Z0-9][-a-zA-Z0-9]*(\.[a-zA-Z0-9][-a-zA-Z0-9]*)*)$/.test(host);
-
-}
 
 
 
@@ -688,40 +494,6 @@ export interface ProxySettings {
   host: string;
 
   port: number;
-
-}
-
-
-
-/**
-
- * App-level configuration
-
- */
-
-export const DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS = 365;
-
-
-
-export function normalizeClaudeTranscriptCleanupPeriodDays(value: unknown): number {
-
-  const numericValue = typeof value === 'number'
-
-    ? value
-
-    : typeof value === 'string' && value.trim() !== ''
-
-      ? Number(value)
-
-      : Number.NaN;
-
-  if (!Number.isFinite(numericValue)) {
-
-    return DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS;
-
-  }
-
-  return Math.max(1, Math.floor(numericValue));
 
 }
 
@@ -1208,36 +980,6 @@ export interface EnvironmentEntry {
 
 
 
-/**
-
- * Project-level settings (synced to .claude/settings.json)
-
- * Based on PRD 0.0.4 data persistence spec
-
- */
-
-export interface ProjectSettings {
-
-  // Permission configuration
-
-  permissions?: {
-
-    mode: string;       // SDK permission mode value
-
-    allow?: string[];   // Custom allowed tools
-
-    deny?: string[];    // Custom denied tools
-
-  };
-
-  // Provider environment variables
-
-  env?: Record<string, string>;
-
-}
-
-
-
 // Preset providers with ModelEntity structure
 
 /** Anthropic 官方预设模型（订阅和 API 共用）
@@ -1622,102 +1364,4 @@ export const PRESET_PROVIDERS: Provider[] = [
   },
 
 ];
-
-
-
-/**
-
- * Get effective model aliases for a provider (preset defaults merged with user overrides).
-
- * Anthropic providers don't need aliases (SDK natively supports their models).
-
- */
-
-export function getEffectiveModelAliases(
-
-  provider: Provider,
-
-  userOverrides?: Record<string, ModelAliases>,
-
-): ModelAliases | undefined {
-
-  // Anthropic providers don't need alias mapping
-
-  if (provider.id === 'anthropic-api') return undefined;
-
-  const defaults = provider.modelAliases ?? {};
-
-  const overrides = userOverrides?.[provider.id];
-
-  if (overrides) {
-
-    // User has explicit overrides — merge with defaults (overrides win, including empty strings)
-
-    return { ...defaults, ...overrides };
-
-  }
-
-  // No user overrides — return preset defaults if any
-
-  if (defaults.sonnet || defaults.opus || defaults.haiku) return defaults;
-
-  // Fallback: no preset aliases and no user overrides — use provider's first model or primaryModel
-
-  // so sub-agents (model: "sonnet"/"opus"/"haiku") don't send raw claude-* to the third-party API.
-
-  const fallbackModel = provider.primaryModel || provider.models?.[0]?.model;
-
-  if (fallbackModel) {
-
-    return { sonnet: fallbackModel, opus: fallbackModel, haiku: fallbackModel };
-
-  }
-
-  return undefined;
-
-}
-
-
-
-export const DEFAULT_CONFIG: AppConfig = {
-
-  defaultProviderId: undefined, // No default — resolved at runtime from first available provider
-
-  defaultPermissionMode: 'auto',
-
-  backgroundAgentPermissionMode: 'inherit', // background agents inherit granted perms; nothing wider (#264)
-
-  theme: 'system',
-
-  minimizeToTray: true,   // 默认开启最小化到托盘
-
-  showDevTools: false,
-
-  liteLLMModelDataRefresh: true, // 默认开启 LiteLLM 模型数据兜底刷新（开发者可关）
-
-  claudeTranscriptCleanupPeriodDays: DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS,
-
-  autoStart: false,       // 默认不开启开机启动
-
-  osNotifications: true,  // 默认开启系统通知
-
-  notificationSound: true, // 默认开启通知声音
-
-  globalSummonShortcut: {
-
-    enabled: true,
-
-    accelerator: 'CmdOrCtrl+Shift+M',
-
-  },
-
-};
-
-
-
-/** Default accelerator string for the global summon shortcut (PRD 0.2.16).
-
- *  Mirrors the Rust constant `global_shortcut::DEFAULT_ACCELERATOR`. */
-
-export const DEFAULT_SUMMON_ACCELERATOR = 'CmdOrCtrl+Shift+M';
 

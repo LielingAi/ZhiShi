@@ -49,7 +49,7 @@ describe('resolveWorkspaceConfig permissionMode (#295)', () => {
         name: 'Plan Agent',
         enabled: true,
         workspacePath,
-        permissionMode: 'plan',
+        permissionMode: 'custom',
       }],
     });
     writeProjects([]);
@@ -57,7 +57,7 @@ describe('resolveWorkspaceConfig permissionMode (#295)', () => {
     const { resolveWorkspaceConfig } = await import('../utils/admin-config');
     const resolved = resolveWorkspaceConfig(workspacePath, null);
 
-    expect(resolved.permissionMode).toBe('plan');
+    expect(resolved.permissionMode).toBe('custom');
   });
 
   it('prefers session snapshot before agent, then project, then global default', async () => {
@@ -69,7 +69,7 @@ describe('resolveWorkspaceConfig permissionMode (#295)', () => {
         name: 'Snapshot Agent',
         enabled: true,
         workspacePath,
-        permissionMode: 'plan',
+        permissionMode: 'custom',
       }],
     });
     writeProjects([{

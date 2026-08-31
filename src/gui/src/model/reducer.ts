@@ -395,7 +395,6 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
           argsSummary: '',
           state: m.ok === false ? 'fail' : 'done',
           output: str(m.content) ?? '',
-          startedAt: Date.now(),
           step: t.details.filter((x) => x.kind === 'tool').length + 1,
         };
         detail.signal = summarizeSignal(detail.name, detail.output, {
@@ -443,7 +442,6 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
             id: `th-${s.seq + 1}`,
             text: '',
             streaming: true,
-            startedAt: Date.now(),
           };
           return { ...blk, details: [...details, th] };
         }),
@@ -500,7 +498,6 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
         argsSummary: summarizeArgs(payload),
         state: 'running',
         output: '',
-        startedAt: Date.now(),
         step: toolCount + 1,
       };
       return {
@@ -533,7 +530,11 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
     // ── turn 终结 ─────────────────────────────────────────────────────
     case 'chat:message-complete': {
       const t = currentTurn(session);
-      if (!t) return { session };
+      // A3-3：无当前块（窄窗口：complete 先于块建立到达）也要落相位与流指针，
+      // 否则 phase 滞留 'running'。
+      if (!t) {
+        return { session: { ...session, streamingTurnId: null, phase: phaseOf(p.sessionState, 'idle') } };
+      }
       const usage = p.usage !== undefined
         ? rec(p.usage)
         : p.input_tokens !== undefined
@@ -541,7 +542,6 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
           : null;
       const meta: TurnMeta | undefined = usage
         ? {
-            model: str(usage.model) ?? str(p.model),
             inputTokens: num(usage.input_tokens) ?? num(usage.input) ?? 0,
             outputTokens: num(usage.output_tokens) ?? num(usage.output) ?? 0,
             toolCount: num(usage.tool_count) ?? t.details.filter((d) => d.kind === 'tool').length,
@@ -605,7 +605,6 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
         id: qid,
         text: str(p.messageText) ?? '',
         kind: 'steering',
-        addedAt: Date.now(),
       });
       return { session: s, toast: `↳ 已插入纠偏：${str(p.messageText) ?? ''}`.slice(0, 120) };
     }
@@ -631,7 +630,6 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
         id: qid,
         text: str(p.messageText) ?? str(p.text) ?? '',
         kind: str(p.kind) === 'steering' ? 'steering' : 'fifo',
-        addedAt: Date.now(),
       });
       return { session: s };
     }

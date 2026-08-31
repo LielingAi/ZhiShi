@@ -49,7 +49,7 @@
     "format": "prettier --experimental-cli --write .",
     "format:check": "prettier --experimental-cli --check --log-level warn .",
     "clean": "rm -rf node_modules dist .turbo .eslintcache *.tsbuildinfo src-tauri/target",
-    "version": "node scripts/sync-version.js && git add src-tauri/tauri.conf.json src-tauri/Cargo.toml",
+    "version": "node scripts/sync-version.js && git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src/shared/constants.ts",
     "dev:gui": "cd src/gui && npm run dev"
   },
   "dependencies": {
@@ -62,22 +62,11 @@
     "js-yaml": "^4.1.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "sharp": "0.34.5",
     "socks": "^2.8.7",
     "undici": "^8.1.0",
     "ws": "^8.21.3",
     "zod": "^4.1.12",
     "zustand": "^5.0.15"
-  },
-  "optionalDependencies": {
-    "@img/sharp-darwin-arm64": "*",
-    "@img/sharp-darwin-x64": "*",
-    "@img/sharp-linux-arm64": "*",
-    "@img/sharp-linux-x64": "*",
-    "@img/sharp-linuxmusl-arm64": "*",
-    "@img/sharp-linuxmusl-x64": "*",
-    "@img/sharp-win32-arm64": "*",
-    "@img/sharp-win32-x64": "*"
   },
   "devDependencies": {
     "@eslint/compat": "^2.0.0",

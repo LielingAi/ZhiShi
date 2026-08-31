@@ -300,11 +300,6 @@ export function groupSidebar(
   return groups.filter((g) => g.items.length > 0);
 }
 
-/** 侧栏条目是否可切换（unreg 组不可切换——未登记，点了只提示）。 */
-export function isSwitchable(item: SidebarEnvItem): boolean {
-  return item.group !== 'unreg';
-}
-
 // ---------------------------------------------------------------------------
 // 1.3.5 ④：本机发现「选中即注册」——登记载荷构造
 // （1.3.7 起 id 口径与服务端「实例即环境」统一；TUI 冻结，不再对齐它）

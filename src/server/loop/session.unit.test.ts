@@ -18,6 +18,7 @@ import {
   appendLoopMessages,
   loadLoopSession,
   loopSessionFile,
+  markLoopSessionCompacted,
   newLoopSessionId,
   normalizeMessagesForPersist,
   parseLoopSession,
@@ -143,6 +144,17 @@ describe('append / load(真临时目录)', () => {
     expect(loadLoopSession(id, { dir: DIR }).meta?.tokenCalibration).toBe(3.3); // ?? 语义:不覆盖
     await appendLoopMessages(id, [assistant('a2')], { tokenCalibration: 2.1 }, { dir: DIR });
     expect(loadLoopSession(id, { dir: DIR }).meta?.tokenCalibration).toBe(2.1); // 显式新值生效
+  });
+
+  it('A1-1 回归:markLoopSessionCompacted 不丢 tokenCalibration', async () => {
+    const id = newLoopSessionId();
+    await appendLoopMessages(id, [user('q1')], { model: 'k3', tokenCalibration: 2.7 }, { dir: DIR });
+    await markLoopSessionCompacted(id, { dir: DIR });
+    const s = loadLoopSession(id, { dir: DIR });
+    expect(s.meta?.compactedAt).toBeTruthy();
+    expect(s.meta?.tokenCalibration).toBe(2.7);
+    expect(s.meta?.model).toBe('k3');
+    expect(s.messages).toHaveLength(1);
   });
 
   it('二次追加:消息累加、createdAt 保留、updatedAt 刷新、model 不覆盖', async () => {

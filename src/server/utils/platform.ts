@@ -42,18 +42,6 @@ export function getCrossPlatformEnv(): {
 }
 
 /**
- * Get home directory with validation
- * Throws if home directory is not available
- */
-export function getHomeDir(): string {
-    const { home } = getCrossPlatformEnv();
-    if (!home) {
-        throw new Error('Home directory not found (HOME/USERPROFILE not set)');
-    }
-    return home;
-}
-
-/**
  * Get home directory or null if not available
  * Use this when you want to handle missing home directory gracefully
  */

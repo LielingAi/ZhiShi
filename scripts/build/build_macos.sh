@@ -208,55 +208,6 @@ npm run build:cli
 # `npm install -g agent-browser@<pinned>` (with `npx` fallback) on first
 # use. Removing the bundle saves ~84MB DMG size + ~1-2min build time.
 
-# 预装 sharp 图像处理（替代 jimp，libvips 原生，上游 claude-code 同款）
-# 需要 sharp + @img/sharp-darwin-{arm64,x64} + @img/sharp-libvips-darwin-{arm64,x64}
-# 为什么不用 agent-browser 的 lockfile 模式：sharp 的 optional deps 按 host 平台过滤，
-# 单 lockfile 只能锁定一个架构。改为 package.json 显式声明 + 强制安装所有 darwin 变体。
-echo -e "  ${CYAN}预装 sharp 图像处理（libvips 原生）...${NC}"
-SHARP_DIR="${PROJECT_DIR}/src-tauri/resources/sharp-runtime"
-rm -rf "${SHARP_DIR}"
-mkdir -p "${SHARP_DIR}"
-cat > "${SHARP_DIR}/package.json" <<'SHARP_PKG'
-{
-  "name": "sharp-runtime",
-  "private": true,
-  "version": "1.0.0",
-  "dependencies": { "sharp": "0.34.5" }
-}
-SHARP_PKG
-(cd "${SHARP_DIR}" && npm install --no-audit --no-fund --no-save --ignore-scripts)
-if [ $? -ne 0 ]; then
-    echo -e "${RED}✗ sharp 主包预装失败${NC}"
-    exit 1
-fi
-# 强制安装所有 macOS 架构的 @img/sharp-* 和 @img/sharp-libvips-*（精确版本锁定，避免 patch 漂移）
-# npm install 默认只装 host arch 的 optional dep，这里显式补全另一个 arch
-(cd "${SHARP_DIR}" && npm install --no-save --force --no-audit --no-fund --ignore-scripts \
-    @img/sharp-darwin-arm64@0.34.5 @img/sharp-darwin-x64@0.34.5 \
-    @img/sharp-libvips-darwin-arm64@1.2.4 @img/sharp-libvips-darwin-x64@1.2.4)
-if [ $? -ne 0 ]; then
-    echo -e "${RED}✗ sharp 跨架构包安装失败${NC}"
-    exit 1
-fi
-# 验证两个架构的原生二进制都存在
-for ARCH in arm64 x64; do
-    SHARP_NODE="${SHARP_DIR}/node_modules/@img/sharp-darwin-${ARCH}/lib/sharp-darwin-${ARCH}.node"
-    SHARP_DYLIB_DIR="${SHARP_DIR}/node_modules/@img/sharp-libvips-darwin-${ARCH}/lib"
-    if [ ! -f "$SHARP_NODE" ]; then
-        echo -e "${RED}✗ sharp-darwin-${ARCH}.node 缺失${NC}"
-        exit 1
-    fi
-    if [ ! -d "$SHARP_DYLIB_DIR" ] || [ -z "$(ls "$SHARP_DYLIB_DIR"/*.dylib 2>/dev/null)" ]; then
-        echo -e "${RED}✗ sharp-libvips-darwin-${ARCH} dylib 缺失${NC}"
-        exit 1
-    fi
-done
-# 删除 linux/win32 的 @img/sharp-* 包（避免公证扫描非 darwin 原生代码）
-find "${SHARP_DIR}/node_modules/@img" -maxdepth 1 -type d \
-    \( -name "sharp-linux*" -o -name "sharp-win32*" -o -name "sharp-libvips-linux*" -o -name "sharp-libvips-win32*" -o -name "sharp-wasm32" \) \
-    -exec rm -rf {} + 2>/dev/null || true
-echo -e "${GREEN}  ✓ sharp 预装完成 (darwin arm64 + x64)${NC}"
-
 # 前端 GUI 已删除（无窗口后台宿主形态）——server/bridge/cli bundle 由
 # tauri build 的 beforeBuildCommand 构建。
 echo -e "${GREEN}✓ 服务端构建完成${NC}"
@@ -344,37 +295,6 @@ echo ""
 # NOTE: agent-browser-cli signing block removed — bundle no longer ships.
 # AI installs the CLI on first use via the agent-browser skill (npm install -g).
 
-# ========================================
-# 签名 sharp 原生二进制
-# ========================================
-echo -e "  ${CYAN}签名 sharp 原生二进制 (.node + libvips .dylib)...${NC}"
-SHARP_SIGNED_COUNT=0
-SHARP_FAILED_COUNT=0
-
-# @img/sharp-darwin-<arch>/lib/*.node 和 @img/sharp-libvips-darwin-<arch>/lib/*.dylib 都需要签名
-# 不签的话公证会拒；sharp 在 TCC 下不需要额外权限（纯 CPU 图像处理）。
-while IFS= read -r binary; do
-    echo -e "    ${CYAN}签名: $(echo "$binary" | sed "s|.*/node_modules/||")${NC}"
-    if codesign --force --options runtime --timestamp \
-        --sign "$APPLE_SIGNING_IDENTITY" "$binary" 2>/dev/null; then
-        ((SHARP_SIGNED_COUNT++))
-    else
-        echo -e "    ${YELLOW}警告: 签名失败 - $binary${NC}"
-        ((SHARP_FAILED_COUNT++))
-    fi
-done < <(find "${SHARP_DIR}/node_modules/@img" -type f \( -name "*.node" -o -name "*.dylib" \) 2>/dev/null)
-
-if [ $SHARP_FAILED_COUNT -gt 0 ]; then
-    echo -e "${RED}错误: sharp 原生二进制签名失败 (${SHARP_FAILED_COUNT} 个)，公证必定失败${NC}"
-    exit 1
-fi
-if [ $SHARP_SIGNED_COUNT -eq 0 ]; then
-    echo -e "${RED}错误: 未签名任何 sharp 二进制，sharp 预装可能失败${NC}"
-    exit 1
-fi
-echo -e "${GREEN}✓ sharp 签名完成 (${SHARP_SIGNED_COUNT} 个文件)${NC}"
-echo ""
-
 # 构建 Tauri 应用
 echo -e "${BLUE}[7/7] 构建 Tauri 应用 (Release + 签名 + 公证)...${NC}"
 echo -e "${YELLOW}这可能需要 5-10 分钟 (包含公证等待时间)...${NC}"
@@ -409,7 +329,7 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
     npm run build:tsx-runtime -- darwin "$NODE_TARGET_ARCH"
 
     # ---- 签名 tsx-runtime 内的 esbuild 原生二进制 ----
-    # esbuild 是 Go 静态编译，没有 JIT 需求；跟 ripgrep / sharp 一样只要
+    # esbuild 是 Go 静态编译，没有 JIT 需求；跟 ripgrep 一样只要
     # `--options runtime --timestamp`，不需要 entitlements。
     # npm 安装后两处 path 都有 binary：
     #   - node_modules/esbuild/bin/esbuild              (npm postinstall 拷贝/硬链接)

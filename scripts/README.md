@@ -122,8 +122,7 @@
 - 版本同步检查
 - TypeScript 检查
 - 打包 server / bridge / cli
-- 预装 sharp 图像运行时
-- 签名 externalBin / vendor / sharp / tsx-runtime / Node.js / Claude SDK native binary
+- 签名 externalBin / vendor / tsx-runtime / Node.js / Claude SDK native binary
 - 构建 ARM/Intel 架构的 DMG 和 tar.gz
 - 验证签名与公证
 - 可选发布到 R2

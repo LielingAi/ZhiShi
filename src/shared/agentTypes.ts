@@ -122,34 +122,6 @@ export interface AgentItem {
 
 /**
 
- * Full agent detail with frontmatter and body
-
- */
-
-export interface AgentDetail {
-
-    name: string;
-
-    folderName: string;
-
-    path: string;
-
-    scope: 'user' | 'project';
-
-    layout: AgentLayout;
-
-    frontmatter: Partial<AgentFrontmatter>;
-
-    body: string;
-
-    meta?: AgentMeta;
-
-}
-
-
-
-/**
-
  * Workspace-level agent config
 
  * Controls which agents are enabled for a specific project

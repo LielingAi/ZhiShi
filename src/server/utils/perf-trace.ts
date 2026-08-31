@@ -1,20 +1,38 @@
 import { performance } from 'node:perf_hooks';
 
-// PRD 0.2.32 §6.6 — PerfTrace TS types have a single source of truth in
-// `src/shared/perfTrace.ts`. This file keeps only Node-specific runtime
-// helpers (nowMs / elapsedMs / emitPerfTrace / traceAsync) that depend on
-// `node:perf_hooks` and therefore cannot live under `src/shared` (which must
-// stay pure for renderer bundling).
-import type {
-  PerfTraceDetail,
-  PerfTraceEvent,
-  PerfTraceName,
-  PerfTraceStatus,
-} from '../../shared/perfTrace';
+// PRD 0.2.32 §6.6 — PerfTrace 词汇表。1.5.4 起内联在本文件：renderer 已删,
+// 共享壳（原 src/shared/perfTrace.ts）失去存在意义（depcruise 不算 type-only
+// 边,纯类型文件被误判孤儿）。Rust 在 src-tauri/src/perf_trace.rs 镜像同一
+// 字段词汇——新增 PerfTraceName 或字段时两处同步,保证统一日志 [perf] 行
+// 跨层一致。
 
-// Re-export so existing call sites importing types from this module keep
-// working. `verbatimModuleSyntax` requires type-only re-exports to be marked.
-export type { PerfTraceDetail, PerfTraceEvent, PerfTraceName, PerfTraceStatus };
+export type PerfTraceName =
+    | 'renderer' // front-end (WebView) interaction phases
+    | 'sidecar_boot'
+    | 'turn'
+    | 'runtime'
+    | 'storage_io'
+    | 'background_job';
+
+export type PerfTraceStatus = 'ok' | 'error' | 'timeout' | 'skipped';
+
+export type PerfTraceDetail = Record<string, string | number | boolean | null | undefined>;
+
+export interface PerfTraceEvent {
+    trace: PerfTraceName;
+    phase: string;
+    durationMs?: number;
+    sessionId?: string;
+    tabId?: string;
+    ownerId?: string;
+    requestId?: string;
+    turnId?: string;
+    runtime?: string;
+    status?: PerfTraceStatus;
+    sizeBytes?: number;
+    count?: number;
+    detail?: PerfTraceDetail;
+}
 
 function safeValue(value: string | number | boolean | null | undefined): string | undefined {
   if (value === undefined || value === null) return undefined;

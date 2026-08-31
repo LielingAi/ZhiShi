@@ -1,9 +1,9 @@
 /**
- * M4a/M4b — pi 引擎会话外壳(与 SDK 引擎并行的生产会话路径)。
+ * M4a/M4b → M4c — pi 引擎会话外壳(SDK 引擎已删,本模块是唯一生产会话路径)。
  *
- * 引擎开关:ZHISHI_LOOP_ENGINE 环境变量 > config.json 的 loopEngine
- * (缺省 'sdk');pi 时 index.ts 的 /chat/* 端点路由到这里,SDK 路径
- * 一行不动。外壳与 agent-session 同构的微型版:会话状态收拢在
+ * 引擎开关(M4c 硬切):恒为 pi——ZHISHI_LOOP_ENGINE / config loopEngine
+ * 仍读取仅为兼容,显式请求 'sdk' 时一次性告警并回落 pi(见
+ * resolveLoopEngine)。外壳与 agent-session 同构的微型版:会话状态收拢在
  * ChatEngine 实例字段(sessionId/messages/queue/busy/abort;1.1.7 ②
  * 由模块级 let 机械收拢,文件底部默认实例 + 原签名 facade 导出),
  * 事件经同一个 sse.broadcast 通道发出——TUI/渲染器零改动。
@@ -52,10 +52,11 @@
  *     生命周期广播 chat:subagent-started/finished,子 loop 工具事件
  *     映射 chat:subagent-tool-*。
  *
- * v1 已知限制:fork 不在 pi 路径;steering 注入为纯文本(图片不随
+ * v1 已知限制:steering 注入为纯文本(图片不随
  * steering 进队列)。1.2.6 批次 B:steering 注入同步补 wire + replay
  * 广播(B6,保 rewind/fork 序数映射 1:1);turn done 时残留 steering
  * drain 到 FIFO 队首续跑(B5,pi 只在 turn 间轮询 steering,收尾不看)。
+ * fork 已实现(forkPiChat 接 /chat/fork 路由,见下文)。
  */
 
 import { randomUUID } from 'node:crypto';
@@ -144,7 +145,7 @@ interface MessageWire {
   /** role === 'tool' 时:工具名与成败(重放工具卡用)。 */
   name?: string;
   ok?: boolean;
-  /** B5(1.2.6)— 来源队列项 id(steering/FIFO/send-and-wait 归属追踪用;
+  /** B5(1.2.6)— 来源队列项 id(steering/FIFO 归属追踪用;
    *  仅 user 消息可能携带;不上屏、不进持久化,纯内存标签)。 */
   queueId?: string;
   attachments?: {
@@ -197,10 +198,6 @@ export interface PiSendResult {
 // ---------------------------------------------------------------------------
 // 纯函数(不碰引擎实例状态,1.1.7 ② 收拢时留在 class 外)
 // ---------------------------------------------------------------------------
-
-export function getPiLogLines(): string[] {
-  return [];
-}
 
 /** 配置缺失类发送错误(缺 provider 定义/API key)——/chat/send 据此区分 400。 */
 export const PI_NO_PROVIDER_ERROR = '无可用的 provider/model(pi 引擎):缺 provider 定义或 API key';
@@ -419,12 +416,15 @@ class ChatEngine {
   private messages: MessageWire[] = [];
   private messageSeq = 0;
   private streamingAssistantId: string | null = null;
-  /** 1.4.4 研究档案来源锚：当前轮 user 消息 id（交互线在 startPiTurn 写入；
-   *  headless invoke 线在起跑前置 undefined——档案实体锚不到线时锚点留空）。 */
+  /** 1.4.4 研究档案来源锚：当前轮 user 消息 id（仅交互线在 startPiTurn 写入；
+   *  headless invoke 线的锚点 undefined 语义经 buildTurnStack 参数下传，
+   *  不碰本字段——invoke 与交互 turn 并发时互不干扰）。 */
   private currentTurnUserMessageId: string | undefined;
   private systemInitInfo: SystemInitInfo | null = null;
   private busy = false;
   private currentAbort: AbortController | null = null;
+  /** FIFO 排队入口已随 /chat/queue 路由删除（queuePiChatMessage/forcePiQueueItem
+   *  已删），本队列仅由历史路径写入——当前恒空，保留 status/cancel 面向 GUI。 */
   private queue: PiQueueItem[] = [];
   /** W1 steering 队列(design-spec §6.1 纠偏档):busy 时 /chat/send 进这里,
    *  由运行中 loop 的 getSteeringMessages 在 turn 间取走注入,不排队等 turn。 */
@@ -434,15 +434,9 @@ class ChatEngine {
   /** 1.1.6 #4 — 引擎当前所在的环境分线键(随 restore/switchEnvSession 更新;
    *  不逐次重读磁盘——select 落盘→切线的窗口内磁盘已超前于引擎)。 */
   private currentEnvKey: string = envKeyForSelection(HOST_SELECTION);
-  /** turn 完成计数(cron/headless 等待点;每个 turn 收尾 +1)。 */
-  private turnSeq = 0;
-  /** B5(1.2.6)— 答案归属表:来源 queueId → 该 turn 收尾的 assistant 气泡 id。
-   *  sendPiChatMessageAndWait 按 queueId 取答案(归属精确到消息,不看
-   *  turnSeq/「最后一条 assistant」)。有界:超 200 条淘汰最旧。 */
-  private turnAnswerByQueueId = new Map<string, string>();
 
   // -------------------------------------------------------------------------
-  // Engine switch(env > config,缺省 sdk)
+  // Engine switch(M4c 硬切:恒 pi;sdk 请求一次性告警回落)
   // -------------------------------------------------------------------------
 
   /**
@@ -632,7 +626,7 @@ class ChatEngine {
    * /chat/send 的 pi 路径(W1 steering 语义,design-spec §6.1 纠偏档):
    * busy 时**不再 FIFO 排队**,改为注入运行中 loop 的 steering 队列
    * (chat:steering-added),pi 在 turn 间把消息注入对话,模型直接响应——
-   * 「纠偏直接打字」。要 FIFO 排队走 /chat/queue(queuePiChatMessage)。
+   * 「纠偏直接打字」。FIFO 排队入口(/chat/queue)已删除。
    */
   async sendPiChatMessage(input: PiSendInput): Promise<PiSendResult> {
     const text = input.text.trim();
@@ -641,8 +635,8 @@ class ChatEngine {
 
     const grounding = await this.resolveInputGrounding(input);
 
-    // B5(1.2.6):queueId 恒分配(直接开 turn 的也带)——send-and-wait 按它
-    // 追踪答案归属,不再靠 turnSeq + 「最后一条 assistant」猜。
+    // B5(1.2.6):queueId 恒分配(直接开 turn 的也带)——steering/FIFO 排队
+    // 与 wire 消息归属的关联键(queue:* 事件族按它对账)。
     const queueId = randomUUID();
     if (this.busy) {
       this.steering.push({ queueId, input, grounding });
@@ -652,29 +646,6 @@ class ChatEngine {
     }
 
     return this.startResolvedTurn(input, grounding, queueId);
-  }
-
-  /**
-   * /chat/queue 的 pi 路径(显式排队):busy 时 FIFO 排队(M4b 语义不变,
-   * queue:added isInFlight:false),空闲时直接开 turn——即 W1 之前的
-   * /chat/send 行为。
-   */
-  async queuePiChatMessage(input: PiSendInput): Promise<PiSendResult> {
-    const text = input.text.trim();
-    const hasImages = !!input.images && input.images.length > 0;
-    if (!text && !hasImages) return { error: 'Message must have text or images.' };
-
-    const grounding = await this.resolveInputGrounding(input);
-
-    if (this.busy) {
-      const queueId = randomUUID();
-      this.queue.push({ queueId, input, grounding });
-      broadcast('queue:added', { queueId, messageText: text.slice(0, 100), isInFlight: false });
-      console.log(`[pi-engine] 消息已排队 queueId=${queueId}(深度=${this.queue.length})`);
-      return { queued: true, queueId, isInFlight: false };
-    }
-
-    return this.startResolvedTurn(input, grounding);
   }
 
   /**
@@ -691,6 +662,8 @@ class ChatEngine {
     scenario: InteractionScenario = resolvePiScenario(),
     // 1.2.7(§三):域判定的内容信号源——最近消息扫描(配方默认 + 内容信号
     // 动态修正,见 resolveSessionDomain);缺省空数组 = 纯配方默认(1.2.4 语义)。
+    // A2-2(1.5.4):调用方须把当前轮用户消息也并入(起跑加载的 history 不含
+    // 本轮)——它同时是专家注入的最近用户消息锚,缺了会滞后一轮。
     historyMessages: readonly AgentMessage[] = [],
     // 1.2.7(域补丁):调用方已算好 caps/domain 时透传(同一 turn 内域判定
     // 只有一个事实源——buildTurnStack 的子代理分域与系统提示分域必须同值);
@@ -761,8 +734,8 @@ class ChatEngine {
   }
 
   /** 启动一个 turn(fire-and-forget);调用前须确认 !busy。
-   *  queueId(B5):本条消息的来源队列项 id——记入 wire 用户消息与 turn
-   *  收尾的答案归属表(send-and-wait 按 queueId 取答案)。 */
+   *  queueId(B5):本条消息的来源队列项 id——记入 wire 用户消息
+   *  (queue:* 事件族按它对账)。 */
   private startPiTurn(input: PiSendInput, resolution: LoopModelResolution, grounding: string, queueId?: string): void {
     const text = input.text.trim();
     this.busy = true;
@@ -776,9 +749,6 @@ class ChatEngine {
     // 里到达的 done.messages)属于起跑时那条线;动态读 this.sessionId 会把
     // 旧 turn 尾部追加进新会话 jsonl(串线)。
     const turnSessionId = this.sessionId;
-    // B5(1.2.6):本 turn 消费的消息来源 id(开 turn 的 prompt + 运行中注入
-    // 的 steering)——turn 收尾时统一登记「queueId → assistant 气泡 id」。
-    const consumedQueueIds: string[] = queueId ? [queueId] : [];
     // W1 — 状态行数据源:turn 开始(running)。
     this.broadcastChatStatus();
 
@@ -875,7 +845,6 @@ class ChatEngine {
       const drained = this.steering.splice(0, this.steering.length);
       console.log(`[pi-engine] steering 注入 ${drained.length} 条`);
       for (const item of drained) {
-        consumedQueueIds.push(item.queueId);
         const wireMsg: MessageWire = {
           id: String(this.messageSeq++),
           role: 'user',
@@ -926,15 +895,9 @@ class ChatEngine {
         // 模块头注释。放在最前:回收的快照同步取,防紧接的 promote 竞态;
         // fire-and-forget,kill 失败绝不阻塞收尾(reapAllBgProcesses 不抛)。
         void reapBgOnLifecyclePoint('turn-end');
-        // B5(1.2.6):答案归属登记——send-and-wait 按 queueId 取自己 turn 的
-        // assistant 气泡,不再靠 turnSeq + 「最后一条 assistant」(steering 没
-        // 被注入时旧逻辑会把上一条消息的答复返回给等待方;cron 等待期间用户
-        // 消息推进 turnSeq → cron 拿到用户的答案)。
-        for (const qid of consumedQueueIds) this.rememberTurnAnswer(qid, assistantMessage.id);
         this.busy = false;
         this.streamingAssistantId = null;
         this.currentAbort = null;
-        this.turnSeq++;
         // B5(1.2.6):drain 残留 steering。pi 只在 turn 间轮询 steering
         // (agent-loop.js),agent 收尾走的是 getFollowUpMessages(本引擎没传)
         // ——最后一跳 LLM 期间到达的纠偏永远等不到注入点,会滞留到下一条
@@ -955,15 +918,6 @@ class ChatEngine {
         if (this.queue.length === 0) this.broadcastChatStatus();
         this.promotePiQueue();
       });
-  }
-
-  /** B5 — 登记答案归属(queueId → assistant 气泡 id),有界淘汰。 */
-  private rememberTurnAnswer(queueId: string, assistantId: string): void {
-    if (this.turnAnswerByQueueId.size >= 200) {
-      const oldest = this.turnAnswerByQueueId.keys().next().value;
-      if (oldest !== undefined) this.turnAnswerByQueueId.delete(oldest);
-    }
-    this.turnAnswerByQueueId.set(queueId, assistantId);
   }
 
   /** 当前 turn done 后自动接下一条(SDK 的 promote 语义,queue:added isInFlight:true)。 */
@@ -996,8 +950,8 @@ class ChatEngine {
 
   /**
    * turn 执行栈组装:工具集(env_exec/env_bg/delegate_task 仅锚定环境后注册;
-   * research_log/intel/expert/request_decision 宿主原生常驻;MCP 每 turn
-   * 热读)+ boundary(含幻觉工具记录,供缺口埋点)+ output-guard。runPiTurn
+   * research_log/intel/expert/request_decision 宿主原生常驻)+ boundary
+   * (含幻觉工具记录,供缺口埋点)+ output-guard。runPiTurn
    * (交互 turn,broadcastEvents=true)与 invokePiSession(B2 cron 独立 invoke
    * 通道,broadcastEvents=false——headless,不往 TUI 广播 bg/subagent 事件)共用。
    * sessionId = 本 turn 的 loop 线快照(request_decision 的归属/注入路由依据)。
@@ -1011,6 +965,9 @@ class ChatEngine {
     // 1.2.7(域补丁):会话域——子代理继承主 agent 的域(派生时刻任务域已定),
     // 可派发清单按 domain.json subagents 收窄;undefined → 全量(宁多勿缺)。
     domain?: ResearchTaskKind,
+    // 1.4.4 档案来源锚取值闭包:交互 turn 读引擎字段(起跑时已写入);
+    // headless invoke 线传恒 undefined——全程不碰引擎单例状态(A1-2)。
+    getAnchorMessageId: () => string | undefined = () => this.currentTurnUserMessageId,
   ): {
     tools: AgentTool[];
     beforeToolCall: ReturnType<typeof makeBoundaryHook>;
@@ -1021,11 +978,12 @@ class ChatEngine {
       ...(env ? [createEnvExecTool(env)] : []),
       createResearchLogTool(this.agentDir),
       // 1.4.4 研究档案：显式研究状态的写通道（宿主原生，无条件注册——
-      // 档案归属本 turn 快照线；来源锚取当前轮 user 消息 id，headless 线
-      // undefined）。广播恒开：auto-run 线也要推 archive:changed 给 GUI。
+      // 档案归属本 turn 快照线；来源锚按 turn 上下文取值：交互 turn 取当前轮
+      // user 消息 id，headless invoke 线恒 undefined）。广播恒开：auto-run
+      // 线也要推 archive:changed 给 GUI。
       createArchiveTool({
         getSessionId: () => sessionId,
-        getAnchor: () => ({ messageId: this.currentTurnUserMessageId }),
+        getAnchor: () => ({ messageId: getAnchorMessageId() }),
         broadcastFn: broadcast,
       }),
       // 1.1.2 情报横切：宿主侧情报检索，无条件注册（不依赖 env）。
@@ -1070,7 +1028,8 @@ class ChatEngine {
         // loadLoopSession 可按 sessionId 读回(transcript 只读查看)。
         storeDir: defaultLoopSessionDir(),
         // 子代理定义(bundled-agents)engine 装载——按会话域收窄(1.2.7 域补丁:
-        // 子代理继承主 agent 的域,不跨域自选;无域全量),v1 不挂 skill 注入。
+        // 子代理继承主 agent 的域,不跨域自选;无域全量)。skill 注入层 1.5.1
+        // 已删——子代理提示正文自包含,frontmatter skills 字段仅声明保留。
         agents: filterAgentsByDomain(loadBundledAgents(), domain).map((a) => ({ name: a.name, body: a.body })),
         ...(broadcastEvents
           ? {
@@ -1141,8 +1100,7 @@ class ChatEngine {
     // 一律用快照,不动态读 this.sessionId——否则 busy 强停换线后,旧 turn
     // 的尾部会写进新会话的 jsonl(串线)。
     turnSessionId: string,
-    // W1 steering 轮询闭包——由 startPiTurn 构造注入(B6 补 wire 需要
-    // startPiTurn 作用域的 consumedQueueIds;闭包本体注释见构造点)。
+    // W1 steering 轮询闭包——由 startPiTurn 构造注入(闭包本体注释见构造点)。
     getSteeringMessages: () => Promise<AgentMessage[]>,
   ): Promise<void> {
     const startedAt = Date.now();
@@ -1163,8 +1121,17 @@ class ChatEngine {
     const { tools, beforeToolCall, afterToolCall, blockedToolNames } =
       this.buildTurnStack(env, resolution, toolNames, true, turnSessionId, domain);
     // 1.2.6（C-11）：压缩阈值估算纳入系统提示——提示先于 transform 组装,
-    // 字符数经同一 chars/4 启发式折算进阈值（compaction 侧向后兼容）。
-    const systemPrompt = await this.assemblePiSystemPrompt(env, scenario, history, { caps, domain }, turnSessionId);
+    // 系统提示按 chars/2 折算进阈值（estimateMessagesTokens 口径,中英混合
+    // 保守折算;与消息体的 chars/4 启发式不同）。
+    const systemPrompt = await this.assemblePiSystemPrompt(
+      env,
+      scenario,
+      // A2-2(1.5.4):注入锚点补当前轮用户消息——history 是当轮 prompt 之前
+      // 的历史,不含本轮;补上后当前话题当轮参与专家注入打分(首轮也可注入)。
+      [...history, { role: 'user', content: promptText, timestamp: startedAt } as AgentMessage],
+      { caps, domain },
+      turnSessionId,
+    );
     const contextWindow = resolution.model.contextWindow || 200_000;
     // 1.5.3:校准系数从会话 meta 读（真实 API ÷ 启发式,上轮学习落盘）;
     // 本轮是否触发过压缩由 onCompact 闭包打标——压缩过的轮次不学习
@@ -1294,11 +1261,13 @@ class ChatEngine {
     // B3:续存目标 = 起跑快照线,不是 this.sessionId(中途换线不串线)。
     assistantMessage.content = fullText;
     // 1.5.3 校准学习:仅未压缩轮次(压缩轮 usage 是裁后体量,学进去系数
-    // 会塌)。真实 API usage ÷ 当轮起跑启发式全量,钳 [0.8, 6] 防离群,
+    // 会塌)。真实 API usage ÷ 同内容启发式估算——分子(末次 LLM 调用实测
+    // input)含当轮新增消息,分母也必须含(history + doneMessages),否则
+    // 口径错位比值恒 >1,工具密集轮顶到钳位。钳 [0.8, 6] 防离群,
     // 经 appendLoopMessages meta 落盘供下轮 evaluateCompaction 乘用。
     let learnedCalibration: number | undefined;
     if (lastUsage && !compactedThisTurn) {
-      const heuristic = estimateMessagesTokens(history, systemPrompt.length);
+      const heuristic = estimateMessagesTokens([...history, ...doneMessages], systemPrompt.length);
       const real = lastUsage.input + lastUsage.cacheRead + lastUsage.cacheWrite;
       if (heuristic > 0 && real > 0) {
         const c = real / heuristic;
@@ -1369,46 +1338,6 @@ class ChatEngine {
     }
   }
 
-  /**
-   * cron 定时任务等 headless 调用(M4c 自 SDK enqueueUserMessage 迁移):
-   * 发消息并等**自己那条消息**的 turn 完成(含 steering 注入/转 FIFO 续跑
-   * 两种消费路径),返回该 turn 的 assistant 文本。
-   * 超时按失败处理(不中断 turn——cron 语义是等结果,不是取消)。
-   *
-   * B5(1.2.6)归属语义:按 queueId 追踪——turn 收尾时登记「消费的 queueId →
-   * 该 turn 的 assistant 气泡 id」(含运行中注入的 steering),等待方轮询
-   * 归属表。旧实现只看 turnSeq 推进 + 取最后一条 assistant:steering 没被
-   * 注入时 turn 结束即返回上一条消息的答复;等待期间别的消息推进 turnSeq
-   * → 等待方拿到别人的答案。
-   *
-   * 注:1.2.6 起 cron 主路径走 invokePiSession(独立 invoke 通道,B2),
-   * 本函数保留给需要「经单例会话发并等」的调用方。
-   */
-  async sendPiChatMessageAndWait(
-    input: PiSendInput,
-    timeoutMs = 10 * 60_000,
-  ): Promise<{ text: string; error?: string }> {
-    const result = await this.sendPiChatMessage(input);
-    if (result.error) return { text: '', error: result.error };
-    const myQueueId = result.queueId!;
-    const start = Date.now();
-    for (;;) {
-      const assistantId = this.turnAnswerByQueueId.get(myQueueId);
-      if (assistantId !== undefined) {
-        this.turnAnswerByQueueId.delete(myQueueId);
-        const msg = this.messages.find((m) => m.id === assistantId);
-        if (!msg) {
-          return { text: '', error: 'turn 已完成,但会话在等待期间被 reset/切换,答案消息已不在当前回放中' };
-        }
-        return { text: msg.content };
-      }
-      if (Date.now() - start > timeoutMs) {
-        return { text: '', error: `等待 turn 完成超时(${timeoutMs}ms)` };
-      }
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
-
   /** B2(1.2.6):引擎当前线的只读快照(cron 无 sessionId 时「跟随当前线」
    *  语义的数据源)。只读——invoke 通道据此写同一条线而不动引擎状态。 */
   getPiCurrentSessionRef(): { loopSessionId: string; sessionMetaId: string | null } {
@@ -1417,8 +1346,7 @@ class ChatEngine {
 
   /**
    * 1.3.2 决策注入——把人的决定作为 user 消息注入回 loop,复用 steering/
-   * 直发通道的全部既有语义(B3 turn 快照线、B5 queueId 答案归属、B6 补
-   * wire):
+   * 直发通道的全部既有语义(B3 turn 快照线、B6 补 wire):
    *   - 归属线 = 当前引擎线(decision.sessionId):走 sendPiChatMessage——
    *     busy 进 steering(pi 在 turn 间轮询注入,随 done.messages 持久化),
    *     闲时直发新 turn;wire 决策块 + broadcast 与普通消息同路径;
@@ -1464,8 +1392,8 @@ class ChatEngine {
    *     set/reset 时序(异步 execute 路径旧有时序窗:reset 先于系统提示组装);
    *   - 答案取 done.messages 里最后一条 assistant 的文本(多跳 turn 拼接的
    *     fullText 只是兜底);
-   *   - timeoutMs 到期按失败返回但【不中断】loop(沿用 sendPiChatMessageAndWait
-   *     的「等结果,不是取消」语义)——loop 在后台跑完并自行续存。
+   *   - timeoutMs 到期按失败返回但【不中断】loop(「等结果,不是取消」
+   *     语义)——loop 在后台跑完并自行续存。
    */
   async invokePiSession(
     input: PiSendInput,
@@ -1499,8 +1427,6 @@ class ChatEngine {
     ];
     const storedInvoke = loadLoopSession(loopSessionId);
     const history = storedInvoke.messages;
-    // 1.4.4 研究档案来源锚：headless 线无 wire user 消息——锚点置空。
-    this.currentTurnUserMessageId = undefined;
     // 1.2.7(域补丁):与交互 turn 同——域判定一次算出,执行栈与系统提示共用。
     const scenario = options.scenario ?? resolvePiScenario();
     const caps = scenario.type === 'security'
@@ -1508,8 +1434,17 @@ class ChatEngine {
       : undefined;
     const domain = caps ? resolveSessionDomain(history, caps) : undefined;
     const { tools, beforeToolCall, afterToolCall, blockedToolNames } =
-      this.buildTurnStack(env, resolution, toolNames, false, loopSessionId, domain);
-    const systemPrompt = await this.assemblePiSystemPrompt(env, scenario, history, { caps, domain }, loopSessionId);
+      // 1.4.4 档案来源锚:headless 线无 wire user 消息,锚恒 undefined——
+      // 经参数下传,不碰引擎单例字段(A1-2)。
+      this.buildTurnStack(env, resolution, toolNames, false, loopSessionId, domain, () => undefined);
+    const systemPrompt = await this.assemblePiSystemPrompt(
+      env,
+      scenario,
+      // A2-2(1.5.4):与交互 turn 同——注入锚点补当前轮用户消息。
+      [...history, { role: 'user', content: input.text.trim(), timestamp: Date.now() } as AgentMessage],
+      { caps, domain },
+      loopSessionId,
+    );
     const contextWindow = resolution.model.contextWindow || 200_000;
     // 1.5.3:与交互 turn 同一接线——meta 校准系数 + 收割 options;压缩
     // 轮次由 onCompactMark 打标,不学习(锚被污染)。
@@ -1570,10 +1505,11 @@ class ChatEngine {
         console.warn(`[pi-engine] invoke 上下文溢出(${failed ?? 'unknown'}),强制压缩后重试本 turn(限 1 次)`);
       }
       // 1.5.3 校准学习（与交互 turn 同口径）：未压缩轮次才学,钳 [0.8, 6]。
+      // 分子(末次调用实测 input)含当轮新增,分母同口径取 history + doneMessages。
       let learnedCalibration: number | undefined;
       const lastUsageMsg = [...doneMessages].reverse().find((m) => m.role === 'assistant');
       if (lastUsageMsg?.usage && !compactedThisTurn) {
-        const heuristic = estimateMessagesTokens(history, systemPrompt.length);
+        const heuristic = estimateMessagesTokens([...history, ...doneMessages], systemPrompt.length);
         const u = lastUsageMsg.usage;
         const real = u.input + u.cacheRead + u.cacheWrite;
         if (heuristic > 0 && real > 0) {
@@ -1763,36 +1699,6 @@ class ChatEngine {
     return null;
   }
 
-  /** /chat/queue/force 的 pi 路径:中断当前 turn,改跑指定排队项。
-   *
-   *  B4(1.2.6)重写:force 不再自己起跑 turn。旧实现 abort 后轮询等 busy
-   *  回落、然后直接 startResolvedTurn——但 turn 收尾的 finally 在 busy=false
-   *  后同步 promotePiQueue 抢跑下一项;若 force 的轮询在 promote 起跑后
-   *  才看到 busy(或 5s 轮询上限超掉 busy 仍未回落),force 会无视在跑的
-   *  turn 再起一个 → 双 turn 并发(streamingAssistantId 互覆、同一
-   *  sessionId 交错 append)。修法选「塞回队首 + promote 统一接管」而非
-   *  「startResolvedTurn 加 busy 断言」:断言只能让 force 放弃/重排(调用方
-   *  语义变模糊),而统一单起点结构性排除并发——turn 起跑只有 promote
-   *  (busy=false 后)与空闲入口(!busy 直查)两处,不可能撞车。
-   */
-  async forcePiQueueItem(queueId: string): Promise<boolean> {
-    const idx = this.queue.findIndex((item) => item.queueId === queueId);
-    if (idx < 0) return false;
-    const [item] = this.queue.splice(idx, 1);
-    // 队首就位:busy → abort 当前 turn,其收尾 finally 的 promote 统一接起
-    // 本项(queue:added isInFlight:true 由 promote 广播,与 FIFO 自动接同形);
-    // 空闲 → 直接 promote。abort 不听话(顽固工具)时本项留在队首等下一
-    // 收尾,语义退化为「下一个跑」,绝不双 turn。
-    this.queue.unshift(item);
-    if (this.busy && this.currentAbort) {
-      this.currentAbort.abort();
-      broadcast('chat:message-stopped', null);
-      return true;
-    }
-    this.promotePiQueue();
-    return true;
-  }
-
   /** /chat/queue/status 的 pi 路径:FIFO 排队 + steering 队列(kind 区分)。 */
   getPiQueueStatus(): Array<{ id: string; messagePreview: string; kind: 'fifo' | 'steering' }> {
     return [
@@ -1924,7 +1830,7 @@ class ChatEngine {
 
 // ---------------------------------------------------------------------------
 // 默认实例 + facade(1.1.7 ②):按原签名逐个委托,调用点(admin-api/index)零改动。
-// 纯函数(getPiLogLines/resolveSessionEnv/resolveSessionEnvKey/
+// 纯函数(resolveSessionEnv/resolveSessionEnvKey/
 // getEnvSessionBinding)不碰实例状态,已在上方按原样导出,不在此委托。
 // ---------------------------------------------------------------------------
 
@@ -1970,17 +1876,6 @@ export async function sendPiChatMessage(input: PiSendInput): Promise<PiSendResul
   return defaultEngine.sendPiChatMessage(input);
 }
 
-export async function queuePiChatMessage(input: PiSendInput): Promise<PiSendResult> {
-  return defaultEngine.queuePiChatMessage(input);
-}
-
-export async function sendPiChatMessageAndWait(
-  input: PiSendInput,
-  timeoutMs = 10 * 60_000,
-): Promise<{ text: string; error?: string }> {
-  return defaultEngine.sendPiChatMessageAndWait(input, timeoutMs);
-}
-
 /** B2(1.2.6)— cron 独立 invoke 通道(不碰单例会话/steering/队列)。 */
 export async function invokePiSession(
   input: PiSendInput,
@@ -2024,10 +1919,6 @@ export function stopPiChat(): boolean {
 
 export function cancelPiQueueItem(queueId: string): string | null {
   return defaultEngine.cancelPiQueueItem(queueId);
-}
-
-export async function forcePiQueueItem(queueId: string): Promise<boolean> {
-  return defaultEngine.forcePiQueueItem(queueId);
 }
 
 export function getPiQueueStatus(): Array<{ id: string; messagePreview: string; kind: 'fifo' | 'steering' }> {

@@ -46,11 +46,6 @@ export function gateToast(item: SidebarEnvItem, gate: Exclude<GateResult, { allo
   return '环境未启动，先启动再进入';
 }
 
-/** 「启动」按钮可用：已登记（非 unreg）且服务端可 up（docker/vm + 配方可回查）。 */
-export function canStartEntry(item: SidebarEnvItem): boolean {
-  return item.group === 'stop' && item.startable === true;
-}
-
 // ---------------------------------------------------------------------------
 // 宿主锚显性化 / 启动恢复映射
 // ---------------------------------------------------------------------------

@@ -13,14 +13,11 @@ export function camelCase(s: string): string {
 export function parseArgs(args: string[]): { positional: string[]; flags: Record<string, unknown> } {
   const positional: string[] = [];
   const flags: Record<string, unknown> = {};
-  const repeatable = new Set(['args', 'env', 'headers', 'models', 'model-names', 'var']);
-// Short-flag → long-flag mapping. Only specific aliases are mapped; bare `-` prefixed positional
-  // args remain valid (none of the current commands actually use bare-`-`
-  // positional, but the explicit allow-list keeps the door open if needed).
-  const shortFlagAliases: Record<string, string> = {
-    'p': 'prompt',
-    // Add more here if PRD documents additional short flags.
-  };
+  // 可重复旗标：重复出现时累积成数组。1.5.4 审计收敛：args/headers/var 随
+  // MCP 删除退役（全仓零消费方）；env 移出（term open --env 重复传曾静默
+  // 拼成 'a,b' 非法 envTag，审计 A3-6）——--env 现在是普通 key-value 旗标，
+  // 重复传时后者覆盖前者。
+  const repeatable = new Set(['models', 'model-names']);
 let i = 0;
   while (i < args.length) {
     const arg = args[i];
@@ -35,9 +32,8 @@ let i = 0;
       const inlineValue = eq >= 0 ? raw.slice(eq + 1) : undefined;
       // Boolean flags (no value follows). Missing entries trigger the
       // generic key-value branch below — which consumes the NEXT token as
-      // value when it doesn't start with `--`. That silently eats short
-      // flags like `-p` (a presence-only flag followed by `-p` would otherwise
-      // swallow `-p` as its value and drop the prompt).
+      // value when it doesn't start with `--`（presence-only 旗标漏登记会把
+      // 下一个位置参数吞成旗标值）。
       // Add any new presence-only flag here.
       if (
         key === 'help' ||
@@ -60,7 +56,7 @@ let i = 0;
         continue;
       }
       // Repeatable flags: ALWAYS consume the next token as a value, even if it
-      // starts with '--' (e.g. --args "--stdio"). The boolean-fallback check
+      // starts with '--' (e.g. --models "--foo"). The boolean-fallback check
       // below must NOT run for repeatable flags — it would overwrite the
       // accumulated array with `true`.
       if (repeatable.has(key)) {
@@ -98,22 +94,22 @@ let i = 0;
       }
       flags[camelCase(key)] = value;
       i += 2;
-    } else if (arg.length === 2 && arg.startsWith('-') && shortFlagAliases[arg.slice(1)]) {
-      // Short flag (e.g. -p) maps to long flag (--prompt). Always consumes the
-      // next token as value (or treats as boolean if next is missing/another flag).
-      const longKey = shortFlagAliases[arg.slice(1)]!;
-      const value = args[i + 1];
-      if (value === undefined || value.startsWith('-')) {
-        flags[camelCase(longKey)] = true;
-        i++;
-      } else {
-        flags[camelCase(longKey)] = value;
-        i += 2;
-      }
     } else {
+      // 裸 `-x` 短旗标无消费方（-p→prompt 已于 1.5.4 随零引用删除）——
+      // 一律按位置参数处理。
       positional.push(arg);
       i++;
     }
   }
   return { positional, flags };
+}
+
+/**
+ * 全局 --port 旗标是否覆盖 sidecar 端口。
+ * 例外：`env add --kind ssh --port N` 的 --port 是目标主机端口（进请求体），
+ * 不是 sidecar 端口——1.5.4 审计 A1-4：全局覆盖曾在路由分发前无条件套用，
+ * 文档化的 ssh --port 用法会把 2222 误当 sidecar 端口、必然 ECONNREFUSED。
+ */
+export function isSidecarPortOverride(positional: string[]): boolean {
+  return !(positional[0] === 'env' && positional[1] === 'add');
 }

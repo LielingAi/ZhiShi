@@ -1,42 +1,14 @@
 /**
  * 工具输出抽屉（复用 v19：命令 + 高亮输出 + 搜索 + 复制）。
- * 输出高亮：flag{} / SIGSEGV 系 / 0x 地址 / CVE / exit 码 / 常见失败词。
+ * 输出高亮：flag{} / SIGSEGV 系 / 0x 地址 / CVE / exit 码 / 常见失败词；
+ * 高亮/搜索定位的纯函数在 model/drawer-highlight.ts（A2-7：搜索先在纯文本
+ * 定位再分段渲染，不在高亮后的 HTML 上切片——搜 class 名片段不产破 HTML）。
  */
 
 import type React from 'react';
 
 import { useGuiStore } from '../store/useGuiStore';
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function highlight(text: string): string {
-  let html = escapeHtml(text);
-  html = html.replace(/(flag\{[^}]*\})/gi, '<span class="hl-flag">$1</span>');
-  html = html.replace(
-    /(SIGSEGV|SIGABRT|SIGILL|Segmentation fault|core dumped)/gi,
-    '<span class="hl-red">$1</span>',
-  );
-  html = html.replace(/(0x[0-9a-fA-F]+)/g, '<span class="hl-cyan">$1</span>');
-  html = html.replace(/(CVE-\d{4}-\d+)/gi, '<span class="hl-amber">$1</span>');
-  html = html.replace(/(\d+\/tcp\s+open)/gi, '<span class="hl-green">$1</span>');
-  html = html.replace(
-    /\b(error|failed|denied|timed out|refused)\b/gi,
-    '<span class="hl-red">$1</span>',
-  );
-  return html;
-}
-
-/** 搜索命中包裹 <mark>；没命中返回 undefined。 */
-function markMatch(raw: string, query: string): string | undefined {
-  const q = query.trim();
-  if (!q) return undefined;
-  const idx = raw.toLowerCase().indexOf(escapeHtml(q.toLowerCase()));
-  if (idx < 0) return undefined;
-  const len = escapeHtml(q).length;
-  return `${raw.slice(0, idx)}<mark class="h-search">${raw.slice(idx, idx + len)}</mark>${raw.slice(idx + len)}`;
-}
+import { drawerOutputHtml } from '../model/drawer-highlight';
 
 export function Drawer(): React.JSX.Element {
   const drawer = useGuiStore((s) => s.drawer);
@@ -48,8 +20,7 @@ export function Drawer(): React.JSX.Element {
 
   const lineCount = drawer.output ? drawer.output.split('\n').length : 0;
   const ok = drawer.state !== 'fail';
-  const base = highlight(drawer.output);
-  const marked = markMatch(base, drawer.search) ?? base;
+  const marked = drawerOutputHtml(drawer.output, drawer.search);
 
   return (
     <div className="drawer open">
@@ -69,7 +40,7 @@ export function Drawer(): React.JSX.Element {
           <span className="d-lines">{lineCount} 行</span>
         </div>
         {drawer.args && <div className="d-cmd">{drawer.args}</div>}
-        {/* 输出已 escapeHtml 后再插 highlight 标签——安全。 */}
+        {/* 输出已 escapeHtml 后再插 highlight/mark 标签——安全（见 model/drawer-highlight）。 */}
         <div className="d-output" dangerouslySetInnerHTML={{ __html: marked }} />
         <div className="d-toolbar">
           <input

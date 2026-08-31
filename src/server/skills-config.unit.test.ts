@@ -9,9 +9,29 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { syncEnvironmentRecipes } from './skills-config';
+
+// A3-4 回归：syncToolSkills 覆盖路径必须备份 + cp 失败回滚。用可控的 cpSync
+// 故障注入验证回滚（skills-config 从 'fs' 裸导入，本文件测试辅助走 'node:fs'
+// 不受影响）。
+const cpFault = vi.hoisted(() => ({ fail: false }));
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return {
+    ...actual,
+    cpSync: (...args: Parameters<typeof actual.cpSync>) => {
+      if (cpFault.fail) throw new Error('simulated cpSync failure');
+      return actual.cpSync(...args);
+    },
+  };
+});
+
+const dateStamp = () => {
+  const d = new Date();
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+};
 
 let dir: string;
 
@@ -142,6 +162,30 @@ describe('syncToolSkills（1.5.1 工具侧技能分发）', () => {
     const outcomes = syncToolSkills(bundled, root);
     expect(outcomes.find((o) => o.id === 'range-ops')?.action).toBe('synced');
     expect(readFileSync(join(root, 'range-ops', 'SKILL.md'), 'utf-8')).toBe('# range-ops v1');
+  });
+
+  it('A3-4：覆盖前旧版备份到 <技能>.bak-<日期>（对齐 recipes 纪律）', async () => {
+    const { syncToolSkills } = await import('./skills-config');
+    writeSkill(root, 'range-ops', '# range-ops OLD');
+    const outcomes = syncToolSkills(bundled, root);
+    expect(outcomes.find((o) => o.id === 'range-ops')?.action).toBe('synced');
+    expect(readFileSync(join(root, 'range-ops', 'SKILL.md'), 'utf-8')).toBe('# range-ops v1');
+    expect(readFileSync(join(root, `range-ops.bak-${dateStamp()}`, 'SKILL.md'), 'utf-8')).toBe('# range-ops OLD');
+  });
+
+  it('A3-4：cp 失败 → 回滚旧版不留空位，记 failed', async () => {
+    const { syncToolSkills } = await import('./skills-config');
+    writeSkill(root, 'range-ops', '# range-ops OLD');
+    cpFault.fail = true;
+    try {
+      const outcomes = syncToolSkills(bundled, root);
+      expect(outcomes.find((o) => o.id === 'range-ops')?.action).toBe('failed');
+    } finally {
+      cpFault.fail = false;
+    }
+    // 旧版回滚复位，备份已 rename 回去
+    expect(readFileSync(join(root, 'range-ops', 'SKILL.md'), 'utf-8')).toBe('# range-ops OLD');
+    expect(existsSync(join(root, `range-ops.bak-${dateStamp()}`))).toBe(false);
   });
 
   it('方法论类不在分发清单（whitebox-audit 不落地）', async () => {

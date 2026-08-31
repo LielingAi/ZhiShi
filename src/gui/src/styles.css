@@ -249,7 +249,6 @@ kbd {
   font-family: var(--mono); font-size: 12px; padding: 2px 0 8px;
 }
 .ready-line .ok { color: var(--cyan); }
-.sys-line { color: var(--faint); font-size: 12px; font-family: var(--mono); padding: 1px 0; margin-bottom: 8px; }
 
 /* ===== chips / 底部 ===== */
 .chip {
@@ -381,9 +380,6 @@ mark.h-search { background: rgba(232,163,61,.3); color: var(--text); border-radi
 }
 .set-nav-item:hover { color: var(--text-dim); background: var(--panel-2); }
 .set-nav-item.on { color: var(--text); background: var(--panel-3); }
-/* 1.3.6：MCP 置灰占位（设计未定，页签不可点）。 */
-.set-nav-item.disabled { color: var(--faint); opacity: .45; cursor: not-allowed; }
-.set-nav-item.disabled:hover { color: var(--faint); background: transparent; }
 .set-nav-item .sn-ic { font-family: var(--mono); font-size: 12px; width: 16px; text-align: center; }
 .set-content { flex: 1; overflow-y: auto; padding: 14px 18px; }
 .set-group { max-width: 520px; margin-bottom: 18px; }
@@ -395,8 +391,6 @@ mark.h-search { background: rgba(232,163,61,.3); color: var(--text); border-radi
 .set-row .sr-control { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .set-row .sr-status { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 .set-row .sr-status.ok { color: var(--green); }
-/* 1.3.5：MCP 页签 failed 状态红色（与 StateHint error 同色口径） */
-.set-row .sr-status.bad { color: var(--red); }
 .set-group { width: 100%; }
 
 /* 1.5.2 设置页自适应：窄窗口导航塌缩为纯图标列 + 行按钮组允许换行收缩。 */

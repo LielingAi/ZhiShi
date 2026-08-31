@@ -21,14 +21,12 @@ export interface SessionMetaRow {
   /** meta id（PATCH/DELETE/switch 的定位键）。 */
   id: string;
   title: string;
-  titleSource?: 'default' | 'auto' | 'user';
   createdAt: string;
   lastActiveAt: string;
   /** wire 回看端点要的 loop-sessions id（旧行可能没有）。 */
   loopSessionId?: string;
   lastMessagePreview?: string;
   messageCount: number;
-  favorite?: boolean;
   /** 1.3.3 置顶（排序信号）。 */
   pinned?: boolean;
   /** 1.3.3 归档（默认藏到「已归档」折叠组）。 */
@@ -58,14 +56,10 @@ export function parseSessionRow(raw: unknown): SessionMetaRow | null {
     lastActiveAt: strOf(r.lastActiveAt) ?? '',
     messageCount: typeof stats.messageCount === 'number' && stats.messageCount > 0 ? stats.messageCount : 0,
   };
-  if (r.titleSource === 'default' || r.titleSource === 'auto' || r.titleSource === 'user') {
-    row.titleSource = r.titleSource;
-  }
   const loopSessionId = strOf(r.loopSessionId);
   if (loopSessionId) row.loopSessionId = loopSessionId;
   const preview = strOf(r.lastMessagePreview);
   if (preview) row.lastMessagePreview = preview;
-  if (r.favorite === true) row.favorite = true;
   if (r.pinned === true) row.pinned = true;
   if (r.archived === true) row.archived = true;
   const envKey = strOf(r.envKey);
@@ -248,7 +242,6 @@ export function autoRunRowsOf(runs: AutoRunLike[]): SessionMetaRow[] {
     .map((r) => ({
       id: `auto-run:${r.id}`,
       title: `⚡ ${r.name}`,
-      titleSource: 'user' as const,
       createdAt: '',
       lastActiveAt: r.updatedAt > 0 ? new Date(r.updatedAt).toISOString() : '',
       messageCount: 0,
@@ -280,7 +273,7 @@ export function applySessionTitleChange(
   const next = rows.map((r) => {
     if (r.id !== id) return r;
     changed = true;
-    return { ...r, title, titleSource: 'auto' as const };
+    return { ...r, title };
   });
   return changed ? next : rows;
 }

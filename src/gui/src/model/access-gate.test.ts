@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { accessGate, canStartEntry, gateToast, hostAnchorLabel, initAnchorToGuiKey, selectionToGuiKey } from './access-gate';
+import { accessGate, gateToast, hostAnchorLabel, initAnchorToGuiKey, selectionToGuiKey } from './access-gate';
 import type { SidebarEnvItem } from './envs';
 
 function item(partial: Partial<SidebarEnvItem>): SidebarEnvItem {
@@ -43,7 +43,7 @@ describe('accessGate', () => {
   });
 });
 
-describe('gateToast / canStartEntry', () => {
+describe('gateToast', () => {
   it('拦截文案与原因对应', () => {
     expect(gateToast(item({ group: 'unreg' }), { allow: false, reason: 'unregistered' })).toBe(
       '未登记，请先在新建环境里接入',
@@ -51,12 +51,6 @@ describe('gateToast / canStartEntry', () => {
     expect(gateToast(item({ group: 'stop' }), { allow: false, reason: 'not-started', canStart: false })).toBe(
       '环境未启动，先启动再进入',
     );
-  });
-
-  it('启动按钮只在 stop + startable 时可见', () => {
-    expect(canStartEntry(item({ group: 'stop', startable: true }))).toBe(true);
-    expect(canStartEntry(item({ group: 'stop', startable: false }))).toBe(false);
-    expect(canStartEntry(item({ group: 'run', startable: true }))).toBe(false);
   });
 });
 

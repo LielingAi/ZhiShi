@@ -18,7 +18,7 @@
  * - **原生模块**：@lydell/node-pty 是 external 的 napi prebuilds——顶层
  *   value-import 会让缺模块的宿主直接炸在启动期，故经 loadNodePty()
  *   **惰性**加载（先常规 node_modules 解析，再 prod 布局
- *   `<Resources>/pty-runtime/` 回落，对齐 sharp/sqlite-runtime 的打包惯例）。
+ *   `<Resources>/pty-runtime/` 回落，对齐 sqlite-runtime 的打包惯例）。
  *   加载失败 → attach 收到 error 帧（sidecar 其余功能不受影响）。
  *
  * 测试纪律：manager 的 env 解析/pty 加载/宿主二进制解析全部可注入——
@@ -116,7 +116,7 @@ export type PtyApi = {
  * 搜索序:
  * 1. 常规 node_modules 解析(dev / tsx 源码运行);
  * 2. prod 布局回落:`<scriptDir>/pty-runtime/node_modules/@lydell/node-pty`
- *    (对齐 sharp-runtime / sqlite-runtime 的打包惯例——发行侧把 prebuilds
+ *    (对齐 sqlite-runtime 的打包惯例——发行侧把 prebuilds
  *    装进该目录即可,见报告「打包侧风险」)。
  * 两处都失败 → null(调用方发 error 帧,不炸进程)。
  */

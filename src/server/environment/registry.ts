@@ -187,9 +187,8 @@ function buildSshCommand(target: string, user?: string, keyPath?: string, port?:
  *   vm     → vm:<vmName>
  *   ssh    → range:<host>
  * 宿主终端无标记（等同 'host'）。标记经 `term open --env` 落到 Rust
- * TerminalManager，agent-session 的边界门控（environment/boundary.ts）按
- * 「env≠host = 界内」消费。字段缺省时兜底 entry.id（validate 已保证按
- * kind 必填，兜底只为防御）。
+ * TerminalManager。字段缺省时兜底 entry.id（validate 已保证按 kind 必填，
+ * 兜底只为防御）。
  */
 export function envTagForEntry(entry: EnvironmentEntry): string {
   switch (entry.kind) {

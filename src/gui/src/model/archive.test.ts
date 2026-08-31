@@ -10,7 +10,6 @@ import { describe, expect, it } from 'vitest';
 import {
   applyArchiveChanged,
   archiveBadgeCount,
-  archiveConfirmedHypotheses,
   archiveEvidence,
   archiveFalsified,
   archiveFindings,
@@ -72,7 +71,6 @@ describe('分组选择器', () => {
     const s = snap();
     expect(archiveOpenQuestions(s).map((e) => e.id)).toEqual(['Q#1']);
     expect(archivePendingHypotheses(s).map((e) => e.id)).toEqual(['H#2']);
-    expect(archiveConfirmedHypotheses(s).map((e) => e.id)).toEqual(['H#3']);
     expect(archiveFindings(s).map((e) => e.id)).toEqual(['C#1']);
     expect(archiveEvidence(s).map((e) => e.id)).toEqual(['V#1']);
     // 证伪与纠正区：R#1 纠正条目挂 H#1（已证伪的假设,带纠正记录不再重复行）。

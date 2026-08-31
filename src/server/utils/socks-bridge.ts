@@ -11,7 +11,8 @@
  *     → Bridge creates SOCKS5 connection to target
  *     → Data flows bidirectionally through the tunnel
  *
- * Used by: agent-session.ts setProxyConfig() / initSocksBridge()
+ * Used by: agent-session.ts initSocksBridgeFromEnv()（1.5.4 起 setProxyConfig 已删——
+ *     无运行时调用方,仅启动期环境继承）
  */
 
 import http from 'http';

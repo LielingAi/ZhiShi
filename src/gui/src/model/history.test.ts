@@ -18,13 +18,11 @@ describe('parseSessionRow（GET /sessions 行归一）', () => {
     const row = parseSessionRow({
       id: 'm1',
       title: '审计 gzip',
-      titleSource: 'auto',
       createdAt: '2026-08-01T00:00:00Z',
       lastActiveAt: '2026-08-02T00:00:00Z',
       loopSessionId: 'loop-1',
       lastMessagePreview: '帮我审 gzip.c',
       stats: { messageCount: 12 },
-      favorite: true,
       pinned: true,
       archived: true,
       envKey: 'env:pwn-vm',
@@ -32,20 +30,18 @@ describe('parseSessionRow（GET /sessions 行归一）', () => {
     expect(row).toEqual({
       id: 'm1',
       title: '审计 gzip',
-      titleSource: 'auto',
       createdAt: '2026-08-01T00:00:00Z',
       lastActiveAt: '2026-08-02T00:00:00Z',
       loopSessionId: 'loop-1',
       lastMessagePreview: '帮我审 gzip.c',
       messageCount: 12,
-      favorite: true,
       pinned: true,
       archived: true,
       envKey: 'env:pwn-vm',
     });
   });
 
-  it('缺省字段走默认（title 空 → New Chat，false 不落 favorite/pinned/archived）', () => {
+  it('缺省字段走默认（title 空 → New Chat，false 不落 pinned/archived）', () => {
     const row = parseSessionRow({ id: 'm2', title: '' });
     expect(row).toEqual({
       id: 'm2',
@@ -213,10 +209,9 @@ describe('applySessionTitleChange（1.4.7 SSE 漏面收口）', () => {
     { id: 's2', title: '另一个', createdAt: '', lastActiveAt: '', messageCount: 1 },
   ] as never[];
 
-  it('命中行就地换标题 + titleSource=auto;未命中/坏 payload 原样', () => {
+  it('命中行就地换标题；未命中/坏 payload 原样', () => {
     const next = applySessionTitleChange(rows, { sessionId: 's2', title: '新标题' });
     expect(next?.find((r) => r.id === 's2')?.title).toBe('新标题');
-    expect(next?.find((r) => r.id === 's2')?.titleSource).toBe('auto');
     expect(next?.find((r) => r.id === 's1')?.title).toBe('旧标题');
     expect(applySessionTitleChange(rows, { sessionId: 'ghost', title: 'x' })).toBe(rows);
     expect(applySessionTitleChange(null, { sessionId: 's1', title: 'x' })).toBeNull();
