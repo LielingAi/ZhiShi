@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 
 # ZhiShi Windows 正式发布构建脚本
 
@@ -988,6 +988,9 @@ try {
     # `npm install -g agent-browser@<pinned>` (with `npx` fallback) on first
 
     # use. Removing the bundle saves ~84MB installer size + build time.
+
+
+
 
 
 
