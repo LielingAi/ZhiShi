@@ -19,6 +19,7 @@ import {
   getAllEffectiveProviders,
   isProviderDisabled,
   getProvidersDir,
+  resolveKimiApiKey,
   type AdminAppConfig,
   type AgentConfigSlim,
 } from './utils/admin-config';
@@ -29,6 +30,7 @@ import { taskConclusionFor } from './cron/task-conclusions';
 import { existsSync , mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync } from 'fs';
 import { ensureDirSync } from './utils/fs-utils';
 import { resolveSshTarget, execInEnvironment, buildScpArgv } from './loop/env-exec';
+import { KIMI_CODING_BASE_URL } from './loop/pi-provider';
 import { buildToolCheckScript, parseToolCheckOutput } from './environment/recipes';
 import {
   CAPABILITY_PROBE_TIMEOUT_MS,
@@ -436,12 +438,26 @@ export async function handleModelVerify(payload: { id: string; model?: string })
   const { id } = payload;
   if (!id) return { success: false, error: 'Missing required field: id' };
 const config = loadConfig();
-  const apiKey = (config.providerApiKeys ?? {})[id];
+  // kimi 内置条目的 key 判定与运行/显示链路同口径（1.5.5：模糊匹配 kimi/moonshot
+  // 系的 anthropic 协议键——精确查 apiKeys['kimi'] 会把 moonshot-coding 键误判未配）。
+  const kimiKey = id === 'kimi' ? resolveKimiApiKey(config as AdminAppConfig) : null;
+  const apiKey = kimiKey?.apiKey ?? (config.providerApiKeys ?? {})[id];
   if (!apiKey) {
     return { success: false, error: `No API key set for provider '${id}'. Use 'zhishi model set-key' first.` };
   }
 // Look up provider config (preset or custom)
-  const provider = findProvider(id);
+  let provider = findProvider(id);
+  if (!provider && id === 'kimi') {
+    // kimi 内置（pi 层 kimiCodingProvider 直连 api.kimi.com/coding）不在
+    // presets/custom——verify 的合成描述与列表条目（kimiBuiltinProviderEntry）
+    // 同源：端点固定、anthropic 协议、Bearer 鉴权、目录取 pi-ai 内置目录首条目。
+    provider = {
+      config: { baseUrl: KIMI_CODING_BASE_URL },
+      authType: 'auth_token',
+      apiProtocol: 'anthropic',
+      primaryModel: Object.values(KIMI_CODING_MODELS as unknown as Record<string, { id: string }>)[0]?.id,
+    };
+  }
   if (!provider) {
     return { success: false, error: `Provider '${id}' not found in presets or custom providers.` };
   }
