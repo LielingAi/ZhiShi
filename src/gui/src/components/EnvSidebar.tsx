@@ -280,9 +280,20 @@ export function EnvSidebar(): React.JSX.Element {
                 {it.group === 'unreg' && !it.registeredAs && (
                   <button
                     className="btn small eb-register"
-                    title={`登记 ${it.label}（environment/add，运行中则切入）`}
+                    title={
+                      // 1.5.10：docker 一键直登；VM 走向导收 address/凭据/配方
+                      //（直登拿不到 address，探测/exec 通道需要它）。
+                      discoveredVm.some((v) => v.id === it.key)
+                        ? `登记 ${it.label}（打开新建环境向导收 address/凭据/配方）`
+                        : `登记 ${it.label}（environment/add，运行中则切入）`
+                    }
                     onClick={(e) => {
                       e.stopPropagation();
+                      // 1.5.10：VM 条目分流到向导 discovered 分支并预勾选。
+                      if (discoveredVm.some((v) => v.id === it.key)) {
+                        openNewEnv({ discoveredKey: it.key });
+                        return;
+                      }
                       void registerDiscovered(it.key);
                     }}
                   >
@@ -299,7 +310,7 @@ export function EnvSidebar(): React.JSX.Element {
       )}
       </div>
       <div className="eb-foot">
-        <button className="btn" onClick={openNewEnv}>＋ 新建环境</button>
+        <button className="btn" onClick={() => openNewEnv()}>＋ 新建环境</button>
         <button className="btn" onClick={() => setPage('settings')}>⚙ 设置</button>
       </div>
     </aside>

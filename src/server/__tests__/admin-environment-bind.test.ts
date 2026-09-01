@@ -84,11 +84,13 @@ describe('handleEnvironmentBindRecipes', () => {
     expect(r.error).toContain('未找到环境');
   });
 
-  it('无主配方的条目：任意非空集合可绑定', async () => {
+  it('无主配方的条目：任意非空集合可绑定 + 1.5.10 顺手归位主配方=集合首项', async () => {
     const noPrimary: EnvironmentEntry = { id: 'ssh-1', kind: 'ssh', host: '10.0.0.9', createdAt: '2026-08-26T00:00:00Z' };
     seedEntries([noPrimary]);
     const r = await handleEnvironmentBindRecipes({ id: 'ssh-1', recipeIds: ['pentest', 'fuzz'] });
     expect(r.success).toBe(true);
     expect(readEntries()[0].recipeIds).toEqual(['pentest', 'fuzz']);
+    // 1.5.10：无主配方的历史条目绑定时归位（与 registry 新登记同规则）
+    expect(readEntries()[0].recipeId).toBe('pentest');
   });
 });

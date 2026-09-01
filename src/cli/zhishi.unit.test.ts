@@ -101,6 +101,53 @@ describe('A1-4 回归：env add --port 是 ssh 目标端口，不覆盖 sidecar 
   }, 30_000);
 });
 
+describe('1.5.10 一致性：env add 新旗标透传 + env bind-recipes 路由/载荷', () => {
+  it('env add --recipe-ids a,b --os-family windows --vmx X.vmx 透传为 recipeIds 数组/osFamily/vmx', async () => {
+    captured = [];
+    const r = await runCli([
+      'env', 'add', '--kind', 'vm', '--id', 'win-box', '--vm-name', 'win10',
+      '--recipe-ids', 'pwn-vm, fuzz-vm', '--os-family', 'windows', '--vmx', 'C:\\VMs\\win10\\win10.vmx',
+    ]);
+    expect(r.stderr).not.toContain('ECONNREFUSED');
+    expect(r.code).toBe(0);
+    const addReq = captured.find((c) => c.url === '/api/admin/environment/add');
+    expect(addReq).toBeDefined();
+    expect(addReq!.body.recipeIds).toEqual(['pwn-vm', 'fuzz-vm']);
+    expect(addReq!.body.osFamily).toBe('windows');
+    expect(addReq!.body.vmx).toBe('C:\\VMs\\win10\\win10.vmx');
+  }, 30_000);
+
+  it('env add 不带新旗标时请求体不含 recipeIds/osFamily/vmx 键（undefined 不进 JSON）', async () => {
+    captured = [];
+    const r = await runCli(['env', 'add', '--kind', 'ssh', '--id', 'dev', '--host', '10.0.0.8']);
+    expect(r.code).toBe(0);
+    const addReq = captured.find((c) => c.url === '/api/admin/environment/add');
+    expect(addReq).toBeDefined();
+    expect(addReq!.body).not.toHaveProperty('recipeIds');
+    expect(addReq!.body).not.toHaveProperty('osFamily');
+    expect(addReq!.body).not.toHaveProperty('vmx');
+  }, 30_000);
+
+  it('env bind-recipes <id> --recipes a,b,c → /api/admin/environment/bind-recipes { id, recipeIds }', async () => {
+    captured = [];
+    const r = await runCli(['env', 'bind-recipes', 'dev-box', '--recipes', 'pwn, fuzz, dev']);
+    expect(r.stderr).not.toContain('ECONNREFUSED');
+    expect(r.code).toBe(0);
+    const req = captured.find((c) => c.url === '/api/admin/environment/bind-recipes');
+    expect(req).toBeDefined();
+    expect(req!.body.id).toBe('dev-box');
+    expect(req!.body.recipeIds).toEqual(['pwn', 'fuzz', 'dev']);
+  }, 30_000);
+
+  it('env bind-recipes 缺 <id> → 用法报错且不发请求', async () => {
+    captured = [];
+    const r = await runCli(['env', 'bind-recipes', '--recipes', 'pwn']);
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain('env-id');
+    expect(captured.some((c) => c.url === '/api/admin/environment/bind-recipes')).toBe(false);
+  }, 30_000);
+});
+
 describe('A2-9 回归：expert review --json 在非 TTY 下尊重 jsonMode', () => {
   it('--json：stdout 是可解析 JSON（含 drafts），无人类提示行', async () => {
     const r = await runCli(['expert', 'review', '--json']);

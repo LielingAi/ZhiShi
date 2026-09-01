@@ -5,7 +5,7 @@
  *   - boot：真实 environment/up + 轮询 environment/ps 推阶段（store.bootEnv）；
  *     向导的配方来源执行步复用此模态承载进度（bootOpts 透传 VM 凭据）
  *   - SSH 接入：向导内的「手动 SSH」来源步（environment/add，补齐
- *     port/name/osFamily/recipeId）；旧 SshModal 已随 1.3.8 B15 删除
+ *     port/name/osFamily/recipeIds——1.5.10 多配方）；旧 SshModal 已随 1.3.8 B15 删除
  *     （modal kind 'ssh' 无触发点，submitSsh 的 id 拼 user@host 过不了
  *     registry 校验）
  *   - adopt：environment/adopt（真实——连通 → 初始化 → 快照 → vmTemplates）
@@ -120,7 +120,9 @@ function AdoptModal({ recipeId }: { recipeId: string }): React.JSX.Element {
   const submitAdopt = useGuiStore((s) => s.submitAdopt);
   const [vmx, setVmx] = useState('');
   const [user, setUser] = useState('');
+  const [keyPath, setKeyPath] = useState('');
   const [pass, setPass] = useState('');
+  const [passwordRef, setPasswordRef] = useState('');
   const [err, setErr] = useState('');
 
   return (
@@ -146,6 +148,17 @@ function AdoptModal({ recipeId }: { recipeId: string }): React.JSX.Element {
               <div className="f-label">guest 用户</div>
               <input className="f-input" placeholder="root" value={user} onChange={(e) => setUser(e.target.value)} />
             </div>
+            {/* 1.5.10：补齐 keyPath / passwordRef 两个可选输入（认领凭据通道：
+                私钥路径；passwordRef = 凭据引用，服务端透传进模板，不落盘）。 */}
+            <div>
+              <div className="f-label">私钥路径（可选——密码留空时走它）</div>
+              <input
+                className="f-input"
+                placeholder="~/.ssh/id_ed25519"
+                value={keyPath}
+                onChange={(e) => setKeyPath(e.target.value)}
+              />
+            </div>
             <div>
               <div className="f-label">guest 密码（现场输入 · 不落盘）</div>
               <input
@@ -154,6 +167,15 @@ function AdoptModal({ recipeId }: { recipeId: string }): React.JSX.Element {
                 placeholder="••••••••"
                 value={pass}
                 onChange={(e) => setPass(e.target.value)}
+              />
+            </div>
+            <div>
+              <div className="f-label">密码引用（可选 · 引用不落盘，up 时回落进条目）</div>
+              <input
+                className="f-input"
+                placeholder="env:ZHISHI_VM_PASSWORD / keychain:…"
+                value={passwordRef}
+                onChange={(e) => setPasswordRef(e.target.value)}
               />
             </div>
           </div>
@@ -171,7 +193,8 @@ function AdoptModal({ recipeId }: { recipeId: string }): React.JSX.Element {
                   return;
                 }
                 setPass('');
-                void submitAdopt(vmx.trim(), user.trim(), '', pass);
+                // 1.5.10：keyPath / passwordRef 一并下发（均 trim 后空串视为未填）。
+                void submitAdopt(vmx.trim(), user.trim(), keyPath.trim(), pass, passwordRef.trim() || undefined);
               }}
             >
               认领

@@ -204,14 +204,15 @@ export interface SshAddInput {
   port?: number;
   name?: string;
   osFamily?: 'linux' | 'windows';
-  /** 1.3.7 向导补齐：绑定的配方 id（决定域归属；server registry 可选字段）。 */
-  recipeId?: string;
+  /** 1.5.10：绑定的配方 id 集合（决定域归属；server registry 可选字段，多配方透传）。 */
+  recipeIds?: string[];
 }
 
-/** 1.3.5：docker/vm 登记载荷（kind 与必填字段对齐 server registry 校验）。 */
+/** 1.3.5：docker/vm 登记载荷（kind 与必填字段对齐 server registry 校验）。
+ *  1.5.10：单数 recipeId → recipeIds 数组（与多配方实际透传对齐）。 */
 export type EnvironmentAddInput =
   | SshAddInput
-  | { id: string; kind: 'docker'; container: string; user?: string; keyPath?: string; recipeId?: string }
+  | { id: string; kind: 'docker'; container: string; user?: string; keyPath?: string; recipeIds?: string[] }
   | {
       id: string;
       kind: 'vm';
@@ -223,7 +224,7 @@ export type EnvironmentAddInput =
       address?: string;
       user?: string;
       keyPath?: string;
-      recipeId?: string;
+      recipeIds?: string[];
     };
 
 export function environmentAdd(
@@ -289,7 +290,9 @@ export function environmentDown(
 
 export function environmentAdopt(
   client: GuiSidecarClient,
-  input: { recipe: string; vmx: string; user?: string; keyPath?: string; password?: string },
+  // 1.5.10：passwordRef（引用不落盘）——服务端 environment/adopt 已接受
+  //（src/server/admin-api.ts::handleEnvironmentAdopt，透传进 vmTemplates 模板）。
+  input: { recipe: string; vmx: string; user?: string; keyPath?: string; password?: string; passwordRef?: string },
 ): Promise<{ success: boolean; error?: string }> {
   return client.adminPost('environment/adopt', input);
 }

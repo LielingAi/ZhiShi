@@ -42,7 +42,7 @@ import {
   type DecisionPending,
 } from '../model/decision';
 import { escAction } from '../model/esc-chain';
-import { bootStages, buildRegisterPayload, isDiscoveredRunning, type DiscoveredLike, type RegisterExtras } from '../model/envs';
+import { bootStages, buildRegisterPayload, isDiscoveredRunning, startRecipeFor, type DiscoveredLike, type RegisterExtras } from '../model/envs';
 import { envRemovePlan, type EnvRemoveTarget } from '../model/env-remove';
 import type { EnvDownTarget } from '../model/env-down';
 import {
@@ -408,7 +408,7 @@ export interface GuiState {
   closeOverlay(): void;
   moveOverlay(delta: number): void;
   pickOverlay(index: number): void;
-  openNewEnv(): void;
+  openNewEnv(prefill?: { discoveredKey?: string }): void;
   /** 1.3.7 场景 1：向导「VM 配方构建」次级入口——改为认领已有 VM（adopt 模板养成）。 */
   openAdopt(recipeId: string): void;
   closeModal(): void;
@@ -419,7 +419,7 @@ export interface GuiState {
   wizardNextStep(): void;
   wizardBackStep(): void;
   wizardExecute(): Promise<void>;
-  submitAdopt(vmx: string, user: string, keyPath: string, password: string): Promise<void>;
+  submitAdopt(vmx: string, user: string, keyPath: string, password: string, passwordRef?: string): Promise<void>;
   bootEnv(recipeId: string): Promise<void>;
   submitSlashArg(value: string): Promise<void>;
   /** 1.5.2：输入区直输 / 命令（doSend 的命令解析入口——isKnownCommand 判定
@@ -853,7 +853,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       state.showToast('未找到该环境条目');
       return;
     }
-    const recipe = entry.recipeId ?? entry.id;
+    // 1.5.10：主配方缺省 = 绑定集合首项（登记 + 只绑配方的条目也能启动）；
+    // entry.id 回落保留旧语义（服务端 recipes 找不到会报错，不改）。
+    const recipe = startRecipeFor(entry);
     state.showToast(`▶ 启动 ${entry.id}（${recipe}）…`);
     try {
       const res = await api.environmentUp(c, {
@@ -1775,10 +1777,18 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
 
   // ── 模态 / 抽屉 / 页面 ──────────────────────────────────────────────
 
-  openNewEnv() {
+  openNewEnv(prefill) {
     if (get().recipes.length === 0) void get().refreshSidebar();
     // 1.3.7：新建入口 = 一个四步向导（状态机重置在 model/env-wizard.ts）。
-    set({ modal: { kind: 'new-env' }, wizard: initialWizardState() });
+    // 1.5.10：侧栏「本机已有」VM 条目的登记入口分流到向导 discovered 分支
+    // 并预勾选该条目（直登拿不到 address，而探测/exec 通道需要它）。
+    const wizard = initialWizardState();
+    if (prefill?.discoveredKey) {
+      wizard.step = 2;
+      wizard.source = 'discovered';
+      wizard.params.discoveredKey = prefill.discoveredKey;
+    }
+    set({ modal: { kind: 'new-env' }, wizard });
   },
 
   closeModal() {
@@ -1869,7 +1879,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     }
   },
 
-  async submitAdopt(vmx: string, user: string, keyPath: string, password: string) {
+  async submitAdopt(vmx: string, user: string, keyPath: string, password: string, passwordRef?: string) {
     const c = client;
     const state = get();
     if (!c) return;
@@ -1882,6 +1892,8 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         user: user || undefined,
         keyPath: keyPath || undefined,
         password: password || undefined,
+        // 1.5.10：凭据引用（不落盘）——服务端透传进 vmTemplates 模板。
+        passwordRef: passwordRef || undefined,
       });
       if (!res.success) {
         state.showToast(`认领失败：${res.error ?? '未知错误'}`);

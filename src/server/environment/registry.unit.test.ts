@@ -113,7 +113,7 @@ describe('validateEnvironmentEntry', () => {
     expect(validateEnvironmentEntry({ id: 'x', kind: 'ssh', host: 'h', keyPath: {} }).ok).toBe(false);
   });
 
-  it('1.3.8 多配方：recipeIds 数组 trim+去重，主配方必须在集合内', () => {
+  it('1.3.8 多配方：recipeIds 数组 trim+去重，主配方在集合内照旧', () => {
     const ok = validateEnvironmentEntry({
       id: 'x',
       kind: 'ssh',
@@ -124,13 +124,56 @@ describe('validateEnvironmentEntry', () => {
     expect(ok.ok).toBe(true);
     if (ok.ok) {
       expect(ok.entry.recipeIds).toEqual(['pwn', 'pentest']);
+      expect(ok.entry.recipeId).toBe('pwn');
     }
-    expect(
-      validateEnvironmentEntry({ id: 'x', kind: 'ssh', host: 'h', recipeId: 'pwn', recipeIds: ['pentest'] }).ok,
-    ).toBe(false);
     expect(
       validateEnvironmentEntry({ id: 'x', kind: 'ssh', host: 'h', recipeIds: 'pwn' }).ok,
     ).toBe(false);
+  });
+
+  it('1.5.10 主配方归位：只有 recipeIds 无 recipeId → 主配方=绑定集合首项', () => {
+    const ok = validateEnvironmentEntry({
+      id: 'x',
+      kind: 'ssh',
+      host: 'h',
+      recipeIds: ['pentest', 'pwn'],
+    });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.entry.recipeId).toBe('pentest');
+      expect(ok.entry.recipeIds).toEqual(['pentest', 'pwn']);
+    }
+  });
+
+  it('1.5.10 主配方归位：recipeId 不在集合内 → 自动并入（保序追加）', () => {
+    const ok = validateEnvironmentEntry({
+      id: 'x',
+      kind: 'ssh',
+      host: 'h',
+      recipeId: 'pwn',
+      recipeIds: ['pentest'],
+    });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.entry.recipeId).toBe('pwn');
+      expect(ok.entry.recipeIds).toEqual(['pentest', 'pwn']);
+    }
+  });
+
+  it('1.5.10 主配方归位：recipeId 与 recipeIds 都没有 → 照旧无配方', () => {
+    const ok = validateEnvironmentEntry({ id: 'x', kind: 'ssh', host: 'h' });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.entry.recipeId).toBeUndefined();
+      expect(ok.entry.recipeIds).toBeUndefined();
+    }
+    // recipeIds 全空（trim 后无有效项）视同没有
+    const empty = validateEnvironmentEntry({ id: 'x', kind: 'ssh', host: 'h', recipeIds: [' ', ''] });
+    expect(empty.ok).toBe(true);
+    if (empty.ok) {
+      expect(empty.entry.recipeId).toBeUndefined();
+      expect(empty.entry.recipeIds).toBeUndefined();
+    }
   });
 });
 

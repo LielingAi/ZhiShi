@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildRegisterPayload, capabilityBadgeText, capabilityTooltip, groupSidebar, isDiscoveredRunning, matchRegisteredEnv, psRowMatchesEntry, resolveEnvState } from './envs';
+import { buildRegisterPayload, capabilityBadgeText, capabilityTooltip, groupSidebar, isDiscoveredRunning, matchRegisteredEnv, psRowMatchesEntry, resolveEnvState, startRecipeFor } from './envs';
 
 const envs = [
   { id: 'pwn@docker', kind: 'docker', name: 'pwn@docker' },
@@ -60,6 +60,30 @@ describe('startable（1.3.1 ① 启动按钮）', () => {
     expect(byKey.get('x')?.startable).toBe(false); // ssh 无配方不可启
   });
 
+  it('1.5.10：只绑 recipeIds（无 recipeId）的登记条目也可启动', () => {
+    const groups = groupSidebar(
+      [{ ...base, kind: 'docker', recipeIds: ['pentest', 'pwn'] }],
+      [],
+      [],
+    );
+    const stop = groups.find((g) => g.label === '已停止');
+    expect(stop?.items[0].startable).toBe(true);
+    // 启动配方缺省 = 绑定集合首项
+    expect(stop?.items[0].recipeId).toBe('pentest');
+    // recipeId 空串但 recipeIds 非空 → 仍可启动
+    expect(
+      resolveEnvState(
+        { entry: { id: 'd', kind: 'vm', recipeId: '', recipeIds: ['rev'] } },
+        [],
+        [],
+      ).startable,
+    ).toBe(true);
+    // 两者皆空 → 不可启动
+    expect(
+      resolveEnvState({ entry: { id: 'd', kind: 'docker', recipeIds: [] } }, [], []).startable,
+    ).toBe(false);
+  });
+
   it('运行中 / 本机已有组永不可启动（已在跑 / 未登记）', () => {
     const groups = groupSidebar(
       [{ ...base, kind: 'docker', recipeId: 'pwn' }],
@@ -70,6 +94,15 @@ describe('startable（1.3.1 ① 启动按钮）', () => {
     const unreg = groups.find((g) => g.label === '本机已有');
     expect(run?.items[0].startable).toBe(false);
     expect(unreg?.items[0].startable).toBe(false);
+  });
+});
+
+describe('startRecipeFor（1.5.10 startEnv 的 up 配方回落）', () => {
+  it('主配方优先；缺省 = 绑定集合首项；再回落条目 id（旧语义保留）', () => {
+    expect(startRecipeFor({ id: 'e', recipeId: 'pwn', recipeIds: ['pentest'] })).toBe('pwn');
+    expect(startRecipeFor({ id: 'e', recipeIds: ['pentest', 'pwn'] })).toBe('pentest');
+    expect(startRecipeFor({ id: 'e' })).toBe('e');
+    expect(startRecipeFor({ id: 'e', recipeIds: [] })).toBe('e');
   });
 });
 

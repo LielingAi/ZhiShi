@@ -85,8 +85,14 @@ export function validateEnvironmentEntry(input: unknown): EnvResult<{ entry: Env
     }
   }
 
-  // 多配方绑定集合（1.3.8 关联侧）：可选字符串数组，trim + 去重 + 保序；
-  // 主配方 recipeId 必须在集合内（缺省时集合等价 [recipeId]，调用方兜底）。
+  // 多配方绑定集合（1.3.8 关联侧）：可选字符串数组，trim + 去重 + 保序。
+  // 1.5.10 一致性修复——登记条目主配方归位三态：
+  //   1) 只有 recipeIds 无 recipeId → 主配方=绑定集合首项（recipeId = recipeIds[0]，
+  //      写进条目；GUI「本机已有」/SSH 多选绑定正是这种载荷，原实现会留下
+  //      缺主配方的条目）；
+  //   2) recipeId 与 recipeIds 都有且 recipeId 在集合内 → 照旧；
+  //   3) 两者都有但 recipeId 不在集合 → 自动并入集合（保序追加），不再拒绝。
+  // 两者都没有 → 照旧无配方字段。
   if (source.recipeIds !== undefined && source.recipeIds !== null) {
     if (!Array.isArray(source.recipeIds)) {
       return fail('env 字段 "recipeIds" 必须是字符串数组');
@@ -98,9 +104,14 @@ export function validateEnvironmentEntry(input: unknown): EnvResult<{ entry: Env
       if (!trimmed) continue;
       if (!ids.includes(trimmed)) ids.push(trimmed);
     }
-    if (ids.length > 0) entry.recipeIds = ids;
-    if (entry.recipeIds && entry.recipeId && !entry.recipeIds.includes(entry.recipeId)) {
-      return fail('env 字段 "recipeIds" 必须包含主配方 recipeId');
+    if (ids.length > 0) {
+      entry.recipeIds = ids;
+      if (!entry.recipeId) {
+        // 主配方=绑定集合首项
+        entry.recipeId = ids[0];
+      } else if (!ids.includes(entry.recipeId)) {
+        ids.push(entry.recipeId);
+      }
     }
   }
 

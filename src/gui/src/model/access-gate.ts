@@ -5,9 +5,11 @@
  * 1.3.8 ②——本闸只消费它推导出的 group/startable 字段）：
  *   - 运行中（run）  → 放行切换（environment/select）
  *   - 已停止（stop） → 拦截：toast「环境未启动，先启动再进入」；
- *                      docker/vm 且带 recipeId 的条目额外提供「启动」
+ *                      docker/vm 且绑定集合非空的条目额外提供「启动」
  *                      （environment/up { recipe }——VM/docker 都走它，
  *                      见 server/admin-api.ts handleEnvironmentUp）。
+ *                      1.5.10：ssh 条目无启动语义，点击直接放行进入——
+ *                      可达性问题在开环境/探测时由服务端报错。
  *   - 本机已有（unreg）→ 拦截：toast「未登记，请先在新建环境里接入」。
  *
  * 宿主会话显性化：currentEnvKey 为 null/'' 时状态栏 env 锚显示
@@ -34,6 +36,9 @@ export type GateResult =
 /** 侧栏条目点击前的准入判定（可切换性 + 启动按钮可见性）。 */
 export function accessGate(item: SidebarEnvItem): GateResult {
   if (item.group === 'unreg') return { allow: false, reason: 'unregistered' };
+  // 1.5.10：ssh 条目无启动语义（恒在「已停止」组、startable 恒 false）——
+  // 点击直接放行进入，可达性问题由服务端在 select/探测时报，不再拦「先启动」。
+  if (item.group === 'stop' && item.kind === 'ssh') return { allow: true };
   if (item.group === 'stop') {
     return { allow: false, reason: 'not-started', canStart: item.startable === true };
   }

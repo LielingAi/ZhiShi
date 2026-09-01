@@ -38,6 +38,19 @@ describe('accessGate', () => {
     });
   });
 
+  it('1.5.10：ssh 条目（无启动语义）已停止也放行进入', () => {
+    // ssh 恒在「已停止」组且 startable 恒 false——不再拦「先启动」，
+    // 可达性问题由服务端在 select/探测时报。
+    expect(accessGate(item({ group: 'stop', kind: 'ssh' }))).toEqual({ allow: true });
+    expect(accessGate(item({ group: 'stop', kind: 'ssh', startable: true }))).toEqual({ allow: true });
+    // 不误伤：docker/vm 已停止仍按 startable 拦截
+    expect(accessGate(item({ group: 'stop', kind: 'vm', startable: true }))).toEqual({
+      allow: false,
+      reason: 'not-started',
+      canStart: true,
+    });
+  });
+
   it('本机已有（未登记）→ 拦截（unregistered）', () => {
     expect(accessGate(item({ group: 'unreg' }))).toEqual({ allow: false, reason: 'unregistered' });
   });

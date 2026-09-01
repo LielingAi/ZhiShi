@@ -118,8 +118,11 @@ Examples:
   zhishi env install docker|hyperv          # auto-install a missing engine (download + verify + launch / dism)
   zhishi env list                           # named environments (id/kind/target/user)
   zhishi env add --kind ssh --id dev-box --host 10.0.0.8 --user root --key-path ~/.ssh/id_ed25519
+                                            # 1.5.10 起还可透传 --recipe-ids a,b --os-family linux|windows --vmx <模板.vmx>
   zhishi env open dev-box                   # open env in embedded terminal (term open --cmd)
   zhishi env remove dev-box
+  zhishi env bind-recipes dev-box --recipes pwn,fuzz
+                                            # 整体替换环境的多配方绑定集合（主配方恒在，1.5.10）
   zhishi env recipes                        # environment recipes (valid + invalid reasons)
   zhishi env up web-recon                   # build + start a recipe container (workspace mounted)
   zhishi env up pwn-vm --vm-base "C:\\VMs\\ubuntu\\ubuntu.vmx" --user researcher
@@ -1919,6 +1922,9 @@ function buildRequestBody(
     }
     if (action === 'add') {
       // 参数式：--kind ssh --id xxx --host ...（校验在 server 侧统一做）
+      // 1.5.10 一致性补齐：--recipe-ids（逗号分隔多值）/--os-family/--vmx 透传——
+      // 服务端 environment/add 已支持（registry.ts OPTIONAL_STRING_FIELDS +
+      // recipeIds 数组校验），CLI 此前把这三个旗标静默丢弃。
       return {
         id: rest[0] ?? flags.id,
         kind: flags.kind,
@@ -1930,6 +1936,22 @@ function buildRequestBody(
         user: flags.user,
         keyPath: flags.keyPath,
         port: flags.port,
+        recipeIds: typeof flags.recipeIds === 'string'
+          ? (flags.recipeIds as string).split(',').map(s => s.trim()).filter(Boolean)
+          : undefined,
+        osFamily: flags.osFamily,
+        vmx: flags.vmx,
+      };
+    }
+    if (action === 'bind-recipes') {
+      // 1.5.10 一致性补齐：zhishi env bind-recipes <id> --recipes a,b,c →
+      // environment/bind-recipes { id, recipeIds }（服务端整体替换语义，
+      // 主配方恒在——空集合/不含主配方由 server 拒绝）。
+      return {
+        id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'env-id', 'env bind-recipes', 'id'),
+        recipeIds: typeof flags.recipes === 'string'
+          ? (flags.recipes as string).split(',').map(s => s.trim()).filter(Boolean)
+          : undefined,
       };
     }
     if (action === 'remove') {

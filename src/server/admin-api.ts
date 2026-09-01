@@ -2452,7 +2452,13 @@ export async function handleEnvironmentBindRecipes(payload: {
       const entries = listEnvironments(config);
       const target = findEnvironmentEntry(entries, id);
       if (!target) throw new Error(`未找到环境 "${id}"`);
-      const next: EnvironmentEntry = { ...target, recipeIds: ids };
+      // 1.5.10：历史遗留条目可能无主配方（recipeIds-only 登记于主配方归位
+      // 之前）——绑定时顺手归位（主配方=绑定集合首项，与 registry 新登记同规则）。
+      const next: EnvironmentEntry = {
+        ...target,
+        recipeIds: ids,
+        ...(!target.recipeId ? { recipeId: ids[0] } : {}),
+      };
       updated = next;
       return { ...config, environments: entries.map((e) => (e.id === id ? next : e)) };
     });

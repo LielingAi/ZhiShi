@@ -197,10 +197,13 @@ zhishi env list                                       # 具名环境（ssh/docke
 zhishi env add --kind ssh --id dev --host H [--port N] [--user U] [--key-path K]
                                                   # --port 是目标主机 ssh 端口（进环境条目）；
                                                   # 1.5.4 起它不再被全局 --port（sidecar 端口覆盖）抢走
+                                                  # 1.5.10 起还可透传 --recipe-ids a,b / --os-family linux|windows / --vmx <模板.vmx>
 
 zhishi env open <id>                                  # 嵌终端接入环境（ssh / docker exec / vm ssh）
 
 zhishi env remove <id>
+
+zhishi env bind-recipes <id> --recipes a,b,c          # 整体替换环境的多配方绑定集合（主配方恒在，1.5.10）
 
 ```
 

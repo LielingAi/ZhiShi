@@ -26,6 +26,8 @@ export interface EnvEntryLike {
   vmx?: string;
   /** 配方 id（docker/vm up 回写的条目带它；启动按钮的 up 参数来源）。 */
   recipeId?: string;
+  /** 1.5.10：多配方绑定集合（含主配方；缺省等价 [recipeId]）。 */
+  recipeIds?: string[];
   /** 1.3.7 场景 3：服务端现场推导的能力域集合（配方绑定域 ∪ 工具探测域）。 */
   capabilityDomains?: string[];
   /** capabilityDomains 的推导时间（ISO）。 */
@@ -203,7 +205,7 @@ export interface EnvStateIdentity {
 
 export interface ResolvedEnvState {
   state: 'running' | 'stopped' | 'unregistered';
-  /** stopped 子状态：可 environment/up 启动（docker/vm 且带 recipeId）。 */
+  /** stopped 子状态：可 environment/up 启动（docker/vm 且绑定集合非空）。 */
   startable: boolean;
   /** unregistered 子状态：同族命中已登记条目（vmx/vmName/container/id）。 */
   registeredAs?: { key: string; label: string };
@@ -221,10 +223,12 @@ export function resolveEnvState(
     if (psRows.some((r) => psRowMatchesEntry(r, e))) return { state: 'running', startable: false };
     return {
       state: 'stopped',
+      // 1.5.10：可启动认绑定集合——主配方 recipeId 或绑定集合 recipeIds 非空
+      // 都算可启动（登记 + 只绑配方的容器/VM 停掉后也要能 environment/up）。
       startable:
         (e.kind === 'docker' || e.kind === 'vm') &&
-        typeof e.recipeId === 'string' &&
-        e.recipeId !== '',
+        ((typeof e.recipeId === 'string' && e.recipeId !== '') ||
+          (Array.isArray(e.recipeIds) && e.recipeIds.length > 0)),
     };
   }
   const d = identity.discovered;
@@ -238,6 +242,15 @@ export function resolveEnvState(
     registeredAs: dup ? { key: dup.id, label: dup.name ?? dup.id } : undefined,
     localStopped,
   };
+}
+
+/**
+ * 1.5.10：startEnv 的 up 配方——登记条目主配方缺省 = 绑定集合首项，
+ * 再缺省回落条目 id（旧语义保留：服务端 recipes 里找不到会报错，
+ * 但登记条目 id 不是配方 id，该回落疑似本来就坏，不改语义）。
+ */
+export function startRecipeFor(entry: EnvEntryLike): string {
+  return entry.recipeId ?? entry.recipeIds?.[0] ?? entry.id;
 }
 
 export function groupSidebar(
@@ -280,9 +293,11 @@ export function groupSidebar(
       detail: `${e.kind ?? 'env'} · 已停止`,
       kind: e.kind ?? 'env',
       warn: false,
-      // docker/vm 条目带 recipeId 才能 environment/up（ssh 条目无配方，不可启）。
+      // docker/vm 条目绑定集合（recipeId 或 recipeIds）非空才能 environment/up
+      //（ssh 条目无配方，不可启——1.5.10 认绑定集合，见 resolveEnvState）。
       startable: st.startable,
-      recipeId: typeof e.recipeId === 'string' ? e.recipeId : undefined,
+      // 1.5.10：侧栏展示的启动配方取 startRecipeFor 同口径（主配方缺省=集合首项）。
+      recipeId: e.recipeId ?? (e.recipeIds?.length ? e.recipeIds[0] : undefined),
       vmx: e.vmx,
       capability: capabilityOf(e),
     });
@@ -321,9 +336,10 @@ export function groupSidebar(
 // （1.3.7 起 id 口径与服务端「实例即环境」统一；TUI 冻结，不再对齐它）
 // ---------------------------------------------------------------------------
 
-/** environment/add 的登记载荷（kind 与必填字段对齐 server registry 校验）。 */
+/** environment/add 的登记载荷（kind 与必填字段对齐 server registry 校验）。
+ *  1.5.10：单数 recipeId → recipeIds 数组（多配方实际透传口径）。 */
 export type RegisterInput =
-  | { id: string; kind: 'docker'; container: string; user?: string; keyPath?: string; recipeId?: string }
+  | { id: string; kind: 'docker'; container: string; user?: string; keyPath?: string; recipeIds?: string[] }
   | {
       id: string;
       kind: 'vm';
@@ -335,7 +351,7 @@ export type RegisterInput =
       address?: string;
       user?: string;
       keyPath?: string;
-      recipeId?: string;
+      recipeIds?: string[];
     };
 
 /** 1.3.7 向导：登记时可选附加字段（绑定配方/凭据/连通地址，全可选，空不下发）。
@@ -373,7 +389,7 @@ function vmNameOf(d: DiscoveredLike): string {
  *   docker             → `docker-<容器名>`    { kind:'docker', container }
  *   vmware/hyperv/vbox → `<vmName>`（净化后） { kind:'vm', vmName, vmx?, osFamily? }
  * 名字缺失 / 驱动未知 / id 净化为空 → null（调用方 toast 提示）。
- * 1.3.7：extras（user/keyPath/recipeId）可选附加，逐字段空值剔除；
+ * 1.3.7：extras（user/keyPath/recipeIds）可选附加，逐字段空值剔除；
  * 1.3.7 实机修复 B：extras.address 仅 VM 分支透传（docker 不需要）。
  * 1.5.10：user/keyPath 同样只进 VM 分支——容器走 docker exec 通道，
  * 凭据语义无解（GUI 侧「本机已有」表单对容器也不渲染这两个字段）。
@@ -381,7 +397,7 @@ function vmNameOf(d: DiscoveredLike): string {
 export function buildRegisterPayload(d: DiscoveredLike, extras?: RegisterExtras): RegisterInput | null {
   // address/user/keyPath 不进公共字段——docker 条目走容器通道，这三个只对 VM
   // 有意义（vm 分支单独透传，防 docker 载荷带上语义无解的字段）；
-  // recipeId（域归属）两类通用。
+  // recipeIds（域归属）两类通用。
   const sharedFields = extras?.recipeIds?.length ? { recipeIds: extras.recipeIds } : {};
   const vmCredFields = extras
     ? {
