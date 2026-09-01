@@ -168,6 +168,8 @@ zhishi model set-default deepseek
 
 ### 专家知识与域包
 
+> 专家知识仓库：[ZhiShiExpertKnowledge](https://github.com/LielingAi/ZhiShiExpertKnowledge)——社区共享的判据化专家条目（SOP/判定链/方法论），下载后 `zhishi expert import` 即可入库。
+
 ```bash
 zhishi expert list             # 专家库清单
 zhishi expert search "栈溢出"   # 检索专家知识
@@ -244,7 +246,7 @@ flowchart LR
 |---|---|
 | `docs/roadmap.md` | 版本任务池（当前线：**1.5.x**——1.5.5 joern 下载地址热修（issue #7）已发版） |
 | `docs/user-guide.md` | 使用指南（安装、选环境、配模型、GUI 操作、常见问题） |
-| `docs/expert-import-guide.md` | 专家知识导入指南（命令/字段规范/JSON+YAML 格式，附可导入的 `expert-import.demo.yaml`） |
+| `docs/expert-import-guide.md` | 专家知识导入指南（命令/字段规范/JSON+YAML 格式，附可导入的 `expert-import.demo.yaml`）；社区条目仓库：[ZhiShiExpertKnowledge](https://github.com/LielingAi/ZhiShiExpertKnowledge) |
 | `docs/design/` | 各版本设计与分析稿（1.1.6–1.2.7、distill-eval、1.3.4 TUI 退役评估） |
 | `docs/spec/` | 长期契约与专项设计（见下） |
 | `docs/spec/expert-knowledge-plan.md` | 专家知识层迭代与技术方案（1.2.1-1.2.3） |
