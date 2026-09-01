@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.7] - 2026-09-01
+
+> **配方专项**（CN 网络实机故障链驱动）：构建期网络回落全覆盖 + joern provision 化 + 基座统一 ubuntu 24.04。
+
+### 修复
+- **构建期网络回落全覆盖**：7 个 docker 配方的 GitHub clone/release/raw（gh-proxy 回落）、pip（清华）、npm（npmmirror）、gem（USTC）逐点接入——此前只有 provision.sh 有回落，Dockerfile 构建期全面裸连
+- **docker build 报错指路**：识别网络形态（镜像站 EOF / docker.io 直连超时 / apt 源不通 / git 128）直接给配置指引，不再只吐 stderr 尾部
+- **ai-security 补构建期自检**（setup.sh）；pwninit/ZAP 钉版 + sha256 校验补齐
+
+### 变更
+- **joern provision 化**：1.8GB 平台包移出 code-audit 镜像，容器首跑后台自动安装；能力清单新增「待装」语义（GUI 显示「· 待装N」，装完自动摘除）——镜像显著瘦身
+- **基座统一 ubuntu 24.04**（pwndbg 官方主测面即 22.04/24.04；PEP 668 全面对齐）
+- **pentest 去 Go 工具链**：kiterunner 换官方预编译二进制（sha256 校验）；jsluice 改环境内按需自装（无官方 release）
+
 ## [1.5.6] - 2026-09-01
 
 ### 修复
