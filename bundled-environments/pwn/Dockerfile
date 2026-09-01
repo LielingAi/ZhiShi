@@ -4,6 +4,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # 1.2.5 选型:删 standalone checksec(pwntools 自带 checksec/cyclic/shellcraft);
 # 加 patchelf(pwninit 运行依赖+换 libc)、ruby(one_gadget/seccomp-tools 是 gem)。
+# apt 源回落（1.5.6:默认源不通时切 USTC 镜像——与 gh_dl/pip 镜像回落同惯例;
+# 海外网络默认源直通便不触发。22.04=sources.list,24.04=deb822 ubuntu.sources）。
+RUN apt-get update -o Acquire::Retries=2 || ( \
+      sed -i 's|//archive\.ubuntu\.com|//mirrors.ustc.edu.cn|g; s|//security\.ubuntu\.com|//mirrors.ustc.edu.cn|g' \
+        /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null; \
+      apt-get update \
+    )
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gdb python3 python3-pip python3-dev \
     git curl jq ca-certificates \
