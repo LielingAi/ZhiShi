@@ -80,6 +80,12 @@ export interface LifecycleOptions {
   shortId?: () => string;
   /** build/run 输出落盘目录；缺省只走 console。 */
   logDir?: string;
+  /**
+   * 1.5.10：fresh=true 跳过「已停止容器 start 续现场」分支——镜像行
+   * 「启动为环境」的语义是从镜像**派生新容器**（老容器现场不动，
+   * 留在 ps -a 里可手动续）；环境条目的启动（startEnv）不传——续现场。
+   */
+  fresh?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -612,9 +618,12 @@ export async function envUp(
   // 1.5.10 (a)：同配方容器查找（ps -a 含已停止——现场持久层）。在跑 → 幂等
   // 返回（原 1.3.8 B6 语义，重复 up 不泄漏孤儿容器）；已停止 → docker start
   // 现场续上（1.5.10 核心：/tmp 现场、装过的工具都还在）。ps 失败（docker
-  // 抖动）容忍，照走后续分支。
-  const psResult = await exec(['docker', ...buildDockerPsByRecipeArgs(recipe.id)], DOCKER_PS_TIMEOUT_MS);
-  if (psResult.exitCode === 0 && !psResult.error) {
+  // 抖动）容忍，照走后续分支。fresh=true（镜像行「启动为环境」）跳过本分支
+  // ——派生新容器，不激活老容器。
+  const psResult = options.fresh
+    ? null
+    : await exec(['docker', ...buildDockerPsByRecipeArgs(recipe.id)], DOCKER_PS_TIMEOUT_MS);
+  if (psResult && psResult.exitCode === 0 && !psResult.error) {
     const existing = parseDockerPs(psResult.stdout).find((i) => i.recipe === recipe.id);
     if (existing) {
       if (existing.status.startsWith('Up')) return { ok: true, instance: existing };

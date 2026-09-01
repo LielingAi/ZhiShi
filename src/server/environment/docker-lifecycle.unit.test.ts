@@ -201,6 +201,23 @@ describe('envUp（1.5.10 链路重排：容器→镜像→build）', () => {
     expect(calls.some((c) => c[1] === 'build' || c[1] === 'run')).toBe(false);
   });
 
+  it('fresh=true（镜像行「启动为环境」）跳过 start 续现场——镜像在直接 run 派生新容器（1.5.10 修正）', async () => {
+    // 同配方有已停止容器，但 fresh 语义是派生新容器，老容器不动
+    const { exec, calls } = scriptedExec([
+      PROBE_OK,
+      ok('{}'), // image inspect：镜像在（exit 0）
+      RUN_OK,
+    ]);
+    const result = await envUp(RECIPE, '/work/dir', { exec, shortId: () => 'a1b2c3d4', fresh: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.instance.name).toBe('zhishi-web-recon-a1b2c3d4');
+    // 没有 ps -a 查容器、没有 start——直接 inspect + run
+    expect(calls.some((c) => c[1] === 'start')).toBe(false);
+    expect(calls.some((c) => c[1] === 'ps')).toBe(false);
+    expect(calls.some((c) => c[1] === 'run')).toBe(true);
+  });
+
   it('start 失败（容器损坏）→ rm -f 清残壳后回落 build/run（现场丢失有日志）', async () => {
     const { exec, calls } = scriptedExec([
       PROBE_OK,

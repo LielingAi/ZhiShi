@@ -281,6 +281,8 @@ export interface EnvUpInput {
   vmBase?: string;
   user?: string;
   keyPath?: string;
+  /** 1.5.10：镜像行「启动为环境」传 true——从镜像派生新容器（不激活老容器）。 */
+  fresh?: boolean;
 }
 
 export function environmentUp(

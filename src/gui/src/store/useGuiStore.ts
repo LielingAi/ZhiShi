@@ -1071,12 +1071,14 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       state.showToast('该镜像缺少配方归属（recipeId），无法启动');
       return;
     }
-    // 镜像在则服务端 run 派生秒开并回写登记（链路服务端已闭环，1.5.10）。
+    // 镜像行 = 从镜像派生新容器（fresh=true——不激活同配方的已停止老容器，
+    // 老容器现场不动；1.5.10 语义修正，用户拍板）。
     state.showToast(`▶ 从镜像 ${img.name ?? img.id} 启动环境（${recipe}）…`);
     try {
       const res = await api.environmentUp(c, {
         recipe,
         workspace: state.workspace ?? undefined,
+        fresh: true,
       });
       if (!res.success) {
         state.showToast(`启动失败：${res.error ?? '未知错误'}`);

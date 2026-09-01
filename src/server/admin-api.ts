@@ -2019,6 +2019,9 @@ export async function handleEnvironmentUp(payload: {
   user?: string;
   keyPath?: string;
   passwordRef?: string;
+  /** 1.5.10：镜像行「启动为环境」传 true——跳过已停止容器续现场分支，
+   *  从镜像派生新容器（老容器现场不动）。 */
+  fresh?: boolean;
 }): Promise<AdminResponse> {
   const id = typeof payload.recipe === 'string' ? payload.recipe.trim() : '';
   if (!id) {
@@ -2135,6 +2138,7 @@ export async function handleEnvironmentUp(payload: {
   }
   const result = await envUp(recipe, workspace, {
     logDir: join(getZhiShiDataDir(), 'logs', 'environments'),
+    ...(payload.fresh === true ? { fresh: true } : {}),
   });
   if (!result.ok) return { success: false, error: result.error };
   try {

@@ -173,6 +173,16 @@ export function EnvSidebar(): React.JSX.Element {
                 onClick={() => {
                   // 1.3.7 实机修复 A：同族已登记条目点击 = 切入已登记身份（不是再登记）。
                   if (it.registeredAs) {
+                    // 1.5.10：目标已停止 → 点行 = 启动（不是切入——切入停止
+                    // 环境会静默无反应：planSwitch 同线 unchanged 直返，实机
+                    // 「点了没反应」）；目标在跑才切入。
+                    const target = groups.flatMap((g) => g.items).find((x) => x.key === it.registeredAs!.key);
+                    const targetGate = target ? accessGate(target) : null;
+                    if (targetGate && !targetGate.allow && targetGate.reason === 'not-started') {
+                      if (targetGate.canStart && target) void startEnv(target.key);
+                      else if (target) showToast(gateToast(target, targetGate));
+                      return;
+                    }
                     void switchEnv(it.registeredAs.key);
                     return;
                   }
