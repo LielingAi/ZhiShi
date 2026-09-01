@@ -27,20 +27,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # garak:LLM 安全扫描器(越狱/注入/泄露探针库,pip 装)
 # 1.5.7：24.04 PEP 668 需 --break-system-packages；失败回落清华镜像。
+# 1.5.8 分层容错：回落也失败降级 WARN——构建继续，环境内可用「补齐环境」补装。
 RUN pip3 install --break-system-packages --no-cache-dir garak \
       || pip3 install --break-system-packages --no-cache-dir \
-           -i https://pypi.tuna.tsinghua.edu.cn/simple garak
+           -i https://pypi.tuna.tsinghua.edu.cn/simple garak \
+      || echo "[zhishi] WARN: garak 安装失败——构建继续，环境内可用『补齐环境』补装" >&2
 
 # PyRIT:多轮攻击编排框架(pip 装;新 API 在 pyrit.executor.attack)。
 # 注意与已停更的同名 WPA 工具区分——PyPI 现名归 Microsoft PyRIT 所有。
 # 1.5.7：同 pip 回落惯例；import 验证移至 setup.sh 构建期自检。
+# 1.5.8：同 garak，失败降级 WARN 不中断构建。
 RUN pip3 install --break-system-packages --no-cache-dir pyrit \
       || pip3 install --break-system-packages --no-cache-dir \
-           -i https://pypi.tuna.tsinghua.edu.cn/simple pyrit
+           -i https://pypi.tuna.tsinghua.edu.cn/simple pyrit \
+      || echo "[zhishi] WARN: pyrit 安装失败——构建继续，环境内可用『补齐环境』补装" >&2
 
-# promptfoo:LLM eval 框架(npm 装,自定义测试用例；1.5.7：失败回落 npmmirror)
+# promptfoo:LLM eval 框架(npm 装,自定义测试用例；1.5.7：失败回落 npmmirror；
+# 1.5.8：回落也失败降级 WARN 不中断构建)
 RUN npm install -g promptfoo \
-      || npm install -g --registry=https://registry.npmmirror.com promptfoo
+      || npm install -g --registry=https://registry.npmmirror.com promptfoo \
+      || echo "[zhishi] WARN: promptfoo 安装失败——构建继续，环境内可用『补齐环境』补装" >&2
 
 # 1.5.7：补构建期自检（此前唯一没有 setup.sh 的配方）
 COPY setup.sh /opt/zhishi/setup.sh

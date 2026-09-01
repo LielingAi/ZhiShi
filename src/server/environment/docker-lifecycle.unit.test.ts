@@ -276,6 +276,16 @@ describe('recognizeDockerBuildNetworkFailure（1.5.7 报错网络形态识别，
     expect(out).toContain('gh-proxy');
   });
 
+  it('形态 5：PyPI 索引不通（上游脚本内部 pip/uv，exit 1）→ 说明镜像重试 + 指引代理（1.5.8）', () => {
+    // 实机形态：pwndbg setup.sh 内部 pip install uv 撞上 PyPI 不通
+    const out = recognizeDockerBuildNetworkFailure(
+      "Creating virtualenv in path: /opt/pwndbg/.venv\nERROR: Could not find a version that satisfies the requirement uv (from versions: none)\nERROR: No matching distribution found for uv\nexecutor failed running [/bin/sh -c ... ./setup.sh]: exit code: 1",
+    );
+    expect(out).toBeDefined();
+    expect(out).toContain('PyPI');
+    expect(out).toContain('清华镜像');
+  });
+
   it('认不出的输出 → undefined（调用方原样输出 stderr 尾部）', () => {
     expect(recognizeDockerBuildNetworkFailure('no such file: Dockerfile')).toBeUndefined();
   });

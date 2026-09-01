@@ -168,14 +168,17 @@ const REGISTRY_MIRROR_SUGGESTIONS = [
  * 识别 docker build 失败输出的网络形态，返回用户可读的排查指引；
  * 认不出来返回 undefined（调用方原样输出 stderr 尾部）。
  *
- * 四种形态（按优先级）：
+ * 五种形态（按优先级）：
  *   1. 已知镜像站域名 + EOF/timeout —— 当前镜像站挂了/限流，给替代清单；
  *   2. auth.docker.io / docker.io + dial/timeout —— Docker Hub 直连不通，
  *      指引配 daemon registry-mirrors（带 JSON 示例）；
  *   3. apt-get exit 100 / archive.ubuntu.com —— 容器内 apt 源不通；1.5.7
  *      配方已内置 apt 源回落，仍失败则指引容器代理；
  *   4. git exit 128 / github.com —— 容器内 git 拉取不通；1.5.7 配方已内置
- *      gh-proxy 回落，仍失败则指引构建代理。
+ *      gh-proxy 回落，仍失败则指引构建代理；
+ *   5. PyPI 索引不通（1.5.8：from versions: none / No matching distribution
+ *      ——上游脚本内部 pip/uv 调用形态，如实机 pwndbg setup.sh 装 uv）——
+ *      1.5.8 配方已内置镜像环境变量重试，仍失败则指引构建代理。
  */
 export function recognizeDockerBuildNetworkFailure(output: string): string | undefined {
   const text = output.toLowerCase();
@@ -226,6 +229,17 @@ export function recognizeDockerBuildNetworkFailure(output: string): string | und
     return [
       '网络形态识别：容器内 git 访问 github.com 失败（exit 128）。',
       '1.5.7 配方已内置 gh-proxy 回落；若仍失败，请为容器构建配置代理',
+      '（docker build --build-arg HTTPS_PROXY=...，或 Docker Desktop / daemon 代理设置）后重试。',
+    ].join('\n');
+  }
+
+  // 形态 5：PyPI 索引不通（上游脚本内部 pip/uv 调用——1.5.8 实机形态）。
+  if (
+    /(no matching distribution found|from versions: none|could not find a version that satisfies)/.test(text)
+  ) {
+    return [
+      '网络形态识别：容器内 pip/uv 找不到任何可用版本——PyPI 索引不可达（不是包不存在）。',
+      '1.5.8 配方已内置镜像环境变量重试（清华镜像）；若仍失败，请为容器构建配置代理',
       '（docker build --build-arg HTTPS_PROXY=...，或 Docker Desktop / daemon 代理设置）后重试。',
     ].join('\n');
   }

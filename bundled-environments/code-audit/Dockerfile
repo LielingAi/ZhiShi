@@ -31,11 +31,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # OpenGrep 是功能严格超集、全兼容、无登录无遥测）。
 # 装 GitHub release 二进制,不走 pip——PyPI 上的 opengrep 包名曾被抢注,
 # 官方分发物就是 release 的 opengrep_manylinux_x86 单文件二进制。
-# 1.5.7：下载加 gh-proxy 回落。
+# 1.5.7：下载加 gh-proxy 回落。1.5.8 分层容错：下载/安装失败降级 WARN——
+# 构建继续，缺失由能力探测报 miss，环境内走「补齐环境」重放 provision.sh 补装。
 RUN OG_URL="https://github.com/opengrep/opengrep/releases/latest/download/opengrep_manylinux_x86" \
  && ( curl -sSfL "$OG_URL" -o /usr/local/bin/opengrep \
       || curl -sSfL "https://gh-proxy.com/$OG_URL" -o /usr/local/bin/opengrep ) \
- && chmod +x /usr/local/bin/opengrep
+ && chmod +x /usr/local/bin/opengrep \
+ || echo "[zhishi] WARN: opengrep 安装失败——构建继续，环境内可用『补齐环境』补装" >&2
 
 # Joern 不预装（1.5.7 joern provision 化：1.8GB 平台包移出镜像——容器首跑时由
 # /opt/zhishi/first-run.sh 按需安装（幂等 + flock 防并发），SKILL.md
@@ -47,22 +49,26 @@ RUN chmod +x /opt/zhishi/first-run.sh
 # ast-grep（即席 AST 搜索/重写,PyPI 官方包 ast-grep-cli,提供 sg/ast-grep）
 # bandit（Python 专项, pip 装）
 # 1.5.7：24.04 PEP 668 需 --break-system-packages；失败回落清华镜像。
+# 1.5.8：回落也失败降级 WARN 不中断构建。
 RUN pip3 install --break-system-packages --no-cache-dir ast-grep-cli bandit \
       || pip3 install --break-system-packages --no-cache-dir \
-           -i https://pypi.tuna.tsinghua.edu.cn/simple ast-grep-cli bandit
+           -i https://pypi.tuna.tsinghua.edu.cn/simple ast-grep-cli bandit \
+      || echo "[zhishi] WARN: ast-grep/bandit 安装失败——构建继续，环境内可用『补齐环境』补装" >&2
 
-# pip-audit（SCA:依赖漏洞对照；1.5.7：同上回落惯例）
+# pip-audit（SCA:依赖漏洞对照；1.5.7：同上回落惯例；1.5.8：失败降级 WARN）
 RUN pip3 install --break-system-packages --no-cache-dir pip-audit \
       || pip3 install --break-system-packages --no-cache-dir \
-           -i https://pypi.tuna.tsinghua.edu.cn/simple pip-audit
+           -i https://pypi.tuna.tsinghua.edu.cn/simple pip-audit \
+      || echo "[zhishi] WARN: pip-audit 安装失败——构建继续，环境内可用『补齐环境』补装" >&2
 
 # osv-scanner（SCA 主力:多生态依赖漏洞对照）。1.5.7：不走官方 install.sh（其内部
 # 下载不走镜像,2026-08-29 实机 404）——与 provision.sh 同口径,直接取 release 的
-# linux_amd64 二进制 + gh-proxy 回落（gh_dl 形态）
+# linux_amd64 二进制 + gh-proxy 回落（gh_dl 形态）；1.5.8：失败降级 WARN
 RUN OSV_URL="https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64" \
  && ( curl -sSfL "$OSV_URL" -o /usr/local/bin/osv-scanner \
       || curl -sSfL "https://gh-proxy.com/$OSV_URL" -o /usr/local/bin/osv-scanner ) \
- && chmod +x /usr/local/bin/osv-scanner
+ && chmod +x /usr/local/bin/osv-scanner \
+ || echo "[zhishi] WARN: osv-scanner 安装失败——构建继续，环境内可用『补齐环境』补装" >&2
 
 # joern-taint.sc:Joern 污点查询模板脚本——把 Joern 从交互式 REPL 变成
 # CLI 一把出结果（用法见 SKILL.md 与脚本头注释）

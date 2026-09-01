@@ -5,14 +5,16 @@
 
 ---
 
-## 1.5.8 —— 分层容错构建：功能工具失败降级 + provision 补齐全配方覆盖（进行中）
+## 1.5.8 —— 分层容错构建：功能工具失败降级 + provision 补齐全配方覆盖（进行中——代码完成，待用户实跑验收）
 
 **缘起（2026-09-01 用户拍板）**：1.5.7 回落链路实证有效（gh-proxy 接住 clone、USTC 接住 apt），但 pwndbg setup.sh 内部 pip 装 uv 撞 PyPI 不通暴露最后一类盲区（上游脚本内部包管理）——修复后用户提出方向性问题：构建不该因单个功能工具失败而全盘中断。设计定稿：**核心层 fail-fast + 功能层降级 WARN**，闭环靠现成能力探测 + 补齐链路（降级装了但没装上 → capabilityMissing → GUI「缺 N」→「补齐环境」→ provision.sh 补装 → 探测摘除）。
 
-- [ ] **Dockerfile 分层容错**：7 个配方功能工具段（pwndbg/pwninit/libc clone/ZAP/nuclei/katana/gem/pip 工具/SecLists/Ghidra/ghidriff/garak/pyrit/promptfoo 等）全部 `|| echo WARN` 降级继续；核心 apt 层（编译器/gdb/python/git 等基本盘）保持 fail-fast；WARN 行带工具名（能力探测 miss 时可对照）
-- [ ] **provision.sh 全配方覆盖**：缺 provision.sh 的 5 个 docker 配方（pwn/fuzz/rev/ai-security/dev）补齐——内容与 Dockerfile 功能段同源（照 1.5.7 joern 的两处内嵌互指形态），补齐链路（environment/setup）对 docker 配方全可用
-- [ ] **报错识别扩展**：1.5.7 的 recognizeDockerBuildNetworkFailure 补「PyPI 索引不通」（from versions: none / No matching distribution）形态
+- [x] **Dockerfile 分层容错**：7 个配方功能工具段（pwndbg/pwninit/libc clone/ZAP/nuclei/katana/gem/pip 工具/SecLists/Ghidra/ghidriff/garak/pyrit/promptfoo 等）全部 `|| echo WARN` 降级继续；核心 apt 层（编译器/gdb/python/git 等基本盘）保持 fail-fast；WARN 行带工具名（能力探测 miss 时可对照）
+- [x] **provision.sh 全配方覆盖**：缺 provision.sh 的 5 个 docker 配方（pwn/fuzz/rev/ai-security/dev）补齐——内容与 Dockerfile 功能段同源（照 1.5.7 joern 的两处内嵌互指形态），补齐链路（environment/setup）对 docker 配方全可用
+- [x] **报错识别扩展**：1.5.7 的 recognizeDockerBuildNetworkFailure 补「PyPI 索引不通」（from versions: none / No matching distribution）形态
 - [ ] **回归 + 验证**：bash -n 全部脚本；Dockerfile 目检；全量测试 + typecheck + eslint + 三构建；用户实跑验收（降级路径：故意断网/断源时构建出镜像 + 能力清单标缺 + 补齐闭环）
+
+> 实际落地（2026-09-01）：①**分层容错**——功能工具段统一降级收尾 `|| echo "[zhishi] WARN: <工具名> 安装失败——构建继续…" >&2`（echo 恒返 0）；复合 RUN 拆段或 `|| { WARN; true; }` 防 `&&` 优先级坑；pentest nuclei/katana 循环删掉 set -e（否则首失败到不了 WARN）；setup.sh 自检分级（核心工具 fatal、功能工具 WARN 不退出；analyzeHeadless 无参数调用装了也退非零——改 command -v 存在性探测防误 WARN）；pwndbg 段完整降级链（clone 直连→gh-proxy→WARN；clone 成但 setup.sh 失败→镜像变量重试→WARN）。②**provision 全覆盖**——pwn/fuzz/rev/ai-security/dev 新建 provision.sh（已装守卫/可重放/非核心 WARN）；sudo 预检冲突统一 `$SUDO` 形态（root 直过、非 root 用前缀、措辞规避 provision.ts 的宽松正则——5 个新脚本 + code-audit/pentest 两个存量一并转换，node 实测 scriptNeedsSudo 全 false）。③**报错识别补形态 5**——PyPI 索引不通（实机 pwndbg setup.sh 装 uv 形态）。验证：18 脚本 bash -n 全过 + CR 零残留 + 39 个 RUN 块 dash 语法校验 + scriptNeedsSudo 正则实测 + 新增 1 单测（形态 5）；全量 171 文件 2233 测试绿 + tsc + eslint + depcruise 438 模块零违规。
 
 > 取舍记录在案：构建「假成功」的代价靠能力探测 + 侧栏「缺 N」显式暴露弥补——不静默；核心层（编译器/gdb/python）装不上仍中断（环境基本盘不能缺）。
 > 边界（不做）：docker 原生无 continue-on-error——降级在 RUN 内部实现；镜像体积优化另行评估。
