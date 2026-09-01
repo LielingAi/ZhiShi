@@ -5,6 +5,21 @@
 
 ---
 
+## 1.5.8 —— 分层容错构建：功能工具失败降级 + provision 补齐全配方覆盖（进行中）
+
+**缘起（2026-09-01 用户拍板）**：1.5.7 回落链路实证有效（gh-proxy 接住 clone、USTC 接住 apt），但 pwndbg setup.sh 内部 pip 装 uv 撞 PyPI 不通暴露最后一类盲区（上游脚本内部包管理）——修复后用户提出方向性问题：构建不该因单个功能工具失败而全盘中断。设计定稿：**核心层 fail-fast + 功能层降级 WARN**，闭环靠现成能力探测 + 补齐链路（降级装了但没装上 → capabilityMissing → GUI「缺 N」→「补齐环境」→ provision.sh 补装 → 探测摘除）。
+
+- [ ] **Dockerfile 分层容错**：7 个配方功能工具段（pwndbg/pwninit/libc clone/ZAP/nuclei/katana/gem/pip 工具/SecLists/Ghidra/ghidriff/garak/pyrit/promptfoo 等）全部 `|| echo WARN` 降级继续；核心 apt 层（编译器/gdb/python/git 等基本盘）保持 fail-fast；WARN 行带工具名（能力探测 miss 时可对照）
+- [ ] **provision.sh 全配方覆盖**：缺 provision.sh 的 5 个 docker 配方（pwn/fuzz/rev/ai-security/dev）补齐——内容与 Dockerfile 功能段同源（照 1.5.7 joern 的两处内嵌互指形态），补齐链路（environment/setup）对 docker 配方全可用
+- [ ] **报错识别扩展**：1.5.7 的 recognizeDockerBuildNetworkFailure 补「PyPI 索引不通」（from versions: none / No matching distribution）形态
+- [ ] **回归 + 验证**：bash -n 全部脚本；Dockerfile 目检；全量测试 + typecheck + eslint + 三构建；用户实跑验收（降级路径：故意断网/断源时构建出镜像 + 能力清单标缺 + 补齐闭环）
+
+> 取舍记录在案：构建「假成功」的代价靠能力探测 + 侧栏「缺 N」显式暴露弥补——不静默；核心层（编译器/gdb/python）装不上仍中断（环境基本盘不能缺）。
+> 边界（不做）：docker 原生无 continue-on-error——降级在 RUN 内部实现；镜像体积优化另行评估。
+> 验收：断网降级路径实测（构建出镜像 + 缺项标出 + 补齐装回）；正常路径 7 配方构建成功（用户实跑）。
+
+---
+
 ## 1.5.7 —— 配方专项：构建期网络回落全覆盖 + 一致性补齐 + 基座统一（进行中——代码完成，待用户实跑构建验收）
 
 **缘起（2026-09-01 用户实机故障链 + 全面配方审计定稿）**：用户配 docker 配方连踩四棒——docker.io 直连超时 → USTC 镜像站已死（EOF）→ 容器内 apt 源不通（exit 100）→ git clone github 无回落（exit 128）。审计实锤：回落惯例只覆盖 provision.sh（gh_dl/pip 清华），**Dockerfile 构建期全面裸连**（GitHub clone/release/raw、pip、npm、gem、GOPROXY 全无回落）。评估取证：pwndbg 官方只测 22.04/24.04（留 22.04 反是偏面）；kiterunner 有官方预编译二进制、jsluice 无 release；joern 无 lite 变体（1.8GB 固有体积）。
