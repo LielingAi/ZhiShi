@@ -235,6 +235,38 @@ describe('envUp', () => {
     expect(result.error).toContain('原始报错尾部');
     expect(result.error).toContain('auth.docker.io');
   });
+
+  it('1.5.9 超时恢复：build 客户端超时但镜像已在 daemon 完成 → inspect 命中后续走 run', async () => {
+    const { exec, calls } = scriptedExec([
+      PROBE_OK,
+      ok(''), // B6 幂等检查：无在跑容器
+      {
+        exitCode: -1,
+        stdout: '#14 naming to docker.io/library/zhishi-env-pwn:latest done\n#14 DONE 46.2s\n',
+        stderr: '',
+        error: 'timed out after 2700000ms: docker build -t zhishi-env-pwn .',
+      },
+      ok('[]'), // image inspect：镜像在 daemon 已完成
+      ok('d0e5f6a7b8c9d0e5f6a7b8c9\n'), // run
+    ]);
+    const result = await envUp(RECIPE, '/work/dir', { exec, shortId: () => 'a1b2c3d4' });
+    expect(result.ok).toBe(true);
+    expect(calls[3].slice(0, 3)).toEqual(['docker', 'image', 'inspect']);
+    expect(calls[4].slice(0, 2)).toEqual(['docker', 'run']);
+  });
+
+  it('1.5.9 超时恢复：build 超时且镜像不在（inspect 失败）→ 仍报失败', async () => {
+    const { exec } = scriptedExec([
+      PROBE_OK,
+      ok(''),
+      { exitCode: -1, stdout: '', stderr: '', error: 'timed out after 2700000ms: docker build ...' },
+      { exitCode: 1, stdout: '', stderr: 'Error: No such image' },
+    ]);
+    const result = await envUp(RECIPE, '/work/dir', { exec });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain('docker build 失败');
+  });
 });
 
 describe('recognizeDockerBuildNetworkFailure（1.5.7 报错网络形态识别，纯函数）', () => {
@@ -288,6 +320,15 @@ describe('recognizeDockerBuildNetworkFailure（1.5.7 报错网络形态识别，
 
   it('认不出的输出 → undefined（调用方原样输出 stderr 尾部）', () => {
     expect(recognizeDockerBuildNetworkFailure('no such file: Dockerfile')).toBeUndefined();
+  });
+
+  it('1.5.9 收紧：正常完成的 build 输出（naming/pull 行带 docker.io）+ exec 超时 → 不误报形态 2', () => {
+    // 实机误报形态：BuildKit daemon 把构建跑完了（naming done），但客户端
+    // 超时被杀——输出里全是 docker.io 正常行 + 错误是 exec 超时文案。
+    const out = recognizeDockerBuildNetworkFailure(
+      '#14 naming to docker.io/library/zhishi-env-pwn:latest done\n#14 DONE 46.2s\ntimed out after 2700000ms: docker build -t zhishi-env-pwn .',
+    );
+    expect(out).toBeUndefined();
   });
 });
 

@@ -170,8 +170,10 @@ const REGISTRY_MIRROR_SUGGESTIONS = [
  *
  * 五种形态（按优先级）：
  *   1. 已知镜像站域名 + EOF/timeout —— 当前镜像站挂了/限流，给替代清单；
- *   2. auth.docker.io / docker.io + dial/timeout —— Docker Hub 直连不通，
- *      指引配 daemon registry-mirrors（带 JSON 示例）；
+ *   2. 真实拉取失败短语（oauth token / source metadata / pull 报错）+
+ *      连接错误 —— Docker Hub 直连不通，指引配 daemon registry-mirrors
+ *      （带 JSON 示例）；1.5.9 收紧——裸 docker.io+timeout 会误伤
+ *      （正常 naming/pull 行都带 docker.io）；
  *   3. apt-get exit 100 / archive.ubuntu.com —— 容器内 apt 源不通；1.5.7
  *      配方已内置 apt 源回落，仍失败则指引容器代理；
  *   4. git exit 128 / github.com —— 容器内 git 拉取不通；1.5.7 配方已内置
@@ -196,9 +198,13 @@ export function recognizeDockerBuildNetworkFailure(output: string): string | und
   }
 
   // 形态 2：Docker Hub 直连失败 —— 需要首配 registry-mirrors。
+  // 1.5.9 收紧：要求真实拉取失败短语（oauth token / source metadata / pull
+  // 报错）——裸「docker.io + timeout」会误伤：正常输出里 naming/pull 行都带
+  // docker.io，而 exec 超时文案带 timed out（实机误报：build 其实在 daemon
+  // 里跑完了，镜像明明出来了）。
   if (
-    /(auth\.docker\.io|registry-1\.docker\.io|docker\.io)/.test(text) &&
-    /(dial tcp|i\/o timeout|timed out|no such host|connection refused)/.test(text)
+    /(failed to fetch [^\n]*token|failed to resolve source metadata|error pulling image|pull access denied|toomanyrequests)/.test(text) &&
+    /(dial tcp|i\/o timeout|timed out|no such host|connection refused|eof|timeout)/.test(text)
   ) {
     return [
       '网络形态识别：Docker Hub 直连失败（docker.io 拨号超时/不可达）——国内网络通常需要配置 registry 镜像站。',
@@ -313,7 +319,7 @@ export async function envPsAll(
 // ---------------------------------------------------------------------------
 
 /** docker build can pull base images on first run — generous timeout. */
-export const DOCKER_BUILD_TIMEOUT_MS = 15 * 60_000;
+export const DOCKER_BUILD_TIMEOUT_MS = 45 * 60_000;
 export const DOCKER_RUN_TIMEOUT_MS = 60_000;
 export const DOCKER_PROBE_TIMEOUT_MS = 10_000;
 export const DOCKER_PS_TIMEOUT_MS = 15_000;
@@ -424,12 +430,30 @@ export async function envUp(
   }
 
   const buildArgs = buildDockerBuildArgs(recipe);
-  const buildResult = await exec(['docker', ...buildArgs], DOCKER_BUILD_TIMEOUT_MS);
+  let buildResult = await exec(['docker', ...buildArgs], DOCKER_BUILD_TIMEOUT_MS);
   appendLog(
     options.logDir,
     `${recipe.id}-build.log`,
     `$ docker ${buildArgs.join(' ')}\n${buildResult.stdout}${buildResult.stderr}\n`,
   );
+  // 1.5.9 超时恢复：BuildKit 的构建在 daemon 侧——客户端被超时杀掉后构建
+  // 仍在 daemon 继续（实机：慢网络 45min 内构建实际完成、镜像出来，但我们
+  // 报了失败）。超时错误时检查镜像是否已在 daemon 完成，在则视为构建成功
+  // 继续 run（镜像层缓存也让紧随的 rebuild 秒回）。
+  if (
+    (buildResult.exitCode !== 0 || buildResult.error)
+    && (buildResult.error ?? '').startsWith('timed out')
+  ) {
+    const inspect = await exec(
+      ['docker', 'image', 'inspect', imageTagFor(recipe.id)],
+      DOCKER_PROBE_TIMEOUT_MS,
+    );
+    if (inspect.exitCode === 0 && !inspect.error) {
+      console.warn(`[env-lifecycle] docker build 客户端超时，但镜像 ${imageTagFor(recipe.id)} 已在 daemon 完成——视为成功继续`);
+      appendLog(options.logDir, `${recipe.id}-build.log`, '[zhishi] 客户端超时后镜像已在 daemon 完成，按成功续走\n');
+      buildResult = { exitCode: 0, stdout: buildResult.stdout, stderr: buildResult.stderr };
+    }
+  }
   if (buildResult.exitCode !== 0 || buildResult.error) {
     // 1.5.7：先跑网络形态识别（对完整输出匹配，不受 outputTail 截断影响），
     // 命中则指引在前、原 stderr 尾部在后；认不出则原样输出尾部。
