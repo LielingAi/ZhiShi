@@ -130,7 +130,7 @@ describe('payload 构造', () => {
     expect(buildWizardPayload(s)).toEqual({ type: 'register', itemKey: 'vmware-/vms/a.vmx' });
   });
 
-  it('本机已有可带附加登记字段（user/keyPath/recipeId，空则不带 extras）', () => {
+  it('本机已有可带附加登记字段（user/keyPath/recipeIds，空则不带 extras；1.5.10 多配方）', () => {
     const s = stateAt(4, {
       source: 'discovered',
       params: {
@@ -138,13 +138,13 @@ describe('payload 构造', () => {
         discoveredKey: 'k',
         discoveredUser: ' root ',
         discoveredKeyPath: '~/.ssh/id',
-        discoveredRecipeId: 'pentest',
+        discoveredRecipeIds: ['pentest'],
       },
     });
     expect(buildWizardPayload(s)).toEqual({
       type: 'register',
       itemKey: 'k',
-      extras: { user: 'root', keyPath: '~/.ssh/id', recipeId: 'pentest' },
+      extras: { user: 'root', keyPath: '~/.ssh/id', recipeIds: ['pentest'] },
     });
   });
 
@@ -176,7 +176,7 @@ describe('payload 构造', () => {
     expect(map['guest 地址']).toBe('10.0.0.9');
   });
 
-  it('SSH → ssh-add：补 port/name/osFamily/recipeId，空值不下发', () => {
+  it('SSH → ssh-add：补 port/name/osFamily/recipeIds，空值不下发（1.5.10 多配方）', () => {
     const s = stateAt(4, {
       source: 'ssh',
       params: {
@@ -187,7 +187,7 @@ describe('payload 构造', () => {
         sshPort: '2222',
         sshName: '跳板机',
         sshOsFamily: 'linux',
-        sshRecipeId: 'pentest',
+        sshRecipeIds: ['pentest'],
       },
     });
     expect(buildWizardPayload(s)).toEqual({
@@ -201,7 +201,7 @@ describe('payload 构造', () => {
         port: 2222,
         name: '跳板机',
         osFamily: 'linux',
-        recipeId: 'pentest',
+        recipeIds: ['pentest'],
       },
     });
   });
@@ -280,7 +280,7 @@ describe('域映射与确认页', () => {
         sshUser: 'u',
         sshKeyPath: 'k',
         sshPort: '2222',
-        sshRecipeId: 'pwn-vm',
+        sshRecipeIds: ['pwn-vm'],
       },
     });
     const map = Object.fromEntries(

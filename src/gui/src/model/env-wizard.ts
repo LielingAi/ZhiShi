@@ -14,7 +14,7 @@
  * 端点形状已对齐 src/server/admin-api.ts（只读核实）：
  *   environment/up      { recipe, workspace?, vmBase?, user?, keyPath? }
  *   environment/add     registry 校验：id 限 [A-Za-z0-9][A-Za-z0-9._-]{0,63}，
- *                       ssh 必填 host；可选 name/user/keyPath/osFamily/recipeId/port(1-65535)
+ *                       ssh 必填 host；可选 name/user/keyPath/osFamily/recipeIds/port(1-65535)
  *   environment/recipes data.recipes: EnvironmentRecipe（id/name/base/tools/vmUser…）
  *   domain/list         data.domains: [{ kind, name, recipes, skills, subagents, … }]
  */
@@ -56,8 +56,8 @@ export interface WizardParams {
   discoveredUser: string;
   /** 本机已有：可选补充的私钥路径（登记 payload 附带）。 */
   discoveredKeyPath: string;
-  /** 本机已有：可选绑定的配方 id（决定域归属，登记 payload 附带）。 */
-  discoveredRecipeId: string;
+  /** 本机已有：可选绑定的配方 id 集合（1.5.10 多选——1.3.8 起环境可承载多配方；决定域归属，登记 payload 附带）。 */
+  discoveredRecipeIds: string[];
   sshHost: string;
   sshUser: string;
   sshKeyPath: string;
@@ -65,8 +65,8 @@ export interface WizardParams {
   sshPort: string;
   sshName: string;
   sshOsFamily: '' | 'linux' | 'windows';
-  /** SSH/本机已有可选绑定的配方（决定域归属）。 */
-  sshRecipeId: string;
+  /** SSH/本机已有可选绑定的配方集合（1.5.10 多选，决定域归属）。 */
+  sshRecipeIds: string[];
 }
 
 export interface EnvWizardState {
@@ -84,14 +84,14 @@ export function initialWizardParams(): WizardParams {
     discoveredAddress: '',
     discoveredUser: '',
     discoveredKeyPath: '',
-    discoveredRecipeId: '',
+    discoveredRecipeIds: [],
     sshHost: '',
     sshUser: '',
     sshKeyPath: '',
     sshPort: '',
     sshName: '',
     sshOsFamily: '',
-    sshRecipeId: '',
+    sshRecipeIds: [],
   };
 }
 
@@ -228,8 +228,9 @@ export type WizardPayload =
   | {
       type: 'register';
       itemKey: string;
-      /** registerDiscovered 的附加登记字段（address/user/keyPath/recipeId，全可选）。 */
-      extras?: { address?: string; user?: string; keyPath?: string; recipeId?: string };
+      /** registerDiscovered 的附加登记字段（address/user/keyPath/recipeIds，全可选）。
+       *  1.5.10：recipeIds 数组（多配方绑定）。 */
+      extras?: { address?: string; user?: string; keyPath?: string; recipeIds?: string[] };
     }
   | {
       type: 'ssh-add';
@@ -242,7 +243,8 @@ export type WizardPayload =
         port?: number;
         name?: string;
         osFamily?: 'linux' | 'windows';
-        recipeId?: string;
+        /** 1.5.10：多配方绑定（数组）。 */
+        recipeIds?: string[];
       };
     };
 
@@ -280,7 +282,7 @@ export function buildWizardPayload(state: EnvWizardState): WizardPayload | null 
       ...(p.discoveredAddress.trim() ? { address: p.discoveredAddress.trim() } : {}),
       ...(p.discoveredUser.trim() ? { user: p.discoveredUser.trim() } : {}),
       ...(p.discoveredKeyPath.trim() ? { keyPath: p.discoveredKeyPath.trim() } : {}),
-      ...(p.discoveredRecipeId ? { recipeId: p.discoveredRecipeId } : {}),
+      ...(p.discoveredRecipeIds.length > 0 ? { recipeIds: p.discoveredRecipeIds } : {}),
     };
     return {
       type: 'register',
@@ -306,7 +308,7 @@ export function buildWizardPayload(state: EnvWizardState): WizardPayload | null 
       ...(port !== undefined ? { port } : {}),
       ...(p.sshName.trim() ? { name: p.sshName.trim() } : {}),
       ...(p.sshOsFamily ? { osFamily: p.sshOsFamily } : {}),
-      ...(p.sshRecipeId ? { recipeId: p.sshRecipeId } : {}),
+      ...(p.sshRecipeIds.length > 0 ? { recipeIds: p.sshRecipeIds } : {}),
     },
   };
 }
@@ -326,6 +328,16 @@ export interface DomainLike {
 export function domainForRecipe(recipeId: string, domains: DomainLike[]): DomainLike | null {
   if (!recipeId) return null;
   return domains.find((d) => Array.isArray(d.recipes) && d.recipes.includes(recipeId)) ?? null;
+}
+
+/** 1.5.10 多配方：绑定集合 → 域集合（按 kind 去重，保持域清单序）。 */
+export function domainsForRecipes(recipeIds: string[], domains: DomainLike[]): DomainLike[] {
+  const out: DomainLike[] = [];
+  for (const id of recipeIds) {
+    const d = domainForRecipe(id, domains);
+    if (d && !out.some((o) => o.kind === d.kind)) out.push(d);
+  }
+  return out;
 }
 
 export interface WizardSummaryRow {
@@ -400,9 +412,9 @@ export function wizardSummaryRows(
     if (state.params.discoveredAddress.trim()) rows.push({ label: 'guest 地址', value: state.params.discoveredAddress.trim() });
     if (state.params.discoveredUser.trim()) rows.push({ label: 'guest 用户', value: state.params.discoveredUser.trim() });
     if (state.params.discoveredKeyPath.trim()) rows.push({ label: '密钥路径', value: state.params.discoveredKeyPath.trim() });
-    if (state.params.discoveredRecipeId) rows.push({ label: '绑定配方', value: state.params.discoveredRecipeId });
-    const domain = domainForRecipe(state.params.discoveredRecipeId, ctx.domains);
-    rows.push({ label: '域绑定', value: domain ? `${domain.name}（${domain.kind}）` : '未绑定' });
+    if (state.params.discoveredRecipeIds.length > 0) rows.push({ label: '绑定配方', value: state.params.discoveredRecipeIds.join('、') });
+    const domains = domainsForRecipes(state.params.discoveredRecipeIds, ctx.domains);
+    rows.push({ label: '域绑定', value: domains.length > 0 ? domains.map((d) => `${d.name}（${d.kind}）`).join('、') : '未绑定' });
   } else if (state.source === 'ssh') {
     const p = state.params;
     rows.push({ label: '主机', value: `${p.sshUser.trim()}@${p.sshHost.trim()}${p.sshPort.trim() ? `:${p.sshPort.trim()}` : ''}` });
@@ -414,10 +426,10 @@ export function wizardSummaryRows(
     if (capRow) rows.push(capRow);
     if (p.sshName.trim()) rows.push({ label: '名称', value: p.sshName.trim() });
     if (p.sshOsFamily) rows.push({ label: 'OS 家族', value: p.sshOsFamily });
-    if (p.sshRecipeId) {
-      rows.push({ label: '绑定配方', value: p.sshRecipeId });
-      const domain = domainForRecipe(p.sshRecipeId, ctx.domains);
-      rows.push({ label: '域绑定', value: domain ? `${domain.name}（${domain.kind}）` : '未绑定' });
+    if (p.sshRecipeIds.length > 0) {
+      rows.push({ label: '绑定配方', value: p.sshRecipeIds.join('、') });
+      const domains = domainsForRecipes(p.sshRecipeIds, ctx.domains);
+      rows.push({ label: '域绑定', value: domains.length > 0 ? domains.map((d) => `${d.name}（${d.kind}）`).join('、') : '未绑定' });
     } else {
       rows.push({ label: '域绑定', value: '未绑定' });
     }

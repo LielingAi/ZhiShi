@@ -317,15 +317,28 @@ function NewEnvModal(): React.JSX.Element | null {
       ? '请填 VM 的 guest 地址（exec/探测通道前提，缺了探测走不通）'
       : null);
 
-  const recipeSelect = (value: string, key: 'sshRecipeId' | 'discoveredRecipeId', label: string) => (
+  // 1.5.10：绑定配方多选（1.3.8 起环境可承载多配方）——chip 开关组，
+  // 点选/再点取消；参数是数组（sshRecipeIds/discoveredRecipeIds）。
+  const recipeSelect = (value: string[], key: 'sshRecipeIds' | 'discoveredRecipeIds', label: string) => (
     <div>
-      <div className="f-label">{label}</div>
-      <select className="f-input" value={value} onChange={(e) => wizardSetParam(key, e.target.value)}>
-        <option value="">（不绑定）</option>
-        {recipes.map((r) => (
-          <option value={r.id} key={r.id}>{r.id}</option>
-        ))}
-      </select>
+      <div className="f-label">{label}（可多选）</div>
+      <div className="wiz-recipe-chips">
+        {recipes.map((r) => {
+          const on = value.includes(r.id);
+          return (
+            <button
+              type="button"
+              className={`btn small ${on ? 'primary' : ''}`}
+              key={r.id}
+              onClick={() =>
+                wizardSetParam(key, on ? value.filter((v) => v !== r.id) : [...value, r.id])
+              }
+            >
+              {r.id}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 
@@ -454,7 +467,7 @@ function NewEnvModal(): React.JSX.Element | null {
               </div>
             </>
           )}
-          {recipeSelect(p.discoveredRecipeId, 'discoveredRecipeId', '绑定配方（可选——决定域归属）')}
+          {recipeSelect(p.discoveredRecipeIds, 'discoveredRecipeIds', '绑定配方（可选——决定域归属）')}
         </div>
       </>
     );
@@ -518,7 +531,7 @@ function NewEnvModal(): React.JSX.Element | null {
             <option value="windows">windows</option>
           </select>
         </div>
-        {recipeSelect(p.sshRecipeId, 'sshRecipeId', '绑定配方（可选——决定域归属）')}
+        {recipeSelect(p.sshRecipeIds, 'sshRecipeIds', '绑定配方（可选——决定域归属）')}
         <div className="m-note">host / 用户 / 密钥路径 必填 · 密码不走正门（keyPath 引用）</div>
       </div>
     );

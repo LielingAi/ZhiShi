@@ -338,13 +338,14 @@ export type RegisterInput =
       recipeId?: string;
     };
 
-/** 1.3.7 向导：登记时可选附加字段（绑定配方/凭据/连通地址，全可选，空不下发）。 */
+/** 1.3.7 向导：登记时可选附加字段（绑定配方/凭据/连通地址，全可选，空不下发）。
+ *  1.5.10：recipeId → recipeIds 数组（1.3.8 起环境可承载多配方，绑定是多选）。 */
 export interface RegisterExtras {
   /** guest 地址——仅 VM 条目下发（docker 走容器通道，不需要）。 */
   address?: string;
   user?: string;
   keyPath?: string;
-  recipeId?: string;
+  recipeIds?: string[];
 }
 
 /**
@@ -381,7 +382,7 @@ export function buildRegisterPayload(d: DiscoveredLike, extras?: RegisterExtras)
   // address/user/keyPath 不进公共字段——docker 条目走容器通道，这三个只对 VM
   // 有意义（vm 分支单独透传，防 docker 载荷带上语义无解的字段）；
   // recipeId（域归属）两类通用。
-  const sharedFields = extras?.recipeId ? { recipeId: extras.recipeId } : {};
+  const sharedFields = extras?.recipeIds?.length ? { recipeIds: extras.recipeIds } : {};
   const vmCredFields = extras
     ? {
         ...(extras.user ? { user: extras.user } : {}),

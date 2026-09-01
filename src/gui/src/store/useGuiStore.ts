@@ -415,7 +415,7 @@ export interface GuiState {
   setModal(modal: ModalState | null): void;
   // 1.3.7：新建环境向导 actions（分发逻辑在 wizardExecute）
   wizardPickSource(source: WizardSource): void;
-  wizardSetParam(key: keyof WizardParams, value: string): void;
+  wizardSetParam(key: keyof WizardParams, value: string | string[]): void;
   wizardNextStep(): void;
   wizardBackStep(): void;
   wizardExecute(): Promise<void>;
