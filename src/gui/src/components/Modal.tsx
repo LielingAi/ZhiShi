@@ -75,7 +75,7 @@ function BootModalInner({ recipeId }: { recipeId: string }): React.JSX.Element {
             构建环境 <b className="m-env-name">{recipe.id}</b>
           </span>
           <span className="m-sub">{recipe.base} · 新建环境 · environment/up 真实构建</span>
-          <button className="m-close" onClick={closeModal} disabled={running}>✕</button>
+          <button className="m-close" onClick={closeModal}>✕</button>
         </div>
         <div className="m-body">
           {stages.map((name, i) => (
@@ -88,9 +88,9 @@ function BootModalInner({ recipeId }: { recipeId: string }): React.JSX.Element {
             </div>
           ))}
           {failed && boot?.error && <div className="m-error">✗ {boot.error}</div>}
-          {/* G-02（1.3.10）：构建进行中 Esc 已拦截（store.esc 不动模态）、✕
-              disabled——构建在服务端继续，关闭 GUI 窗口也不中断。 */}
-          {running && <div className="m-hint">构建进行中，关闭窗口不影响构建</div>}
+          {/* 1.5.9：构建期 ✕/Esc = 收起（构建在服务端继续，完成/失败均有
+              toast），侧栏「构建中」行可随时重开进度。 */}
+          {running && <div className="m-hint">构建在后台继续——收起后从侧栏「构建中」重新打开进度</div>}
           {(done || failed) && (
             <div className="m-actions">
               <button

@@ -38,6 +38,11 @@ export function EnvSidebar(): React.JSX.Element {
   const openNewEnv = useGuiStore((s) => s.openNewEnv);
   const setPage = useGuiStore((s) => s.setPage);
   const showToast = useGuiStore((s) => s.showToast);
+  // 1.5.9：boot 收起后的重入口。
+  const boot = useGuiStore((s) => s.boot);
+  const modalKind = useGuiStore((s) => s.modal?.kind);
+  const setModal = useGuiStore((s) => s.setModal);
+  const bootRunning = boot?.status === 'running' && modalKind !== 'boot';
 
   // 1.3.8 视觉：行操作收进「⋯」下拉菜单（单入口，菜单项带文字标签）。
   const [menuFor, setMenuFor] = useState<string | null>(null);
@@ -114,6 +119,17 @@ export function EnvSidebar(): React.JSX.Element {
           ⟳
         </button>
       </div>
+      {/* 1.5.9：boot 模态收起后的构建进度重入口（构建在服务端继续，
+          完成/失败有 toast）——boot running 且模态不在场时显示。 */}
+      {bootRunning && (
+        <div
+          className="eb-item eb-booting"
+          title="构建进行中——点击打开进度"
+          onClick={() => setModal({ kind: 'boot' })}
+        >
+          <span className="spinner" /> 构建中 {boot?.recipeId}
+        </div>
+      )}
       {/* 1.4.1 修复：环境多时列表滚动、底部入口（新建/设置）恒可见 */}
       <div className="eb-scroll">
         {groups.map((g) => (

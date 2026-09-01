@@ -2310,13 +2310,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         set({ verdictDismissed: true });
         break;
       case 'close-modal':
-        // G-02（1.3.10）：boot 构建进行中 Esc 不关模态（与 ✕ disabled 对齐）
-        // ——不做 abort（bootEnv 无 AbortController，environment/up 继续跑），
-        // 完成后 BootModal 自显结果；toast 提示构建仍在进行。
-        if (get().modal?.kind === 'boot' && get().boot?.status === 'running') {
-          get().showToast('构建进行中');
-          break;
-        }
+        // 1.5.9：boot 构建期 Esc = 收起模态（不再是拦截）——构建在服务端
+        // 继续（bootEnv 无 AbortController），完成/失败均有 toast，侧栏
+        // 「构建中」行可重开进度。
         // G-05（1.3.10）：复用 closeModal——modal 与 wizard 一并清（原分支只
         // 清 modal，与 closeModal 语义分裂）。
         get().closeModal();

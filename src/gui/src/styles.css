@@ -87,6 +87,8 @@ kbd {
 }
 .eb-item:hover { background: var(--panel-2); color: var(--text); }
 .eb-item.cur { background: var(--panel-3); color: var(--text); }
+/* 1.5.9：boot 收起后的「构建中」重入行（侧栏顶部，点击重开 boot 模态） */
+.eb-item.eb-booting { color: var(--cyan); margin: 2px 6px 6px; border: 1px dashed var(--panel-3); }
 .eb-item .st { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .eb-item .st.run { background: var(--cyan); box-shadow: 0 0 4px rgba(53,195,226,.6); }
 .eb-item .st.stop, .eb-item .st.unreg { background: var(--faint); }
