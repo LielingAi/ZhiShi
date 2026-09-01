@@ -18,6 +18,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.10] - 2026-09-01
+
+> **docker 环境三层模型**：镜像持久（本机已有可发现可启动）→ 容器持久（现场，stop/start）→ workspace 持久（成果，bind mount）。
+
+### 变更（三层模型）
+- **镜像一等公民**：「本机已有」分组新增镜像行（zhishi-env-*），一键「启动为环境」——镜像在就秒开，不再重复构建
+- **容器现场持久**：停止 = 暂停（stop 不删容器）——/tmp 的 crash 现场、装过的工具、调试状态全保留，再启动秒续；「删除」才是真删（确认模态写清现场随删）
+- **up 链路重排**：有容器（含已停）→ start 续现场；无容器有镜像 → 直接 run；无镜像才 build
+- **显式入口**：环境行菜单新增「重新构建」（强 build 换新容器）与「重置容器」（镜像不动换干净容器）；CLI 对应 `env rebuild` / `env reset`；`env discover` 打印含镜像区
+
+### 一致性修复（全入口审计驱动）
+- 登记条目只绑了配方集合也能启动（主配方缺省=集合首项；修「停掉后无法启动」硬伤）
+- 「本机已有」容器登记不再要凭据（容器走 docker exec，凭据语义无解）；VM 登记改走向导（收地址/凭据）
+- 绑定配方多选（chip 开关组，1.3.8 多配方的表单漏改）；CLI `env add` 补 `--recipe-ids/--os-family/--vmx`，新增 `env bind-recipes`
+- SSH 条目准入闸放行（无启动语义，「先启动再进入」对 ssh 自相矛盾）
+- GUI 认领模态补 keyPath/passwordRef（与 CLI adopt 对齐）
+
 ## [1.5.9] - 2026-09-01
 
 ### 新增
