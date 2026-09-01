@@ -47,6 +47,10 @@ export function accessGate(item: SidebarEnvItem): GateResult {
 
 /** 拦截 toast 文案（与准入闸结果一一对应）。 */
 export function gateToast(item: SidebarEnvItem, gate: Exclude<GateResult, { allow: true }>): string {
+  // 1.5.10：镜像行无登记语义——点击提示走「启动为环境」而不是登记引导。
+  if (gate.reason === 'unregistered' && item.kind === 'docker-image') {
+    return '镜像无需登记——点「启动为环境」派生容器';
+  }
   if (gate.reason === 'unregistered') return '未登记，请先在新建环境里接入';
   return '环境未启动，先启动再进入';
 }

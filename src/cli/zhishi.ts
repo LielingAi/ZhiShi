@@ -135,6 +135,9 @@ Examples:
                                             # build VM template from scratch (unattended Ubuntu ISO install)
   zhishi env ps                             # running recipe instances (docker label / vmrun list)
   zhishi env down <container-id|env-id|vmx>   # stop + remove (docker) / stop soft (VM; VM files kept)
+  zhishi env rebuild <recipe>               # 强制重建镜像并换容器（docker 配方；镜像+容器全换新，1.5.10）
+  zhishi env reset <env-id> [--cwd PATH]    # 镜像不动，给 docker 环境换干净容器（现场重置，1.5.10）
+  zhishi env discover                       # 只读发现本机环境（docker 容器/镜像 + VM；1.5.10 起含 zhishi-env-* 镜像区）
   zhishi env exec <env-id> -- <command...>  # isolated VM one-shot exec via vmrun guest channel (P2)
   zhishi agent list                          # agent 清单（1.3.9 起交互会话迁至 GUI；agent 仅子命令）
   zhishi agent show <agent-id>              # effective defaults for a workspace
@@ -349,6 +352,17 @@ if (!result.success) {
   if (group === 'env' && action === 'ps') {
     const data = (result.data as { instances?: Array<Record<string, unknown>> }) ?? {};
     printEnvInstances(data.instances ?? []);
+    return;
+  }
+  if (group === 'env' && action === 'discover') {
+    // D28 只读发现面：docker 容器区 / docker 镜像区（1.5.10 新增，zhishi-env-*
+    // 镜像是一等成员）/ VM 区。引擎缺席由 server 侧降级为空数组，这里照打。
+    const data = (result.data as {
+      docker?: Array<Record<string, unknown>>;
+      images?: Array<Record<string, unknown>>;
+      vm?: Array<Record<string, unknown>>;
+    }) ?? {};
+    printEnvDiscover(data);
     return;
   }
   if (group === 'env' && action === 'up') {
@@ -735,6 +749,43 @@ function printEnvInstances(instances: Array<Record<string, unknown>>): void {
       + pad(String(inst.status ?? ''), 18)
       + String(inst.workspace ?? ''),
     );
+  }
+}
+/**
+ * Format `zhishi env discover` output（D28 只读发现面）：三个分区——
+ * docker 容器（含已退出）/ docker 镜像（1.5.10 新增：zhishi-env-* 镜像逐行
+ * recipeId + 镜像名，「本机已有」接入镜像）/ VM（vmware/hyperv/vbox 全量）。
+ * 空分区打印「（无）」而非静默——agent 读得到「该侧确实扫过但没有」。
+ */
+function printEnvDiscover(data: {
+  docker?: Array<Record<string, unknown>>;
+  images?: Array<Record<string, unknown>>;
+  vm?: Array<Record<string, unknown>>;
+}): void {
+  const docker = data.docker ?? [];
+  const images = data.images ?? [];
+  const vm = data.vm ?? [];
+  console.log('docker 容器:');
+  if (docker.length === 0) {
+    console.log('  （无）');
+  }
+  for (const c of docker) {
+    const managed = c.managed === true ? '  (zhishi 管理)' : '';
+    console.log(`  ${String(c.id ?? '')}  ${String(c.name ?? '')}  ${String(c.image ?? '')}  ${String(c.status ?? '')}${managed}`);
+  }
+  console.log('docker 镜像（zhishi-env-*）:');
+  if (images.length === 0) {
+    console.log('  （无）');
+  }
+  for (const img of images) {
+    console.log(`  ${String(img.recipeId ?? '')}  ${String(img.name ?? img.image ?? '')}`);
+  }
+  console.log('VM:');
+  if (vm.length === 0) {
+    console.log('  （无）');
+  }
+  for (const v of vm) {
+    console.log(`  ${String(v.driver ?? '')}  ${String(v.name ?? '')}  ${String(v.state ?? '')}`);
   }
 }
 /**
@@ -1952,6 +2003,23 @@ function buildRequestBody(
         recipeIds: typeof flags.recipes === 'string'
           ? (flags.recipes as string).split(',').map(s => s.trim()).filter(Boolean)
           : undefined,
+      };
+    }
+    if (action === 'rebuild') {
+      // 1.5.10：zhishi env rebuild <recipe> → environment/rebuild { recipe, workspace }
+      // （强制重建镜像 + 换容器）。workspace 与 env up 一致：无 --cwd 回退进程 cwd。
+      return {
+        recipe: requirePositional(rest[0] ?? (flags.recipe as string | undefined), 'recipe', 'env rebuild', 'recipe'),
+        workspace: String(flags.cwd || process.cwd()).trim(),
+      };
+    }
+    if (action === 'reset') {
+      // 1.5.10：zhishi env reset <id> → environment/reset { id, workspace? }
+      // （镜像不动、换干净容器）。workspace 可选——缺省由 server 沿用旧容器
+      // 登记的 workspace（envReset 回落），CLI 不擅自塞 cwd。
+      return {
+        id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'env-id', 'env reset', 'id'),
+        workspace: flags.cwd ? String(flags.cwd).trim() : undefined,
       };
     }
     if (action === 'remove') {

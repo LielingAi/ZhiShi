@@ -8,6 +8,7 @@ function snap(): SidebarSnapshot {
     running: [{ id: 'ps:old' }],
     discoveredDocker: [{ id: 'dk:old' }],
     discoveredVm: [{ driver: 'vmware', id: 'vm:old' }],
+    discoveredImages: [{ driver: 'docker-image', id: 'zhishi-env-old:latest', recipeId: 'old' }],
     recipes: [{ id: 'r:old', name: 'R-old', tools: [] }],
     domains: [{ kind: 'binary', name: '二进制', recipes: ['r:old'] }],
   };
@@ -27,6 +28,8 @@ describe('mergeSidebarSnapshot（侧栏快照归并 + 代次治理）', () => {
     expect(merged?.running.map((r) => r.id)).toEqual(['ps:new']);
     expect(merged?.discoveredDocker.map((d) => d.id)).toEqual(['dk:new']);
     expect(merged?.discoveredVm.map((v) => v.id)).toEqual(['vm:new']);
+    // 1.5.10：images 键缺失（旧 sidecar 快照）→ 回退旧值，不清空
+    expect(merged?.discoveredImages.map((d) => d.id)).toEqual(['zhishi-env-old:latest']);
     expect(merged?.recipes.map((r) => r.id)).toEqual(['r:new']);
     expect(merged?.domains.map((d) => d.kind)).toEqual(['pentest']);
   });
@@ -43,7 +46,12 @@ describe('mergeSidebarSnapshot（侧栏快照归并 + 代次治理）', () => {
     const merged = mergeSidebarSnapshot(3, 3, snap(), {
       envs: undefined, // environment/list 失败 → 保留旧 envs
       running: [{ id: 'ps:new' }],
-      discover: { docker: [{ id: 'dk:new' }], vm: [] }, // vm 空是有效快照 → 覆盖
+      // 1.5.10：discover 三键——docker/vm 覆盖，images 缺失 → 回退旧值
+      discover: {
+        docker: [{ id: 'dk:new' }],
+        vm: [],
+        images: [{ driver: 'docker-image', id: 'zhishi-env-pwn:latest', recipeId: 'pwn' }],
+      },
       // recipes / domains 缺失 → 回退旧值
     });
     expect(merged).not.toBeNull();
@@ -51,6 +59,7 @@ describe('mergeSidebarSnapshot（侧栏快照归并 + 代次治理）', () => {
     expect(merged?.running.map((r) => r.id)).toEqual(['ps:new']);
     expect(merged?.discoveredDocker.map((d) => d.id)).toEqual(['dk:new']);
     expect(merged?.discoveredVm).toEqual([]);
+    expect(merged?.discoveredImages.map((d) => d.id)).toEqual(['zhishi-env-pwn:latest']);
     expect(merged?.recipes.map((r) => r.id)).toEqual(['r:old']);
     expect(merged?.domains.map((d) => d.kind)).toEqual(['binary']);
   });

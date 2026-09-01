@@ -108,10 +108,12 @@ export function recipesForSource(source: WizardSource, recipes: Recipe[]): Recip
 
 /**
  * 1.3.8 ③a：配方生命周期差异说明（按 base 一句）——向导 Step 2 选配方与
- * Step 3 确认页展示，docker 一次性容器 vs VM 持久可快照的差异显性化。
+ * Step 3 确认页展示，docker 现场持久容器 vs VM 持久可快照的差异显性化。
+ * 1.5.10：docker 改镜像为主三层模型——停止=暂停（stop 不 rm，现场保留，
+ * 重启续现场）；要干净容器走「重置容器」，要新配方内容走「重新构建」。
  */
 export function recipeLifecycleNote(base: string | undefined): string {
-  return base === 'vm' ? '持久虚拟机，可快照回滚' : '一次性容器，用完即弃';
+  return base === 'vm' ? '持久虚拟机，可快照回滚' : '现场持久（停止=暂停，重启续现场）';
 }
 
 /**

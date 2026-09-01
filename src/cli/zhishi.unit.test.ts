@@ -67,6 +67,19 @@ beforeAll(async () => {
       res.setHeader('content-type', 'application/json');
       if (req.url === '/api/admin/expert/drafts') {
         res.end(JSON.stringify({ success: true, data: { drafts: [DRAFT] } }));
+      } else if (req.url === '/api/admin/environment/discover') {
+        // 1.5.10 发现面契约：docker 容器 / docker 镜像（docker-image 驱动）/ VM 三区。
+        res.end(JSON.stringify({
+          success: true,
+          data: {
+            docker: [{ id: 'abc123', name: 'zhishi-env-pwn-1', image: 'zhishi-env-pwn:latest', status: 'Up 2 hours', managed: true }],
+            images: [
+              { driver: 'docker-image', id: 'zhishi-env-pwn:latest', name: 'zhishi-env-pwn:latest', image: 'zhishi-env-pwn:latest', recipeId: 'pwn' },
+              { driver: 'docker-image', id: 'zhishi-env-fuzz:latest', name: 'zhishi-env-fuzz:latest', image: 'zhishi-env-fuzz:latest', recipeId: 'fuzz' },
+            ],
+            vm: [{ driver: 'vmware', id: '/vms/pwn.vmx', name: 'pwn.vmx', vmx: '/vms/pwn.vmx', state: 'unknown', osFamily: 'linux' }],
+          },
+        }));
       } else {
         res.end(JSON.stringify({ success: true, data: {} }));
       }
@@ -145,6 +158,75 @@ describe('1.5.10 一致性：env add 新旗标透传 + env bind-recipes 路由/�
     expect(r.code).not.toBe(0);
     expect(r.stderr).toContain('env-id');
     expect(captured.some((c) => c.url === '/api/admin/environment/bind-recipes')).toBe(false);
+  }, 30_000);
+});
+
+describe('1.5.10：env rebuild/reset 路由与载荷 + env discover 镜像区打印', () => {
+  it('env rebuild <recipe> → /api/admin/environment/rebuild { recipe, workspace=cwd }', async () => {
+    captured = [];
+    const r = await runCli(['env', 'rebuild', 'pwn']);
+    expect(r.stderr).not.toContain('ECONNREFUSED');
+    expect(r.code).toBe(0);
+    const req = captured.find((c) => c.url === '/api/admin/environment/rebuild');
+    expect(req).toBeDefined();
+    expect(req!.body.recipe).toBe('pwn');
+    expect(req!.body.workspace).toBe(process.cwd());
+  }, 30_000);
+
+  it('env rebuild 缺 <recipe> → 用法报错且不发请求', async () => {
+    captured = [];
+    const r = await runCli(['env', 'rebuild']);
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain('recipe');
+    expect(captured.some((c) => c.url === '/api/admin/environment/rebuild')).toBe(false);
+  }, 30_000);
+
+  it('env reset <id> → /api/admin/environment/reset { id }（无 --cwd 不带 workspace 键）', async () => {
+    captured = [];
+    const r = await runCli(['env', 'reset', 'pwn-box']);
+    expect(r.stderr).not.toContain('ECONNREFUSED');
+    expect(r.code).toBe(0);
+    const req = captured.find((c) => c.url === '/api/admin/environment/reset');
+    expect(req).toBeDefined();
+    expect(req!.body.id).toBe('pwn-box');
+    expect(req!.body).not.toHaveProperty('workspace');
+  }, 30_000);
+
+  it('env reset <id> --cwd /work → 请求体带 workspace=/work', async () => {
+    captured = [];
+    const r = await runCli(['env', 'reset', 'pwn-box', '--cwd', '/work']);
+    expect(r.code).toBe(0);
+    const req = captured.find((c) => c.url === '/api/admin/environment/reset');
+    expect(req).toBeDefined();
+    expect(req!.body.workspace).toBe('/work');
+  }, 30_000);
+
+  it('env reset 缺 <id> → 用法报错且不发请求', async () => {
+    captured = [];
+    const r = await runCli(['env', 'reset']);
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain('env-id');
+    expect(captured.some((c) => c.url === '/api/admin/environment/reset')).toBe(false);
+  }, 30_000);
+
+  it('env discover 打印含镜像区（逐行 recipeId + 镜像名）及 docker/VM 区', async () => {
+    const r = await runCli(['env', 'discover']);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('docker 镜像（zhishi-env-*）:');
+    expect(r.stdout).toContain('pwn  zhishi-env-pwn:latest');
+    expect(r.stdout).toContain('fuzz  zhishi-env-fuzz:latest');
+    expect(r.stdout).toContain('docker 容器:');
+    expect(r.stdout).toContain('VM:');
+  }, 30_000);
+
+  it('env discover --json：原样输出完整 JSON（含 images 数组），不走分区打印', async () => {
+    const r = await runCli(['env', 'discover', '--json']);
+    expect(r.code).toBe(0);
+    expect(r.stdout).not.toContain('docker 镜像（zhishi-env-*）:');
+    const parsed = JSON.parse(r.stdout) as { success: boolean; data: { images: Array<{ recipeId: string; driver: string }> } };
+    expect(parsed.success).toBe(true);
+    expect(parsed.data.images.map((i) => i.recipeId)).toEqual(['pwn', 'fuzz']);
+    expect(parsed.data.images[0].driver).toBe('docker-image');
   }, 30_000);
 });
 

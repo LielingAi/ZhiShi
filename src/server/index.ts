@@ -250,6 +250,9 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'environment/recipes') return api.handleEnvironmentRecipes();
   if (route === 'environment/up') return await api.handleEnvironmentUp(payload as Parameters<typeof api.handleEnvironmentUp>[0]);
   if (route === 'environment/down') return await api.handleEnvironmentDown(payload as Parameters<typeof api.handleEnvironmentDown>[0]);
+  // 1.5.10 显式重建/重置入口（docker：镜像为主三层模型）
+  if (route === 'environment/rebuild') return await api.handleEnvironmentRebuild(payload as Parameters<typeof api.handleEnvironmentRebuild>[0]);
+  if (route === 'environment/reset') return await api.handleEnvironmentReset(payload as Parameters<typeof api.handleEnvironmentReset>[0]);
   if (route === 'environment/ps') return await api.handleEnvironmentPs();
   if (route === 'environment/discover') return await api.handleEnvironmentDiscover();
   // 1.3.7 场景 3：能力集合重推 + 回写（GUI 手动刷新入口）

@@ -2,25 +2,34 @@
  * 安全研究员版 P1 E4 — docker 环境生命周期 unit tests.
  *
  * 全部通过注入的 exec 断言命令组装与输出解析，绝不真调 docker。
- * 覆盖：镜像 tag / 容器名约定、build/run/stop/rm/ps 参数组装、
+ * 覆盖：镜像 tag / 容器名约定、build/run/stop/rm/ps/images 参数组装、
  * `docker ps` 输出解析（含 Windows 路径 workspace）、docker 不可用的
- * 清晰错误（复用 E1 探测语义）、VM 配方的内部路由错误拦截、build/run 失败路径。
+ * 清晰错误（复用 E1 探测语义）、VM 配方的内部路由错误拦截、build/run 失败路径、
+ * 1.5.10 三层模型（envUp 四分支 / down 只 stop 不 rm / rebuild / reset /
+ * 镜像发现解析）。
  */
 import { describe, expect, it } from 'vitest';
 
 import type { EnvironmentRecipe } from './recipes';
 import {
   buildDockerBuildArgs,
+  buildDockerImagesArgs,
   buildDockerPsAllArgs,
   buildDockerPsArgs,
+  buildDockerPsByRecipeArgs,
   buildDockerRunArgs,
   containerNameFor,
   dockerContainerRunning,
   envDown,
+  envImages,
   envPs,
   envPsAll,
+  envRebuild,
+  envReset,
+  envRmContainer,
   envUp,
   imageTagFor,
+  parseDockerImages,
   parseDockerPs,
   parseDockerPsAll,
   parseDockerRunningRows,
@@ -93,6 +102,20 @@ describe('command assembly (pure)', () => {
     expect(args).toContain('label=zhishi.env');
     expect(args[0]).toBe('ps');
   });
+
+  it('1.5.10：buildDockerPsByRecipeArgs 含 -a（含已停止）且按配方 label 过滤', () => {
+    const args = buildDockerPsByRecipeArgs('web-recon');
+    expect(args[0]).toBe('ps');
+    expect(args).toContain('-a');
+    expect(args).toContain('label=zhishi.env=web-recon');
+  });
+
+  it('1.5.10：buildDockerImagesArgs 只认 zhishi-env-* 且过滤 dangling', () => {
+    const args = buildDockerImagesArgs();
+    expect(args[0]).toBe('images');
+    expect(args).toContain('dangling=false');
+    expect(args).toContain('reference=zhishi-env-*');
+  });
 });
 
 describe('parseDockerPs (pure)', () => {
@@ -119,13 +142,21 @@ describe('parseDockerPs (pure)', () => {
   });
 });
 
-describe('envUp', () => {
-  it('runs probe → ps（幂等检查）→ build → run and returns the started instance', async () => {
+describe('envUp（1.5.10 链路重排：容器→镜像→build）', () => {
+  const RUNNING_LINE =
+    'd0e5f6a7b8c9\tzhishi-web-recon-a1b2c3d4\tzhishi-env-web-recon\tUp 2 hours\tweb-recon\t/work/dir';
+  const STOPPED_LINE =
+    'd0e5f6a7b8c9\tzhishi-web-recon-a1b2c3d4\tzhishi-env-web-recon\tExited (0) 3 days ago\tweb-recon\t/work/dir';
+  const INSPECT_MISS = { exitCode: 1, stdout: '', stderr: 'Error: No such image' };
+  const RUN_OK = ok('d0e5f6a7b8c9d0e5f6a7b8c9\n');
+
+  it('分支 (c)：无容器无镜像 → ps -a → inspect miss → build → run', async () => {
     const { exec, calls } = scriptedExec([
       PROBE_OK,
-      ok(''), // B6 幂等检查：zhishi.env label 下无在跑容器
+      ok(''), // ps -a：同配方无容器（含已停止）
+      INSPECT_MISS, // image inspect：镜像不在
       ok('...build output...'),
-      ok('d0e5f6a7b8c9d0e5f6a7b8c9\n'),
+      RUN_OK,
     ]);
     const result = await envUp(RECIPE, '/work/dir', {
       exec,
@@ -138,15 +169,16 @@ describe('envUp', () => {
     expect(result.instance.recipe).toBe('web-recon');
     expect(result.instance.workspace).toBe('/work/dir');
     expect(calls[0][0]).toBe('docker');
-    expect(calls[1].slice(0, 2)).toEqual(['docker', 'ps']); // B6 幂等检查
-    expect(calls[2].slice(0, 2)).toEqual(['docker', 'build']);
-    expect(calls[3].slice(0, 2)).toEqual(['docker', 'run']);
+    expect(calls[1].slice(0, 2)).toEqual(['docker', 'ps']); // 1.5.10 容器查找
+    expect(calls[1]).toContain('-a'); // 含已停止
+    expect(calls[1]).toContain('label=zhishi.env=web-recon');
+    expect(calls[2].slice(0, 3)).toEqual(['docker', 'image', 'inspect']);
+    expect(calls[3].slice(0, 2)).toEqual(['docker', 'build']);
+    expect(calls[4].slice(0, 2)).toEqual(['docker', 'run']);
   });
 
-  it('B6 幂等：同配方已有在跑容器 → 直接返回现有实例，不 build 不 run', async () => {
-    const existingLine =
-      'd0e5f6a7b8c9\tzhishi-web-recon-a1b2c3d4\tzhishi-env-web-recon\tUp 2 hours\tweb-recon\t/work/dir';
-    const { exec, calls } = scriptedExec([PROBE_OK, ok(`${existingLine}\n`)]);
+  it('分支 (a) 在跑幂等：同配方已有在跑容器 → 直接返回现有实例，不 build 不 run', async () => {
+    const { exec, calls } = scriptedExec([PROBE_OK, ok(`${RUNNING_LINE}\n`)]);
     const result = await envUp(RECIPE, '/work/dir', { exec, shortId: () => 'ffffffff' });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -157,13 +189,61 @@ describe('envUp', () => {
     expect(calls.some((c) => c[1] === 'build' || c[1] === 'run')).toBe(false);
   });
 
-  it('B6 幂等检查只认同配方：别的配方在跑不挡本配方 up', async () => {
+  it('分支 (a) 已停止 → docker start 现场续上（1.5.10 核心），不 build 不 run', async () => {
+    const { exec, calls } = scriptedExec([PROBE_OK, ok(`${STOPPED_LINE}\n`), ok('d0e5f6a7b8c9\n')]);
+    const result = await envUp(RECIPE, '/work/dir', { exec, shortId: () => 'ffffffff' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.instance.name).toBe('zhishi-web-recon-a1b2c3d4');
+    expect(result.instance.status).toBe('Up'); // start 后状态置 Up
+    expect(calls).toHaveLength(3);
+    expect(calls[2]).toEqual(['docker', 'start', 'd0e5f6a7b8c9']);
+    expect(calls.some((c) => c[1] === 'build' || c[1] === 'run')).toBe(false);
+  });
+
+  it('start 失败（容器损坏）→ rm -f 清残壳后回落 build/run（现场丢失有日志）', async () => {
+    const { exec, calls } = scriptedExec([
+      PROBE_OK,
+      ok(`${STOPPED_LINE}\n`),
+      { exitCode: 1, stdout: '', stderr: 'container is marked for removal' }, // start 失败
+      ok(''), // rm -f 残壳
+      INSPECT_MISS, // 镜像不在
+      ok('built'),
+      RUN_OK,
+    ]);
+    const result = await envUp(RECIPE, '/work/dir', { exec, shortId: () => 'a1b2c3d4' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.instance.name).toBe('zhishi-web-recon-a1b2c3d4'); // 新容器
+    expect(calls[3]).toEqual(['docker', 'rm', '-f', 'd0e5f6a7b8c9']);
+    expect(calls.some((c) => c[1] === 'build')).toBe(true);
+    expect(calls.some((c) => c[1] === 'run')).toBe(true);
+  });
+
+  it('分支 (b)：无容器有镜像 → 跳过 build 直接 run（秒开）', async () => {
+    const { exec, calls } = scriptedExec([
+      PROBE_OK,
+      ok(''), // ps -a：无容器
+      ok('[{"Id":"sha256:..."}]'), // image inspect：镜像在
+      RUN_OK,
+    ]);
+    const result = await envUp(RECIPE, '/work/dir', { exec, shortId: () => 'a1b2c3d4' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.instance.name).toBe('zhishi-web-recon-a1b2c3d4');
+    expect(calls).toHaveLength(4);
+    expect(calls.some((c) => c[1] === 'build')).toBe(false); // 镜像在 → 不 build
+    expect(calls[3].slice(0, 2)).toEqual(['docker', 'run']);
+  });
+
+  it('容器查找只认同配方：别的配方容器不挡本配方 up', async () => {
     const otherLine = 'aaaaaaaabbbb\tzhishi-pwn-12345678\tzhishi-env-pwn\tUp 1 hour\tpwn\t/other';
     const { exec, calls } = scriptedExec([
       PROBE_OK,
       ok(`${otherLine}\n`),
+      INSPECT_MISS,
       ok('built'),
-      ok('d0e5f6a7b8c9d0e5f6a7b8c9\n'),
+      RUN_OK,
     ]);
     const result = await envUp(RECIPE, '/work/dir', { exec, shortId: () => 'a1b2c3d4' });
     expect(result.ok).toBe(true);
@@ -172,12 +252,13 @@ describe('envUp', () => {
     expect(calls.some((c) => c[1] === 'run')).toBe(true);
   });
 
-  it('B6 幂等检查的 ps 失败 → 容忍，照走正常 up', async () => {
+  it('容器查找的 ps 失败 → 容忍，照走镜像/build 分支', async () => {
     const { exec, calls } = scriptedExec([
       PROBE_OK,
       { exitCode: 1, stdout: '', stderr: 'ps hiccup' },
+      INSPECT_MISS,
       ok('built'),
-      ok('d0e5f6a7b8c9d0e5f6a7b8c9\n'),
+      RUN_OK,
     ]);
     const result = await envUp(RECIPE, '/work/dir', { exec, shortId: () => 'a1b2c3d4' });
     expect(result.ok).toBe(true);
@@ -208,7 +289,8 @@ describe('envUp', () => {
   it('surfaces build failure output', async () => {
     const { exec } = scriptedExec([
       PROBE_OK,
-      ok(''), // B6 幂等检查：无在跑容器
+      ok(''), // 容器查找：无容器
+      INSPECT_MISS, // 镜像不在
       { exitCode: 1, stdout: '', stderr: 'no such file: Dockerfile' },
     ]);
     const result = await envUp(RECIPE, '/work/dir', { exec });
@@ -221,7 +303,8 @@ describe('envUp', () => {
   it('build 失败命中网络形态识别 → 指引在前 + 原 stderr 尾部在后（1.5.7）', async () => {
     const { exec } = scriptedExec([
       PROBE_OK,
-      ok(''), // B6 幂等检查：无在跑容器
+      ok(''), // 容器查找：无容器
+      INSPECT_MISS,
       {
         exitCode: 1,
         stdout: '',
@@ -239,26 +322,30 @@ describe('envUp', () => {
   it('1.5.9 超时恢复：build 客户端超时但镜像已在 daemon 完成 → inspect 命中后续走 run', async () => {
     const { exec, calls } = scriptedExec([
       PROBE_OK,
-      ok(''), // B6 幂等检查：无在跑容器
+      ok(''), // 容器查找：无容器
+      INSPECT_MISS, // 前置 inspect：镜像不在 → 走 build
       {
         exitCode: -1,
         stdout: '#14 naming to docker.io/library/zhishi-env-pwn:latest done\n#14 DONE 46.2s\n',
         stderr: '',
         error: 'timed out after 2700000ms: docker build -t zhishi-env-pwn .',
       },
-      ok('[]'), // image inspect：镜像在 daemon 已完成
-      ok('d0e5f6a7b8c9d0e5f6a7b8c9\n'), // run
+      ok('[]'), // 超时恢复 inspect：镜像在 daemon 已完成
+      RUN_OK,
     ]);
     const result = await envUp(RECIPE, '/work/dir', { exec, shortId: () => 'a1b2c3d4' });
     expect(result.ok).toBe(true);
-    expect(calls[3].slice(0, 3)).toEqual(['docker', 'image', 'inspect']);
-    expect(calls[4].slice(0, 2)).toEqual(['docker', 'run']);
+    expect(calls[2].slice(0, 3)).toEqual(['docker', 'image', 'inspect']);
+    expect(calls[3].slice(0, 2)).toEqual(['docker', 'build']);
+    expect(calls[4].slice(0, 3)).toEqual(['docker', 'image', 'inspect']);
+    expect(calls[5].slice(0, 2)).toEqual(['docker', 'run']);
   });
 
   it('1.5.9 超时恢复：build 超时且镜像不在（inspect 失败）→ 仍报失败', async () => {
     const { exec } = scriptedExec([
       PROBE_OK,
       ok(''),
+      INSPECT_MISS,
       { exitCode: -1, stdout: '', stderr: '', error: 'timed out after 2700000ms: docker build ...' },
       { exitCode: 1, stdout: '', stderr: 'Error: No such image' },
     ]);
@@ -332,34 +419,174 @@ describe('recognizeDockerBuildNetworkFailure（1.5.7 报错网络形态识别，
   });
 });
 
-describe('envDown', () => {
-  it('stops then removes the container', async () => {
-    const { exec, calls } = scriptedExec([ok(''), ok('')]);
+describe('envDown（1.5.10：只 stop 不 rm——现场持久）', () => {
+  it('只发 docker stop，绝不 rm（容器保留现场）', async () => {
+    const { exec, calls } = scriptedExec([ok('')]);
     const result = await envDown('d0e5f6a7b8c9', { exec });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.stopped).toBe('d0e5f6a7b8c9');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual(['docker', 'stop', 'd0e5f6a7b8c9']);
+  });
+
+  it('stop 未成功（已停止/已消失）→ 幂等放行（视为已暂停），不发 rm', async () => {
+    const { exec, calls } = scriptedExec([
+      { exitCode: 1, stdout: '', stderr: 'No such container' },
+    ]);
+    const result = await envDown('gone', { exec });
+    expect(result.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe('envRmContainer（1.5.10：rm 端点/重建/重置的真删除语义）', () => {
+  it('stop（幂等）+ rm 容器', async () => {
+    const { exec, calls } = scriptedExec([ok(''), ok('')]);
+    const result = await envRmContainer('d0e5f6a7b8c9', { exec });
     expect(result.ok).toBe(true);
     expect(calls[0]).toEqual(['docker', 'stop', 'd0e5f6a7b8c9']);
     expect(calls[1]).toEqual(['docker', 'rm', 'd0e5f6a7b8c9']);
   });
 
-  it('tolerates stop failure (already stopped) but still removes', async () => {
+  it('stop 失败（已停止）不阻断 rm；rm 失败才报错', async () => {
     const { exec, calls } = scriptedExec([
       { exitCode: 1, stdout: '', stderr: 'No such container' },
       ok(''),
     ]);
-    const result = await envDown('gone', { exec });
+    const result = await envRmContainer('gone', { exec });
     expect(result.ok).toBe(true);
     expect(calls).toHaveLength(2);
+
+    const fail = await envRmContainer('x', {
+      exec: async (argv) =>
+        argv[1] === 'rm'
+          ? { exitCode: 1, stdout: '', stderr: 'permission denied' }
+          : ok(''),
+    });
+    expect(fail.ok).toBe(false);
+    if (fail.ok) return;
+    expect(fail.error).toContain('permission denied');
+  });
+});
+
+describe('envRebuild（1.5.10 显式重建：强制 build → 清旧容器 → run）', () => {
+  const OLD_LINE =
+    'd0e5f6a7b8c9\tzhishi-web-recon-old99\tzhishi-env-web-recon\tUp 2 hours\tweb-recon\t/work/dir';
+  const RUN_OK = ok('f6e5d4c3b2a1f6e5d4c3b2a1\n');
+
+  it('有旧容器 → 强制 build（不看镜像在不在）→ stop+rm 旧容器 → run 新容器', async () => {
+    const { exec, calls } = scriptedExec([
+      PROBE_OK,
+      ok('built'), // build 强制跑（无前置 inspect 短路）
+      ok(`${OLD_LINE}\n`), // ps -a 找旧容器
+      ok(''), // stop 旧容器
+      ok(''), // rm 旧容器
+      RUN_OK,
+    ]);
+    const result = await envRebuild(RECIPE, '/work/dir', { exec, shortId: () => 'a1b2c3d4' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.instance.name).toBe('zhishi-web-recon-a1b2c3d4');
+    expect(calls[1].slice(0, 2)).toEqual(['docker', 'build']); // 紧跟 probe，无 inspect
+    expect(calls[3]).toEqual(['docker', 'stop', 'd0e5f6a7b8c9']);
+    expect(calls[4]).toEqual(['docker', 'rm', 'd0e5f6a7b8c9']);
+    expect(calls[5].slice(0, 2)).toEqual(['docker', 'run']);
   });
 
-  it('fails when rm fails', async () => {
-    const { exec } = scriptedExec([
-      ok(''),
-      { exitCode: 1, stdout: '', stderr: 'permission denied' },
+  it('无旧容器 → build 后直接 run', async () => {
+    const { exec, calls } = scriptedExec([PROBE_OK, ok('built'), ok(''), RUN_OK]);
+    const result = await envRebuild(RECIPE, '/work/dir', { exec, shortId: () => 'a1b2c3d4' });
+    expect(result.ok).toBe(true);
+    expect(calls.some((c) => c[1] === 'stop' || c[1] === 'rm')).toBe(false);
+    expect(calls[3].slice(0, 2)).toEqual(['docker', 'run']);
+  });
+
+  it('build 失败 → 旧容器不动（不 stop 不 rm），报 build 错误', async () => {
+    const { exec, calls } = scriptedExec([
+      PROBE_OK,
+      { exitCode: 1, stdout: '', stderr: 'no such file: Dockerfile' },
     ]);
-    const result = await envDown('x', { exec });
+    const result = await envRebuild(RECIPE, '/work/dir', { exec });
     expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toContain('permission denied');
+    expect(calls.some((c) => c[1] === 'stop' || c[1] === 'rm' || c[1] === 'run')).toBe(false);
+  });
+});
+
+describe('envReset（1.5.10 显式重置：镜像不动，换干净容器）', () => {
+  const OLD_LINE =
+    'd0e5f6a7b8c9\tzhishi-web-recon-old99\tzhishi-env-web-recon\tExited (0) 1 day ago\tweb-recon\t/work/dir';
+  const RUN_OK = ok('f6e5d4c3b2a1f6e5d4c3b2a1\n');
+
+  it('有容器 → stop+rm 旧容器 → run 新容器（workspace 取旧容器 label），不 build', async () => {
+    const { exec, calls } = scriptedExec([
+      PROBE_OK,
+      ok(`${OLD_LINE}\n`), // label 反查定位容器 + 取回 workspace
+      ok(''), // stop
+      ok(''), // rm
+      RUN_OK,
+    ]);
+    const result = await envReset('web-recon', undefined, {
+      exec,
+      container: 'zhishi-web-recon-old99',
+      shortId: () => 'a1b2c3d4',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.instance.name).toBe('zhishi-web-recon-a1b2c3d4');
+    expect(result.instance.workspace).toBe('/work/dir'); // 现场挂载不变
+    expect(calls[2]).toEqual(['docker', 'stop', 'zhishi-web-recon-old99']);
+    expect(calls[3]).toEqual(['docker', 'rm', 'zhishi-web-recon-old99']);
+    expect(calls.some((c) => c[1] === 'build')).toBe(false); // 镜像不动
+  });
+
+  it('无容器可 rm → 直接 run（幂等），workspace 回落 cwd', async () => {
+    const { exec, calls } = scriptedExec([PROBE_OK, ok(''), RUN_OK]);
+    const result = await envReset('web-recon', '/explicit/ws', {
+      exec,
+      shortId: () => 'a1b2c3d4',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.instance.workspace).toBe('/explicit/ws');
+    expect(calls).toHaveLength(3);
+    expect(calls[2].slice(0, 2)).toEqual(['docker', 'run']);
+  });
+});
+
+describe('1.5.10 镜像发现 — envImages / parseDockerImages', () => {
+  const IMAGES =
+    'zhishi-env-pwn:latest\n' +
+    'zhishi-env-web-recon:latest\n' +
+    'mysql:8\n' + // 非 zhishi-env-*（防御：daemon 侧已过滤，解析侧再守一道）
+    '<none>:<none>\n';
+
+  it('parseDockerImages 反解 recipeId；非 zhishi-env-* 与 dangling 不纳管', () => {
+    const items = parseDockerImages(IMAGES);
+    expect(items).toHaveLength(2);
+    expect(items[0]).toEqual({
+      driver: 'docker-image',
+      id: 'zhishi-env-pwn:latest',
+      name: 'zhishi-env-pwn:latest',
+      image: 'zhishi-env-pwn:latest',
+      recipeId: 'pwn',
+    });
+    expect(items[1].recipeId).toBe('web-recon');
+  });
+
+  it('envImages 经注入 exec 返回镜像清单、只读；docker 不可用降级 ok:false', async () => {
+    const { exec, calls } = scriptedExec([ok(IMAGES)]);
+    const result = await envImages({ exec });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.images).toHaveLength(2);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].slice(0, 2).join(' ')).toBe('docker images');
+
+    const down = await envImages({
+      exec: async () => ({ exitCode: 1, stdout: '', stderr: 'Cannot connect to the Docker daemon' }),
+    });
+    expect(down.ok).toBe(false);
   });
 });
 

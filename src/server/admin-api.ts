@@ -139,10 +139,15 @@ import {
 import {
   dockerContainerRunning,
   envDown,
+  envImages,
   envPs,
   envPsAll,
+  envRebuild,
+  envReset,
+  envRmContainer,
   envUp,
   type DiscoveredDocker,
+  type DiscoveredDockerImage,
   type EnvInstance,
   type EnvResult,
 } from './environment/docker-lifecycle';
@@ -2004,7 +2009,9 @@ export function handleEnvironmentRecipes(): AdminResponse {
     };
   }
 }
-/** `environment/up` — build + 起常驻容器（docker 配方）/ 拷贝模板 + 起 VM（vm 配方，P2 vmrun 驱动）。 */
+/** `environment/up` — 1.5.10 三层模型：同配方容器在跑幂等返回 / 已停止
+ *  docker start 现场续上 / 无容器有镜像直接 run / 无镜像 build+run（docker
+ *  配方）；VM 配方拷贝模板 + 起 VM（P2 vmrun 驱动）。 */
 export async function handleEnvironmentUp(payload: {
   recipe?: string;
   workspace?: string;
@@ -2130,50 +2137,161 @@ export async function handleEnvironmentUp(payload: {
     logDir: join(getZhiShiDataDir(), 'logs', 'environments'),
   });
   if (!result.ok) return { success: false, error: result.error };
-  // docker 配方回写注册表条目（与 VM 路径对齐）：id = 容器名，container 是
-  // 执行通道（docker exec）与 ps/down 的定位锚。幂等重 up：同 id 先摘再加。
-  // 此前 docker up 不回写 → 环境选不进、env_exec 无条目可解析（断点修复）。
   try {
-    const entry = {
-      id: result.instance.name,
-      kind: 'docker' as const,
-      name: `${recipe.name}（${recipe.id}）`,
-      recipeId: recipe.id,
-      // 1.3.8 多配方：up 回写初始化绑定集合 [主配方]。
-      recipeIds: [recipe.id],
-      container: result.instance.name,
-      // 探测全集自检(1.3.7 场景 3):构建后当场跑一条批量探测(全配方工具
-      // 并集)——声明工具漂移证据落 toolCheck,在场工具→域 ∪ 配方绑定域落
-      // capabilityDomains;失败降级为无自检无能力字段,不阻断 up。
-      // 1.5.7:传入 firstRunTools——首跑钩子正在后台装的工具探测未命中,
-      // 落 capabilityPending(已登记待装)而不进 missing 双计数。
-      // 注意 stub 条目必须带 recipeId——绑定域反查(candidate)靠它。
-      ...(await runEnvProbeWithCapabilities(
-        {
-          id: result.instance.name,
-          kind: 'docker',
-          container: result.instance.name,
-          recipeId: recipe.id,
-          createdAt: '',
-        },
-        recipe.tools,
-        recipe.firstRunTools,
-      )),
-      createdAt: new Date().toISOString(),
-    };
-    await atomicModifyConfig((config) => {
-      let entries = listEnvironments(config);
-      if (findEnvironmentEntry(entries, entry.id)) {
-        const removed = removeEnvironmentEntry(entries, entry.id);
+    await writebackDockerEnvEntry(recipe, result.instance);
+  } catch (err) {
+    console.warn(`[environment/up] docker 已启动但 env 条目回写失败：${err instanceof Error ? err.message : String(err)}`);
+  }
+  return { success: true, data: { instance: result.instance } };
+}
+/**
+ * docker 配方的注册表回写（1.5.10 从 environment/up 抽出，up/rebuild/reset
+ * 共用）：id = 容器名，container 是执行通道（docker exec）与 ps/down 的定位锚。
+ * 幂等：obsoleteIds 与同 id 条目先摘再加（rebuild/reset 换新容器名时把旧
+ * 容器名的登记一并摘掉）。回写前当场跑探测全集自检（1.3.7 场景 3）；探测
+ * 失败降级为无能力字段，不阻断。
+ */
+async function writebackDockerEnvEntry(
+  recipe: EnvironmentRecipe,
+  instance: EnvInstance,
+  obsoleteIds: string[] = [],
+): Promise<void> {
+  const entry = {
+    id: instance.name,
+    kind: 'docker' as const,
+    name: `${recipe.name}（${recipe.id}）`,
+    recipeId: recipe.id,
+    // 1.3.8 多配方：up 回写初始化绑定集合 [主配方]。
+    recipeIds: [recipe.id],
+    container: instance.name,
+    // 探测全集自检(1.3.7 场景 3):构建后当场跑一条批量探测(全配方工具
+    // 并集)——声明工具漂移证据落 toolCheck,在场工具→域 ∪ 配方绑定域落
+    // capabilityDomains;失败降级为无自检无能力字段,不阻断 up。
+    // 1.5.7:传入 firstRunTools——首跑钩子正在后台装的工具探测未命中,
+    // 落 capabilityPending(已登记待装)而不进 missing 双计数。
+    // 注意 stub 条目必须带 recipeId——绑定域反查(candidate)靠它。
+    ...(await runEnvProbeWithCapabilities(
+      {
+        id: instance.name,
+        kind: 'docker',
+        container: instance.name,
+        recipeId: recipe.id,
+        createdAt: '',
+      },
+      recipe.tools,
+      recipe.firstRunTools,
+    )),
+    createdAt: new Date().toISOString(),
+  };
+  await atomicModifyConfig((config) => {
+    let entries = listEnvironments(config);
+    for (const oid of new Set([...obsoleteIds, entry.id])) {
+      if (findEnvironmentEntry(entries, oid)) {
+        const removed = removeEnvironmentEntry(entries, oid);
         if (!removed.ok) throw new Error(removed.error);
         entries = removed.entries;
       }
-      const added = addEnvironmentEntry(entries, entry);
-      if (!added.ok) throw new Error(added.error);
-      return { ...config, environments: added.entries };
-    });
+    }
+    const added = addEnvironmentEntry(entries, entry);
+    if (!added.ok) throw new Error(added.error);
+    return { ...config, environments: added.entries };
+  });
+}
+/** `environment/rebuild` — 1.5.10 显式重建（docker 配方）：强制 docker
+ *  build（不看镜像在不在——配方内容更新/镜像损坏的入口）→ 成功后 stop+rm
+ *  同配方旧容器（旧现场随重建销毁）→ run 新容器 → 回写（与 up 同尾段）。
+ *  build 失败旧容器不动。VM 配方的重建走 environment/build（模板构建）。 */
+export async function handleEnvironmentRebuild(payload: {
+  recipe?: string;
+  workspace?: string;
+}): Promise<AdminResponse> {
+  const id = typeof payload.recipe === 'string' ? payload.recipe.trim() : '';
+  if (!id) {
+    return {
+      success: false,
+      error: 'Missing required argument: <recipe>',
+      recoveryHint: {
+        recoveryCommand: 'zhishi env recipes',
+        message: 'See available environment recipes.',
+      },
+    };
+  }
+  const recipe = loadRecipe(defaultRecipesRoot(), id);
+  if (!recipe) {
+    return { success: false, error: `未找到环境类型 "${id}"` };
+  }
+  if (!recipe.valid) {
+    return { success: false, error: `环境类型 "${id}" 无效：${recipe.invalidReasons.join('；')}` };
+  }
+  if (recipe.base === 'vm') {
+    return { success: false, error: `配方 "${id}" 是 VM 配方——重建走 environment/build（模板构建）` };
+  }
+  const workspace = typeof payload.workspace === 'string' && payload.workspace.trim()
+    ? payload.workspace.trim()
+    : process.cwd();
+  // 重建会换新容器名——记下同配方旧登记，回写时一并摘掉。
+  const obsoleteIds = listEnvironments(loadConfig())
+    .filter((e) => e.kind === 'docker' && e.recipeId === recipe.id)
+    .map((e) => e.id);
+  const result = await envRebuild(recipe, workspace, {
+    logDir: join(getZhiShiDataDir(), 'logs', 'environments'),
+  });
+  if (!result.ok) return { success: false, error: result.error };
+  try {
+    await writebackDockerEnvEntry(recipe, result.instance, obsoleteIds);
   } catch (err) {
-    console.warn(`[environment/up] docker 已启动但 env 条目回写失败：${err instanceof Error ? err.message : String(err)}`);
+    console.warn(`[environment/rebuild] docker 已重建但 env 条目回写失败：${err instanceof Error ? err.message : String(err)}`);
+  }
+  return { success: true, data: { instance: result.instance } };
+}
+/** `environment/reset` — 1.5.10 显式重置（docker 条目）：镜像不动，stop+rm
+ *  条目容器 → run 新容器（要干净房间时人选）→ 回写新条目、摘旧条目。
+ *  无容器可 rm 时直接 run（幂等）。workspace 缺省取旧容器的
+ *  zhishi.workspace label（现场挂载不变），无容器时回落 cwd。 */
+export async function handleEnvironmentReset(payload: {
+  id?: string;
+  workspace?: string;
+}): Promise<AdminResponse> {
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!id) {
+    return { success: false, error: 'Missing required argument: <id>' };
+  }
+  const entry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
+  if (!entry) {
+    return { success: false, error: `未找到环境 "${id}"（zhishi env list 查看已有环境）` };
+  }
+  if (entry.kind !== 'docker') {
+    return { success: false, error: `环境 "${id}" 不是 docker 条目（kind=${entry.kind}）——重置只适用于 docker 环境` };
+  }
+  const recipeId = entry.recipeId ?? entry.recipeIds?.[0];
+  if (!recipeId) {
+    return { success: false, error: `环境 "${id}" 无配方归属（recipeId 缺失），无法重置` };
+  }
+  const workspace = typeof payload.workspace === 'string' && payload.workspace.trim()
+    ? payload.workspace.trim()
+    : undefined;
+  const result = await envReset(recipeId, workspace, {
+    container: entry.container ?? entry.id,
+    logDir: join(getZhiShiDataDir(), 'logs', 'environments'),
+  });
+  if (!result.ok) return { success: false, error: result.error };
+  // 回写：配方文件在 → 全字段（含探测自检）；不在（reset 不 build，不依赖
+  // 配方目录）→ 最小 stub 配方只供条目命名/归属，探测面为空。
+  try {
+    const recipe = loadRecipe(defaultRecipesRoot(), recipeId);
+    const recipeForWriteback: EnvironmentRecipe = recipe ?? {
+      id: recipeId,
+      dir: '',
+      name: recipeId,
+      description: '',
+      base: 'docker',
+      tools: [],
+      valid: true,
+      invalidReasons: [],
+    };
+    await writebackDockerEnvEntry(recipeForWriteback, result.instance, [entry.id]);
+  } catch (err) {
+    console.warn(`[environment/reset] docker 已重置但 env 条目回写失败：${err instanceof Error ? err.message : String(err)}`);
   }
   return { success: true, data: { instance: result.instance } };
 }
@@ -2478,8 +2596,10 @@ export async function handleEnvironmentBindRecipes(payload: {
 /** `environment/down` — 停一个实例。路由顺序（P2 B3 + 1.3.7）：登记条目
  * kind=vm 且 resolveVmxForEntry 解析出 vmx → vmware（id → vmx 解析在本层
  * 做，vm-lifecycle 不读 config）；Hyper-V 名字命中 → Stop-VM；
- * VirtualBox 名字命中 → controlvm acpipowerbutton；否则按 docker 容器处理
- * （stop + rm）。引擎探测失败容错（没装不炸路由，落到下一个）。 */
+ * VirtualBox 名字命中 → controlvm acpipowerbutton；否则按 docker 容器处理。
+ * 1.5.10：docker down 语义由销毁改暂停——只 stop 不 rm（容器现场持久，
+ * 下次 up 走 docker start 续上）；真删除归 environment/rm / reset / rebuild。
+ * 引擎探测失败容错（没装不炸路由，落到下一个）。 */
 export async function handleEnvironmentDown(payload: {
   id?: string;
 }): Promise<AdminResponse> {
@@ -2534,7 +2654,9 @@ export async function handleEnvironmentDown(payload: {
   }
   const result = await envDown(id);
   if (!result.ok) return { success: false, error: result.error };
-  return { success: true, data: { removed: result.removed } };
+  // 1.5.10：docker down = 暂停（容器保留现场）。响应键沿用 removed（与 VM
+  // 分支同形状，GUI 只刷新侧栏），语义以本注释为准。
+  return { success: true, data: { removed: result.stopped } };
 }
 /** W1 — snapshot/rollback 的条目解析:登记 vm 环境 + vmx 定位(1.3.7 起
  * 统一走 resolveVmxForEntry:条目 vmx 字段优先,缺省回落 vmName→vmTemplates
@@ -2887,8 +3009,11 @@ export async function handleAutoRunList(payload: { workspace?: unknown }): Promi
  * 引导（env rm 只对登记条目）。Hyper-V 名字命中 → hypervEnvRm（Remove-VM
  * + 删实例目录）；VirtualBox 名字命中 → vboxEnvRm（unregistervm --delete）。
  * 1.3.7 补口：ssh 条目只摘登记（远端机器不受影响，无实体可删）；docker
- * 条目容器运行中拒绝（docker ps 探测，口径照 vm「运行中拒绝」），停着
- * 只摘登记——容器实体的删除仍归 env down（stop + rm），不走 rm。
+ * 条目容器运行中拒绝（docker ps 探测，口径照 vm「运行中拒绝」）。
+ * 1.5.10：down 语义改暂停（stop 不 rm）后，docker 条目的真删除归 rm——
+ * 停止的 docker 条目删除时 stop（幂等）+ rm 容器 + 摘登记，容器现场随删
+ * （GUI 确认模态文案同步改）。探测失败（docker 不可用）保留旧口径：跳过
+ * 实体删除直接摘登记。
  * 1.3.8 B2：已登记的 hyperv/vbox 条目（kind=vm 且解析不出 vmx）按条目 id
  * 回落实体删除（hypervEnvRm/vboxEnvRm，自带运行中拒绝）+ 摘登记——此前
  * 直接摘登记，与 GUI 的「永久删除 VM 实例」警示相反。 */
@@ -2903,6 +3028,20 @@ let rmDockerProbeImpl: RmDockerProbe = defaultRmDockerProbe;
 /** 测试注入 docker 运行探测（传 null 复位为生产探测）。 */
 export function __setRmDockerProbeForTests(fn: RmDockerProbe | null): void {
   rmDockerProbeImpl = fn ?? defaultRmDockerProbe;
+}
+/** rm 的 docker 实体删除通道（生产 = envRmContainer 实查：stop 幂等 + rm）。
+ *  1.5.10：down 改暂停后真删除归 rm。模块级可替换——admin 接线测试注入假
+ *  通道，绝不真调 docker。 */
+export interface RmDockerOps {
+  rmContainer: (container: string) => Promise<EnvResult<{ removed: string }>>;
+}
+const defaultRmDockerOps: RmDockerOps = {
+  rmContainer: (container) => envRmContainer(container),
+};
+let rmDockerOpsImpl: RmDockerOps = defaultRmDockerOps;
+/** 测试注入 docker 实体删除通道（传 null 复位为生产通道）。 */
+export function __setRmDockerOpsForTests(ops: RmDockerOps | null): void {
+  rmDockerOpsImpl = ops ?? defaultRmDockerOps;
 }
 /** rm 的 hyperv/vbox 实体删除通道（生产 = 各 lifecycle 实查）。
  *  模块级可替换——admin 接线测试注入假通道，绝不真连 Hyper-V/VirtualBox。 */
@@ -2977,8 +3116,9 @@ export async function handleEnvironmentRm(payload: {
     return unregisterEntry();
   }
   // 1.3.7 补口：docker 条目容器运行中拒绝（口径照 vm「运行中拒绝」：
-  // 探测失败视为不在跑，放行摘登记）；停着只摘登记——容器实体的删除
-  // 仍归 env down（stop + rm），不在这里做。
+  // 探测失败视为不在跑，放行）。1.5.10：停着 → stop（幂等）+ rm 容器 +
+  // 摘登记——rm 是真删除，容器现场随删（down 改暂停后实体删除归这里）。
+  // 探测失败（docker 不可用）时保留旧口径：跳过实体删除直接摘登记。
   if (rmEntry?.kind === 'docker') {
     const container = rmEntry.container ?? rmEntry.id;
     const probe = await rmDockerProbeImpl(container);
@@ -2987,6 +3127,10 @@ export async function handleEnvironmentRm(payload: {
         success: false,
         error: `环境 "${id}" 的容器 "${container}" 还在运行——先 zhishi env down ${id}，确认不要了再 rm`,
       };
+    }
+    if (probe.ok) {
+      const rm = await rmDockerOpsImpl.rmContainer(container);
+      if (!rm.ok) return { success: false, error: rm.error };
     }
     return unregisterEntry();
   }
@@ -3224,7 +3368,9 @@ export async function handleEnvironmentPs(): Promise<AdminResponse> {
  *
  * 并行扫描宿主机：docker 全量容器（含已退出，去掉 zhishi.env 过滤）+ VMware
  * 运行中 vmx（vmrun list 只有运行中口径，无全量枚举 API）+ Hyper-V 全量 VM
- * （Get-VM 无过滤，1.3.8 B5）+ VirtualBox 全量 VM（list vms，1.3.8 B5）。
+ * （Get-VM 无过滤，1.3.8 B5）+ VirtualBox 全量 VM（list vms，1.3.8 B5）+
+ * 1.5.10 docker 镜像（zhishi-env-*，「本机已有」接入镜像——镜像行可一键
+ * 启动为环境；非 zhishi-env-* 镜像不纳管，记录在案边界）。
  * 任一引擎缺席/不可用都走 safe 降级（该侧返回空数组），绝不抛错、绝不拖垮
  * 其它侧。结果只用于 gate 的「本机已有」分组，**从不回写 config.json**
  * （D28 约束①）。全量口径会扫出用户无关 VM——与已登记条目的去重由 1.3.7
@@ -3240,33 +3386,39 @@ export interface DiscoveredVm {
   /** guest OS 家族（vmware 从 vmx 静态判定；其余缺省 linux）。 */
   osFamily?: 'linux' | 'windows';
 }
-/** environment/discover 的四源枚举通道（生产 = 各 lifecycle 实查）。
+/** environment/discover 的五源枚举通道（生产 = 各 lifecycle 实查）。
  *  模块级可替换——admin 接线测试注入假源，绝不真连 docker/vmrun/hyperv/vbox。 */
 export interface DiscoverSources {
   dockerPsAll: () => Promise<EnvResult<{ instances: DiscoveredDocker[] }>>;
+  /** 1.5.10：zhishi-env-* 镜像发现（docker-image 驱动条目）。 */
+  dockerImages: () => Promise<EnvResult<{ images: DiscoveredDockerImage[] }>>;
   vmPs: () => Promise<EnvResult<{ vmxes: string[] }>>;
   hypervPsAll: () => Promise<EnvResult<{ instances: HypervInstance[] }>>;
   vboxPsAll: () => Promise<EnvResult<{ instances: VboxInstance[] }>>;
 }
 const defaultDiscoverSources: DiscoverSources = {
   dockerPsAll: () => envPsAll(),
+  dockerImages: () => envImages(),
   vmPs: () => vmEnvPs(),
   hypervPsAll: () => hypervEnvPsAll(),
   vboxPsAll: () => vboxEnvPsAll(),
 };
 let discoverSourcesImpl: DiscoverSources = defaultDiscoverSources;
-/** 测试注入 discover 四源（传 null 复位为生产源；Partial 可只换单侧）。 */
+/** 测试注入 discover 五源（传 null 复位为生产源；Partial 可只换单侧）。 */
 export function __setDiscoverSourcesForTests(sources: Partial<DiscoverSources> | null): void {
   discoverSourcesImpl = { ...defaultDiscoverSources, ...(sources ?? {}) };
 }
 export async function handleEnvironmentDiscover(): Promise<AdminResponse> {
-  const [dockerResult, vmResult, hypervResult, vboxResult] = await Promise.all([
+  const [dockerResult, imagesResult, vmResult, hypervResult, vboxResult] = await Promise.all([
     discoverSourcesImpl.dockerPsAll(),
+    discoverSourcesImpl.dockerImages(),
     discoverSourcesImpl.vmPs(),
     discoverSourcesImpl.hypervPsAll(),
     discoverSourcesImpl.vboxPsAll(),
   ]);
   const docker = dockerResult.ok ? dockerResult.instances : [];
+  // 1.5.10：镜像源降级同样为空数组（docker 不可用时与容器侧一起空）。
+  const images = imagesResult.ok ? imagesResult.images : [];
   const vm: DiscoveredVm[] = [
     ...(vmResult.ok
       ? vmResult.vmxes.map((v) => {
@@ -3300,7 +3452,7 @@ export async function handleEnvironmentDiscover(): Promise<AdminResponse> {
         }))
       : []),
   ];
-  return { success: true, data: { docker, vm } };
+  return { success: true, data: { docker, vm, images } };
 }
 /** `environment/adopt` — 模板认领（P2 V6）：把一台已有系统的 VM 自动养成
  * 配方模板（连通 → guest 初始化 → setup.sh → 关机 → 快照），产出落

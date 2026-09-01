@@ -12,6 +12,7 @@
 
 import type {
   DiscoveredDocker,
+  DiscoveredDockerImage,
   DiscoveredVm,
   DomainEntity,
   EnvEntry,
@@ -19,12 +20,14 @@ import type {
   Recipe,
 } from '../client/api';
 
-/** 侧栏五源快照（store 顶层状态里对应字段的形状）。 */
+/** 侧栏五源快照（store 顶层状态里对应字段的形状）。
+ *  1.5.10：discoveredImages = zhishi-env-* 镜像发现条目（discover 第三键）。 */
 export interface SidebarSnapshot {
   envs: EnvEntry[];
   running: PsInstance[];
   discoveredDocker: DiscoveredDocker[];
   discoveredVm: DiscoveredVm[];
+  discoveredImages: DiscoveredDockerImage[];
   recipes: Recipe[];
   domains: DomainEntity[];
 }
@@ -33,7 +36,7 @@ export interface SidebarSnapshot {
 export interface SidebarMergeResults {
   envs?: EnvEntry[];
   running?: PsInstance[];
-  discover?: { docker: DiscoveredDocker[]; vm: DiscoveredVm[] };
+  discover?: { docker: DiscoveredDocker[]; vm: DiscoveredVm[]; images?: DiscoveredDockerImage[] };
   recipes?: Recipe[];
   domains?: DomainEntity[];
 }
@@ -54,6 +57,8 @@ export function mergeSidebarSnapshot(
     running: results.running ?? prev.running,
     discoveredDocker: results.discover?.docker ?? prev.discoveredDocker,
     discoveredVm: results.discover?.vm ?? prev.discoveredVm,
+    // 1.5.10：镜像源独立归并（discover 请求整体失败时三键一起回退旧值）。
+    discoveredImages: results.discover?.images ?? prev.discoveredImages,
     recipes: results.recipes ?? prev.recipes,
     domains: results.domains ?? prev.domains,
   };

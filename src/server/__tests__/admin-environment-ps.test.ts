@@ -12,7 +12,9 @@
  *  - B3：ssh 条目探测用 host 字段 + 条目 port（不再 e.address:22）；
  *  - B7：同 id 多源行去重（引擎行 + 手动探测行只出一行）；
  *  - B12：environment/down 对 ssh 条目明确报错（不落 docker 兜底）；
- *  - B5：discover 的 hyperv/vbox 走全量枚举（非 zhishi-* / 停止态也列出）。
+ *  - B5：discover 的 hyperv/vbox 走全量枚举（非 zhishi-* / 停止态也列出）；
+ *  - 1.5.10：discover 第五源 docker 镜像（zhishi-env-*，driver=docker-image，
+ *    带反解 recipeId），单侧缺席降级空数组。
  */
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -247,6 +249,14 @@ describe('handleEnvironmentDiscover — B5 全量枚举', () => {
           ok: true as const,
           instances: [{ id: 'c1', name: 'user-mysql', image: 'mysql', status: 'Exited', managed: false }],
         }),
+      // 1.5.10：镜像源（zhishi-env-* 发现条目，driver: docker-image）
+      dockerImages: () =>
+        Promise.resolve({
+          ok: true as const,
+          images: [
+            { driver: 'docker-image' as const, id: 'zhishi-env-pwn:latest', name: 'zhishi-env-pwn:latest', image: 'zhishi-env-pwn:latest', recipeId: 'pwn' },
+          ],
+        }),
       vmPs: () => Promise.resolve({ ok: true as const, vmxes: ['D:\\vms\\kali.vmx'] }),
       hypervPsAll: () =>
         Promise.resolve({
@@ -264,8 +274,16 @@ describe('handleEnvironmentDiscover — B5 全量枚举', () => {
     });
     const r = await handleEnvironmentDiscover();
     expect(r.success).toBe(true);
-    const data = r.data as { docker: Array<{ name: string }>; vm: Array<{ driver: string; name: string; state: string }> };
+    const data = r.data as {
+      docker: Array<{ name: string }>;
+      vm: Array<{ driver: string; name: string; state: string }>;
+      images: Array<{ driver: string; recipeId: string }>;
+    };
     expect(data.docker.map((d) => d.name)).toEqual(['user-mysql']);
+    // 1.5.10：镜像行作为发现面新驱动类型返回（带反解的 recipeId）
+    expect(data.images).toEqual([
+      { driver: 'docker-image', id: 'zhishi-env-pwn:latest', name: 'zhishi-env-pwn:latest', image: 'zhishi-env-pwn:latest', recipeId: 'pwn' },
+    ]);
     const vmNames = data.vm.map((v) => `${v.driver}:${v.name}`);
     expect(vmNames).toContain('hyperv:zhishi-pwn-a1b2');
     expect(vmNames).toContain('hyperv:user-win11'); // 全量：非 zhishi-* 也列出
@@ -277,6 +295,7 @@ describe('handleEnvironmentDiscover — B5 全量枚举', () => {
     seedEntries([]);
     __setDiscoverSourcesForTests({
       dockerPsAll: () => Promise.resolve({ ok: false as const, error: 'docker 不可用' }),
+      dockerImages: () => Promise.resolve({ ok: false as const, error: 'docker 不可用' }),
       vmPs: () => Promise.resolve({ ok: false as const, error: 'vmrun 不可用' }),
       hypervPsAll: () => Promise.resolve({ ok: false as const, error: 'Hyper-V 不可用' }),
       vboxPsAll: () =>
@@ -287,8 +306,9 @@ describe('handleEnvironmentDiscover — B5 全量枚举', () => {
     });
     const r = await handleEnvironmentDiscover();
     expect(r.success).toBe(true);
-    const data = r.data as { docker: unknown[]; vm: Array<{ driver: string; name: string }> };
+    const data = r.data as { docker: unknown[]; vm: Array<{ driver: string; name: string }>; images: unknown[] };
     expect(data.docker).toEqual([]);
+    expect(data.images).toEqual([]); // 1.5.10：镜像源同样单侧降级为空数组
     expect(data.vm).toEqual([{ driver: 'vbox', id: 'user-kali', name: 'user-kali', state: 'unknown' }]);
   });
 });

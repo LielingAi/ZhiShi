@@ -403,10 +403,10 @@ describe('wizardDiscoveredItems（1.3.7 实机修复）', () => {
 // ===== 1.3.8 ③a：向导生命周期差异显性化 =====
 
 describe('recipeLifecycleNote（1.3.8 ③a 生命周期差异）', () => {
-  it('vm → 持久可快照；docker/缺省 → 一次性容器', () => {
+  it('vm → 持久可快照；docker/缺省 → 现场持久（1.5.10 镜像为主）', () => {
     expect(recipeLifecycleNote('vm')).toBe('持久虚拟机，可快照回滚');
-    expect(recipeLifecycleNote('docker')).toBe('一次性容器，用完即弃');
-    expect(recipeLifecycleNote(undefined)).toBe('一次性容器，用完即弃');
+    expect(recipeLifecycleNote('docker')).toBe('现场持久（停止=暂停，重启续现场）');
+    expect(recipeLifecycleNote(undefined)).toBe('现场持久（停止=暂停，重启续现场）');
   });
 
   it('确认页带「生命周期」行（docker/vm 各一句）', () => {
@@ -418,7 +418,7 @@ describe('recipeLifecycleNote（1.3.8 ③a 生命周期差异）', () => {
       wizardSummaryRows(dockerState, { recipes: RECIPES, domains: DOMAINS }).map((r) => [r.label, r.value]),
     );
     expect(dockerMap['基底']).toBe('docker');
-    expect(dockerMap['生命周期']).toBe('一次性容器，用完即弃');
+    expect(dockerMap['生命周期']).toBe('现场持久（停止=暂停，重启续现场）');
 
     const vmState = stateAt(3, {
       source: 'vm-recipe',

@@ -9,6 +9,12 @@
  * 条目，见 model/envs.matchRegisteredEnv）——不出「登记」按钮，点击
  * 直接切入已登记身份，防同一 VM/容器重复登记。
  *
+ * 1.5.10：「本机已有」接入镜像行（zhishi-env-*，driver 'docker-image'，
+ * 带「镜像」徽章）——行操作只有「启动为环境」（environment/up {recipe}，
+ * 镜像在则秒开 + 服务端回写登记）；环境行 ⋯ 菜单加「重新构建…」
+ * （recipeId 非空）与「重置容器…」（docker 条目），确认模态文案在
+ * model/env-rebuild。
+ *
  * 准入判定在 model/envs.ts（分组）+ model/access-gate.ts（点击拦截/启动
  * 按钮可见性，纯函数已单测）；本组件只接线到 store。
  */
@@ -20,12 +26,15 @@ import { useGuiStore } from '../store/useGuiStore';
 import { capabilityBadgeText, capabilityTooltip, groupSidebar } from '../model/envs';
 import { accessGate, gateToast } from '../model/access-gate';
 import { canStopEnv } from '../model/env-down';
+import { canRebuildEnv, canResetEnv } from '../model/env-rebuild';
 
 export function EnvSidebar(): React.JSX.Element {
   const envs = useGuiStore((s) => s.envs);
   const running = useGuiStore((s) => s.running);
   const discoveredDocker = useGuiStore((s) => s.discoveredDocker);
   const discoveredVm = useGuiStore((s) => s.discoveredVm);
+  // 1.5.10：镜像发现条目（zhishi-env-*，本机已有组的镜像行数据源）。
+  const discoveredImages = useGuiStore((s) => s.discoveredImages);
   const currentEnvKey = useGuiStore((s) => s.currentEnvKey);
   const switchEnv = useGuiStore((s) => s.switchEnv);
   const startEnv = useGuiStore((s) => s.startEnv);
@@ -34,6 +43,10 @@ export function EnvSidebar(): React.JSX.Element {
   const registerDiscovered = useGuiStore((s) => s.registerDiscovered);
   const requestEnvRemove = useGuiStore((s) => s.requestEnvRemove);
   const requestEnvDown = useGuiStore((s) => s.requestEnvDown);
+  // 1.5.10：镜像行「启动为环境」+ ⋯ 菜单「重新构建/重置容器」。
+  const startImageEnv = useGuiStore((s) => s.startImageEnv);
+  const requestEnvRebuild = useGuiStore((s) => s.requestEnvRebuild);
+  const requestEnvReset = useGuiStore((s) => s.requestEnvReset);
   const openEnvDetail = useGuiStore((s) => s.openEnvDetail);
   const openNewEnv = useGuiStore((s) => s.openNewEnv);
   const setPage = useGuiStore((s) => s.setPage);
@@ -81,9 +94,17 @@ export function EnvSidebar(): React.JSX.Element {
             vmx: v.vmx,
             osFamily: v.osFamily,
           })),
+          // 1.5.10：镜像行进本机已有组（driver 'docker-image'，带反解的 recipeId）。
+          ...discoveredImages.map((d) => ({
+            id: d.id,
+            name: d.name,
+            driver: d.driver,
+            image: d.image,
+            recipeId: d.recipeId,
+          })),
         ],
       ),
-    [envs, running, discoveredDocker, discoveredVm],
+    [envs, running, discoveredDocker, discoveredVm, discoveredImages],
   );
 
   /** 从 store 最新快照重建侧栏分组（点击重探后重新判定准入）。 */
@@ -101,6 +122,13 @@ export function EnvSidebar(): React.JSX.Element {
           driver: v.driver,
           vmx: v.vmx,
           osFamily: v.osFamily,
+        })),
+        ...s.discoveredImages.map((d) => ({
+          id: d.id,
+          name: d.name,
+          driver: d.driver,
+          image: d.image,
+          recipeId: d.recipeId,
         })),
       ],
     );
@@ -185,6 +213,11 @@ export function EnvSidebar(): React.JSX.Element {
                     已登记为 {it.registeredAs.label}
                   </span>
                 )}
+                {/* 1.5.10：镜像行徽章——与容器/VM 行区分（无登记语义，
+                    行操作只有「启动为环境」）。 */}
+                {it.kind === 'docker-image' && (
+                  <span className="cap" title={it.detail}>镜像</span>
+                )}
                 {it.group === 'run' && <span className="snap">◆</span>}
                 {it.warn && <span className="warn">⚠</span>}
                 {/* 1.3.8 视觉：行操作收进「⋯」下拉菜单（单入口，文字标签，不依赖悬停提示） */}
@@ -225,6 +258,32 @@ export function EnvSidebar(): React.JSX.Element {
                         }}
                       >
                         ⏹ 停止（有损，需确认）
+                      </button>
+                    )}
+                    {/* 1.5.10：显式重建（recipeId 非空才显示）——镜像重建 +
+                        换全新容器，旧现场随删（确认模态文案在 model/env-rebuild）。 */}
+                    {canRebuildEnv(it) && (
+                      <button
+                        className="eb-menu-item"
+                        onClick={() => {
+                          setMenuFor(null);
+                          requestEnvRebuild({ recipe: it.recipeId!, label: it.label });
+                        }}
+                      >
+                        ♻ 重新构建…
+                      </button>
+                    )}
+                    {/* 1.5.10：显式重置（docker 条目）——镜像不动、换干净容器，
+                        现场清空。 */}
+                    {canResetEnv(it) && (
+                      <button
+                        className="eb-menu-item"
+                        onClick={() => {
+                          setMenuFor(null);
+                          requestEnvReset({ id: it.key, label: it.label });
+                        }}
+                      >
+                        ⟲ 重置容器…
                       </button>
                     )}
                     <button
@@ -277,7 +336,20 @@ export function EnvSidebar(): React.JSX.Element {
                     </button>
                   </div>
                 )}
-                {it.group === 'unreg' && !it.registeredAs && (
+                {it.group === 'unreg' && !it.registeredAs && it.kind === 'docker-image' && (
+                  <button
+                    className="btn small eb-register"
+                    title={`启动为环境（environment/up ${it.recipeId ?? ''}——镜像在则秒开并登记入侧栏）`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      // 1.5.10：镜像 → 环境（run 派生容器 + 服务端回写登记）。
+                      void startImageEnv(it.key);
+                    }}
+                  >
+                    启动为环境
+                  </button>
+                )}
+                {it.group === 'unreg' && !it.registeredAs && it.kind !== 'docker-image' && (
                   <button
                     className="btn small eb-register"
                     title={

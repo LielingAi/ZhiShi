@@ -42,9 +42,10 @@ import {
   type DecisionPending,
 } from '../model/decision';
 import { escAction } from '../model/esc-chain';
-import { bootStages, buildRegisterPayload, isDiscoveredRunning, startRecipeFor, type DiscoveredLike, type RegisterExtras } from '../model/envs';
+import { bootStages, buildRegisterPayload, imageStartRecipe, isDiscoveredRunning, startRecipeFor, type DiscoveredLike, type RegisterExtras } from '../model/envs';
 import { envRemovePlan, type EnvRemoveTarget } from '../model/env-remove';
 import type { EnvDownTarget } from '../model/env-down';
+import type { EnvRebuildTarget, EnvResetTarget } from '../model/env-rebuild';
 import {
   buildWizardPayload,
   findRunningEnvForRecipe,
@@ -120,6 +121,7 @@ import * as api from '../client/api';
 import type {
   AgentEntity,
   DiscoveredDocker,
+  DiscoveredDockerImage,
   DiscoveredVm,
   DomainEntity,
   EnvEntry,
@@ -209,6 +211,8 @@ export type ModalKind =
   | 'env-down'
   | 'env-provision'
   | 'env-detail'
+  | 'env-rebuild'
+  | 'env-reset'
   | 'auto-run-start'
   | 'auto-run-stop';
 
@@ -242,6 +246,10 @@ export interface ModalState {
   envProvision?: { id: string; label: string; missing: string[] };
   /** 1.3.8 多配方：env-detail 模态展示/管理目标（完整登记条目）。 */
   envDetail?: EnvEntry;
+  /** 1.5.10：env-rebuild 模态的重建目标（文案见 model/env-rebuild）。 */
+  envRebuild?: EnvRebuildTarget;
+  /** 1.5.10：env-reset 模态的重置目标（文案见 model/env-rebuild）。 */
+  envReset?: EnvResetTarget;
 }
 
 export interface DrawerState {
@@ -290,6 +298,8 @@ export interface GuiState {
   running: PsInstance[];
   discoveredDocker: DiscoveredDocker[];
   discoveredVm: DiscoveredVm[];
+  /** 1.5.10：zhishi-env-* 镜像发现条目（discover 第三键 images）。 */
+  discoveredImages: DiscoveredDockerImage[];
   recipes: Recipe[];
   models: ModelProvider[];
   workspace: string | null;
@@ -396,6 +406,16 @@ export interface GuiState {
   requestEnvDown(target: EnvDownTarget): void;
   /** 1.3.8 ①：确认停止（environment/down → 成功 refreshSidebar + toast；失败 toast 服务端错误原文）。 */
   confirmEnvDown(): Promise<void>;
+  /** 1.5.10：镜像行「启动为环境」（environment/up {recipe}——镜像在则秒开 + 服务端回写登记）。 */
+  startImageEnv(itemKey: string): Promise<void>;
+  /** 1.5.10：环境行 ⋯「重新构建…」入口——开确认模态（文案在 model/env-rebuild）。 */
+  requestEnvRebuild(target: EnvRebuildTarget): void;
+  /** 1.5.10：确认重建（environment/rebuild → 成功 refreshSidebar + toast；失败保留模态）。 */
+  confirmEnvRebuild(): Promise<void>;
+  /** 1.5.10：docker 环境行 ⋯「重置容器…」入口——开确认模态（文案在 model/env-rebuild）。 */
+  requestEnvReset(target: EnvResetTarget): void;
+  /** 1.5.10：确认重置（environment/reset → 成功 refreshSidebar + toast；失败保留模态）。 */
+  confirmEnvReset(): Promise<void>;
   /** 1.3.8 多配方：侧栏 ℹ 入口——开环境详情模态（登记条目快照）。 */
   openEnvDetail(envId: string): void;
   /** 1.3.8 多配方：应用绑定集合（environment/bind-recipes → 成功关模态 + refreshSidebar + toast）。 */
@@ -544,6 +564,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   running: [],
   discoveredDocker: [],
   discoveredVm: [],
+  discoveredImages: [],
   recipes: [],
   models: [],
   workspace: null,
@@ -1032,6 +1053,101 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       state.showToast(`✓ 已停止 ${target.label}`);
     } catch (err) {
       state.showToast(`停止失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  // ── 1.5.10：镜像行「启动为环境」+ 显式重建/重置（镜像为主三层模型） ──
+
+  async startImageEnv(itemKey: string) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    const img = state.discoveredImages.find((d) => d.id === itemKey);
+    const recipe = img ? imageStartRecipe(img) : null;
+    if (!img || !recipe) {
+      state.showToast('该镜像缺少配方归属（recipeId），无法启动');
+      return;
+    }
+    // 镜像在则服务端 run 派生秒开并回写登记（链路服务端已闭环，1.5.10）。
+    state.showToast(`▶ 从镜像 ${img.name ?? img.id} 启动环境（${recipe}）…`);
+    try {
+      const res = await api.environmentUp(c, {
+        recipe,
+        workspace: state.workspace ?? undefined,
+      });
+      if (!res.success) {
+        state.showToast(`启动失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      void state.refreshSidebar();
+      state.showToast(`✓ ${recipe} 已启动（镜像派生）`);
+    } catch (err) {
+      state.showToast(`启动失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  requestEnvRebuild(target) {
+    set({ modal: { kind: 'env-rebuild', envRebuild: target } });
+  },
+
+  async confirmEnvRebuild() {
+    const c = client;
+    const state = get();
+    const target = state.modal?.envRebuild;
+    if (!target) return;
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    state.showToast(`⏳ 重新构建 ${target.recipe}（docker build，可能要几分钟）…`);
+    try {
+      const res = await api.environmentRebuild(c, {
+        recipe: target.recipe,
+        workspace: state.workspace ?? undefined,
+      });
+      if (!res.success) {
+        // 失败保留模态（可重试/取消），toast 服务端错误原文。
+        state.showToast(`重建失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set({ modal: null });
+      void state.refreshSidebar();
+      state.showToast(`✓ ${target.label} 已重建（镜像重建 + 全新容器）`);
+    } catch (err) {
+      state.showToast(`重建失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  requestEnvReset(target) {
+    set({ modal: { kind: 'env-reset', envReset: target } });
+  },
+
+  async confirmEnvReset() {
+    const c = client;
+    const state = get();
+    const target = state.modal?.envReset;
+    if (!target) return;
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.environmentReset(c, {
+        id: target.id,
+        workspace: state.workspace ?? undefined,
+      });
+      if (!res.success) {
+        state.showToast(`重置失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set({ modal: null });
+      void state.refreshSidebar();
+      state.showToast(`✓ ${target.label} 已重置（镜像不动，换干净容器）`);
+    } catch (err) {
+      state.showToast(`重置失败：${err instanceof Error ? err.message : String(err)}`);
     }
   },
 

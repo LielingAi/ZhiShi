@@ -7,8 +7,9 @@
  * 覆盖：
  *  - ssh 条目：只摘登记（远端机器不动），探测通道不被调用；
  *  - docker 条目容器在跑 → 拒绝（照 vm「运行中拒绝」语义），登记不动；
- *  - docker 条目容器停着 → 只摘登记（容器实体归 env down，不在 rm 做）；
- *  - docker 探测失败（docker 不可用）→ 放行摘登记（探测失败视为不在跑）；
+ *  - docker 条目容器停着 → stop（幂等）+ rm 容器 + 摘登记（1.5.10：rm 是
+ *    真删除，容器现场随删；down 改暂停后实体删除归 rm）；
+ *  - docker 探测失败（docker 不可用）→ 放行摘登记，跳过实体删除（旧口径）；
  *  - .vmx 直传拒绝（既有守卫不受新分支影响）。
  */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -17,6 +18,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  __setRmDockerOpsForTests,
   __setRmDockerProbeForTests,
   __setRmVmEntityOpsForTests,
   handleEnvironmentRm,
@@ -70,6 +72,7 @@ beforeEach(() => {
 
 afterEach(() => {
   __setRmDockerProbeForTests(null);
+  __setRmDockerOpsForTests(null);
   __setRmVmEntityOpsForTests(null);
   process.env.HOME = prevHome;
   process.env.USERPROFILE = prevUserProfile;
@@ -92,30 +95,66 @@ describe('handleEnvironmentRm — ssh 条目（只摘登记，远端机器不受
   });
 });
 
-describe('handleEnvironmentRm — docker 条目（运行中拒绝，停着只摘登记）', () => {
-  it('容器在跑 → 拒绝，引导先 env down；登记原样保留', async () => {
+describe('handleEnvironmentRm — docker 条目（运行中拒绝；停着 rm 真删除）', () => {
+  it('容器在跑 → 拒绝，引导先 env down；登记原样保留，不碰实体', async () => {
     seedEntries([DOCKER_ENTRY]);
     __setRmDockerProbeForTests(() => Promise.resolve({ ok: true, running: true }));
+    let rmCalled = 0;
+    __setRmDockerOpsForTests({
+      rmContainer: () => {
+        rmCalled += 1;
+        return Promise.resolve({ ok: true as const, removed: 'x' });
+      },
+    });
     const r = await handleEnvironmentRm({ id: DOCKER_ENTRY.id });
     expect(r.success).toBe(false);
     expect(r.error).toContain('还在运行');
     expect(r.error).toContain(`zhishi env down ${DOCKER_ENTRY.id}`);
     expect(readEnvIds()).toEqual([DOCKER_ENTRY.id]);
+    expect(rmCalled).toBe(0);
   });
 
-  it('容器停着 → 摘登记成功（容器实体不归 rm 管）', async () => {
+  it('1.5.10：容器停着 → stop（幂等）+ rm 容器 + 摘登记（真删除，现场随删）', async () => {
     seedEntries([SSH_ENTRY, DOCKER_ENTRY]);
     __setRmDockerProbeForTests(() => Promise.resolve({ ok: true, running: false }));
+    const rmCalls: string[] = [];
+    __setRmDockerOpsForTests({
+      rmContainer: (container) => {
+        rmCalls.push(container);
+        return Promise.resolve({ ok: true as const, removed: container });
+      },
+    });
     const r = await handleEnvironmentRm({ id: DOCKER_ENTRY.id });
     expect(r.success).toBe(true);
+    expect(rmCalls).toEqual(['zhishi-pwn-a3f2']); // 实体删除按条目 container 字段
     expect(readEnvIds()).toEqual(['range-1']);
   });
 
-  it('探测失败（docker 不可用）→ 视为不在跑，放行摘登记', async () => {
+  it('1.5.10：容器停着但实体 rm 失败 → 报错，登记保留（不摘登记留孤儿引用）', async () => {
+    seedEntries([DOCKER_ENTRY]);
+    __setRmDockerProbeForTests(() => Promise.resolve({ ok: true, running: false }));
+    __setRmDockerOpsForTests({
+      rmContainer: () => Promise.resolve({ ok: false as const, error: 'docker rm 失败：permission denied' }),
+    });
+    const r = await handleEnvironmentRm({ id: DOCKER_ENTRY.id });
+    expect(r.success).toBe(false);
+    expect(r.error).toContain('permission denied');
+    expect(readEnvIds()).toEqual([DOCKER_ENTRY.id]);
+  });
+
+  it('探测失败（docker 不可用）→ 视为不在跑，跳过实体删除直接摘登记（旧口径保留）', async () => {
     seedEntries([DOCKER_ENTRY]);
     __setRmDockerProbeForTests(() => Promise.resolve({ ok: false }));
+    let rmCalled = 0;
+    __setRmDockerOpsForTests({
+      rmContainer: () => {
+        rmCalled += 1;
+        return Promise.resolve({ ok: true as const, removed: 'x' });
+      },
+    });
     const r = await handleEnvironmentRm({ id: DOCKER_ENTRY.id });
     expect(r.success).toBe(true);
+    expect(rmCalled).toBe(0);
     expect(readEnvIds()).toEqual([]);
   });
 
@@ -125,6 +164,9 @@ describe('handleEnvironmentRm — docker 条目（运行中拒绝，停着只摘
     __setRmDockerProbeForTests((container) => {
       probed = container;
       return Promise.resolve({ ok: true, running: false });
+    });
+    __setRmDockerOpsForTests({
+      rmContainer: () => Promise.resolve({ ok: true as const, removed: 'zhishi-pwn-a3f2' }),
     });
     const r = await handleEnvironmentRm({ id: 'my-pwn' });
     expect(r.success).toBe(true);

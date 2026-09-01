@@ -184,6 +184,10 @@ zhishi env ps                                         # 运行中实例合集（
 
 zhishi env down <id>                                  # 停环境（docker=stop+rm；VM=stop soft 停真实 VM，文件不动）
 
+zhishi env rebuild <recipe>                           # 强制重建镜像并换容器（docker 配方；镜像+容器全换新，1.5.10）
+
+zhishi env reset <id> [--cwd PATH]                    # 镜像不动，给 docker 环境换干净容器（现场重置，1.5.10）
+
 zhishi env rm <id>                                    # 摘除环境登记（运行中拒绝；VM 文件绝不删）
 
 zhishi env adopt <recipe> --vm <X.vmx> [--user U]     # 认领已有系统的 VM 为模板（自动初始化+快照，密码现场输入不落盘）

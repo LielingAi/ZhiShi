@@ -21,14 +21,15 @@ describe('envRemovePlan — 五类形态', () => {
     expect(plan.confirmLabel).toBe('移除登记');
   });
 
-  it('docker：只摘登记，容器实例销毁走「环境停止」（轻确认，非警示）', () => {
+  it('docker：1.5.10 真删容器——现场随删不可恢复（警示态，无需输名）', () => {
     const plan = envRemovePlan(target({ kind: 'docker' }));
     expect(plan.allowed).toBe(true);
-    expect(plan.danger).toBe(false);
+    expect(plan.danger).toBe(true);
     expect(plan.strength).toBe('confirm');
-    expect(plan.body).toContain('只摘除登记');
-    expect(plan.body).toContain('容器实例不在此删除');
-    expect(plan.body).toContain('环境停止');
+    expect(plan.body).toContain('docker rm');
+    expect(plan.body).toContain('现场随删、不可恢复');
+    expect(plan.body).toContain('镜像保留');
+    expect(plan.confirmLabel).toBe('删除容器并移除登记');
   });
 
   it('vm + vmx（vmware）：只摘登记，VM 文件原样保留（轻确认，非警示）', () => {

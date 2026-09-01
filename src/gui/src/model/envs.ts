@@ -11,7 +11,9 @@
  *   已停止   = 已登记但不在运行中的条目
  *   本机已有 = discover 出来的、未登记（不在 list 里）的本机容器/VM；
  *              1.3.7 实机修复 A：id 之外再按 vmx/vmName/container 同族匹配——
- *              命中已登记条目的带 registeredAs 徽章（不可重复登记）
+ *              命中已登记条目的带 registeredAs 徽章（不可重复登记）；
+ *              1.5.10：zhishi-env-* 镜像也进本组（driver 'docker-image'，
+ *              无登记语义——行操作只有「启动为环境」）
  */
 
 export interface EnvEntryLike {
@@ -52,11 +54,16 @@ export interface DiscoveredLike {
   id: string;
   name?: string;
   state?: string;
+  /** docker / vmware / hyperv / vbox；1.5.10 新增 'docker-image'（zhishi-env-* 镜像）。 */
   driver?: string;
   /** 1.3.5：vmware 的 vmx 绝对路径（登记 payload 用；hyperv/vbox 无）。 */
   vmx?: string;
   /** 1.3.5：guest OS 家族（登记 payload 用；缺省不传）。 */
   osFamily?: 'linux' | 'windows';
+  /** 1.5.10：镜像条目的配方 id（服务端从 zhishi-env-<recipeId> 反解）。 */
+  recipeId?: string;
+  /** 1.5.10：镜像全名（zhishi-env-<recipe>:<tag>；展示用，缺省取 name/id）。 */
+  image?: string;
 }
 
 export interface SidebarEnvItem {
@@ -73,7 +80,9 @@ export interface SidebarEnvItem {
    * （environment/up 按 recipe 幂等重 up，VM/docker 都走它）。
    */
   startable: boolean;
-  /** 启动按钮的 up 配方（startable 时非空）。 */
+  /** 启动按钮的 up 配方（startable 时非空）。
+   *  1.5.10：镜像行（kind 'docker-image'）复用此字段——「启动为环境」的
+   *  up 配方 = 服务端从镜像名反解的 recipeId。 */
   recipeId?: string;
   /** vmware 条目的 vmx 路径（删除确认文案的驱动判定入参，见 model/env-remove）。 */
   vmx?: string;
@@ -253,6 +262,16 @@ export function startRecipeFor(entry: EnvEntryLike): string {
   return entry.recipeId ?? entry.recipeIds?.[0] ?? entry.id;
 }
 
+/**
+ * 1.5.10：镜像行「启动为环境」的 up 配方——仅 docker-image 发现条目
+ * 且服务端反解出 recipeId 时返回；否则 null（调用方 toast 拒绝）。
+ */
+export function imageStartRecipe(d: DiscoveredLike): string | null {
+  if (d.driver !== 'docker-image') return null;
+  const r = d.recipeId?.trim();
+  return r ? r : null;
+}
+
 export function groupSidebar(
   envs: EnvEntryLike[],
   running: PsInstanceLike[],
@@ -276,6 +295,8 @@ export function groupSidebar(
       kind: inst.driver ?? entry?.kind ?? 'env',
       warn: false,
       startable: false,
+      // 1.5.10：运行中行也带配方（⋯ 菜单「重新构建」入口的 rebuild 参数来源）。
+      recipeId: entry?.recipeId ?? (entry?.recipeIds?.length ? entry.recipeIds[0] : undefined),
       vmx: entry?.vmx,
       capability: capabilityOf(entry),
     });
@@ -306,6 +327,22 @@ export function groupSidebar(
   const unregItems: SidebarEnvItem[] = [];
   for (const d of discovered) {
     if (registeredIds.has(d.id)) continue;
+    // 1.5.10：镜像行（docker-image）——不是容器/VM，无登记语义；
+    // 行操作只有「启动为环境」（environment/up { recipe: recipeId }，
+    // 镜像在则秒开 + 服务端回写登记）。
+    if (d.driver === 'docker-image') {
+      unregItems.push({
+        key: d.id,
+        label: d.name ?? d.id,
+        group: 'unreg',
+        detail: `docker-image · 镜像（配方 ${d.recipeId ?? '未知'}）`,
+        kind: 'docker-image',
+        warn: false,
+        startable: false,
+        recipeId: d.recipeId,
+      });
+      continue;
+    }
     // 1.3.8 ②：同族匹配 + 停止态判定收口进 resolveEnvState——
     // 已登记的同族条目显徽章、不再出「登记」按钮，防重复登记。
     const st = resolveEnvState({ discovered: d }, running, envs);

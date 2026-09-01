@@ -65,6 +65,12 @@ describe('gateToast', () => {
       '环境未启动，先启动再进入',
     );
   });
+
+  it('1.5.10：镜像行（docker-image）无登记语义——引导「启动为环境」', () => {
+    expect(
+      gateToast(item({ group: 'unreg', kind: 'docker-image' }), { allow: false, reason: 'unregistered' }),
+    ).toBe('镜像无需登记——点「启动为环境」派生容器');
+  });
 });
 
 describe('hostAnchorLabel', () => {

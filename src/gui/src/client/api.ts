@@ -8,7 +8,8 @@
  *   - /chat/model   POST { model, providerId } → { success, providerId, model }
  *   - /api/admin/environment/list     → { success, data: { environments } }
  *   - /api/admin/environment/ps       → { success, data: { instances } }
- *   - /api/admin/environment/discover → { success, data: { docker, vm } }
+ *   - /api/admin/environment/discover → { success, data: { docker, vm, images } }
+ *     （1.5.10：images = zhishi-env-* 镜像发现条目，driver 'docker-image'）
  *   - /api/admin/environment/recipes  → { success, data: { root, recipes } }
  *   - /api/admin/environment/select   POST { workspace, selection } → { success, data? }
  *   - /api/admin/environment/add      POST EnvironmentEntryInput → { success }
@@ -70,6 +71,17 @@ export interface DiscoveredVm {
   osFamily?: 'linux' | 'windows';
   /** 1.3.5：vmware 的 vmx 绝对路径（登记 payload 用）。 */
   vmx?: string;
+}
+
+/** 1.5.10：zhishi-env-* 镜像发现条目（environment/discover 第三键 images）。 */
+export interface DiscoveredDockerImage {
+  driver: 'docker-image';
+  /** 镜像全名 zhishi-env-<recipe>:<tag>（唯一键）。 */
+  id: string;
+  name?: string;
+  image?: string;
+  /** 从仓库名反解的配方 id（zhishi-env-<recipeId> → recipeId）。 */
+  recipeId?: string;
 }
 
 export interface Recipe {
@@ -137,12 +149,14 @@ export function fetchEnvironmentPs(client: GuiSidecarClient): Promise<PsInstance
 
 export function fetchEnvironmentDiscover(
   client: GuiSidecarClient,
-): Promise<{ docker: DiscoveredDocker[]; vm: DiscoveredVm[] }> {
+): Promise<{ docker: DiscoveredDocker[]; vm: DiscoveredVm[]; images: DiscoveredDockerImage[] }> {
   return client
-    .adminPost<{ success: boolean; data?: { docker?: DiscoveredDocker[]; vm?: DiscoveredVm[] } }>(
-      'environment/discover',
-    )
-    .then((r) => ({ docker: r.data?.docker ?? [], vm: r.data?.vm ?? [] }));
+    .adminPost<{
+      success: boolean;
+      data?: { docker?: DiscoveredDocker[]; vm?: DiscoveredVm[]; images?: DiscoveredDockerImage[] };
+    }>('environment/discover')
+    // 1.5.10：images 键缺省（旧 sidecar）回落空数组——镜像行不渲染，容器/VM 面不受影响。
+    .then((r) => ({ docker: r.data?.docker ?? [], vm: r.data?.vm ?? [], images: r.data?.images ?? [] }));
 }
 
 export function fetchEnvironmentRecipes(client: GuiSidecarClient): Promise<Recipe[]> {
@@ -278,14 +292,39 @@ export function environmentUp(
 
 /**
  * 1.3.8 ①：停止运行中环境（侧栏「停止」按钮）。服务端按条目路由：
- * vmware 关 vmx、hyperv Stop-VM、vbox acpipowerbutton、docker stop+rm
- * （src/server/admin-api.ts::handleEnvironmentDown）。
+ * vmware 关 vmx、hyperv Stop-VM、vbox acpipowerbutton、docker stop
+ * ——1.5.10 起 docker 只 stop 不 rm（暂停语义，现场保留；真删除归
+ * environment/rm / reset / rebuild，见 src/server/admin-api.ts）。
  */
 export function environmentDown(
   client: GuiSidecarClient,
   input: { id: string },
 ): Promise<{ success: boolean; error?: string; data?: { removed?: string } }> {
   return client.adminPost('environment/down', input);
+}
+
+/**
+ * 1.5.10：显式重建（docker 配方）——强制 docker build（不看缓存语义由服务端
+ * 定）→ stop+rm 同配方旧容器（旧现场随删）→ run 新容器 → 回写登记。
+ * 构建期长（分钟级），调用侧 toast 说明。
+ */
+export function environmentRebuild(
+  client: GuiSidecarClient,
+  input: { recipe: string; workspace?: string },
+): Promise<{ success: boolean; error?: string; data?: Record<string, unknown> }> {
+  return client.adminPost('environment/rebuild', input);
+}
+
+/**
+ * 1.5.10：显式重置（docker 条目）——镜像不动，stop+rm 条目容器 → run 干净
+ * 新容器（要干净房间时人选）→ 回写新登记。workspace 缺省由服务端取旧容器
+ * 挂载 label。
+ */
+export function environmentReset(
+  client: GuiSidecarClient,
+  input: { id: string; workspace?: string },
+): Promise<{ success: boolean; error?: string; data?: Record<string, unknown> }> {
+  return client.adminPost('environment/reset', input);
 }
 
 export function environmentAdopt(
@@ -332,8 +371,9 @@ export function environmentBindRecipes(
 
 /**
  * 1.3.7 补口：删除已登记环境（侧栏「删除」按钮）。服务端按 kind 分派：
- * ssh/docker 摘登记（docker 运行中拒绝）、vmware 摘登记不动 VM 文件、
- * hyperv/vbox 删 VM 实例——语义确认文案在 model/env-remove。
+ * ssh 摘登记、vmware 摘登记不动 VM 文件、hyperv/vbox 删 VM 实例；
+ * 1.5.10 起 docker 停着删除 = 真删容器（stop 幂等 + rm，现场随删）再摘登记
+ * ——语义确认文案在 model/env-remove。
  */
 export function environmentRemove(
   client: GuiSidecarClient,

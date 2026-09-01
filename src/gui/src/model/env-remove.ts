@@ -4,7 +4,9 @@
  * 侧栏「删除」入口的判定与文案——按驱动给准确语义（不许含糊），与服务端
  * handleEnvironmentRm（src/server/admin-api.ts）一一对应：
  *   ssh        → 只摘登记，远端机器不受影响
- *   docker     → 只摘登记；容器实例不在此删除，销毁走「环境停止」（env down）
+ *   docker     → 1.5.10 起真删：stop（幂等）+ rm 容器 + 摘登记——容器现场
+ *                随删不可恢复；镜像保留（可重新 up 派生）。docker 不可用
+ *                探测失败时服务端降级为只摘登记
  *   vm + vmx   → vmware：只摘登记，VM 文件原样保留
  *   vm 无 vmx  → hyperv/vbox：会删除 VM 实例（Remove-VM / unregistervm
  *                --delete）——强警示（红）+ 输入环境名二次确认
@@ -66,12 +68,24 @@ export function envRemovePlan(t: EnvRemoveTarget): EnvRemovePlan {
       confirmLabel: '永久删除',
     };
   }
+  // 1.5.10：docker 停着删除 = 真删（stop 幂等 + rm 容器 + 摘登记）——现场
+  // 随删不可恢复，升警示态（红）；镜像保留，重新 up 可再派生。
+  if (t.kind === 'docker') {
+    return {
+      allowed: true,
+      danger: true,
+      strength: 'confirm',
+      body:
+        `将删除「${t.label}」的容器（docker rm）并移除环境登记——` +
+        '容器内现场随删、不可恢复；镜像保留（可重新启动派生干净容器），' +
+        '/workspace 挂载成果不受影响。',
+      confirmLabel: '删除容器并移除登记',
+    };
+  }
   const body =
     t.kind === 'ssh'
       ? `将移除「${t.label}」的环境登记——只摘除登记，远端机器不受任何影响。`
-      : t.kind === 'docker'
-        ? `将移除「${t.label}」的环境登记——只摘除登记，容器实例不在此删除（销毁走「环境停止」）。`
-        : `将移除「${t.label}」的环境登记——只摘除登记，VM 文件原样保留，不做任何删除。`;
+      : `将移除「${t.label}」的环境登记——只摘除登记，VM 文件原样保留，不做任何删除。`;
   return {
     allowed: true,
     danger: false,

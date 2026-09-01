@@ -3,8 +3,10 @@
  *
  * 侧栏「运行中」行的停止入口（environment/down）——停止是有损操作：
  *   vm     → VM 关机（vmrun stop / Stop-VM / controlvm acpipowerbutton）
- *   docker → 容器停止并移除（docker stop + rm）
- * 进行中的现场可能丢失，必须确认模态，文案按 kind 给准确语义。
+ *   docker → 1.5.10 起改「暂停」语义：docker stop 不 rm——容器现场保留，
+ *            下次 up 走 docker start 秒续（真删除归 environment/rm /
+ *            reset / rebuild）
+ * VM 关机/旧语义下现场可能丢失，必须确认模态，文案按 kind 给准确语义。
  * 服务端路由语义见 src/server/admin-api.ts::handleEnvironmentDown（只读核实）。
  *
  * 纯函数：不 import store / React / client；单测逐形态断言文案。
@@ -20,6 +22,8 @@ export interface EnvDownTarget {
 }
 
 export interface EnvDownPlan {
+  /** 模态标题（1.5.10：docker 暂停语义区别于通用「停止环境」）。 */
+  title: string;
   /** 模态正文（准确说明会发生什么）。 */
   body: string;
   /** 确认按钮文案。 */
@@ -27,13 +31,17 @@ export interface EnvDownPlan {
 }
 
 export function envDownPlan(t: EnvDownTarget): EnvDownPlan {
-  const what =
-    t.kind === 'docker'
-      ? '容器将停止并移除（docker stop + rm）'
-      : t.kind === 'vm'
-        ? 'VM 将关机'
-        : '实例将停止';
+  // 1.5.10：docker 停止 = 暂停（stop 不 rm）——现场保留，不属有损操作。
+  if (t.kind === 'docker') {
+    return {
+      title: '暂停环境',
+      body: `暂停环境「${t.label}」？容器将停止但保留（docker stop，不删容器）——现场保留，下次启动秒续。`,
+      confirmLabel: '暂停环境',
+    };
+  }
+  const what = t.kind === 'vm' ? 'VM 将关机' : '实例将停止';
   return {
+    title: '停止环境',
     body: `停止环境「${t.label}」？${what}，进行中的现场可能丢失。`,
     confirmLabel: '停止环境',
   };

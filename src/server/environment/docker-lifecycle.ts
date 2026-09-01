@@ -3,18 +3,34 @@
  *
  * docker 配方 = Dockerfile + setup.sh + SKILL.md。生命周期命令：
  *
- *   envUp(recipe, workspace)
- *     0. 幂等：zhishi.env=<name> label 已有在跑容器 → 直接返回现有实例
- *     1. docker build -t zhishi-env-<name> <dir>
- *     2. docker run -d --name zhishi-<name>-<shortid>
+ * 1.5.10 三层模型（定稿）：镜像持久（本机已有可发现可启动）→ 容器持久
+ * （现场，stop/start——/tmp crash 现场、装过的工具是研究资产）→ /workspace
+ * 持久（成果，bind mount 不变）。不再是「用完即弃的一次性容器」。
+ *
+ *   envUp(recipe, workspace)——链路重排（1.5.10）：
+ *     a. docker ps -a --filter label=zhishi.env=<name>（含已停止）找同配方容器：
+ *        在跑 → 直接返回现有实例（幂等）；已停止 → docker start 现场续上
+ *       （start 失败 = 容器损坏 → 清残壳后回落 build/run，原现场丢失）
+ *     b. 无容器 → docker image inspect zhishi-env-<name>：镜像在 → 直接 run
+ *       （跳过 build，秒开）
+ *     c. 镜像不在 → docker build -t zhishi-env-<name> <dir> → run
+ *     run 形态：docker run -d --name zhishi-<name>-<shortid>
  *       --label zhishi.env=<name> --label zhishi.workspace=<path>
  *       -v <workspace>:/workspace -w /workspace
  *       zhishi-env-<name> bash -c '<首跑钩子>; exec tail -f /dev/null'
  *                                        # 容器常驻，exec 进入；1.5.7 起首跑
  *                                        # 钩子（/opt/zhishi/first-run.sh，存在
  *                                        # 才跑）后台装 firstRunTools 声明的工具
- *   envDown(instanceId) → docker stop + docker rm
- *   envPs()             → docker ps --filter label=zhishi.env 解析成实例列表
+ *   envDown(instanceId)      → docker stop（1.5.10：只暂停不 rm，现场持久；
+ *                              真删除归 envRmContainer / envReset / envRebuild）
+ *   envRmContainer(id)       → stop（幂等）+ rm——rm 端点的真删除语义
+ *   envRebuild(recipe, ws)   → 强制 build（不看镜像在不在）→ stop+rm 旧容器
+ *                              → run 新容器（显式重建入口）
+ *   envReset(recipeId, ...)  → stop+rm 条目容器 → run 新容器（镜像不动，
+ *                              要干净房间时的显式入口）
+ *   envPs()                  → docker ps --filter label=zhishi.env 解析成实例列表
+ *   envImages()              → docker images zhishi-env-* 镜像发现（1.5.10，
+ *                              非 zhishi-env-* 不纳管——记录在案边界）
  *
  * VM 配方（base: vm）不走这里——由 environment/vm-lifecycle.ts 的 vmrun
  * 驱动接管（P2）；本模块收到 VM 配方说明 admin-api 路由错了，报内部错误。
@@ -96,7 +112,7 @@ export function buildDockerBuildArgs(recipe: EnvironmentRecipe): string[] {
  * 跳过，行为与旧版 `tail -f /dev/null` 完全一致。
  */
 export function buildDockerRunArgs(
-  recipe: EnvironmentRecipe,
+  recipe: Pick<EnvironmentRecipe, 'id'>,
   containerName: string,
   workspace: string,
 ): string[] {
@@ -136,6 +152,21 @@ export function parseDockerPs(stdout: string): EnvInstance[] {
     instances.push({ id, name, image, status, recipe, workspace });
   }
   return instances;
+}
+
+/**
+ * 1.5.10：envUp/rebuild/reset 的同配方容器查找——`docker ps -a --filter
+ * label=zhishi.env=<recipe>`（**含已停止**：现场持久的容器停着也要找到，
+ * envUp 对它走 docker start 续现场）。输出格式与 buildDockerPsArgs 相同，
+ * 解析复用 parseDockerPs。
+ */
+export function buildDockerPsByRecipeArgs(recipeId: string): string[] {
+  return [
+    'ps',
+    '-a',
+    '--filter', `label=zhishi.env=${recipeId}`,
+    '--format', '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Label "zhishi.env"}}\t{{.Label "zhishi.workspace"}}',
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +346,69 @@ export async function envPsAll(
 }
 
 // ---------------------------------------------------------------------------
+// 1.5.10 — 镜像发现（「本机已有」接入镜像：镜像是发现面一等成员）
+// ---------------------------------------------------------------------------
+
+/**
+ * `docker images` 枚举 zhishi-env-* 镜像。dangling=false 过滤构建残留的
+ * `<none>:<none>` 层；reference 过滤在 daemon 侧收敛，解析侧再守一道
+ * （非 zhishi-env-* 镜像不纳管——记录在案边界，见 roadmap 1.5.10）。
+ */
+export function buildDockerImagesArgs(): string[] {
+  return [
+    'images',
+    '--filter', 'dangling=false',
+    '--filter', 'reference=zhishi-env-*',
+    '--format', '{{.Repository}}:{{.Tag}}',
+  ];
+}
+
+/** 自动发现用的 docker 镜像条目（1.5.10 发现面新驱动 docker-image）。 */
+export interface DiscoveredDockerImage {
+  driver: 'docker-image';
+  /** 镜像全名 zhishi-env-<recipe>:<tag>（唯一键）。 */
+  id: string;
+  name: string;
+  image: string;
+  /** 从仓库名反解的配方 id（zhishi-env-<recipeId> → recipeId）。 */
+  recipeId: string;
+}
+
+/** Parse `docker images` 的 `{{.Repository}}:{{.Tag}}` 行（见 buildDockerImagesArgs）。 */
+export function parseDockerImages(stdout: string): DiscoveredDockerImage[] {
+  const items: DiscoveredDockerImage[] = [];
+  for (const line of stdout.split('\n')) {
+    const text = line.replace(/\r$/, '').trim();
+    if (!text) continue;
+    const sep = text.lastIndexOf(':');
+    const repo = sep > 0 ? text.slice(0, sep) : text;
+    if (repo === '<none>' || !repo.startsWith('zhishi-env-')) continue; // 边界：非 zhishi-env-* 不纳管
+    const recipeId = repo.slice('zhishi-env-'.length);
+    if (!recipeId) continue;
+    items.push({ driver: 'docker-image', id: text, name: text, image: text, recipeId });
+  }
+  return items;
+}
+
+/**
+ * 1.5.10 镜像发现：列出本机 zhishi-env-* 镜像（只读，不写配置）。复用
+ * EnvResult 契约，docker 不可用时 ok:false 由聚合层降级，绝不抛错。
+ */
+export async function envImages(
+  options: LifecycleOptions = {},
+): Promise<EnvResult<{ images: DiscoveredDockerImage[] }>> {
+  const exec = options.exec ?? defaultDockerExec;
+  const result = await exec(['docker', ...buildDockerImagesArgs()], DOCKER_PS_TIMEOUT_MS);
+  if (result.exitCode !== 0 || result.error) {
+    return {
+      ok: false,
+      error: `docker images 失败（Docker 不可用？）：\n${outputTail(result)}`,
+    };
+  }
+  return { ok: true, images: parseDockerImages(result.stdout) };
+}
+
+// ---------------------------------------------------------------------------
 // I/O — default exec (same shape as engines.ts::defaultEngineExec)
 // ---------------------------------------------------------------------------
 
@@ -399,36 +493,16 @@ async function ensureDockerAvailable(exec: DockerExec): Promise<string | null> {
 }
 
 /**
- * envUp：build 镜像 + 起常驻容器。VM 配方直接报内部路由错误（不碰 docker，
- * VM 由 vm-lifecycle.ts 接管）；
- * docker 不可用报带引导的错误；build/run 输出落日志（logDir 配置时）。
+ * docker build 尾段（envUp 的 (c) 分支与 envRebuild 共用，1.5.10 抽出）：
+ * 输出落日志（logDir 配置时）；1.5.9 超时恢复（客户端超时被杀但 daemon
+ * 侧构建完成 → inspect 命中按成功续走）保留在本分支；失败先跑 1.5.7/1.5.8
+ * 网络形态识别，命中则指引在前、原 stderr 尾部在后。
  */
-export async function envUp(
+async function dockerBuildImage(
   recipe: EnvironmentRecipe,
-  workspace: string,
-  options: LifecycleOptions = {},
-): Promise<EnvResult<{ instance: EnvInstance }>> {
-  if (recipe.base === 'vm') {
-    return {
-      ok: false,
-      error: `内部路由错误：VM 配方 "${recipe.id}" 应由 vm-lifecycle（vmrun 驱动）处理，请反馈此问题`,
-    };
-  }
-
-  const exec = options.exec ?? defaultDockerExec;
-
-  const dockerError = await ensureDockerAvailable(exec);
-  if (dockerError) return { ok: false, error: dockerError };
-
-  // 1.3.8 B6 幂等：同配方已有在跑容器（zhishi.env=<recipe> label）→ 直接
-  // 返回现有实例，不重复 build/run——重复 up 不再泄漏孤儿容器。ps 失败
-  // （docker 抖动）容忍，照走正常 up。
-  const psResult = await exec(['docker', ...buildDockerPsArgs()], DOCKER_PS_TIMEOUT_MS);
-  if (psResult.exitCode === 0 && !psResult.error) {
-    const existing = parseDockerPs(psResult.stdout).find((i) => i.recipe === recipe.id);
-    if (existing) return { ok: true, instance: existing };
-  }
-
+  exec: DockerExec,
+  options: LifecycleOptions,
+): Promise<EnvResult<object>> {
   const buildArgs = buildDockerBuildArgs(recipe);
   let buildResult = await exec(['docker', ...buildArgs], DOCKER_BUILD_TIMEOUT_MS);
   appendLog(
@@ -468,7 +542,20 @@ export async function envUp(
       error: `docker build 失败（配方 "${recipe.id}"）：\n${detail}`,
     };
   }
+  return { ok: true };
+}
 
+/**
+ * docker run 尾段（envUp/envRebuild/envReset 共用，1.5.10 抽出）：
+ * 起常驻容器（命名 zhishi-<recipe>-<shortid>，label + /workspace bind mount
+ * + 首跑钩子），输出落日志，返回 EnvInstance。
+ */
+async function dockerRunContainer(
+  recipe: Pick<EnvironmentRecipe, 'id'>,
+  workspace: string,
+  exec: DockerExec,
+  options: LifecycleOptions,
+): Promise<EnvResult<{ instance: EnvInstance }>> {
   const shortId = (options.shortId ?? (() => randomBytes(4).toString('hex')))();
   const containerName = containerNameFor(recipe.id, shortId);
   const runArgs = buildDockerRunArgs(recipe, containerName, workspace);
@@ -499,8 +586,89 @@ export async function envUp(
   };
 }
 
-/** envDown：stop + rm。stop 失败（已停止/已消失）不阻断 rm。 */
+/**
+ * envUp：1.5.10 链路重排——(a) 同配方容器（含已停止）：在跑幂等返回 /
+ * 已停止 docker start 现场续上；(b) 无容器有镜像 → 直接 run（秒开）；
+ * (c) 无镜像 → build → run。VM 配方直接报内部路由错误（不碰 docker，
+ * VM 由 vm-lifecycle.ts 接管）；docker 不可用报带引导的错误。
+ */
+export async function envUp(
+  recipe: EnvironmentRecipe,
+  workspace: string,
+  options: LifecycleOptions = {},
+): Promise<EnvResult<{ instance: EnvInstance }>> {
+  if (recipe.base === 'vm') {
+    return {
+      ok: false,
+      error: `内部路由错误：VM 配方 "${recipe.id}" 应由 vm-lifecycle（vmrun 驱动）处理，请反馈此问题`,
+    };
+  }
+
+  const exec = options.exec ?? defaultDockerExec;
+
+  const dockerError = await ensureDockerAvailable(exec);
+  if (dockerError) return { ok: false, error: dockerError };
+
+  // 1.5.10 (a)：同配方容器查找（ps -a 含已停止——现场持久层）。在跑 → 幂等
+  // 返回（原 1.3.8 B6 语义，重复 up 不泄漏孤儿容器）；已停止 → docker start
+  // 现场续上（1.5.10 核心：/tmp 现场、装过的工具都还在）。ps 失败（docker
+  // 抖动）容忍，照走后续分支。
+  const psResult = await exec(['docker', ...buildDockerPsByRecipeArgs(recipe.id)], DOCKER_PS_TIMEOUT_MS);
+  if (psResult.exitCode === 0 && !psResult.error) {
+    const existing = parseDockerPs(psResult.stdout).find((i) => i.recipe === recipe.id);
+    if (existing) {
+      if (existing.status.startsWith('Up')) return { ok: true, instance: existing };
+      const startResult = await exec(['docker', 'start', existing.id], DOCKER_RUN_TIMEOUT_MS);
+      if (startResult.exitCode === 0 && !startResult.error) {
+        return { ok: true, instance: { ...existing, status: 'Up' } };
+      }
+      // start 失败 = 容器损坏，现场已不可续：清残壳（best-effort，避免下次
+      // up 再撞同一个坏容器）后回落 build/run 分支——原容器现场随残壳丢失。
+      console.warn(
+        `[env-lifecycle] docker start ${existing.name}（${existing.id}）失败——容器损坏，现场不可续，回落重建（原容器现场丢失）：${outputTail(startResult)}`,
+      );
+      await exec(['docker', 'rm', '-f', existing.id], DOCKER_RUN_TIMEOUT_MS);
+    }
+  }
+
+  // 1.5.10 (b)：无容器 → 镜像在（inspect 命中）→ 直接 run（跳过 build，秒开）。
+  const inspect = await exec(
+    ['docker', 'image', 'inspect', imageTagFor(recipe.id)],
+    DOCKER_PROBE_TIMEOUT_MS,
+  );
+  if (inspect.exitCode !== 0 || inspect.error) {
+    // 1.5.10 (c)：镜像不在 → build → run。
+    const built = await dockerBuildImage(recipe, exec, options);
+    if (!built.ok) return built;
+  }
+
+  return dockerRunContainer(recipe, workspace, exec, options);
+}
+
+/**
+ * envDown：只 stop 不 rm（1.5.10 容器现场持久——down 语义由销毁改暂停，
+ * /tmp crash 现场、装过的工具保留，下次 up 走 docker start 续上）。
+ * 真删除归 environment/rm（envRmContainer）/ environment/reset / rebuild。
+ * stop 未成功（已停止/已消失）按「已暂停」幂等放行。
+ */
 export async function envDown(
+  instanceId: string,
+  options: LifecycleOptions = {},
+): Promise<EnvResult<{ stopped: string }>> {
+  const exec = options.exec ?? defaultDockerExec;
+
+  const stopResult = await exec(['docker', 'stop', instanceId], DOCKER_RUN_TIMEOUT_MS);
+  if (stopResult.exitCode !== 0 || stopResult.error) {
+    console.warn(`[env-lifecycle] docker stop ${instanceId} 未成功（视为已暂停——容器保留现场，不 rm）：${outputTail(stopResult)}`);
+  }
+  return { ok: true, stopped: instanceId };
+}
+
+/**
+ * 1.5.10：rm 端点的真删除语义——stop（幂等，已停不报错）+ rm 容器，容器
+ * 现场随删。environment/rm 的 docker 分支与 rebuild/reset 清旧容器共用。
+ */
+export async function envRmContainer(
   instanceId: string,
   options: LifecycleOptions = {},
 ): Promise<EnvResult<{ removed: string }>> {
@@ -519,6 +687,90 @@ export async function envDown(
     };
   }
   return { ok: true, removed: instanceId };
+}
+
+/**
+ * 1.5.10 environment/rebuild：显式重建——不看镜像在不在，强制 docker build
+ * （配方内容更新/镜像损坏的入口）；build 成功后 stop+rm 同配方旧容器（旧
+ * 现场随重建销毁），run 新容器。build 失败时旧容器不动（重建不毁现场）。
+ */
+export async function envRebuild(
+  recipe: EnvironmentRecipe,
+  workspace: string,
+  options: LifecycleOptions = {},
+): Promise<EnvResult<{ instance: EnvInstance }>> {
+  if (recipe.base === 'vm') {
+    return {
+      ok: false,
+      error: `内部路由错误：VM 配方 "${recipe.id}" 应由 vm-lifecycle（vmrun 驱动）处理，请反馈此问题`,
+    };
+  }
+
+  const exec = options.exec ?? defaultDockerExec;
+
+  const dockerError = await ensureDockerAvailable(exec);
+  if (dockerError) return { ok: false, error: dockerError };
+
+  // 强制 build（不看镜像在不在）；失败 → 旧容器原样保留，现场不丢。
+  const built = await dockerBuildImage(recipe, exec, options);
+  if (!built.ok) return built;
+
+  // build 成功 → 清同配方旧容器（含已停止）再 run 新容器。
+  const psResult = await exec(['docker', ...buildDockerPsByRecipeArgs(recipe.id)], DOCKER_PS_TIMEOUT_MS);
+  if (psResult.exitCode === 0 && !psResult.error) {
+    for (const old of parseDockerPs(psResult.stdout)) {
+      if (old.recipe !== recipe.id) continue;
+      const removed = await envRmContainer(old.id, { ...options, exec });
+      if (!removed.ok) {
+        return {
+          ok: false,
+          error: `旧容器 "${old.name}" 清理失败，重建中止（新镜像已构建，旧容器保留）：\n${removed.error}`,
+        };
+      }
+    }
+  }
+
+  return dockerRunContainer(recipe, workspace, exec, options);
+}
+
+/**
+ * 1.5.10 environment/reset：换干净房间——镜像不动，stop+rm 条目容器后 run
+ * 新容器。容器定位：优先 options.container（条目 container 名）；缺省按
+ * zhishi.env=<recipeId> label 反查首个同配方容器（同时取回 zhishi.workspace
+ * label 作 run 挂载目录——条目不存 workspace，容器 label 存）。无容器可 rm
+ * 时直接 run（幂等）。
+ */
+export async function envReset(
+  recipeId: string,
+  workspace: string | undefined,
+  options: LifecycleOptions & { container?: string } = {},
+): Promise<EnvResult<{ instance: EnvInstance }>> {
+  const exec = options.exec ?? defaultDockerExec;
+
+  const dockerError = await ensureDockerAvailable(exec);
+  if (dockerError) return { ok: false, error: dockerError };
+
+  let target = options.container;
+  let ws = workspace;
+  const psResult = await exec(['docker', ...buildDockerPsByRecipeArgs(recipeId)], DOCKER_PS_TIMEOUT_MS);
+  if (psResult.exitCode === 0 && !psResult.error) {
+    const rows = parseDockerPs(psResult.stdout);
+    const want = target;
+    const hit = want
+      ? rows.find((i) => i.name === want || i.id === want || i.id.startsWith(want))
+      : rows[0];
+    if (hit) {
+      target = hit.name;
+      ws = ws ?? hit.workspace;
+    }
+  }
+  if (target) {
+    const removed = await envRmContainer(target, { exec });
+    if (!removed.ok) return { ok: false, error: removed.error };
+  }
+
+  // run 只需配方 id（镜像不动——reset 不 build，不需要配方目录）。
+  return dockerRunContainer({ id: recipeId }, ws ?? process.cwd(), exec, options);
 }
 
 /**

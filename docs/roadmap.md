@@ -5,17 +5,19 @@
 
 ---
 
-## 1.5.10 —— docker 环境改镜像为主（进行中）
+## 1.5.10 —— docker 环境改镜像为主（进行中——代码完成，待用户实跑验收）
 
 **缘起（2026-09-01 用户拍板，两轮设计修正定稿）**：现状是容器为主——envUp 每次都跑 docker build、down 即删容器（现场全丢）。用户两轮定调：①「正常的 docker 环境应该是镜像，镜像派生出容器」；②「镜像不应该由 zhishi 私下持久，而应该挂进『本机已有』对接」——镜像是既有发现面的一等成员。最终三层模型：**镜像持久（本机已有可发现可启动）→ 容器持久（现场，stop/start）→ /workspace 持久（成果，bind mount）**。
 
-- [ ] **「本机已有」接入镜像**：发现面除容器外列出本机镜像（zhishi-env-* 及可识别镜像）——镜像行一键「启动为环境」（run 派生容器 + 登记进注册表）
-- [ ] **容器现场持久**：down 语义销毁改暂停（stop 不 rm）；up 链路重排——有容器（含已停止）→ docker start（现场续上）→ 无容器有镜像 → run 派生 → 无镜像 → build → run
-- [ ] **显式重建/重置入口**：「重新构建」（镜像坏了/要新配方内容——不看缓存强 build）+「重置」（rm 容器 + run 新容器——要干净房间时人选）
-- [ ] **登记语义对齐**：discover/adopt 链路（matchRegisteredEnv 同族命中）对镜像来源的容器正确归属配方
-- [ ] **回归 + 验证**：envUp 三分支单测（start 已有/start 派生/build+run）+ down 只 stop + 幂等/超时恢复既有用例全绿；全量 + typecheck + eslint + 三构建；用户实跑（up→down→up 现场保留；镜像行启动为环境；配方更新走显式重建）
+- [x] **「本机已有」接入镜像**：发现面除容器外列出本机镜像（zhishi-env-* 及可识别镜像）——镜像行一键「启动为环境」（run 派生容器 + 登记进注册表）
+- [x] **容器现场持久**：down 语义销毁改暂停（stop 不 rm）；up 链路重排——有容器（含已停止）→ docker start（现场续上）→ 无容器有镜像 → run 派生 → 无镜像 → build → run
+- [x] **显式重建/重置入口**：「重新构建」（镜像坏了/要新配方内容——不看缓存强 build）+「重置」（rm 容器 + run 新容器——要干净房间时人选）
+- [x] **登记语义对齐**：discover/adopt 链路（matchRegisteredEnv 同族命中）对镜像来源的容器正确归属配方
+- [x] **回归 + 验证**：envUp 三分支单测（start 已有/start 派生/build+run）+ down 只 stop + 幂等/超时恢复既有用例全绿；全量 + typecheck + eslint + 三构建；用户实跑（up→down→up 现场保留；镜像行启动为环境；配方更新走显式重建）
 
-- [ ] **新建环境全入口一致性（审计驱动扩项，矩阵见下）**：①启动判定 startable/startEnv 认 recipeIds（登记条目主配方缺省=绑定集合首项——修「登记+绑配方的容器停掉后无法启动」）；②服务端 environment/add 只有 recipeIds 无 recipeId 时写回主配方=首项；③侧栏直接登记：docker 保持一键直登，VM 改走向导（收 address/凭据——直登拿不到 address 而探测/exec 需要它）；④CLI 对齐：env add 补 --recipe-ids/osFamily/vmx 透传 + 新增 env bind-recipes；⑤GUI 认领模态补 keyPath/passwordRef（CLI adopt 有、GUI 没有）；⑥SSH 条目准入闸放行（无启动语义——「先启动再进入」对 ssh 自相矛盾，可达性在开环境/探测时报）；⑦GUI client 类型层改实（recipeIds 数组，不再靠 spread 绕过）
+- [x] **新建环境全入口一致性（审计驱动扩项，矩阵见下）**：①启动判定 startable/startEnv 认 recipeIds（登记条目主配方缺省=绑定集合首项——修「登记+绑配方的容器停掉后无法启动」）；②服务端 environment/add 只有 recipeIds 无 recipeId 时写回主配方=首项；③侧栏直接登记：docker 保持一键直登，VM 改走向导（收 address/凭据——直登拿不到 address 而探测/exec 需要它）；④CLI 对齐：env add 补 --recipe-ids/osFamily/vmx 透传 + 新增 env bind-recipes；⑤GUI 认领模态补 keyPath/passwordRef（CLI adopt 有、GUI 没有）；⑥SSH 条目准入闸放行（无启动语义——「先启动再进入」对 ssh 自相矛盾，可达性在开环境/探测时报）；⑦GUI client 类型层改实（recipeIds 数组，不再靠 spread 绕过）
+
+> 实际落地（2026-09-01，server→GUI+CLI 两波）：①**envUp 重排**——ps -a 找同配方容器（在跑幂等返回/已停止 docker start 续现场，start 失败清残壳回落重建）→ 无容器 inspect 镜像（在则直接 run 秒开）→ 无镜像才 build（1.5.9 超时恢复保留在 build 分支）；build/run 尾段抽 dockerBuildImage/dockerRunContainer 共用函数。②**envDown 改暂停**（stop 不 rm；stop 失败幂等放行）；environment/rm docker 停着删除改真删容器（envRmContainer 承载真删除语义，rm 失败留登记不留孤儿引用）。③**新端点**——environment/rebuild {recipe}（强制 build + 旧容器 stop+rm + run 新 + 回写）与 environment/reset {id}（镜像不动换干净容器，容器定位优先条目 container 名缺省 label 反查）；回写抽 writebackDockerEnvEntry 三处共用。④**discover 加镜像**——docker images 过滤 zhishi-env-* 解析（非 zhishi 镜像不纳管），driver 'docker-image' 新条目形态带 recipeId 反解。⑤**GUI**——本机已有镜像行（「镜像」徽章 +「启动为环境」按钮，点行 toast 引导）；⋯ 菜单加「♻ 重新构建…」「⟲ 重置容器…」（确认模态照 env-down 形态，文案写清现场去留）；down 文案改「暂停——现场保留，下次启动秒续」；rm 文案改「真删容器现场随删」红险；recipeLifecycleNote 改实「现场持久」。⑥**CLI**——env rebuild/reset 子命令 + env discover 三分区打印（容器/镜像/VM，旧版只打兜底）+ TOP_HELP/SKILL.md 同步。回归：新增/改写 ~30 单测（envUp 四分支/down 两态/rebuild/reset/镜像发现/菜单可见性/文案断言）；全量 172 文件 2275 测试绿 + tsc + eslint + depcruise 440 模块零违规 + 三构建绿。遗留记录在案：「删除镜像」入口未做（server 无端点，下版再议）；rm 在 docker 不可用时降级只摘登记（既有口径，GUI 文案按主语义写实）。
 
 > 一致性取舍记录在案：docker 与 VM 的操作面差异中**合理**的保留（停止文案/删除语义/ssh 不可停——生命周期不同）；**漏改**的全修（上述 7 条）。docker 新建（docker-recipe 分支）保持单配方——镜像就是配方内容，多配方对 docker 新建无语义（登记后再绑是能力并集语义）。
 

@@ -14,7 +14,9 @@
  *   - env-remove：环境删除确认（1.3.7 补口；驱动文案/确认强度在
  *     model/env-remove——hyperv/vbox 删 VM 实例形态需输入环境名二次确认）
  *   - env-down：环境停止确认（1.3.8 ①；VM 关机/容器停止的有损操作，文案在
- *     model/env-down）
+ *     model/env-down——1.5.10 起 docker 停止=暂停（stop 不 rm，现场保留））
+ *   - env-rebuild / env-reset：显式重建/重置确认（1.5.10 镜像为主三层模型，
+ *     文案在 model/env-rebuild）
  *   - 向导 Step 2/3：配方生命周期差异（1.3.8 ③a，model/env-wizard::
  *     recipeLifecycleNote）+ 打法摘要 workflowSummary 默认折叠（1.3.8 ③b）
  */
@@ -26,6 +28,7 @@ import { selectCurrentSession, useGuiStore } from '../store/useGuiStore';
 import { bootStages } from '../model/envs';
 import { envRemovePlan } from '../model/env-remove';
 import { envDownPlan } from '../model/env-down';
+import { envRebuildPlan, envResetPlan } from '../model/env-rebuild';
 import { addRecipeBinding, boundRecipeIds, removeRecipeBinding } from '../model/env-recipes';
 import { AutoRunModal } from './AutoRunModals';
 import {
@@ -990,23 +993,25 @@ function EnvDownModal(): React.JSX.Element | null {
   const target = modal?.envDown;
   if (!target) return null;
   const plan = envDownPlan(target);
+  // 1.5.10：docker 停止=暂停（现场保留）——非有损，不用红色警示态。
+  const dockerPause = target.kind === 'docker';
 
   return (
     <div className="modal-backdrop open">
       <div className="modal">
         <div className="m-head">
           <span className="m-title">
-            停止环境 <b className="m-env-name">{target.label}</b>
+            {plan.title} <b className="m-env-name">{target.label}</b>
           </span>
           <span className="m-sub">environment/down · {target.kind}</span>
           <button className="m-close" onClick={closeModal}>✕</button>
         </div>
         <div className="m-body">
-          <div className="m-danger">{plan.body}</div>
+          <div className={dockerPause ? 'm-note' : 'm-danger'}>{plan.body}</div>
           <div className="m-actions">
             <button className="btn" onClick={closeModal}>取消</button>
             <button
-              className="btn danger"
+              className={`btn ${dockerPause ? 'primary' : 'danger'}`}
               disabled={busy}
               onClick={async () => {
                 setBusy(true);
@@ -1079,6 +1084,98 @@ function EnvProvisionModal(): React.JSX.Element | null {
   );
 }
 
+// ── 1.5.10：显式重建 / 重置确认（文案在 model/env-rebuild；形态照 env-down 模态） ──
+
+function EnvRebuildModal(): React.JSX.Element | null {
+  const modal = useGuiStore((s) => s.modal);
+  const closeModal = useGuiStore((s) => s.closeModal);
+  const confirmEnvRebuild = useGuiStore((s) => s.confirmEnvRebuild);
+  const [busy, setBusy] = useState(false);
+
+  const target = modal?.envRebuild;
+  if (!target) return null;
+  const plan = envRebuildPlan(target);
+
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal">
+        <div className="m-head">
+          <span className="m-title">
+            重新构建 <b className="m-env-name">{target.label}</b>
+          </span>
+          <span className="m-sub">environment/rebuild · {target.recipe}</span>
+          <button className="m-close" onClick={closeModal}>✕</button>
+        </div>
+        <div className="m-body">
+          <div className="m-danger">{plan.body}</div>
+          <div className="m-actions">
+            <button className="btn" onClick={closeModal}>取消</button>
+            <button
+              className="btn danger"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await confirmEnvRebuild();
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {busy ? '重建中（可能要几分钟）…' : plan.confirmLabel}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EnvResetModal(): React.JSX.Element | null {
+  const modal = useGuiStore((s) => s.modal);
+  const closeModal = useGuiStore((s) => s.closeModal);
+  const confirmEnvReset = useGuiStore((s) => s.confirmEnvReset);
+  const [busy, setBusy] = useState(false);
+
+  const target = modal?.envReset;
+  if (!target) return null;
+  const plan = envResetPlan(target);
+
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal">
+        <div className="m-head">
+          <span className="m-title">
+            重置容器 <b className="m-env-name">{target.label}</b>
+          </span>
+          <span className="m-sub">environment/reset · {target.id}</span>
+          <button className="m-close" onClick={closeModal}>✕</button>
+        </div>
+        <div className="m-body">
+          <div className="m-danger">{plan.body}</div>
+          <div className="m-actions">
+            <button className="btn" onClick={closeModal}>取消</button>
+            <button
+              className="btn danger"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await confirmEnvReset();
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {plan.confirmLabel}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Modal(): React.JSX.Element | null {
   const modal = useGuiStore((s) => s.modal);
   if (!modal) return null;
@@ -1103,6 +1200,10 @@ export function Modal(): React.JSX.Element | null {
       return <EnvProvisionModal />;
     case 'env-detail':
       return <EnvDetailModal />;
+    case 'env-rebuild':
+      return <EnvRebuildModal />;
+    case 'env-reset':
+      return <EnvResetModal />;
     case 'auto-run-start':
     case 'auto-run-stop':
       return <AutoRunModal />;

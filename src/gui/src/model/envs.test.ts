@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildRegisterPayload, capabilityBadgeText, capabilityTooltip, groupSidebar, isDiscoveredRunning, matchRegisteredEnv, psRowMatchesEntry, resolveEnvState, startRecipeFor } from './envs';
+import { buildRegisterPayload, capabilityBadgeText, capabilityTooltip, groupSidebar, imageStartRecipe, isDiscoveredRunning, matchRegisteredEnv, psRowMatchesEntry, resolveEnvState, startRecipeFor } from './envs';
 
 const envs = [
   { id: 'pwn@docker', kind: 'docker', name: 'pwn@docker' },
@@ -254,6 +254,51 @@ describe('isDiscoveredRunning（1.3.5 登记后是否切入）', () => {
     expect(isDiscoveredRunning({ id: 'v', state: 'powered off', driver: 'vmware' })).toBe(false);
     expect(isDiscoveredRunning({ id: 'v', state: 'unknown', driver: 'vmware' })).toBe(false);
     expect(isDiscoveredRunning({ id: 'v' })).toBe(false);
+  });
+});
+
+
+// ===== 1.5.10：「本机已有」接入镜像行（docker-image 驱动） =====
+
+describe('镜像行（1.5.10 镜像为主三层模型）', () => {
+  const IMAGE = {
+    driver: 'docker-image',
+    id: 'zhishi-env-pwn:latest',
+    name: 'zhishi-env-pwn:latest',
+    image: 'zhishi-env-pwn:latest',
+    recipeId: 'pwn',
+  };
+
+  it('镜像条目进本机已有组：kind/配方/detail 带镜像语义，无登记徽章', () => {
+    const groups = groupSidebar([], [], [IMAGE]);
+    const unreg = groups.find((g) => g.label === '本机已有')!;
+    expect(unreg.items).toHaveLength(1);
+    const item = unreg.items[0];
+    expect(item.kind).toBe('docker-image');
+    expect(item.label).toBe('zhishi-env-pwn:latest');
+    expect(item.recipeId).toBe('pwn'); // 「启动为环境」的 up 配方
+    expect(item.detail).toContain('镜像');
+    expect(item.detail).toContain('pwn');
+    expect(item.registeredAs).toBeUndefined();
+    expect(item.startable).toBe(false); // 启动语义在行按钮，不走准入闸
+  });
+
+  it('镜像行与容器/VM 发现条目同组共存（不互相去重）', () => {
+    const groups = groupSidebar([], [], [
+      { id: 'c1', name: 'kali-2024', state: 'Exited (0)', driver: 'docker' },
+      IMAGE,
+      { id: 'v1', name: 'win11', driver: 'hyperv' },
+    ]);
+    const unreg = groups.find((g) => g.label === '本机已有')!;
+    expect(unreg.items.map((i) => i.kind)).toEqual(['docker', 'docker-image', 'hyperv']);
+  });
+
+  it('imageStartRecipe：docker-image 且 recipeId 非空 → up 配方；否则 null', () => {
+    expect(imageStartRecipe(IMAGE)).toBe('pwn');
+    expect(imageStartRecipe({ ...IMAGE, recipeId: '' })).toBeNull();
+    expect(imageStartRecipe({ ...IMAGE, recipeId: '  ' })).toBeNull();
+    expect(imageStartRecipe({ id: 'c1', driver: 'docker' })).toBeNull();
+    expect(imageStartRecipe({ id: 'v1', driver: 'hyperv' })).toBeNull();
   });
 });
 
