@@ -5,6 +5,23 @@
 
 ---
 
+## 1.5.7 —— 配方专项：构建期网络回落全覆盖 + 一致性补齐 + 基座统一（进行中）
+
+**缘起（2026-09-01 用户实机故障链 + 全面配方审计定稿）**：用户配 docker 配方连踩四棒——docker.io 直连超时 → USTC 镜像站已死（EOF）→ 容器内 apt 源不通（exit 100）→ git clone github 无回落（exit 128）。审计实锤：回落惯例只覆盖 provision.sh（gh_dl/pip 清华），**Dockerfile 构建期全面裸连**（GitHub clone/release/raw、pip、npm、gem、GOPROXY 全无回落）。评估取证：pwndbg 官方只测 22.04/24.04（留 22.04 反是偏面）；kiterunner 有官方预编译二进制、jsluice 无 release；joern 无 lite 变体（1.8GB 固有体积）。
+
+- [ ] **构建期网络回落全覆盖（核心项）**：GitHub（gh-proxy）/ pip（清华）/ npm（npmmirror）/ gem（USTC rubygems）/ GOPROXY（goproxy.cn）统一 helper 段（各配方共享同一惯例文本），7 个 Dockerfile + setup.sh 全接入——pwn（pwndbg/pwninit/libc clone）、pentest（SecLists/nuclei/katana/ZAP/go 工具链）、code-audit（opengrep/joern/osv-scanner）、rev（Ghidra/ghidriff）、ai-security（garak/pyrit/promptfoo）、pentest setup.sh（clairvoyance pip git+https）逐点覆盖
+- [ ] **报错文案识别**：docker build 失败识别网络形态（镜像站 EOF / 拉取超时 / apt 源不通 / git 128），报错里直接给配置指引（daemon mirror / Containers proxy），不再只吐 stderr 尾巴
+- [ ] **一致性补齐**：ai-security 补 setup.sh 构建期自检（其余 6 个都有）；校验和纪律统一（pwninit/ZAP 补 sha256——pentest 的 nuclei/katana 已有，对齐）
+- [ ] **ubuntu 统一 24.04**（评估结论支持：pwndbg 官方主测面即 22.04/24.04）：4 个 22.04 配方迁移 + PEP 668（--break-system-packages）全面对齐；每个配方构建 + 自检实跑验证
+- [ ] **pentest 去 Go 工具链**：kiterunner 换官方预编译二进制（v1.0.2 linux_amd64 实测在）；jsluice 降级为环境内按需自装（无 release，为它一个拉 150MB Go 不值）
+- [ ] **回归 + 验证**：7 配方 docker build 全跑通（本机 docker 不可用时经 VM/远程 docker 验证）；provision.sh 与 Dockerfile 的同款工具安装口径对齐复查
+
+> 记录在案：joern 保持镜像内预装（无 lite 变体；主力工具按需装违背「环境即战力」）；joern provision 化 + docker 首跑钩子 +「已登记待装」语义待拍板（机制成本：docker 无首跑机制、能力探测缺装语义、离线退化）。
+> 边界（不做）：配方工具集增减（选型 1.2.5 已定）；metasploit/CodeQL 维持不预装（SKILL.md 降级路径已有）。
+> 验收：CN 网络裸机（无代理无镜像配置）下 7 配方全部构建成功；报错文案指路实测。
+
+---
+
 ## 1.5.5 —— joern 下载地址热修（issue #7，已完成）
 
 - [x] joern v4.x 起 release 资产改平台分包（裸 `joern-cli.zip` 404）——code-audit provision.sh + Dockerfile 按 `uname -m` 选 `joern-cli-linux-x86_64/arm64.zip`；包内顶层目录 `joern-cli/` 不变（上游 `topLevelDirectory = packageName` 核实）
