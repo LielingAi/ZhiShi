@@ -15,6 +15,10 @@
 - [ ] **登记语义对齐**：discover/adopt 链路（matchRegisteredEnv 同族命中）对镜像来源的容器正确归属配方
 - [ ] **回归 + 验证**：envUp 三分支单测（start 已有/start 派生/build+run）+ down 只 stop + 幂等/超时恢复既有用例全绿；全量 + typecheck + eslint + 三构建；用户实跑（up→down→up 现场保留；镜像行启动为环境；配方更新走显式重建）
 
+- [ ] **新建环境全入口一致性（审计驱动扩项，矩阵见下）**：①启动判定 startable/startEnv 认 recipeIds（登记条目主配方缺省=绑定集合首项——修「登记+绑配方的容器停掉后无法启动」）；②服务端 environment/add 只有 recipeIds 无 recipeId 时写回主配方=首项；③侧栏直接登记：docker 保持一键直登，VM 改走向导（收 address/凭据——直登拿不到 address 而探测/exec 需要它）；④CLI 对齐：env add 补 --recipe-ids/osFamily/vmx 透传 + 新增 env bind-recipes；⑤GUI 认领模态补 keyPath/passwordRef（CLI adopt 有、GUI 没有）；⑥SSH 条目准入闸放行（无启动语义——「先启动再进入」对 ssh 自相矛盾，可达性在开环境/探测时报）；⑦GUI client 类型层改实（recipeIds 数组，不再靠 spread 绕过）
+
+> 一致性取舍记录在案：docker 与 VM 的操作面差异中**合理**的保留（停止文案/删除语义/ssh 不可停——生命周期不同）；**漏改**的全修（上述 7 条）。docker 新建（docker-recipe 分支）保持单配方——镜像就是配方内容，多配方对 docker 新建无语义（登记后再绑是能力并集语义）。
+
 > 取舍记录在案：①配方哈希自动门控重建被砍（用户定调：镜像在就用，要新内容走显式重建——自动重建违背「镜像为主」）；②容器腐化风险用「重置」入口对冲（现场连续性优先——/tmp crash 现场/装过的工具是研究资产）；③1.5.9 的 inspect 超时恢复逻辑保留为 build 分支兜底。
 > 边界（不做）：镜像仓库化（推送/共享）；非 zhishi 镜像的任意镜像纳管（先认 zhishi-env-* 与可识别镜像）。
 > 验收：up→down→up 现场保留（/tmp 文件还在）；「本机已有」镜像行可启动为环境；显式重建/重置可用；二次 up 秒开。
