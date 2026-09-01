@@ -374,21 +374,24 @@ function vmNameOf(d: DiscoveredLike): string {
  * 名字缺失 / 驱动未知 / id 净化为空 → null（调用方 toast 提示）。
  * 1.3.7：extras（user/keyPath/recipeId）可选附加，逐字段空值剔除；
  * 1.3.7 实机修复 B：extras.address 仅 VM 分支透传（docker 不需要）。
+ * 1.5.10：user/keyPath 同样只进 VM 分支——容器走 docker exec 通道，
+ * 凭据语义无解（GUI 侧「本机已有」表单对容器也不渲染这两个字段）。
  */
 export function buildRegisterPayload(d: DiscoveredLike, extras?: RegisterExtras): RegisterInput | null {
-  // address 不进公共 extraFields——docker 条目走容器通道，address 只对 VM 有意义
-  //（vm 分支单独透传，防 docker 载荷带上语义无解的字段）。
-  const extraFields = extras
+  // address/user/keyPath 不进公共字段——docker 条目走容器通道，这三个只对 VM
+  // 有意义（vm 分支单独透传，防 docker 载荷带上语义无解的字段）；
+  // recipeId（域归属）两类通用。
+  const sharedFields = extras?.recipeId ? { recipeId: extras.recipeId } : {};
+  const vmCredFields = extras
     ? {
         ...(extras.user ? { user: extras.user } : {}),
         ...(extras.keyPath ? { keyPath: extras.keyPath } : {}),
-        ...(extras.recipeId ? { recipeId: extras.recipeId } : {}),
       }
     : {};
   const name = d.name?.trim();
   if (!name) return null;
   if (d.driver === 'docker') {
-    return { id: `docker-${name}`, kind: 'docker', container: name, ...extraFields };
+    return { id: `docker-${name}`, kind: 'docker', container: name, ...sharedFields };
   }
   if (d.driver === 'vmware' || d.driver === 'hyperv' || d.driver === 'vbox') {
     const vmName = vmNameOf(d);
@@ -403,7 +406,8 @@ export function buildRegisterPayload(d: DiscoveredLike, extras?: RegisterExtras)
       ...(d.osFamily ? { osFamily: d.osFamily } : {}),
       // 1.3.7 实机修复 B：address 是 exec/探测通道前提，登记时一并收下。
       ...(extras?.address ? { address: extras.address } : {}),
-      ...extraFields,
+      ...vmCredFields,
+      ...sharedFields,
     };
   }
   return null;

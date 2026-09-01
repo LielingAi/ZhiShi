@@ -143,13 +143,13 @@ describe('buildRegisterPayload（1.3.5 选中即注册；1.3.7 起 vm id = vmNam
       user: 'root',
       keyPath: '~/.ssh/id_ed25519',
     });
-    // docker 载荷不带 address（容器通道不需要）
+    // docker 载荷不带 address/user/keyPath（容器通道不需要——1.5.10）
     expect(
       buildRegisterPayload(
         { id: 'c1', name: 'kali', driver: 'docker' },
-        { address: '10.0.0.9', user: 'root' },
+        { address: '10.0.0.9', user: 'root', keyPath: '~/.ssh/id_ed25519', recipeId: 'pentest' },
       ),
-    ).toEqual({ id: 'docker-kali', kind: 'docker', container: 'kali', user: 'root' });
+    ).toEqual({ id: 'docker-kali', kind: 'docker', container: 'kali', recipeId: 'pentest' });
     // 空串 address 视同未填（逐字段空值剔除）
     expect(
       buildRegisterPayload({ id: 'v', name: 'kali', driver: 'vbox' }, { address: '' }),

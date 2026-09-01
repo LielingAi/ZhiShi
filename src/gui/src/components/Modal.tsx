@@ -432,24 +432,28 @@ function NewEnvModal(): React.JSX.Element | null {
               />
             </div>
           )}
-          <div>
-            <div className="f-label">guest 用户（可选）</div>
-            <input
-              className="f-input"
-              placeholder="root"
-              value={p.discoveredUser}
-              onChange={(e) => wizardSetParam('discoveredUser', e.target.value)}
-            />
-          </div>
-          <div>
-            <div className="f-label">密钥路径（可选）</div>
-            <input
-              className="f-input"
-              placeholder="~/.ssh/id_ed25519"
-              value={p.discoveredKeyPath}
-              onChange={(e) => wizardSetParam('discoveredKeyPath', e.target.value)}
-            />
-          </div>
+          {selected?.isVm && (
+            <>
+              <div>
+                <div className="f-label">guest 用户（可选）</div>
+                <input
+                  className="f-input"
+                  placeholder="root"
+                  value={p.discoveredUser}
+                  onChange={(e) => wizardSetParam('discoveredUser', e.target.value)}
+                />
+              </div>
+              <div>
+                <div className="f-label">密钥路径（可选）</div>
+                <input
+                  className="f-input"
+                  placeholder="~/.ssh/id_ed25519"
+                  value={p.discoveredKeyPath}
+                  onChange={(e) => wizardSetParam('discoveredKeyPath', e.target.value)}
+                />
+              </div>
+            </>
+          )}
           {recipeSelect(p.discoveredRecipeId, 'discoveredRecipeId', '绑定配方（可选——决定域归属）')}
         </div>
       </>
