@@ -59,9 +59,13 @@ function BootModalInner({ recipeId }: { recipeId: string }): React.JSX.Element {
 
   const stages = useMemo(() => bootStages(recipe.base), [recipe.base]);
 
-  // 挂载即发起真实 up（重复打开会重发请求；幂等兜底在服务端 environment/up，
-  // store 层无去抖）。
+  // 挂载即发起真实 up。1.5.10 修回归：boot 模态可收起后「重开=查看进度」
+  // ——已有该配方的 boot 状态（running/done/failed）时不重发（重发在服务端
+  // 幂等但会重置阶段轮询，且收起重入路径经侧栏「构建中」行）。
   useEffect(() => {
+    if (!recipeId) return; // 防御：空配方不发起（重开路径必须带 recipeId）
+    const existing = useGuiStore.getState().boot;
+    if (existing?.recipeId === recipeId) return;
     void bootEnv(recipeId);
   }, [recipeId, bootEnv]);
 

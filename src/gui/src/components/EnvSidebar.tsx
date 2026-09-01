@@ -153,7 +153,7 @@ export function EnvSidebar(): React.JSX.Element {
         <div
           className="eb-item eb-booting"
           title="构建进行中——点击打开进度"
-          onClick={() => setModal({ kind: 'boot' })}
+          onClick={() => setModal({ kind: 'boot', recipeId: boot?.recipeId })}
         >
           <span className="spinner" /> 构建中 {boot?.recipeId}
         </div>
