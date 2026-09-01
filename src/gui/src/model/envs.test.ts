@@ -289,6 +289,64 @@ describe('能力徽章（1.3.7 场景 3）', () => {
     // 无缺失 → 徽章不带缺口标记
     expect(capabilityBadgeText({ domains: ['binary'], toolsTotal: 9, toolsMissing: [] })).toBe('能力：binary');
   });
+
+  it('1.5.7：待装口径进徽章与 tooltip（缺 0 待装 2）', () => {
+    const groups = groupSidebar(
+      [{
+        id: 'e2',
+        kind: 'vm',
+        capabilityDomains: ['binary'],
+        capabilityTools: { total: 9, missing: [], toolsPending: 2 },
+        capabilityPending: ['joern', 'zap'],
+      }],
+      [],
+      [],
+    );
+    const cap = groups[0].items[0].capability!;
+    // capabilityOf 透传：capabilityPending → toolsPending
+    expect(cap.toolsPending).toEqual(['joern', 'zap']);
+    expect(capabilityBadgeText(cap)).toBe('能力：binary · 待装2');
+    const tip = capabilityTooltip(cap);
+    // 待装不在场也不算缺失：在场 7/9（9 - 0 缺 - 2 待装）
+    expect(tip).toContain('工具在场 7/9');
+    expect(tip).toContain('待装（2）：joern、zap');
+    expect(tip).toContain('首跑自动安装中，稍候或手动刷新');
+    // 待装不出「补齐环境」引导（那是 missing 的语义）
+    expect(tip).not.toContain('补齐环境');
+  });
+
+  it('1.5.7：缺与待装同时出现（缺 1 待装 1）', () => {
+    const cap = {
+      domains: ['binary'],
+      toolsTotal: 9,
+      toolsMissing: ['opengrep'],
+      toolsPending: ['joern'],
+    };
+    expect(capabilityBadgeText(cap)).toBe('能力：binary · 缺1 · 待装1');
+    const tip = capabilityTooltip(cap);
+    expect(tip).toContain('工具在场 7/9');
+    expect(tip).toContain('声明了但环境里没有（1）：opengrep——可用「⋯ → 补齐环境」安装');
+    expect(tip).toContain('待装（1）：joern——首跑自动安装中，稍候或手动刷新');
+  });
+
+  it('1.5.7：无缺无待装 → 徽章与 tooltip 不带缺口/待装标记（全无）', () => {
+    const cap = { domains: ['binary'], toolsTotal: 9, toolsMissing: [], toolsPending: [] };
+    expect(capabilityBadgeText(cap)).toBe('能力：binary');
+    const tip = capabilityTooltip(cap);
+    expect(tip).toContain('工具在场 9/9');
+    expect(tip).not.toContain('待装');
+  });
+
+  it('1.5.7：混合形态（域截断 +N 与缺/待装标记叠加）', () => {
+    const cap = {
+      domains: ['binary', 'pentest', 'ai-security'],
+      toolsTotal: 9,
+      toolsMissing: ['opengrep'],
+      toolsPending: ['joern', 'zap'],
+    };
+    expect(capabilityBadgeText(cap)).toBe('能力：binary · pentest +1 · 缺1 · 待装2');
+    expect(capabilityTooltip(cap)).toContain('待装（2）：joern、zap');
+  });
 });
 
 

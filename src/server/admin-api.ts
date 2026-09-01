@@ -2145,6 +2145,8 @@ export async function handleEnvironmentUp(payload: {
       // 探测全集自检(1.3.7 场景 3):构建后当场跑一条批量探测(全配方工具
       // 并集)——声明工具漂移证据落 toolCheck,在场工具→域 ∪ 配方绑定域落
       // capabilityDomains;失败降级为无自检无能力字段,不阻断 up。
+      // 1.5.7:传入 firstRunTools——首跑钩子正在后台装的工具探测未命中,
+      // 落 capabilityPending(已登记待装)而不进 missing 双计数。
       // 注意 stub 条目必须带 recipeId——绑定域反查(candidate)靠它。
       ...(await runEnvProbeWithCapabilities(
         {
@@ -2155,6 +2157,7 @@ export async function handleEnvironmentUp(payload: {
           createdAt: '',
         },
         recipe.tools,
+        recipe.firstRunTools,
       )),
       createdAt: new Date().toISOString(),
     };
@@ -2196,18 +2199,24 @@ export function __setCapabilityExecForTests(fn: CapabilityExecFn | null): void {
  * 通道失败 → {}（不写能力字段也不写 toolCheck，保 baseline 行为，不阻断 up）。
  * 空探测面（1.3.10 #4）：也走 bound 分支——与 probeEnvironmentCapabilities
  * 对齐，「绑定域恒在」不因无工具可探而丢能力字段。
+ * 1.5.7：third 参 firstRunTools（配方首跑安装声明）——pending =
+ * firstRunTools − 在场 随探测落盘（capabilityPending，空则不出字段）；
+ * pending 工具不进 capabilityMissing 双计数。通道失败时 {} 的纪律对
+ * pending 同样成立（探测失败不动 pending）。
  */
 export async function runEnvProbeWithCapabilities(
   entry: EnvironmentEntry,
   recipeTools: string[],
+  firstRunTools?: string[],
 ): Promise<{
   toolCheck?: { ok: boolean; missing: string[]; checkedAt: string };
   capabilityDomains?: string[];
   capabilityDerivedAt?: string;
   capabilityMissing?: string[];
+  capabilityPending?: string[];
 }> {
   const recipes = scanRecipes(defaultRecipesRoot());
-  const surface = [...new Set([...collectProbeSurface(recipes), ...recipeTools])].sort((a, b) =>
+  const surface = [...new Set([...collectProbeSurface(recipes), ...recipeTools, ...(firstRunTools ?? [])])].sort((a, b) =>
     a.localeCompare(b),
   );
   if (surface.length === 0) {
@@ -2229,17 +2238,25 @@ export async function runEnvProbeWithCapabilities(
       capabilityDomains?: string[];
       capabilityDerivedAt?: string;
       capabilityMissing?: string[];
+      capabilityPending?: string[];
     } = {};
     if (recipeTools.length > 0) {
       out.toolCheck = { ...parseToolCheckOutput(stdout, recipeTools), checkedAt: now };
     }
+    const present = parseProbePresentTools(stdout);
+    // 1.5.7：pending = firstRunTools − 在场（已登记待装）。
+    const pendingSet = new Set((firstRunTools ?? []).filter((t) => !present.has(t)));
+    if (firstRunTools !== undefined && pendingSet.size > 0) {
+      out.capabilityPending = [...pendingSet].sort((a, b) => a.localeCompare(b));
+    }
     // 1.4.9：MISS 清单随探测落盘（全集——展示侧按集合内配方过滤）。
-    out.capabilityMissing = surface.filter((t) => !parseProbePresentTools(stdout).has(t));
+    // 1.5.7：减去 pending——待装工具不进 missing 双计数。
+    out.capabilityMissing = surface.filter((t) => !present.has(t) && !pendingSet.has(t));
     const manifests = loadDomainManifests();
     const domains = mergeCapabilityDomains(
       boundDomainsForEntry(entry, manifests),
       probedDomainsForTools(
-        parseProbePresentTools(stdout),
+        present,
         buildToolDomainIndex(recipes, manifests),
         manifests,
       ),
@@ -2255,11 +2272,14 @@ export async function runEnvProbeWithCapabilities(
 }
 /**
  * 能力重推 + 回写（environment/capability-refresh 与 domain/check 顺带刷新共用）。
- * 探测失败 → null（调用方保留旧能力字段，不清空）。
+ * 探测失败 → null（调用方保留旧能力字段，不清空；1.5.7：capabilityPending
+ * 同样不动——探测失败不碰待装清单）。
+ * 1.5.7 待装闭环：探测命中 pending 工具（首跑装完）→ 从 pending 摘除；
+ * pending 空 → 删字段；探测未执行（bound-only）→ pending 保持旧值。
  */
 export async function refreshEntryCapabilities(
   entry: EnvironmentEntry,
-): Promise<{ capabilityDomains: string[]; capabilityDerivedAt: string; capabilityMissing?: string[] } | null> {
+): Promise<{ capabilityDomains: string[]; capabilityDerivedAt: string; capabilityMissing?: string[]; capabilityPending?: string[] } | null> {
   const probed = await probeEnvironmentCapabilities(entry, {
     recipes: scanRecipes(defaultRecipesRoot()),
     manifests: loadDomainManifests(),
@@ -2268,18 +2288,24 @@ export async function refreshEntryCapabilities(
   if (!probed) return null;
   try {
     await atomicModifyConfig((config) => {
-      const entries = listEnvironments(config).map((e) =>
-        e.id === entry.id
-          ? {
-              ...e,
-              capabilityDomains: probed.capabilityDomains,
-              capabilityDerivedAt: probed.capabilityDerivedAt,
-              // 1.4.9：MISS 清单随重推落盘；探测未执行（bound-only）时清掉
-              // 旧缺失——缺失真相跟着最近一次真探测走。
-              capabilityMissing: probed.capabilityMissing ?? [],
-            }
-          : e,
-      );
+      const entries = listEnvironments(config).map((e) => {
+        if (e.id !== entry.id) return e;
+        // 1.5.7：pending 三态——undefined（探测未执行/本就无 pending）保留旧值；
+        // 空数组（全部装完）删字段；非空（部分装完）写新清单。
+        const { capabilityPending: oldPending, ...rest } = e;
+        const next: EnvironmentEntry = {
+          ...rest,
+          capabilityDomains: probed.capabilityDomains,
+          capabilityDerivedAt: probed.capabilityDerivedAt,
+          // 1.4.9：MISS 清单随重推落盘；探测未执行（bound-only）时清掉
+          // 旧缺失——缺失真相跟着最近一次真探测走。
+          capabilityMissing: probed.capabilityMissing ?? [],
+        };
+        const nextPending =
+          probed.capabilityPending === undefined ? oldPending : probed.capabilityPending;
+        if (nextPending && nextPending.length > 0) next.capabilityPending = nextPending;
+        return next;
+      });
       return { ...config, environments: entries };
     });
   } catch (err) {
@@ -2566,7 +2592,9 @@ export async function handleDomainCheck(payload: { id?: string }): Promise<Admin
       if (!recipe || !entry || recipe.tools.length === 0) continue;
       // 1.3.7 场景 3：探测全集一次两吃——漂移证据照报，能力集合顺带刷新回写
       // （capability-refresh 的批量形态；探测失败的条目不动旧能力字段）。
-      const check = await runEnvProbeWithCapabilities(entry, recipe.tools);
+      // 1.5.7：传 firstRunTools——pending（已登记待装）工具不进 missing
+      // 双计数；pending 字段本身的摘除闭环在 capability-refresh/setup 链路。
+      const check = await runEnvProbeWithCapabilities(entry, recipe.tools, recipe.firstRunTools);
       if (check.capabilityDomains) {
         try {
           await atomicModifyConfig((config) => ({

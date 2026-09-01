@@ -9,7 +9,10 @@
  *     2. docker run -d --name zhishi-<name>-<shortid>
  *       --label zhishi.env=<name> --label zhishi.workspace=<path>
  *       -v <workspace>:/workspace -w /workspace
- *       zhishi-env-<name> tail -f /dev/null        # 容器常驻，exec 进入
+ *       zhishi-env-<name> bash -c '<首跑钩子>; exec tail -f /dev/null'
+ *                                        # 容器常驻，exec 进入；1.5.7 起首跑
+ *                                        # 钩子（/opt/zhishi/first-run.sh，存在
+ *                                        # 才跑）后台装 firstRunTools 声明的工具
  *   envDown(instanceId) → docker stop + docker rm
  *   envPs()             → docker ps --filter label=zhishi.env 解析成实例列表
  *
@@ -82,7 +85,15 @@ export function buildDockerBuildArgs(recipe: EnvironmentRecipe): string[] {
 
 /**
  * `docker run -d --name zhishi-<name>-<shortid> --label ... -v ws:/workspace
- * -w /workspace <image> tail -f /dev/null` — 容器常驻，后续 docker exec 进入。
+ * -w /workspace <image> bash -c '<首跑钩子> ; exec tail -f /dev/null'`
+ * ——容器常驻，后续 docker exec 进入。
+ *
+ * 1.5.7 首跑钩子：配方 firstRunTools 声明的重型工具（如 joern 1.8GB，下载
+ * 20min 级）由镜像内 /opt/zhishi/first-run.sh 安装。钩子脚本存在则 nohup
+ * 后台执行（日志落 /var/log/zhishi-first-run.log），**不阻塞容器就绪**——
+ * env up 的 run 超时（DOCKER_RUN_TIMEOUT_MS = 60s）等不起首跑安装；nohup
+ * 防止后续 exec 的信号链杀掉安装进程。脚本不存在（无首跑工具的配方）直接
+ * 跳过，行为与旧版 `tail -f /dev/null` 完全一致。
  */
 export function buildDockerRunArgs(
   recipe: EnvironmentRecipe,
@@ -97,7 +108,7 @@ export function buildDockerRunArgs(
     '-v', `${workspace}:/workspace`,
     '-w', '/workspace',
     imageTagFor(recipe.id),
-    'tail', '-f', '/dev/null',
+    'bash', '-c', 'if [ -f /opt/zhishi/first-run.sh ]; then nohup bash /opt/zhishi/first-run.sh >> /var/log/zhishi-first-run.log 2>&1 & fi; exec tail -f /dev/null',
   ];
 }
 
@@ -126,6 +137,102 @@ export function parseDockerPs(stdout: string): EnvInstance[] {
   }
   return instances;
 }
+
+// ---------------------------------------------------------------------------
+// 1.5.7 — docker build 失败的网络形态识别（纯函数，可单测）
+// ---------------------------------------------------------------------------
+
+/**
+ * 已知名可查的 registry 镜像站域名（daemon registry-mirrors 常用项）。
+ * 构建报错里出现这些域名 + 连接中断类关键词，说明是「当前镜像站挂了」，
+ * 与「Docker Hub 直连不通」是两种形态，指引不同（换站 vs 首配 mirror）。
+ */
+const KNOWN_REGISTRY_MIRROR_HOSTS: readonly string[] = [
+  'docker.m.daocloud.io',
+  'dockerproxy',
+  'docker.nju.edu.cn',
+  'hub-mirror.c.163.com',
+  'mirror.ccs.tencentyun.com',
+  'registry.docker-cn.com',
+  'docker.mirrors.ustc.edu.cn',
+];
+
+/** 可选的替代镜像站清单（指引文案共用）。 */
+const REGISTRY_MIRROR_SUGGESTIONS = [
+  'https://docker.m.daocloud.io',
+  'https://dockerproxy.net',
+  'https://docker.nju.edu.cn',
+];
+
+/**
+ * 识别 docker build 失败输出的网络形态，返回用户可读的排查指引；
+ * 认不出来返回 undefined（调用方原样输出 stderr 尾部）。
+ *
+ * 四种形态（按优先级）：
+ *   1. 已知镜像站域名 + EOF/timeout —— 当前镜像站挂了/限流，给替代清单；
+ *   2. auth.docker.io / docker.io + dial/timeout —— Docker Hub 直连不通，
+ *      指引配 daemon registry-mirrors（带 JSON 示例）；
+ *   3. apt-get exit 100 / archive.ubuntu.com —— 容器内 apt 源不通；1.5.7
+ *      配方已内置 apt 源回落，仍失败则指引容器代理；
+ *   4. git exit 128 / github.com —— 容器内 git 拉取不通；1.5.7 配方已内置
+ *      gh-proxy 回落，仍失败则指引构建代理。
+ */
+export function recognizeDockerBuildNetworkFailure(output: string): string | undefined {
+  const text = output.toLowerCase();
+  const hasNetError = /(dial tcp|i\/o timeout|timed out|timeout|eof|connection reset|no such host|temporary failure|unavailable)/.test(text);
+
+  // 形态 1：已知镜像站 + 连接中断 —— 镜像站自身故障/限流。
+  const mirror = KNOWN_REGISTRY_MIRROR_HOSTS.find((h) => text.includes(h));
+  if (mirror && hasNetError) {
+    return [
+      `网络形态识别：当前配置的 registry 镜像站（${mirror}）连接中断/超时——该镜像站可能已挂或限流。`,
+      '可在 daemon 配置（registry-mirrors）中替换为其他镜像站：',
+      ...REGISTRY_MIRROR_SUGGESTIONS.map((m) => `  - ${m}`),
+      '改完重启 docker（Linux: systemctl restart docker；Docker Desktop: 重启应用）后重试。',
+    ].join('\n');
+  }
+
+  // 形态 2：Docker Hub 直连失败 —— 需要首配 registry-mirrors。
+  if (
+    /(auth\.docker\.io|registry-1\.docker\.io|docker\.io)/.test(text) &&
+    /(dial tcp|i\/o timeout|timed out|no such host|connection refused)/.test(text)
+  ) {
+    return [
+      '网络形态识别：Docker Hub 直连失败（docker.io 拨号超时/不可达）——国内网络通常需要配置 registry 镜像站。',
+      '在 docker daemon 配置（Linux: /etc/docker/daemon.json；Docker Desktop: Settings → Docker Engine）加入：',
+      '{',
+      '  "registry-mirrors": [',
+      ...REGISTRY_MIRROR_SUGGESTIONS.map((m, i) => `    "${m}"${i < REGISTRY_MIRROR_SUGGESTIONS.length - 1 ? ',' : ''}`),
+      '  ]',
+      '}',
+      '保存后重启 docker 再重试。',
+    ].join('\n');
+  }
+
+  // 形态 3：容器内 apt 失败（exit 100 / ubuntu 官方源不可达）。
+  if (
+    /(exit code: 100|exit status 100)/.test(text) &&
+    /(apt|archive\.ubuntu\.com|security\.ubuntu\.com)/.test(text)
+  ) {
+    return [
+      '网络形态识别：容器内 apt 更新/安装失败（exit 100，ubuntu 官方源不可达）。',
+      '1.5.7 配方已内置 apt 源回落（默认源不通自动切 USTC 镜像）；若仍失败，说明镜像内全部 apt 源不可达，',
+      '请为容器构建/运行配置网络代理（Docker Desktop: Settings → Resources → Proxies；或 daemon 的 http-proxy 配置）后重试。',
+    ].join('\n');
+  }
+
+  // 形态 4：容器内 git 访问 github.com 失败（exit 128）。
+  if (/(exit code: 128|exit status 128)/.test(text) && text.includes('github.com')) {
+    return [
+      '网络形态识别：容器内 git 访问 github.com 失败（exit 128）。',
+      '1.5.7 配方已内置 gh-proxy 回落；若仍失败，请为容器构建配置代理',
+      '（docker build --build-arg HTTPS_PROXY=...，或 Docker Desktop / daemon 代理设置）后重试。',
+    ].join('\n');
+  }
+
+  return undefined;
+}
+
 
 /**
  * D28 自动发现：全量 `docker ps -a`（含已退出），**去掉** `label=zhishi.env`
@@ -310,9 +417,17 @@ export async function envUp(
     `$ docker ${buildArgs.join(' ')}\n${buildResult.stdout}${buildResult.stderr}\n`,
   );
   if (buildResult.exitCode !== 0 || buildResult.error) {
+    // 1.5.7：先跑网络形态识别（对完整输出匹配，不受 outputTail 截断影响），
+    // 命中则指引在前、原 stderr 尾部在后；认不出则原样输出尾部。
+    const networkHint = recognizeDockerBuildNetworkFailure(
+      `${buildResult.stdout}\n${buildResult.stderr}\n${buildResult.error ?? ''}`,
+    );
+    const detail = networkHint
+      ? `${networkHint}\n--- 原始报错尾部 ---\n${outputTail(buildResult)}`
+      : outputTail(buildResult);
     return {
       ok: false,
-      error: `docker build 失败（配方 "${recipe.id}"）：\n${outputTail(buildResult)}`,
+      error: `docker build 失败（配方 "${recipe.id}"）：\n${detail}`,
     };
   }
 

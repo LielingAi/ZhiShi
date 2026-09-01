@@ -16,6 +16,9 @@
  * 落盘：EnvironmentEntry.capabilityDomains / capabilityDerivedAt（服务端派生，
  * 非用户编辑）。探测失败（ssh 不通 / docker 死了 / 通道报错）→ 返回 undefined，
  * 调用方不写能力字段（保 baseline 行为），也绝不误判空集合。
+ * 1.5.7：capabilityPending（已登记待装 = 配方 firstRunTools 声明首跑安装、
+ * 探测未命中的工具）随探测闭环——missing 减去 pending 不双计数，探测命中
+ * 的首跑工具从 pending 摘除。
  *
  * 结构照 recipes.ts：反推表 / 探测面 / 解析 / 合并是纯函数（可单测）；
  * probeEnvironmentCapabilities 是唯一 IO（exec 可注入，测试不碰真实通道）。
@@ -75,7 +78,9 @@ export function buildToolDomainIndex(
     if (!recipe.valid) continue;
     const domains = recipeDomains.get(recipe.id);
     if (!domains) continue;
-    for (const tool of recipe.tools) {
+    // 1.5.7：firstRunTools 一并入表——首跑安装完成后探测命中，应同样贡献
+    // 域证据（装完就是真实在场的工具）。
+    for (const tool of [...recipe.tools, ...(recipe.firstRunTools ?? [])]) {
       const list = index.get(tool);
       if (list) {
         for (const d of domains) if (!list.includes(d)) list.push(d);
@@ -91,12 +96,15 @@ export function buildToolDomainIndex(
  * 探测面：全部 valid 配方 tools 的并集（去重，字典序排序——输出稳定，
  * 探测脚本可缓存对比）。无域归属的配方工具也在探测面内（探测的是工具，
  * 域反推时才按表归并——表外工具自然不落任何域）。
+ * 1.5.7：firstRunTools 并入探测面——首跑工具必须被探测，装完后才能从
+ * capabilityPending 摘除闭环（不在探测面里就永远是 pending）。
  */
 export function collectProbeSurface(recipes: readonly EnvironmentRecipe[]): string[] {
   const set = new Set<string>();
   for (const recipe of recipes) {
     if (!recipe.valid) continue;
     for (const tool of recipe.tools) set.add(tool);
+    for (const tool of recipe.firstRunTools ?? []) set.add(tool);
   }
   return [...set].sort((a, b) => a.localeCompare(b));
 }
@@ -183,18 +191,21 @@ export function capabilityScopeTools(
   ].sort((a, b) => a.localeCompare(b));
 }
 
-/** 集合内缺失（toolCheck.missing ∪ capabilityMissing ∩ 集合内工具）。 */
+/** 集合内缺失（toolCheck.missing ∪ capabilityMissing ∩ 集合内工具）。
+ *  1.5.7：减去 capabilityPending——已登记待装的首跑工具正在后台安装，
+ *  不进 missing 双计数。 */
 export function capabilityMissingInScope(
-  entry: Pick<EnvironmentEntry, 'capabilityDomains' | 'capabilityMissing' | 'toolCheck'>,
+  entry: Pick<EnvironmentEntry, 'capabilityDomains' | 'capabilityMissing' | 'capabilityPending' | 'toolCheck'>,
   recipes: readonly EnvironmentRecipe[],
   manifests: readonly DomainManifest[],
 ): { total: number; missing: string[] } | undefined {
   if (!entry.capabilityDomains?.length) return undefined;
   const scope = capabilityScopeTools(entry.capabilityDomains, recipes, manifests);
   if (scope.length === 0) return undefined;
+  const pending = new Set(entry.capabilityPending ?? []);
   const missing = [
     ...new Set([...(entry.toolCheck?.missing ?? []), ...(entry.capabilityMissing ?? [])]),
-  ].filter((t) => scope.includes(t));
+  ].filter((t) => scope.includes(t) && !pending.has(t));
   return { total: scope.length, missing };
 }
 
@@ -216,10 +227,15 @@ export interface CapabilityProbeDeps {
 export interface CapabilityProbeResult {
   capabilityDomains: string[];
   capabilityDerivedAt: string;
-  /** 探测面中缺失的工具（surface − 在场，字典序；1.4.9 MISS 落盘）。
+  /** 探测面中缺失的工具（surface − 在场 − pending，字典序；1.4.9 MISS 落盘，
+   *  1.5.7 起减去已登记待装——pending 工具不进 missing 双计数）。
    *  探测未执行（空探测面 bound-only）时为 undefined——与「探测了但零
    *  缺失」区分。 */
   capabilityMissing?: string[];
+  /** 1.5.7：重推后的待装清单 = 条目 capabilityPending − 本次探测在场
+   *  （命中的首跑工具装完了，摘除；空数组 = 全部装完，调用方删字段）。
+   *  探测未执行时为 undefined（调用方不动 pending）。 */
+  capabilityPending?: string[];
 }
 
 /**
@@ -239,13 +255,14 @@ export async function probeEnvironmentCapabilities(
   const surface = collectProbeSurface(deps.recipes);
   let probed: string[] = [];
   let missing: string[] | undefined;
+  let pending: string[] | undefined;
   if (surface.length > 0) {
     let stdout: string;
     try {
       const r = await deps.exec(entry, buildToolCheckScript(surface), {
         timeoutMs: CAPABILITY_PROBE_TIMEOUT_MS,
       });
-      if (!r.ok) return undefined; // 通道失败 → 不写能力字段
+      if (!r.ok) return undefined; // 通道失败 → 不写能力字段（pending 同样不动）
       stdout = r.stdout ?? '';
     } catch {
       return undefined;
@@ -258,7 +275,15 @@ export async function probeEnvironmentCapabilities(
     );
     // 1.4.9：MISS 清单随探测落盘——「声明了但环境里没有」是元数据可信的
     // 另一半（adopt 环境此前永远看不到缺失）。
-    missing = surface.filter((t) => !present.has(t));
+    // 1.5.7：减去已登记待装（capabilityPending）——首跑工具正在后台安装，
+    // 不进 missing 双计数；同时重算 pending = 旧 pending − 本次在场
+    // （首跑装完的工具摘除闭环；空数组交给调用方删字段）。
+    const oldPending = entry.capabilityPending ?? [];
+    const pendingSet = new Set(oldPending);
+    missing = surface.filter((t) => !present.has(t) && !pendingSet.has(t));
+    if (oldPending.length > 0) {
+      pending = oldPending.filter((t) => !present.has(t));
+    }
   }
   const domains = mergeCapabilityDomains(bound, probed);
   if (domains.length === 0) return undefined;
@@ -266,5 +291,6 @@ export async function probeEnvironmentCapabilities(
     capabilityDomains: domains,
     capabilityDerivedAt: (deps.now?.() ?? new Date()).toISOString(),
     ...(missing !== undefined ? { capabilityMissing: missing } : {}),
+    ...(pending !== undefined ? { capabilityPending: pending } : {}),
   };
 }

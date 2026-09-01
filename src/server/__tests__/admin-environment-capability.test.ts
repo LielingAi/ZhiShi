@@ -32,12 +32,15 @@ let scratch: string;
 let prevHome: string | undefined;
 let prevUserProfile: string | undefined;
 
-function seedRecipe(id: string, tools: string[]): void {
+function seedRecipe(id: string, tools: string[], firstRunTools?: string[]): void {
   const dir = join(scratch, '.zhishi', 'environments', id);
   mkdirSync(dir, { recursive: true });
+  const firstRun = firstRunTools?.length
+    ? `firstRunTools:\n${firstRunTools.map((t) => `  - ${t}\n`).join('')}`
+    : '';
   writeFileSync(
     join(dir, 'SKILL.md'),
-    `---\nname: ${id}\nbase: docker\ntools:\n${tools.map((t) => `  - ${t}\n`).join('')}---\n\n# ${id}\n`,
+    `---\nname: ${id}\nbase: docker\ntools:\n${tools.map((t) => `  - ${t}\n`).join('')}${firstRun}---\n\n# ${id}\n`,
     'utf-8',
   );
   writeFileSync(join(dir, 'Dockerfile'), 'FROM scratch\n', 'utf-8');
@@ -217,5 +220,85 @@ describe('1.3.10 #4 — 空探测面两实现对齐（绑定域恒在）', () =>
       exec: () => Promise.resolve({ ok: true, stdout: '' }),
     });
     expect(fromProbe).toBeUndefined();
+  });
+});
+
+describe('1.5.7 — capabilityPending（env up 落盘 / refresh 摘除闭环）', () => {
+  it('env up 探测：firstRunTools 未命中 → capabilityPending 落盘，且不进 capabilityMissing 双计数', async () => {
+    seedRecipe('code-audit', ['opengrep', 'rg'], ['joern']);
+    const entry: EnvironmentEntry = {
+      id: 'zhishi-code-audit-b1c2',
+      kind: 'docker',
+      container: 'zhishi-code-audit-b1c2',
+      recipeId: 'code-audit',
+      createdAt: '',
+    };
+    __setCapabilityExecForTests(() =>
+      Promise.resolve({ ok: true, stdout: 'OK:opengrep\nOK:rg\nMISS:joern\nOK:gdb\n' }),
+    );
+    const r = await runEnvProbeWithCapabilities(entry, ['opengrep', 'rg'], ['joern']);
+    expect(r.capabilityPending).toEqual(['joern']);
+    expect(r.capabilityMissing).not.toContain('joern');
+    expect(r.capabilityMissing).toContain('pwntools'); // 普通缺失照报
+    // firstRunTools 已在场（镜像里其实装了）→ 不落 pending
+    __setCapabilityExecForTests(() =>
+      Promise.resolve({ ok: true, stdout: 'OK:opengrep\nOK:rg\nOK:joern\n' }),
+    );
+    const r2 = await runEnvProbeWithCapabilities(entry, ['opengrep', 'rg'], ['joern']);
+    expect(r2.capabilityPending).toBeUndefined();
+  });
+
+  it('探测通道失败 → {}：pending 不落盘（与能力字段同一纪律）', async () => {
+    __setCapabilityExecForTests(() => Promise.resolve({ ok: false, stdout: '' }));
+    const r = await runEnvProbeWithCapabilities(PWN_ENTRY, ['gdb'], ['joern']);
+    expect(r).toEqual({});
+  });
+
+  it('refresh：探测命中 pending 工具（首跑装完）→ 摘除，pending 空删字段', async () => {
+    seedRecipe('pwn2', ['gdb'], ['joern']);
+    const entry: EnvironmentEntry = {
+      id: 'zhishi-pwn2-c3d4',
+      kind: 'docker',
+      container: 'zhishi-pwn2-c3d4',
+      recipeId: 'pwn2',
+      capabilityPending: ['joern'],
+      createdAt: '2026-08-25T00:00:00Z',
+    };
+    const config = readConfig();
+    writeFileSync(
+      join(scratch, '.zhishi', 'config.json'),
+      JSON.stringify({ ...config, environments: [entry] }),
+      'utf-8',
+    );
+    // joern 已装完（OK）→ refresh 后 pending 字段应消失。
+    __setCapabilityExecForTests(() => Promise.resolve({ ok: true, stdout: 'OK:gdb\nOK:joern\n' }));
+    const r = await handleEnvironmentCapabilityRefresh({ id: entry.id });
+    expect(r.success).toBe(true);
+    const saved = readConfig().environments?.find((e) => e.id === entry.id);
+    expect(saved?.capabilityPending).toBeUndefined();
+  });
+
+  it('refresh：pending 工具仍未装完 → pending 保留且不进 missing', async () => {
+    seedRecipe('pwn3', ['gdb'], ['joern']);
+    const entry: EnvironmentEntry = {
+      id: 'zhishi-pwn3-d4e5',
+      kind: 'docker',
+      container: 'zhishi-pwn3-d4e5',
+      recipeId: 'pwn3',
+      capabilityPending: ['joern'],
+      createdAt: '2026-08-25T00:00:00Z',
+    };
+    const config = readConfig();
+    writeFileSync(
+      join(scratch, '.zhishi', 'config.json'),
+      JSON.stringify({ ...config, environments: [entry] }),
+      'utf-8',
+    );
+    __setCapabilityExecForTests(() => Promise.resolve({ ok: true, stdout: 'OK:gdb\nMISS:joern\n' }));
+    const r = await handleEnvironmentCapabilityRefresh({ id: entry.id });
+    expect(r.success).toBe(true);
+    const saved = readConfig().environments?.find((e) => e.id === entry.id);
+    expect(saved?.capabilityPending).toEqual(['joern']);
+    expect(saved?.capabilityMissing).not.toContain('joern');
   });
 });

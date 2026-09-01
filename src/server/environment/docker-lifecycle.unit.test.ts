@@ -24,6 +24,7 @@ import {
   parseDockerPs,
   parseDockerPsAll,
   parseDockerRunningRows,
+  recognizeDockerBuildNetworkFailure,
   type DockerExec,
   type DockerExecResult,
 } from './docker-lifecycle';
@@ -72,7 +73,7 @@ describe('command assembly (pure)', () => {
     ]);
   });
 
-  it('run args: detached, labeled, workspace mounted at /workspace, keep-alive tail', () => {
+  it('run args: detached, labeled, workspace mounted at /workspace, first-run hook + keep-alive tail', () => {
     expect(buildDockerRunArgs(RECIPE, 'zhishi-web-recon-a1b2c3d4', '/work/dir')).toEqual([
       'run', '-d',
       '--name', 'zhishi-web-recon-a1b2c3d4',
@@ -81,7 +82,8 @@ describe('command assembly (pure)', () => {
       '-v', '/work/dir:/workspace',
       '-w', '/workspace',
       'zhishi-env-web-recon',
-      'tail', '-f', '/dev/null',
+      // 1.5.7 首跑钩子：脚本存在则 nohup 后台执行（不阻塞容器就绪），随后 exec tail 常驻
+      'bash', '-c', 'if [ -f /opt/zhishi/first-run.sh ]; then nohup bash /opt/zhishi/first-run.sh >> /var/log/zhishi-first-run.log 2>&1 & fi; exec tail -f /dev/null',
     ]);
   });
 
@@ -216,17 +218,66 @@ describe('envUp', () => {
     expect(result.error).toContain('no such file: Dockerfile');
   });
 
-  it('surfaces run failure output', async () => {
+  it('build 失败命中网络形态识别 → 指引在前 + 原 stderr 尾部在后（1.5.7）', async () => {
     const { exec } = scriptedExec([
       PROBE_OK,
       ok(''), // B6 幂等检查：无在跑容器
-      ok('built'),
-      { exitCode: 125, stdout: '', stderr: 'docker: Error response from daemon: Conflict.' },
+      {
+        exitCode: 1,
+        stdout: '',
+        stderr: '#5 ERROR: failed to fetch https://auth.docker.io/token: dial tcp: i/o timeout',
+      },
     ]);
     const result = await envUp(RECIPE, '/work/dir', { exec });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain('run');
+    expect(result.error).toContain('registry-mirrors');
+    expect(result.error).toContain('原始报错尾部');
+    expect(result.error).toContain('auth.docker.io');
+  });
+});
+
+describe('recognizeDockerBuildNetworkFailure（1.5.7 报错网络形态识别，纯函数）', () => {
+  it('形态 2：docker.io dial/timeout → 指引配 daemon registry-mirrors（带 JSON 示例）', () => {
+    const out = recognizeDockerBuildNetworkFailure(
+      'ERROR: failed to solve: failed to fetch anonymous token: Get "https://auth.docker.io/token": dial tcp 54.236.131.166:443: i/o timeout',
+    );
+    expect(out).toBeDefined();
+    expect(out).toContain('registry-mirrors');
+    expect(out).toContain('"https://docker.m.daocloud.io"');
+  });
+
+  it('形态 1：已知镜像站域名 + EOF → 指出当前镜像站挂了并给替代清单', () => {
+    const out = recognizeDockerBuildNetworkFailure(
+      'ERROR: failed to solve: docker.m.daocloud.io/library/ubuntu:24.04: reading manifest: EOF',
+    );
+    expect(out).toBeDefined();
+    expect(out).toContain('docker.m.daocloud.io');
+    expect(out).toContain('镜像站');
+    expect(out).toContain('dockerproxy.net');
+  });
+
+  it('形态 3：apt-get exit 100 + archive.ubuntu.com → 指引容器代理并说明配方已带 apt 回落', () => {
+    const out = recognizeDockerBuildNetworkFailure(
+      'Err:1 http://archive.ubuntu.com/ubuntu noble InRelease\nCould not connect to archive.ubuntu.com:80\nexecutor failed running [/bin/sh -c apt-get update]: exit code: 100',
+    );
+    expect(out).toBeDefined();
+    expect(out).toContain('apt');
+    expect(out).toContain('USTC');
+    expect(out).toContain('代理');
+  });
+
+  it('形态 4：git clone github.com exit 128 → 说明配方已带 gh-proxy 回落或指引代理', () => {
+    const out = recognizeDockerBuildNetworkFailure(
+      "fatal: unable to access 'https://github.com/joernio/joern.git/': Failed to connect\nexecutor failed running [/bin/sh -c git clone ...]: exit code: 128",
+    );
+    expect(out).toBeDefined();
+    expect(out).toContain('github.com');
+    expect(out).toContain('gh-proxy');
+  });
+
+  it('认不出的输出 → undefined（调用方原样输出 stderr 尾部）', () => {
+    expect(recognizeDockerBuildNetworkFailure('no such file: Dockerfile')).toBeUndefined();
   });
 });
 

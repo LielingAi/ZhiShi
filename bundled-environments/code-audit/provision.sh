@@ -40,6 +40,9 @@ fi
 # 1.5.5（issue #7）：joern v4.x 起 release 资产改平台分包
 # （joern-cli-<os>-<arch>.zip），裸 joern-cli.zip 已不存在（404）——
 # 按 uname -m 选包。
+# 同步点（1.5.7 joern provision 化）：本段与 first-run.sh 的 joern 安装段是
+# 同一份逻辑的两处内嵌（本脚本走 base64 传输必须自包含，无法 source 共享
+# 文件；docker 镜像侧由 first-run.sh 首跑安装）——改一处必须同步另一处。
 if ! command -v joern >/dev/null 2>&1; then
   echo "[code-audit/provision] installing joern..."
   case "$(uname -m)" in

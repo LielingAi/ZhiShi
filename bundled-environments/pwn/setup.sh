@@ -4,10 +4,15 @@ set -euo pipefail
 
 echo "[pwn-env] installing python tooling..."
 # 1.2.5 选型:删 ropper(停滞+与 ROPgadget 冗余)
-pip3 install --no-cache-dir pwntools ROPgadget
+# 1.5.7：24.04 PEP 668 系统级 pip 需 --break-system-packages；失败回落清华镜像。
+pip3 install --break-system-packages --no-cache-dir pwntools ROPgadget \
+  || pip3 install --break-system-packages --no-cache-dir \
+       -i https://pypi.tuna.tsinghua.edu.cn/simple pwntools ROPgadget
 
 echo "[pwn-env] installing ruby tooling..."
-gem install seccomp-tools one_gadget
+# 1.5.7：gem 失败回落 USTC rubygems 镜像。
+gem install seccomp-tools one_gadget \
+  || gem install --source https://mirrors.ustc.edu.cn/rubygems/ seccomp-tools one_gadget
 
 echo "[pwn-env] checking toolchain..."
 gdb --version | head -1

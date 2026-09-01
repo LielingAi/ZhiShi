@@ -100,6 +100,50 @@ describe('parseRecipeFrontmatter', () => {
   });
 });
 
+describe('firstRunTools（1.5.7 首跑安装工具声明）', () => {
+  it('解析 firstRunTools（与 tools 同形态：数组、逐项 trim）', () => {
+    const content = VALID_DOCKER_SKILL.replace(
+      'tools:\n  - nmap\n  - curl\n  - whatweb',
+      'tools:\n  - nmap\n  - curl\n  - whatweb\nfirstRunTools:\n  -  joern \n  - zap',
+    );
+    const { frontmatter, errors } = parseRecipeFrontmatter(content);
+    expect(errors).toEqual([]);
+    expect(frontmatter.firstRunTools).toEqual(['joern', 'zap']);
+  });
+
+  it('非必填：缺省 → undefined，不影响其他字段与校验链', () => {
+    const { frontmatter, errors } = parseRecipeFrontmatter(VALID_DOCKER_SKILL);
+    expect(errors).toEqual([]);
+    expect(frontmatter.firstRunTools).toBeUndefined();
+    const recipe = buildRecipe('web-recon', '/x/web-recon', VALID_DOCKER_SKILL, new Set(['SKILL.md', 'Dockerfile']));
+    expect(recipe.valid).toBe(true);
+    expect(recipe.firstRunTools).toBeUndefined();
+  });
+
+  it('buildRecipe 透传 firstRunTools 到 EnvironmentRecipe', () => {
+    const content = VALID_DOCKER_SKILL.replace(
+      'tools:\n  - nmap\n  - curl\n  - whatweb',
+      'tools:\n  - nmap\n  - curl\n  - whatweb\nfirstRunTools: [joern]',
+    );
+    const recipe = buildRecipe('code-audit', '/x/code-audit', content, new Set(['SKILL.md', 'Dockerfile']));
+    expect(recipe.valid).toBe(true);
+    expect(recipe.firstRunTools).toEqual(['joern']);
+  });
+
+  it('非法 firstRunTools（非字符串数组）→ invalidReasons，不炸扫描', () => {
+    const content = VALID_DOCKER_SKILL.replace(
+      'tools:\n  - nmap\n  - curl\n  - whatweb',
+      'tools:\n  - nmap\n  - curl\n  - whatweb\nfirstRunTools: joern',
+    );
+    const { frontmatter, errors } = parseRecipeFrontmatter(content);
+    expect(errors.some((e) => e.includes('firstRunTools'))).toBe(true);
+    expect(frontmatter.firstRunTools).toBeUndefined();
+    const recipe = buildRecipe('bad', '/x/bad', content, new Set(['SKILL.md', 'Dockerfile']));
+    expect(recipe.valid).toBe(false);
+    expect(recipe.invalidReasons.some((r) => r.includes('firstRunTools'))).toBe(true);
+  });
+});
+
 describe('validateRecipe', () => {
   it('accepts a complete docker recipe', () => {
     const { frontmatter } = parseRecipeFrontmatter(VALID_DOCKER_SKILL);

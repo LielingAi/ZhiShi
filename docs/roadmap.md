@@ -5,18 +5,21 @@
 
 ---
 
-## 1.5.7 —— 配方专项：构建期网络回落全覆盖 + 一致性补齐 + 基座统一（进行中）
+## 1.5.7 —— 配方专项：构建期网络回落全覆盖 + 一致性补齐 + 基座统一（进行中——代码完成，待用户实跑构建验收）
 
 **缘起（2026-09-01 用户实机故障链 + 全面配方审计定稿）**：用户配 docker 配方连踩四棒——docker.io 直连超时 → USTC 镜像站已死（EOF）→ 容器内 apt 源不通（exit 100）→ git clone github 无回落（exit 128）。审计实锤：回落惯例只覆盖 provision.sh（gh_dl/pip 清华），**Dockerfile 构建期全面裸连**（GitHub clone/release/raw、pip、npm、gem、GOPROXY 全无回落）。评估取证：pwndbg 官方只测 22.04/24.04（留 22.04 反是偏面）；kiterunner 有官方预编译二进制、jsluice 无 release；joern 无 lite 变体（1.8GB 固有体积）。
 
-- [ ] **构建期网络回落全覆盖（核心项）**：GitHub（gh-proxy）/ pip（清华）/ npm（npmmirror）/ gem（USTC rubygems）/ GOPROXY（goproxy.cn）统一 helper 段（各配方共享同一惯例文本），7 个 Dockerfile + setup.sh 全接入——pwn（pwndbg/pwninit/libc clone）、pentest（SecLists/nuclei/katana/ZAP/go 工具链）、code-audit（opengrep/joern/osv-scanner）、rev（Ghidra/ghidriff）、ai-security（garak/pyrit/promptfoo）、pentest setup.sh（clairvoyance pip git+https）逐点覆盖
-- [ ] **报错文案识别**：docker build 失败识别网络形态（镜像站 EOF / 拉取超时 / apt 源不通 / git 128），报错里直接给配置指引（daemon mirror / Containers proxy），不再只吐 stderr 尾巴
-- [ ] **一致性补齐**：ai-security 补 setup.sh 构建期自检（其余 6 个都有）；校验和纪律统一（pwninit/ZAP 补 sha256——pentest 的 nuclei/katana 已有，对齐）
-- [ ] **ubuntu 统一 24.04**（评估结论支持：pwndbg 官方主测面即 22.04/24.04）：4 个 22.04 配方迁移 + PEP 668（--break-system-packages）全面对齐；每个配方构建 + 自检实跑验证
-- [ ] **pentest 去 Go 工具链**：kiterunner 换官方预编译二进制（v1.0.2 linux_amd64 实测在）；jsluice 降级为环境内按需自装（无 release，为它一个拉 150MB Go 不值）
-- [ ] **回归 + 验证**：7 配方 docker build 全跑通（本机 docker 不可用时经 VM/远程 docker 验证）；provision.sh 与 Dockerfile 的同款工具安装口径对齐复查
+- [x] **构建期网络回落全覆盖（核心项）**：GitHub（gh-proxy）/ pip（清华）/ npm（npmmirror）/ gem（USTC rubygems）/ GOPROXY（goproxy.cn）统一 helper 段（各配方共享同一惯例文本），7 个 Dockerfile + setup.sh 全接入——pwn（pwndbg/pwninit/libc clone）、pentest（SecLists/nuclei/katana/ZAP/go 工具链）、code-audit（opengrep/joern/osv-scanner）、rev（Ghidra/ghidriff）、ai-security（garak/pyrit/promptfoo）、pentest setup.sh（clairvoyance pip git+https）逐点覆盖
+- [x] **报错文案识别**：docker build 失败识别网络形态（镜像站 EOF / 拉取超时 / apt 源不通 / git 128），报错里直接给配置指引（daemon mirror / Containers proxy），不再只吐 stderr 尾巴
+- [x] **一致性补齐**：ai-security 补 setup.sh 构建期自检（其余 6 个都有）；校验和纪律统一（pwninit/ZAP 补 sha256——pentest 的 nuclei/katana 已有，对齐）
+- [x] **ubuntu 统一 24.04**（评估结论支持：pwndbg 官方主测面即 22.04/24.04）：4 个 22.04 配方迁移 + PEP 668（--break-system-packages）全面对齐；每个配方构建 + 自检实跑验证
+- [x] **pentest 去 Go 工具链**：kiterunner 换官方预编译二进制（v1.0.2 linux_amd64 实测在）；jsluice 降级为环境内按需自装（无 release，为它一个拉 150MB Go 不值）
+- [x] **joern provision 化（用户拍板做）**：1.8GB 平台包移出 code-audit 镜像——docker 首跑钩子（entrypoint 检测未装则装，复用 provision.sh 的 joern 段抽成共享脚本）+ 能力探测的「已登记待装」语义（装完前不显示「无此能力」，显示待装态）；provision.sh 与 docker 首跑共用同一安装脚本
+- [ ] **回归 + 验证**：7 配方 docker build 由用户实跑（本机无 docker）；provision.sh 与 Dockerfile 的同款工具安装口径对齐复查
 
-> 记录在案：joern 保持镜像内预装（无 lite 变体；主力工具按需装违背「环境即战力」）；joern provision 化 + docker 首跑钩子 +「已登记待装」语义待拍板（机制成本：docker 无首跑机制、能力探测缺装语义、离线退化）。
+> 实际落地（2026-09-01，三面并行 + 中央校验）：①**回落全覆盖**——7 个 Dockerfile 顶部统一 1.5.7 惯例注释块 + 逐点接入：GitHub clone/release/raw 全部 gh_dl 形态回落（pwn 三 clone/pwninit、pentest SecLists/nuclei/katana（重构为单次 API 取 JSON + sha256 校验保留）/ZAP、code-audit opengrep/joern、rev Ghidra、osv-scanner 从 install.sh 改 provision.sh 同口径 release 直取）；pip 清华回落（全部 pip 点 + *-vm setup.sh 对齐）；npm npmmirror、gem USTC、clairvoyance pip git+https 走 gh-proxy。②**报错识别**——docker-lifecycle 新增纯函数 recognizeDockerBuildNetworkFailure：镜像站 EOF（已知死站清单域名识别）、docker.io 直连超时（指引 daemon registry-mirrors + JSON 示例）、apt exit 100（说明 1.5.7 已带回落 + Containers proxy 指引）、git 128（gh-proxy 说明）；报错 = 指引 + 原 stderr 尾部，识别吃完整输出不受截断影响。③**一致性**——ai-security 补 setup.sh（garak/pyrit/promptfoo 逐项验证）；pwninit 钉 3.3.3 + ZAP 钉 v2.17.0 均补 sha256（官方无 checksums 的自算固化，注释写明日期/版本——钉版是 sha256 固化的必然代价）。④**基座统一 24.04**——4 个 22.04 配方迁移，pip 全面 --break-system-packages。⑤**pentest 去 Go**——kiterunner 换官方 v1.0.2 预编译二进制（sha256 官方 checksums 实算匹配）；jsluice 移出 tools[] 改按需自装（不预装工具留在能力声明会永久 MISS——与 metasploit 不列入口径一致），Go 工具链整段删除。⑥**joern provision 化**——code-audit Dockerfile 删 joern 段改 COPY first-run.sh；first-run.sh = joern 平台分包安装段（1.5.5 逻辑）+ command -v 幂等 + flock 防并发 + gh_dl 回落；provision.sh 同段内嵌互指同步点；docker-lifecycle buildDockerRunArgs 常驻 argv 换首跑钩子（nohup 后台装不阻塞容器就绪）；recipes.ts 解析 frontmatter firstRunTools；EnvironmentEntry.capabilityPending 数据模型（pending = firstRunTools − 在场，探测命中摘除、空删字段、探测失败不动、missing 归并减 pending 防双计数）；GUI 待装展示（徽章「· 待装N」+ tooltip 引导 + 详情模态行；「补齐环境」按钮语义自动正确）。回归：新增 22 单测（recipes 4 + docker-lifecycle 6 + capability-derive 5 + admin 接线 3 + GUI 4）；全量 171 文件 2232 测试绿 + tsc + eslint + depcruise 438 模块零违规 + 三构建绿；14 个脚本 bash -n 全过；Dockerfile 逐文件目检 + LF 零 CR 复查（1.4.9/1.5.1 教训）。
+
+> 记录在案：joern provision 化已定（做）；metasploit/CodeQL 维持不预装（SKILL.md 降级路径已有）。
 > 边界（不做）：配方工具集增减（选型 1.2.5 已定）；metasploit/CodeQL 维持不预装（SKILL.md 降级路径已有）。
 > 验收：CN 网络裸机（无代理无镜像配置）下 7 配方全部构建成功；报错文案指路实测。
 

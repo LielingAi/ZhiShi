@@ -27,13 +27,14 @@ import {
 
 // ===== Fixtures =====
 
-function recipe(id: string, tools: string[], valid = true): EnvironmentRecipe {
+function recipe(id: string, tools: string[], valid = true, firstRunTools?: string[]): EnvironmentRecipe {
   return {
     id,
     dir: `/recipes/${id}`,
     name: id,
     base: 'docker',
     tools,
+    ...(firstRunTools ? { firstRunTools } : {}),
     valid,
     invalidReasons: valid ? [] : ['缺少 SKILL.md（配方定义文件）'],
   };
@@ -252,5 +253,76 @@ describe('probeEnvironmentCapabilities（注入 exec，不真连）', () => {
     });
     expect(called).toBe(0);
     expect(r?.capabilityDomains).toEqual(['binary']);
+  });
+});
+
+describe('1.5.7 — capabilityPending（已登记待装：firstRunTools 声明、探测未命中）', () => {
+  const fixedNow = () => new Date('2026-08-25T12:00:00Z');
+  const okExec = (stdout: string) => () => Promise.resolve({ ok: true as const, stdout });
+  // code-audit 声明首跑安装 joern（构建期装不下，容器首跑钩子后台装）。
+  const FIRST_RUN_RECIPES = [...RECIPES.filter((r) => r.id !== 'code-audit'), recipe('code-audit', ['opengrep', 'rg'], true, ['joern'])];
+
+  it('firstRunTools 并入探测面与工具→域反推表（装完后探测命中才算闭环）', () => {
+    expect(collectProbeSurface(FIRST_RUN_RECIPES)).toContain('joern');
+    expect(buildToolDomainIndex(FIRST_RUN_RECIPES, MANIFESTS).get('joern')).toEqual(['whitebox']);
+  });
+
+  it('missing 归并减去 pending：待装工具不进 capabilityMissing 双计数，且随探测返回新 pending', async () => {
+    const entry: EnvironmentEntry = {
+      ...ENTRY,
+      recipeId: 'code-audit',
+      capabilityPending: ['joern'],
+    };
+    const r = await probeEnvironmentCapabilities(entry, {
+      recipes: FIRST_RUN_RECIPES,
+      manifests: MANIFESTS,
+      exec: okExec('OK:opengrep\nOK:rg\nMISS:joern\n'),
+      now: fixedNow,
+    });
+    // joern 在探测面且 MISS，但已登记 pending → 不进 missing。
+    expect(r?.capabilityMissing).not.toContain('joern');
+    expect(r?.capabilityMissing).toContain('gdb'); // 普通缺失照报
+    // 仍未装完 → pending 保留。
+    expect(r?.capabilityPending).toEqual(['joern']);
+  });
+
+  it('摘除闭环：探测命中 pending 工具（首跑装完）→ 从 pending 摘除，空则返回空数组（调用方删字段）', async () => {
+    const entry: EnvironmentEntry = {
+      ...ENTRY,
+      recipeId: 'code-audit',
+      capabilityPending: ['joern'],
+    };
+    const r = await probeEnvironmentCapabilities(entry, {
+      recipes: FIRST_RUN_RECIPES,
+      manifests: MANIFESTS,
+      exec: okExec('OK:opengrep\nOK:rg\nOK:joern\n'),
+      now: fixedNow,
+    });
+    expect(r?.capabilityPending).toEqual([]); // 全部装完 → 空数组（删字段信号）
+    // 装完的 joern 贡献域证据（whitebox 已由绑定域覆盖，不重复）。
+    expect(r?.capabilityDomains).toEqual(['whitebox']);
+  });
+
+  it('capabilityMissingInScope 同样减去 pending（读侧口径与写侧一致）', () => {
+    const r = capabilityMissingInScope(
+      {
+        capabilityDomains: ['whitebox'],
+        capabilityMissing: ['joern', 'opengrep'], // 旧数据可能已把 pending 写进 missing
+        capabilityPending: ['joern'],
+      },
+      FIRST_RUN_RECIPES,
+      MANIFESTS,
+    );
+    expect(r?.missing).toEqual(['opengrep']);
+  });
+
+  it('通道失败 → undefined：pending 与能力字段都不动（与既有纪律一致）', async () => {
+    const entry: EnvironmentEntry = { ...ENTRY, capabilityPending: ['joern'] };
+    const r = await probeEnvironmentCapabilities(entry, {
+      recipes: FIRST_RUN_RECIPES,
+      manifests: MANIFESTS,
+      exec: () => Promise.resolve({ ok: false as const, stdout: '' }),
+    });
+    expect(r).toBeUndefined();
   });
 });

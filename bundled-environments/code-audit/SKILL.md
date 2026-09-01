@@ -1,6 +1,6 @@
 ---
 name: code-audit
-description: 白盒审计研究环境——源码漏洞审计的环境。任务涉及源码级漏洞挖掘（审计开源项目、找注入/越权/逻辑漏洞、SCA 依赖审计）时使用。内置 OpenGrep（静态分析主力,Semgrep CE 的全兼容超集）+ Joern（污点传播,多语言 CPG,预置 joern-taint.sc 模板 CLI 化）+ ast-grep（即席 AST 搜索/重写）+ bandit（Python 专项）+ pip-audit/osv-scanner（SCA）+ ripgrep/universal-ctags（手工数据流追索）。CodeQL 不预装（下载大）,仅开源靶标条件启用,需要时环境内自装。
+description: 白盒审计研究环境——源码漏洞审计的环境。任务涉及源码级漏洞挖掘（审计开源项目、找注入/越权/逻辑漏洞、SCA 依赖审计）时使用。内置 OpenGrep（静态分析主力,Semgrep CE 的全兼容超集）+ Joern（污点传播,多语言 CPG,首跑自动安装,预置 joern-taint.sc 模板 CLI 化）+ ast-grep（即席 AST 搜索/重写）+ bandit（Python 专项）+ pip-audit/osv-scanner（SCA）+ ripgrep/universal-ctags（手工数据流追索）。CodeQL 不预装（下载大）,仅开源靶标条件启用,需要时环境内自装。
 base: docker
 tools:
   - opengrep
@@ -12,6 +12,11 @@ tools:
   - pip-audit
   - rg
   - ctags
+# 1.5.7 joern provision 化：移出镜像、容器首跑由 /opt/zhishi/first-run.sh
+# 按需安装的工具——装完前能力探测显示「已登记待装」而非「无此能力」。
+firstRunTools:
+  - joern
+  - joern-parse
 ---
 
 # code-audit —— 白盒审计研究环境
@@ -41,6 +46,9 @@ rg -n "exec\(|eval\(|SELECT" src/              # ⑥ 手工追索入口
 ```
 
 ## Joern 污点分析（1day/数据流主力）
+
+1.5.7 起 joern 不随镜像预装（1.8GB 平台包）——容器首跑自动安装
+（/opt/zhishi/first-run.sh，幂等）；装完前 `joern` 不可用属正常「待装」态。
 
 ```bash
 joern-parse -o /workspace/out/target.cpg.bin .            # ① 建 CPG(多语言)

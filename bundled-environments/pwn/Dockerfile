@@ -1,6 +1,15 @@
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+# 1.5.7 构建期网络回落惯例（7 个 docker 配方统一文本）：GitHub git clone 与
+# release/raw 下载直连失败回落 gh-proxy.com（https://gh-proxy.com/<url>，照
+# provision.sh 的 gh_dl 形态）；pip install 失败回落清华镜像
+# （-i https://pypi.tuna.tsinghua.edu.cn/simple）；npm install -g 失败回落
+# npmmirror（--registry=https://registry.npmmirror.com）；gem install 失败回落
+# USTC rubygems（--source https://mirrors.ustc.edu.cn/rubygems/）。
+# 海外网络直连成功即不触发回落。1.5.7 基座统一 ubuntu 24.04：
+# 系统级 pip 一律 --break-system-packages（PEP 668）。
 
 # 1.2.5 选型:删 standalone checksec(pwntools 自带 checksec/cyclic/shellcraft);
 # 加 patchelf(pwninit 运行依赖+换 libc)、ruby(one_gadget/seccomp-tools 是 gem)。
@@ -20,20 +29,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     file xxd less \
  && rm -rf /var/lib/apt/lists/*
 
-# pwndbg（git clone + 官方 setup.sh，构建期一次装完）
+# pwndbg（git clone + 官方 setup.sh，构建期一次装完；1.5.7：clone 加 gh-proxy 回落）
 RUN git clone --depth 1 https://github.com/pwndbg/pwndbg /opt/pwndbg \
- && cd /opt/pwndbg && ./setup.sh
+      || git clone --depth 1 https://gh-proxy.com/https://github.com/pwndbg/pwndbg /opt/pwndbg; \
+    cd /opt/pwndbg && ./setup.sh
 
-# pwninit（官方 release 二进制,GitHub API 取最新版）
-RUN PWNINIT_URL=$(curl -sSf https://api.github.com/repos/io12/pwninit/releases/latest \
-      | jq -r '.assets[].browser_download_url | select(test("pwninit$"))' | head -1) \
- && curl -sSfL "$PWNINIT_URL" -o /usr/local/bin/pwninit \
+# pwninit（官方 release 二进制；1.5.7：版本钉 3.3.3 + sha256 校验——官方未发布
+# checksums，以下 sha256 为 2026-09-01 下载自算固化；下载加 gh-proxy 回落）
+RUN PWNINIT_URL="https://github.com/io12/pwninit/releases/download/3.3.3/pwninit" \
+ && ( curl -sSfL "$PWNINIT_URL" -o /usr/local/bin/pwninit \
+      || curl -sSfL "https://gh-proxy.com/$PWNINIT_URL" -o /usr/local/bin/pwninit ) \
+ && echo "f124b6645b01b0fc4adacabe61438fe73eef517dc3e4696a08e1250a8f47eec3  /usr/local/bin/pwninit" \
+      | sha256sum -c - \
  && chmod +x /usr/local/bin/pwninit
 
 # libc-database / glibc-all-in-one（换 libc 调试两件套,git clone 即装;
-# 实际 libc 包按需 ./get 下载,不进镜像）
-RUN git clone --depth 1 https://github.com/niklasb/libc-database /opt/libc-database \
- && git clone --depth 1 https://github.com/matrix1001/glibc-all-in-one /opt/glibc-all-in-one
+# 实际 libc 包按需 ./get 下载,不进镜像；1.5.7：clone 加 gh-proxy 回落）
+RUN gh_clone() { git clone --depth 1 "$1" "$2" \
+      || git clone --depth 1 "https://gh-proxy.com/$1" "$2"; }; \
+    gh_clone https://github.com/niklasb/libc-database /opt/libc-database \
+ && gh_clone https://github.com/matrix1001/glibc-all-in-one /opt/glibc-all-in-one
 
 COPY setup.sh /opt/zhishi/setup.sh
 RUN chmod +x /opt/zhishi/setup.sh && /opt/zhishi/setup.sh

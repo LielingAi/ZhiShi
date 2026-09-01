@@ -1,6 +1,15 @@
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+# 1.5.7 构建期网络回落惯例（7 个 docker 配方统一文本）：GitHub git clone 与
+# release/raw 下载直连失败回落 gh-proxy.com（https://gh-proxy.com/<url>，照
+# provision.sh 的 gh_dl 形态）；pip install 失败回落清华镜像
+# （-i https://pypi.tuna.tsinghua.edu.cn/simple）；npm install -g 失败回落
+# npmmirror（--registry=https://registry.npmmirror.com）；gem install 失败回落
+# USTC rubygems（--source https://mirrors.ustc.edu.cn/rubygems/）。
+# 海外网络直连成功即不触发回落。1.5.7 基座统一 ubuntu 24.04：
+# 系统级 pip 一律 --break-system-packages（PEP 668）。
 
 # 1.2.5 选型:openjdk 是 Joern 的运行依赖(JRE 17+)
 # apt 源回落（1.5.6:默认源不通时切 USTC 镜像——与 gh_dl/pip 镜像回落同惯例;
@@ -22,36 +31,38 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # OpenGrep 是功能严格超集、全兼容、无登录无遥测）。
 # 装 GitHub release 二进制,不走 pip——PyPI 上的 opengrep 包名曾被抢注,
 # 官方分发物就是 release 的 opengrep_manylinux_x86 单文件二进制。
-RUN curl -sSfL https://github.com/opengrep/opengrep/releases/latest/download/opengrep_manylinux_x86 \
-      -o /usr/local/bin/opengrep \
+# 1.5.7：下载加 gh-proxy 回落。
+RUN OG_URL="https://github.com/opengrep/opengrep/releases/latest/download/opengrep_manylinux_x86" \
+ && ( curl -sSfL "$OG_URL" -o /usr/local/bin/opengrep \
+      || curl -sSfL "https://gh-proxy.com/$OG_URL" -o /usr/local/bin/opengrep ) \
  && chmod +x /usr/local/bin/opengrep
 
-# Joern（污点传播主力,多语言 CPG）。绕开 joern-install.sh 的交互提示,
-# 直接取 release 的 joern-cli 平台包解到 /opt/joern。
-# 1.5.5（issue #7）：joern v4.x 起资产改平台分包（joern-cli-<os>-<arch>.zip）,
-# 裸 joern-cli.zip 已 404——按 uname -m 选包。
-RUN case "$(uname -m)" in \
-      aarch64|arm64) JOERN_ASSET=joern-cli-linux-arm64.zip ;; \
-      *)             JOERN_ASSET=joern-cli-linux-x86_64.zip ;; \
-    esac \
- && curl -sSfL "https://github.com/joernio/joern/releases/latest/download/$JOERN_ASSET" \
-      -o /tmp/joern-cli.zip \
- && unzip -q /tmp/joern-cli.zip -d /opt/joern \
- && rm -f /tmp/joern-cli.zip \
- && for b in joern joern-parse joern-scan joern-export joern-slice; do \
-      ln -sf "/opt/joern/joern-cli/$b" "/usr/local/bin/$b"; \
-    done
+# Joern 不预装（1.5.7 joern provision 化：1.8GB 平台包移出镜像——容器首跑时由
+# /opt/zhishi/first-run.sh 按需安装（幂等 + flock 防并发），SKILL.md
+# firstRunTools 声明「已登记待装」语义；安装逻辑与 provision.sh 的 joern 段
+# 是同一份的两处内嵌，改动须互相同步）
+COPY first-run.sh /opt/zhishi/first-run.sh
+RUN chmod +x /opt/zhishi/first-run.sh
 
 # ast-grep（即席 AST 搜索/重写,PyPI 官方包 ast-grep-cli,提供 sg/ast-grep）
 # bandit（Python 专项, pip 装）
-RUN pip3 install --no-cache-dir ast-grep-cli bandit
+# 1.5.7：24.04 PEP 668 需 --break-system-packages；失败回落清华镜像。
+RUN pip3 install --break-system-packages --no-cache-dir ast-grep-cli bandit \
+      || pip3 install --break-system-packages --no-cache-dir \
+           -i https://pypi.tuna.tsinghua.edu.cn/simple ast-grep-cli bandit
 
-# pip-audit（SCA:依赖漏洞对照）
-RUN pip3 install --no-cache-dir pip-audit
+# pip-audit（SCA:依赖漏洞对照；1.5.7：同上回落惯例）
+RUN pip3 install --break-system-packages --no-cache-dir pip-audit \
+      || pip3 install --break-system-packages --no-cache-dir \
+           -i https://pypi.tuna.tsinghua.edu.cn/simple pip-audit
 
-# osv-scanner（SCA 主力:多生态依赖漏洞对照;官方 install.sh 取 GitHub
-# release,构建期一次到位——与 apt/pip 同级的供应链信任,构建时网络必需）
-RUN curl -sSfL https://raw.githubusercontent.com/google/osv-scanner/main/scripts/install.sh | sh
+# osv-scanner（SCA 主力:多生态依赖漏洞对照）。1.5.7：不走官方 install.sh（其内部
+# 下载不走镜像,2026-08-29 实机 404）——与 provision.sh 同口径,直接取 release 的
+# linux_amd64 二进制 + gh-proxy 回落（gh_dl 形态）
+RUN OSV_URL="https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64" \
+ && ( curl -sSfL "$OSV_URL" -o /usr/local/bin/osv-scanner \
+      || curl -sSfL "https://gh-proxy.com/$OSV_URL" -o /usr/local/bin/osv-scanner ) \
+ && chmod +x /usr/local/bin/osv-scanner
 
 # joern-taint.sc:Joern 污点查询模板脚本——把 Joern 从交互式 REPL 变成
 # CLI 一把出结果（用法见 SKILL.md 与脚本头注释）

@@ -45,6 +45,8 @@ export interface EnvEntry {
   capabilityDomains?: string[];
   /** capabilityDomains 的推导时间（ISO）。 */
   capabilityDerivedAt?: string;
+  /** 1.5.7：待装工具清单（首跑自动安装进行中；不计入 toolCheck/capabilityTools 的 missing）。 */
+  capabilityPending?: string[];
 }
 
 export interface PsInstance {

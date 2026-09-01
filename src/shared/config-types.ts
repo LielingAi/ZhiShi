@@ -972,6 +972,14 @@ export interface EnvironmentEntry {
 
   capabilityMissing?: string[];
 
+  /** 已登记待装工具（1.5.7）：配方 firstRunTools 声明「首跑安装」、探测
+   *  未命中的工具——容器首跑钩子（/opt/zhishi/first-run.sh）正在后台装。
+   *  pending 工具不进 missing 双计数（capabilityMissing 与
+   *  capabilityMissingInScope 都会减去）；重推/setup 闭环探测命中时摘除
+   *  （空则删字段）。与 capabilityMissing 同一纪律：探测失败不动本字段。 */
+
+  capabilityPending?: string[];
+
   /** ISO 时间戳，server 侧写入时盖章。 */
 
   createdAt: string;

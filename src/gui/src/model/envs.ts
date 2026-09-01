@@ -31,8 +31,12 @@ export interface EnvEntryLike {
   /** capabilityDomains 的推导时间（ISO）。 */
   capabilityDerivedAt?: string;
   /** 1.4.9：能力集合内工具口径（服务端 environment/list 装饰）——
-   *  total = 集合内配方工具总数；missing = 声明了但环境里没有的清单。 */
-  capabilityTools?: { total: number; missing: string[] };
+   *  total = 集合内配方工具总数；missing = 声明了但环境里没有的清单。
+   *  1.5.7：toolsPending = 待装计数（首跑自动安装进行中的工具数，与
+   *  capabilityPending 清单同源；pending 不计入 missing）。 */
+  capabilityTools?: { total: number; missing: string[]; toolsPending?: number };
+  /** 1.5.7：待装工具清单（首跑自动安装进行中；服务端 environment/list 条目字段）。 */
+  capabilityPending?: string[];
 }
 
 export interface PsInstanceLike {
@@ -77,8 +81,9 @@ export interface SidebarEnvItem {
    */
   registeredAs?: { key: string; label: string };
   /** 1.3.7 场景 3：现场推导的能力集合（透明展示，无声明 UI）。
-   *  1.4.9：带集合内工具口径（在场/缺失——缺失是「补齐环境」入口的依据）。 */
-  capability?: { domains: string[]; derivedAt?: string; toolsTotal?: number; toolsMissing?: string[] };
+   *  1.4.9：带集合内工具口径（在场/缺失——缺失是「补齐环境」入口的依据）。
+   *  1.5.7：toolsPending = 待装清单（首跑自动安装进行中；不出「补齐环境」入口）。 */
+  capability?: { domains: string[]; derivedAt?: string; toolsTotal?: number; toolsMissing?: string[]; toolsPending?: string[] };
 }
 
 export interface SidebarGroup {
@@ -86,7 +91,9 @@ export interface SidebarGroup {
   items: SidebarEnvItem[];
 }
 
-/** 条目 → 能力集合（1.3.7 场景 3：无字段 = 未推导过，不是空集合）。 */
+/** 条目 → 能力集合（1.3.7 场景 3：无字段 = 未推导过，不是空集合）。
+ *  1.5.7：capabilityPending（待装清单）透传为 capability.toolsPending；
+ *  计数口径以清单长度为准（与 capabilityTools.toolsPending 同源，清单优先）。 */
 function capabilityOf(e: EnvEntryLike | undefined): SidebarEnvItem['capability'] {
   return e?.capabilityDomains?.length
     ? {
@@ -95,30 +102,39 @@ function capabilityOf(e: EnvEntryLike | undefined): SidebarEnvItem['capability']
         ...(e.capabilityTools
           ? { toolsTotal: e.capabilityTools.total, toolsMissing: e.capabilityTools.missing }
           : {}),
+        ...(e.capabilityPending?.length ? { toolsPending: e.capabilityPending } : {}),
       }
     : undefined;
 }
 
 /** 能力徽章文案（侧栏行内短形态——最多 2 个域 + 「+N」，行内不挤环境名）。
- *  1.4.9：有缺失时带「缺 N」缺口标记（名实分离的可视面）。 */
+ *  1.4.9：有缺失时带「缺 N」缺口标记（名实分离的可视面）。
+ *  1.5.7：有待装时再带「待装 N」标记（首跑自动安装进行中；与「缺 N」可同时出现）。 */
 export function capabilityBadgeText(cap: NonNullable<SidebarEnvItem['capability']>): string {
   const domains = cap.domains;
   const shown = domains.slice(0, 2).join(' · ');
   const base = domains.length > 2 ? `能力：${shown} +${domains.length - 2}` : `能力：${shown}`;
   const miss = cap.toolsMissing?.length ?? 0;
-  return miss > 0 ? `${base} · 缺${miss}` : base;
+  const pend = cap.toolsPending?.length ?? 0;
+  return `${base}${miss > 0 ? ` · 缺${miss}` : ''}${pend > 0 ? ` · 待装${pend}` : ''}`;
 }
 
-/** 能力徽章 tooltip（完整列表 + 推导时间与来源说明 + 在场/缺失明细）。 */
+/** 能力徽章 tooltip（完整列表 + 推导时间与来源说明 + 在场/缺失明细）。
+ *  1.5.7：有待装时加一行待装清单——语义是「首跑自动安装中」，
+ *  引导「稍候或手动刷新」，不出「补齐环境」引导（那是 missing 的语义）。 */
 export function capabilityTooltip(cap: NonNullable<SidebarEnvItem['capability']>): string {
   const when = cap.derivedAt ? `，探测于 ${cap.derivedAt}` : '';
   const base = `能力：${cap.domains.join(' · ')}（现场推导：配方绑定 ∪ 工具探测${when}）`;
   if (cap.toolsTotal === undefined) return base;
-  const present = cap.toolsTotal - (cap.toolsMissing?.length ?? 0);
+  // 待装工具既不在场也不算缺失（pending 不计入 missing），在场数要再减去待装数
+  const present = cap.toolsTotal - (cap.toolsMissing?.length ?? 0) - (cap.toolsPending?.length ?? 0);
   const missing = cap.toolsMissing?.length
     ? `\n声明了但环境里没有（${cap.toolsMissing.length}）：${cap.toolsMissing.join('、')}——可用「⋯ → 补齐环境」安装`
     : '';
-  return `${base}\n工具在场 ${present}/${cap.toolsTotal}${missing}`;
+  const pending = cap.toolsPending?.length
+    ? `\n待装（${cap.toolsPending.length}）：${cap.toolsPending.join('、')}——首跑自动安装中，稍候或手动刷新`
+    : '';
+  return `${base}\n工具在场 ${present}/${cap.toolsTotal}${missing}${pending}`;
 }
 
 /**

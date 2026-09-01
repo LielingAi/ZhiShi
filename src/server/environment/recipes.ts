@@ -45,6 +45,10 @@ export interface RecipeFrontmatter {
   description?: string;
   base?: RecipeBase;
   tools?: string[];
+  /** 1.5.7：首跑安装工具声明——镜像构建期装不下/太重的工具（如 joern 1.8GB
+   *  下载），由容器首跑钩子 /opt/zhishi/first-run.sh 后台安装。探测未命中时
+   *  落 EnvironmentEntry.capabilityPending（已登记待装），不进 missing 双计数。 */
+  firstRunTools?: string[];
   /** vm 配方：模板 VM 的 .vmx 绝对路径（也可由 `env up --vm-base` 现场给）。 */
   vm_base?: string;
   /** vm 配方：guest SSH 用户名（地址回写 env 条目时的缺省 user）。 */
@@ -67,6 +71,8 @@ export interface EnvironmentRecipe {
   base?: RecipeBase;
   /** 工具清单声明（发现环节唯一事实源）。 */
   tools: string[];
+  /** 1.5.7：首跑安装工具声明（frontmatter firstRunTools）；无声明时 undefined。 */
+  firstRunTools?: string[];
   /** vm 配方：模板 .vmx 路径（frontmatter vm_base；可被 env up --vm-base 覆盖）。 */
   vmBase?: string;
   /** vm 配方：guest SSH 缺省用户（frontmatter vm_user）。 */
@@ -185,6 +191,18 @@ export function parseRecipeFrontmatter(content: string): {
     }
   }
 
+  // 1.5.7：firstRunTools 与 tools 同形态——非必填、非空字符串数组、逐项 trim。
+  if (source.firstRunTools !== undefined) {
+    if (
+      Array.isArray(source.firstRunTools) &&
+      source.firstRunTools.every((t) => typeof t === 'string' && t.trim())
+    ) {
+      frontmatter.firstRunTools = source.firstRunTools.map((t) => (t as string).trim());
+    } else {
+      errors.push('firstRunTools 必须是非空字符串数组（首跑安装工具声明，1.5.7）');
+    }
+  }
+
   for (const key of ['vm_base', 'vm_user', 'vm_snapshot'] as const) {
     const raw = source[key];
     if (raw === undefined) continue;
@@ -255,6 +273,7 @@ export function buildRecipe(
     description: frontmatter.description,
     base: frontmatter.base,
     tools: frontmatter.tools ?? [],
+    firstRunTools: frontmatter.firstRunTools,
     workflowSummary: buildRecipeWorkflowSummary(skillContent),
     vmBase: frontmatter.vm_base,
     vmUser: frontmatter.vm_user,

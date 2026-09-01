@@ -863,6 +863,13 @@ function EnvDetailModal(): React.JSX.Element | null {
               <span className="wiz-v">缺：{entry.toolCheck.missing.join('、')}</span>
             </div>
           )}
+          {/* 1.5.7：待装清单（首跑自动安装进行中）——提示等待/刷新，不出「补齐环境」引导 */}
+          {entry.capabilityPending && entry.capabilityPending.length > 0 && (
+            <div className="wiz-confirm-row">
+              <span className="wiz-k">待装（首跑自动装）</span>
+              <span className="wiz-v">{entry.capabilityPending.join('、')}</span>
+            </div>
+          )}
 
           <div className="f-label" style={{ marginTop: 12 }}>配方绑定（绑定 = 展示/构建来源，不改变能力判定）</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>

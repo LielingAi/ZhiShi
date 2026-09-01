@@ -11,7 +11,9 @@ GHIDRA_URL="https://github.com/NationalSecurityAgency/ghidra/releases/download/G
 
 echo "[rev-env] downloading Ghidra ${GHIDRA_VERSION} (headless)..."
 if [ ! -d /opt/ghidra ]; then
-  wget -q "${GHIDRA_URL}" -O "/tmp/${GHIDRA_ZIP}"
+  # 1.5.7：下载失败回落 gh-proxy.com（gh_dl 形态）
+  wget -q "${GHIDRA_URL}" -O "/tmp/${GHIDRA_ZIP}" \
+    || wget -q "https://gh-proxy.com/${GHIDRA_URL}" -O "/tmp/${GHIDRA_ZIP}"
   echo "${GHIDRA_SHA256}  /tmp/${GHIDRA_ZIP}" | sha256sum -c -
   unzip -q "/tmp/${GHIDRA_ZIP}" -d /opt
   mv "/opt/ghidra_${GHIDRA_VERSION}_PUBLIC" /opt/ghidra
@@ -23,7 +25,10 @@ echo "[rev-env] installing ghidriff (patch diff,1day 刚需)..."
 # ghidriff 是 pip 包 + 独立 CLI（经 pyhidra 驱动本机 Ghidra；
 # GHIDRA_INSTALL_DIR 已在 Dockerfile 里 ENV 固定到 /opt/ghidra）。
 # ubuntu 24.04 有 PEP 668,系统级 pip 必须 --break-system-packages。
-pip3 install --break-system-packages --no-cache-dir ghidriff
+# 1.5.7：失败回落清华镜像。
+pip3 install --break-system-packages --no-cache-dir ghidriff \
+  || pip3 install --break-system-packages --no-cache-dir \
+       -i https://pypi.tuna.tsinghua.edu.cn/simple ghidriff
 
 echo "[rev-env] checking toolchain..."
 java -version 2>&1 | head -1
