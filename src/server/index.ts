@@ -787,8 +787,9 @@ if (pathname === '/chat/model' && request.method === 'POST') {
             // (聚合平台同名模型撞名时全局反查会错配供应商)。
             const provider = findEffectiveProvider(providerIdArg, config);
             if (!provider) {
-              // kimi 内置无 preset 定义(pi 层 kimiCodingProvider 直连)——
-              // resolveLoopModel 同样放行,这里保持一致的宽松语义。
+              // kimi preset 已就位（1.5.6）——这里的放行只服务无 provider 定义的
+              // kimi 系模糊 id（如自定义的 moonshot-coding 无文件形态）；
+              // resolveLoopModel 同样放行,保持一致的宽松语义。
               if (!isKimiCodingProvider(providerIdArg)) {
                 return jsonResponse({ success: false, error: `未知供应商: ${providerIdArg}` }, 404);
               }

@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.5.6] - 2026-09-01
 
 ### 修复
-- **kimi 内置 provider 的 verify 链路**（新机器实机报错「Provider 'kimi' not found in presets or custom providers」）：kimi 是合成条目（pi 层 kimiCodingProvider 直连 api.kimi.com/coding），不在 presets/custom——verify 时合成描述（端点/anthropic 协议/Bearer 鉴权/内置目录首条目）；key 判定走 resolveKimiApiKey 模糊口径（moonshot-coding 键同认，与运行/显示链路一致）
+- **kimi 内置收编为标准 preset**（新机器实机报错「Provider 'kimi' not found in presets or custom providers」牵出）：kimi 内置原为合成条目（pi 层 kimiCodingProvider 直连，为测试闭环而生）——display/verify/runtime 三条链路各打补丁。收编后 kimi 是 PRESET_PROVIDERS 里的普通 preset（api.kimi.com/coding / anthropic / Bearer，目录 k3/k3-256k/kimi-for-coding×2），verify/列表/切换全走统一路径无特例；key 判定保留 kimi 系模糊口径（moonshot-coding 键同认，与运行链路一致）
 
 ## [1.5.5] - 2026-08-31
 

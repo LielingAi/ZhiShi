@@ -1,5 +1,5 @@
 /**
- * admin model/list 测试（1.2.9 Q1）——kimi 内置条目的 key 判定口径与
+ * admin model/list 测试（1.2.9 Q1 / 1.5.6 收编 preset）——kimi 条目的 key 判定口径与
  * 「当前使用 provider/model」字段。
  *
  * 背景 bug：显示链路精确查 providerApiKeys['kimi']，运行链路
@@ -34,14 +34,14 @@ beforeEach(() => {
   configMock.mockReturnValue({});
 });
 
-describe('model/list — kimi 内置条目 key 判定（1.2.9 Q1）', () => {
-  it('moonshot-coding 键 → kimi 内置显示已配 key（与运行链路同口径）', () => {
+describe('model/list — kimi preset 条目 key 判定（1.2.9 Q1 / 1.5.6）', () => {
+  it('moonshot-coding 键 → kimi 显示已配 key（与运行链路同口径）', () => {
     configMock.mockReturnValue({ providerApiKeys: { 'moonshot-coding': 'sk-x' } });
     const kimi = list().data.find((p) => p.id === 'kimi');
     expect(kimi?.hasApiKey).toBe(true);
   });
 
-  it('moonshot preset 键（openai 协议端点）→ kimi 内置仍显示未配', () => {
+  it('moonshot preset 键（openai 协议端点）→ kimi 仍显示未配', () => {
     configMock.mockReturnValue({ providerApiKeys: { moonshot: 'sk-x' } });
     const kimi = list().data.find((p) => p.id === 'kimi');
     expect(kimi?.hasApiKey).toBe(false);

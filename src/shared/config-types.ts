@@ -1219,6 +1219,55 @@ export const PRESET_PROVIDERS: Provider[] = [
   },
 
   {
+    id: 'kimi',
+
+    name: 'Kimi Code（官方）',
+
+    vendor: 'Moonshot AI',
+
+    cloudProvider: '模型官方',
+
+    type: 'api',
+
+    primaryModel: 'k3',
+
+    isBuiltin: true,
+
+    authType: 'auth_token',
+
+    apiProtocol: 'anthropic',
+
+    websiteUrl: 'https://www.kimi.com/coding',
+
+    config: {
+
+      baseUrl: 'https://api.kimi.com/coding',
+
+      timeout: 600000,
+
+    },
+
+    models: [
+
+      // 1.5.6：kimi 内置合成条目收编为标准 preset（原合成逻辑见 git 历史
+      // admin-api kimiBuiltinProviderEntry——为测试闭环而生，display/verify/
+      // runtime 三条链路各打补丁,不如一个 preset 统一）。模型目录镜像 pi-ai
+      // 内置 kimi-coding 目录（运行链路 buildLoopModel 用 kimiCodingProvider()
+      // .getModels()）——本表服务显示/verify,目录漂移可接受。
+
+      { model: 'k3', modelName: 'Kimi K3', modelSeries: 'kimi', contextLength: 1_048_576, maxOutputTokens: 131_072, inputModalities: ['text', 'image'] },
+
+      { model: 'k3-256k', modelName: 'Kimi K3-256K', modelSeries: 'kimi', contextLength: 262_144, maxOutputTokens: 131_072, inputModalities: ['text', 'image'] },
+
+      { model: 'kimi-for-coding', modelName: 'Kimi K2.7 Code', modelSeries: 'kimi', contextLength: 262_144, maxOutputTokens: 32_768, inputModalities: ['text', 'image'] },
+
+      { model: 'kimi-for-coding-highspeed', modelName: 'Kimi For Coding HighSpeed', modelSeries: 'kimi', contextLength: 262_144, maxOutputTokens: 32_768, inputModalities: ['text', 'image'] },
+
+    ],
+
+  },
+
+  {
     id: 'dashscope',
 
     name: '通义千问 (DashScope)',

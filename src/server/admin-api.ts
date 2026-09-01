@@ -30,7 +30,6 @@ import { taskConclusionFor } from './cron/task-conclusions';
 import { existsSync , mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync } from 'fs';
 import { ensureDirSync } from './utils/fs-utils';
 import { resolveSshTarget, execInEnvironment, buildScpArgv } from './loop/env-exec';
-import { KIMI_CODING_BASE_URL } from './loop/pi-provider';
 import { buildToolCheckScript, parseToolCheckOutput } from './environment/recipes';
 import {
   CAPABILITY_PROBE_TIMEOUT_MS,
@@ -74,7 +73,6 @@ import { runLoopText } from './loop/loop';
 import { buildLoopTranscript } from './loop/transcript';
 import { exportReport } from './report/export';
 import { workspacePathsEqual } from '../shared/workspacePath';
-import { KIMI_CODING_MODELS } from '@earendil-works/pi-ai/providers/kimi-coding.models';
 import { loadEnabledAgents } from './agents/agent-loader';
 import { getZhiShiDataDir } from './utils/app-dirs';
 import { join } from 'path';
@@ -292,6 +290,17 @@ export function handleModelList(): AdminResponse {
   const verifyStatus = config.providerVerifyStatus ?? {};
   const presetCustomModels = (config.presetCustomModels ?? {}) as Record<string, unknown>;
 const allProviders = getAllEffectiveProviders(config);
+  // 1.2.9(Q1):kimi preset 的 key 判定对齐运行链路口径——resolveLoopModel 对
+  // kimi 系是模糊匹配(id 含 kimi/moonshot 且非 openai 协议定义即走
+  // kimi-coding),精确查 apiKeys['kimi'] 会把 moonshot-coding 键误判未配。
+  const hasKimiUsableKey = Object.entries(apiKeys).some(([kid, k]) => {
+    if (!k || !String(k).trim()) return false;
+    const lid = kid.toLowerCase();
+    if (!lid.includes('kimi') && !lid.includes('moonshot')) return false;
+    const def = allProviders.find((p) => String(p.id) === kid);
+    const proto = def?.apiProtocol ? String(def.apiProtocol) : 'anthropic';
+    return proto === 'anthropic'; // moonshot preset 是 openai 协议,不进 kimi-coding 路径
+  });
   const data: Array<Record<string, unknown>> = allProviders.map(p => {
     const id = String(p.id);
     const cfg = p.config as Record<string, unknown> | undefined;
@@ -310,29 +319,13 @@ const allProviders = getAllEffectiveProviders(config);
       isBuiltin: !!p.isBuiltin,
       protocol: p.apiProtocol ? String(p.apiProtocol) : 'anthropic',
       enabled: p.enabled !== false,
-      hasApiKey: !!apiKeys[id],
+      hasApiKey: id === 'kimi' ? hasKimiUsableKey : !!apiKeys[id],
       status: (verifyStatus[id] as Record<string, unknown>)?.status ?? 'not-set',
       primaryModel: p.primaryModel ? String(p.primaryModel) : undefined,
       models: [...merged.values()],
     };
   });
-// kimi 内置(pi 层 kimiCodingProvider,api.kimi.com/coding):不在
-  // PRESET_PROVIDERS、也不走 set-key 拉目录——模型目录随 pi-ai 内置。
-  // 补一条合成条目,客户端 /model 状态卡与 /chat/model 的 kimi 反查闭环
-  // 才能覆盖它;目录从 pi-ai 内置目录取,不硬编码避免漂移。
-  // 1.2.9(Q1):key 判定对齐运行链路口径——resolveLoopModel 对 kimi 系是
-  // 模糊匹配(id 含 kimi/moonshot 且非 openai 协议定义即走 kimi-coding),
-  // 显示链路此前只认精确键 'kimi',用户配的 'moonshot-coding' 显示「未配
-  // key」但实际可用。hasKimiUsableKey 与运行判定同规则。
-  const hasKimiUsableKey = Object.entries(apiKeys).some(([kid, k]) => {
-    if (!k || !String(k).trim()) return false;
-    const lid = kid.toLowerCase();
-    if (!lid.includes('kimi') && !lid.includes('moonshot')) return false;
-    const def = allProviders.find((p) => String(p.id) === kid);
-    const proto = def?.apiProtocol ? String(def.apiProtocol) : 'anthropic';
-    return proto === 'anthropic'; // moonshot preset 是 openai 协议,不进 kimi-coding 路径
-  });
-  data.push(kimiBuiltinProviderEntry(apiKeys, verifyStatus, hasKimiUsableKey));
+  // 1.5.6：kimi 已收编为标准 preset（config-types.ts），合成条目删除。
   // 1.2.9(Q1):当前生效的 provider/model(与 resolveLoopModel 同回落规则)
   // ——状态卡此前只显示目录,用户无法判断「现在在用哪家」。
   const currentProviderId = (config.defaultProviderId as string | undefined)
@@ -346,39 +339,6 @@ const allProviders = getAllEffectiveProviders(config);
       })())
     : undefined;
   return { success: true, data, current: { providerId: currentProviderId, modelId: currentModelId } };
-}
-/** kimi 内置合成条目:模型目录取自 pi-ai 的 kimi-coding 内置目录。
- *  hasKimiUsableKey(1.2.9):由调用方按运行链路口径算出(id 含
- *  kimi/moonshot 且非 openai 协议定义),不再精确查 apiKeys['kimi']——
- *  用户实际配的键是 moonshot-coding,精确匹配会误显「未配 key」。 */
-function kimiBuiltinProviderEntry(
-  apiKeys: Record<string, string>,
-  verifyStatus: Record<string, unknown>,
-  hasKimiUsableKey?: boolean,
-): Record<string, unknown> {
-  const catalog = KIMI_CODING_MODELS as unknown as Record<
-    string,
-    { id: string; name: string; contextWindow?: number; maxTokens?: number }
-  >;
-  const models: ModelEntity[] = Object.values(catalog).map((m) => ({
-    model: m.id,
-    modelName: m.name,
-    modelSeries: 'kimi',
-    contextLength: m.contextWindow,
-    maxOutputTokens: m.maxTokens,
-  }));
-  return {
-    id: 'kimi',
-    name: 'Kimi (内置)',
-    vendor: 'Moonshot AI',
-    isBuiltin: true,
-    protocol: 'anthropic',
-    enabled: true,
-    hasApiKey: hasKimiUsableKey ?? !!apiKeys['kimi'],
-    status: (verifyStatus['kimi'] as Record<string, unknown>)?.status ?? 'not-set',
-    primaryModel: models[0]?.model,
-    models,
-  };
 }
 export async function handleModelSetKey(payload: { id: string; apiKey: string }): Promise<AdminResponse> {
   const { id, apiKey } = payload;
@@ -445,19 +405,9 @@ const config = loadConfig();
   if (!apiKey) {
     return { success: false, error: `No API key set for provider '${id}'. Use 'zhishi model set-key' first.` };
   }
-// Look up provider config (preset or custom)
-  let provider = findProvider(id);
-  if (!provider && id === 'kimi') {
-    // kimi 内置（pi 层 kimiCodingProvider 直连 api.kimi.com/coding）不在
-    // presets/custom——verify 的合成描述与列表条目（kimiBuiltinProviderEntry）
-    // 同源：端点固定、anthropic 协议、Bearer 鉴权、目录取 pi-ai 内置目录首条目。
-    provider = {
-      config: { baseUrl: KIMI_CODING_BASE_URL },
-      authType: 'auth_token',
-      apiProtocol: 'anthropic',
-      primaryModel: Object.values(KIMI_CODING_MODELS as unknown as Record<string, { id: string }>)[0]?.id,
-    };
-  }
+// Look up provider config (preset or custom)。1.5.6：kimi 已是标准
+  // preset（config-types.ts），findProvider 全覆盖——无合成特例。
+  const provider = findProvider(id);
   if (!provider) {
     return { success: false, error: `Provider '${id}' not found in presets or custom providers.` };
   }
