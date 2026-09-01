@@ -18,6 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.8] - 2026-09-01
+
+> **分层容错构建**：功能工具失败不再拖死整个 docker 构建——降级 WARN 继续，缺项由能力探测标出、「补齐环境」一键装回。
+
+### 变更
+- **Dockerfile 分层容错**：7 个配方功能工具段（pwndbg/pwninit/ZAP/nuclei/Ghidra/gem/pip 工具等）失败降级 WARN 继续；核心 apt 层（编译器/gdb/python 基本盘）保持 fail-fast；setup.sh 自检同步分级
+- **provision.sh 全配方覆盖**：补齐 pwn/fuzz/rev/ai-security/dev 五个配方的补齐脚本，「补齐环境」对全部 docker 配方可用（存量 code-audit/pentest 转 root 容器兼容形态）
+
+### 修复
+- 报错识别补「PyPI 索引不通」形态（上游脚本内部 pip/uv 调用场景，如 pwndbg setup.sh 装 uv）
+- pwn 配方：pwndbg setup.sh 内部包管理失败时带镜像环境变量自动重试（1.5.7 实机故障链最后一棒）
+
 ## [1.5.7] - 2026-09-01
 
 > **配方专项**（CN 网络实机故障链驱动）：构建期网络回落全覆盖 + joern provision 化 + 基座统一 ubuntu 24.04。
