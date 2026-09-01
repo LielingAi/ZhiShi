@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.11] - 2026-09-01
+
+### 修复
+- **boot 模态重开不再重发构建**（1.5.9 收起功能回归：侧栏「构建中」重入未传 recipeId + 模态挂载即重发 → 实机报「Missing required argument: <recipe>」）——重开=查看进度，不收起重发
+
 ## [1.5.10] - 2026-09-01
 
 > **docker 环境三层模型**：镜像持久（本机已有可发现可启动）→ 容器持久（现场，stop/start）→ workspace 持久（成果，bind mount）。
