@@ -12,7 +12,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # 系统级 pip 一律 --break-system-packages（PEP 668）。
 
 # 1.2.5 选型:删 standalone checksec(pwntools 自带 checksec/cyclic/shellcraft);
-# 加 patchelf(pwninit 运行依赖+换 libc)、ruby(one_gadget/seccomp-tools 是 gem)。
+# 加 patchelf(pwninit 运行依赖+换 libc)、ruby+ruby-dev(one_gadget/seccomp-tools
+# 是 gem；1.5.8 实机：缺 ruby-dev 头文件 → racc 原生扩展编译失败 → gem 装不上)。
 # apt 源回落（1.5.6:默认源不通时切 USTC 镜像——与 gh_dl/pip 镜像回落同惯例;
 # 海外网络默认源直通便不触发。22.04=sources.list,24.04=deb822 ubuntu.sources）。
 RUN apt-get update -o Acquire::Retries=2 || ( \
@@ -25,7 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gdb python3 python3-pip python3-dev \
     git curl jq ca-certificates \
     socat netcat-openbsd \
-    patchelf ruby \
+    patchelf ruby ruby-dev \
     file xxd less \
  && rm -rf /var/lib/apt/lists/*
 

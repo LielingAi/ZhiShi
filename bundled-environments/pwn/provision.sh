@@ -27,7 +27,7 @@ gh_dl() { # gh_dl <release-url> <输出文件> <超时秒>
 echo "[pwn/provision] installing base toolchain via apt..."
 $SUDO apt-get update -qq
 $SUDO apt-get install -y -qq gdb python3 python3-pip python3-dev \
-  git curl jq ca-certificates socat netcat-openbsd patchelf ruby file xxd less
+  git curl jq ca-certificates socat netcat-openbsd patchelf ruby ruby-dev file xxd less
 
 # pwndbg（同步 Dockerfile pwndbg 段：clone 直连→gh-proxy 回落；官方 setup.sh
 # 裸跑→带清华镜像环境变量重试（它内部的 pip/uv 调用不受外部回落管，1.5.7
