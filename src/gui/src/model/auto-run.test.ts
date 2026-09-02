@@ -255,6 +255,47 @@ describe('applyAutoRunEvent', () => {
     ).toMatchObject({ id: 'ar-1', status: 'running', used: 0, updatedAt: 7 });
   });
 
+  it('1.5.13：started 带 loopSessionId——新条目与既有条目都拿到线（观察流轮询依赖）', () => {
+    // 新条目：事件建条目时带线
+    const fresh = applyAutoRunEvent(null, {
+      kind: 'started',
+      id: 'ar-9',
+      name: 'n',
+      envKey: 'pwn-vm',
+      goal: 'g',
+      budget: { kind: 'turns', limit: 10 },
+      criteria: [],
+      loopSessionId: 'loop-9',
+    }, 1);
+    expect(fresh?.loopSessionId).toBe('loop-9');
+    // 既有乐观条目缺线（旧回包形态）→ started 事件补线
+    const optimistic = autoRunEntryOf({ id: 'ar-9', status: 'starting' })!;
+    expect(optimistic.loopSessionId).toBeUndefined();
+    const patched = applyAutoRunEvent(optimistic, {
+      kind: 'started',
+      id: 'ar-9',
+      name: 'n',
+      envKey: 'pwn-vm',
+      goal: 'g',
+      budget: { kind: 'turns', limit: 10 },
+      criteria: [],
+      loopSessionId: 'loop-9',
+    }, 2);
+    expect(patched?.loopSessionId).toBe('loop-9');
+    // 已有线不被覆盖（本地为准）
+    const kept = applyAutoRunEvent({ ...patched!, loopSessionId: 'loop-keep' }, {
+      kind: 'started',
+      id: 'ar-9',
+      name: 'n',
+      envKey: 'pwn-vm',
+      goal: 'g',
+      budget: { kind: 'turns', limit: 10 },
+      criteria: [],
+      loopSessionId: 'loop-9',
+    }, 3);
+    expect(kept?.loopSessionId).toBe('loop-keep');
+  });
+
   it('started：已有同 id（乐观条目）→ 只翻 running，字段以本地为准', () => {
     const local = entry({ status: 'starting', budget: { kind: 'time', limit: 120 } });
     const next = applyAutoRunEvent(local, {

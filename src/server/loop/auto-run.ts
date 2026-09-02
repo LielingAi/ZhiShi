@@ -61,7 +61,7 @@ import type { InteractionScenario } from '../system-prompt';
 
 // 生产接线依赖(函数体只在 startAutoRun 等入口使用,纯函数单测不触)。
 import { broadcast } from '../sse';
-import { invokePiSession, getPiAgentState } from './chat-engine';
+import { invokePiSession, getPiAgentState, getEnvSessionBinding } from './chat-engine';
 import { appendLoopMessages, loadLoopSession, newLoopSessionId } from './session';
 import { loadArchive } from './archive';
 import { getResearchEventById, listResearchEvents } from '../memory/store';
@@ -956,6 +956,9 @@ export async function runAutoRunLoop(
         } catch (err) {
           deps.log(`[auto-run] 自动出报告异常(completed 不受影响):${err instanceof Error ? err.message : String(err)}`);
         }
+        // 1.5.13：收官注回交互线——人工在同环境继续时模型上下文带 loop 成果
+        // （放在报告导出后，reportDir 进注回文本）。
+        injectInteractiveWrapUp(record, lastText, '已通过验收');
         break;
       }
       // fail/continue:注回 loop 线,继续跑(设计 §4「不通过/继续跑」均续跑)。
@@ -1150,6 +1153,8 @@ export async function runAutoRunLoop(
     record.updatedAt = new Date(deps.now()).toISOString();
     persist();
     deps.broadcast('auto-run:completed', { id: record.id, outcome: 'stopped' });
+    // 1.5.13：终止也注回交互线（中途成果+终止事实进交互上下文）。
+    injectInteractiveWrapUp(record, lastText, `已终止（跑了 ${turn} 轮）`);
   }
   ctl.requestStop(); // 幂等;确保 isStopped 归位(waitUntilDone 依赖)
   ctl.__finish();
@@ -1357,8 +1362,37 @@ async function ensureOrphanRecovery(workspace: string): Promise<void> {
 }
 
 /** 引擎锚定工作区(生产依赖的缺省 workspace 数据源)。 */
-function engineWorkspace(): string {
-  return getPiAgentState().agentDir || process.cwd();
+function engineWorkspace(): string {  return getPiAgentState().agentDir || process.cwd();
+}
+
+/**
+ * 1.5.13：收官注回交互线（人工继续的上下文共享）——run 终态时把
+ * 目标/结果/报告/轨迹线写进同工作区当前环境的交互会话线
+ * （appendLoopMessages 落盘——下一个交互轮次的模型上下文即带 loop 成果）。
+ * 无绑定 / 绑定线即本 run 线 / 当前选定环境不是 run 的环境 → 静默跳过
+ * （不串线）。失败只告警，不影响终态。
+ */
+function injectInteractiveWrapUp(record: AutoRunRecord, lastText: string, outcome: string): void {
+  try {
+    const ws = record.workspace ?? engineWorkspace();
+    const binding = getEnvSessionBinding(ws);
+    if (!binding || binding.loopSessionId === record.loopSessionId) return;
+    if (binding.envKey !== record.envKey) return;
+    const summary = lastText.trim().slice(0, 600) || '（无）';
+    const text = [
+      `【auto loop 收官】「${record.name}」${outcome}。`,
+      `目标：${record.goal}`,
+      `结论摘要：${summary}`,
+      `验收条件：${record.criteria.length} 条（启动即锁定，全程未改）。`,
+      record.reportDir ? `报告：${record.reportDir}` : '报告：未生成',
+      `loop 轨迹线：${record.loopSessionId}（细节用 recall 工具或历史回看查）。`,
+    ].join('\n');
+    void appendLoopMessages(binding.loopSessionId, [
+      { role: 'user', content: text, timestamp: Date.now() } as AgentMessage,
+    ]).catch((err) => console.warn('[auto-run] 收官注回交互线失败（不影响终态）:', err));
+  } catch (err) {
+    console.warn('[auto-run] 收官注回交互线异常（不影响终态）:', err);
+  }
 }
 
 export type AutoRunApiResult<T = unknown> =

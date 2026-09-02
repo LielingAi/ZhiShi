@@ -2964,7 +2964,9 @@ export async function handleAutoRunStart(payload: Record<string, unknown>): Prom
     : (getPiAgentState().agentDir || process.cwd());
   const result = await startAutoRun(payload, workspace);
   if (!result.success) return { success: false, error: result.error };
-  return { success: true, data: { id: result.data.id } };
+  // 1.5.13：loopSessionId 随回包下发——GUI 观察流（AutoRunStream 轮询 run 的
+  // loop 线）需要它；乐观条目在 SSE started 到达前就能带线。
+  return { success: true, data: { id: result.data.id, loopSessionId: result.data.record.loopSessionId } };
 }
 /** `auto-run/stop` — Esc 语义终止循环。 */
 export function handleAutoRunStop(payload: { id?: unknown }): AdminResponse {

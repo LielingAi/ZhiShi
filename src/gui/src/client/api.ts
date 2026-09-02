@@ -832,13 +832,20 @@ export interface AutoRunStartInput {
 export function autoRunStart(
   client: GuiSidecarClient,
   input: AutoRunStartInput,
-): Promise<{ success: boolean; id?: string; error?: string }> {
+): Promise<{ success: boolean; id?: string; loopSessionId?: string; error?: string }> {
   return client
-    .adminPost<{ success: boolean; id?: string; data?: { id?: string }; error?: string }>(
+    .adminPost<{ success: boolean; id?: string; loopSessionId?: string; data?: { id?: string; loopSessionId?: string }; error?: string }>(
       'auto-run/start',
       input,
     )
-    .then((r) => ({ success: r.success, id: r.id ?? r.data?.id, error: r.error }));
+    .then((r) => ({
+      success: r.success,
+      id: r.id ?? r.data?.id,
+      // 1.5.13：loopSessionId 透传——观察流（AutoRunStream 轮询 run 的线）
+      // 依赖它；此前服务端已返回 record.loopSessionId 但这里丢了。
+      loopSessionId: r.loopSessionId ?? r.data?.loopSessionId,
+      error: r.error,
+    }));
 }
 
 /** POST auto-run/stop { id }（Esc 终止确认 → 终止 loop，会话保留回普通模式）。 */

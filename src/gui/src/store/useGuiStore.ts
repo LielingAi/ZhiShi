@@ -1493,9 +1493,10 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       }
       // 乐观条目（status starting）——观察卡立即出现；SSE auto-run:started
       // 到达后转正（applyAutoRunEvent 同 id 只翻状态，字段以本地为准）。
+      // 1.5.13：loopSessionId 随回包带上（观察流轮询 run 线靠它）。
       set({
         modal: null,
-        autoRun: optimisticAutoRunEntry(res.id, payload),
+        autoRun: optimisticAutoRunEntry(res.id, payload, undefined, res.loopSessionId),
         verdictDismissed: false,
       });
       state.showToast(`✓ auto loop 已启动：${payload.name}`);

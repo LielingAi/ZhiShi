@@ -795,6 +795,8 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
           criteria: Array.isArray(p.criteria)
             ? p.criteria.filter((x): x is string => typeof x === 'string')
             : [],
+          // 1.5.13：loopSessionId 透传（此前丢——观察流轮询不到 run 线）。
+          ...(str(p.loopSessionId) ? { loopSessionId: str(p.loopSessionId)! } : {}),
         },
       };
     }

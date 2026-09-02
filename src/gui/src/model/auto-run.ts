@@ -222,11 +222,13 @@ export function buildAutoRunStartPayload(form: AutoRunFormView): AutoRunStartPay
   };
 }
 
-/** start 响应后、SSE auto-run:started 到达前的乐观条目（观察卡立即出现）。 */
+/** start 响应后、SSE auto-run:started 到达前的乐观条目（观察卡立即出现）。
+ *  1.5.13：loopSessionId 随 start 回包下发即带上——观察流轮询依赖它。 */
 export function optimisticAutoRunEntry(
   id: string,
   payload: AutoRunStartPayload,
   now = Date.now(),
+  loopSessionId?: string,
 ): AutoRunEntry {
   return {
     id,
@@ -237,6 +239,7 @@ export function optimisticAutoRunEntry(
     used: 0,
     criteria: payload.criteria,
     status: 'starting',
+    ...(loopSessionId ? { loopSessionId } : {}),
     updatedAt: now,
   };
 }
@@ -352,6 +355,8 @@ export type AutoRunDelta =
       goal: string;
       budget: AutoRunBudget;
       criteria: string[];
+      /** 1.5.13：started 事件带 loopSessionId——观察流轮询 run 线依赖它。 */
+      loopSessionId?: string;
     }
   | { kind: 'phase'; id: string; phase: string }
   | { kind: 'turn'; id: string; turnCount?: number; used?: number; conclusion?: string }
@@ -376,7 +381,14 @@ export function applyAutoRunEvent(
   switch (delta.kind) {
     case 'started': {
       if (entry && entry.id === delta.id) {
-        return { ...entry, status: 'running', updatedAt: now };
+        // 1.5.13：乐观条目已有字段以本地为准，但 loopSessionId 缺则补上
+        // （乐观条目早于 start 回包/started 事件的旧形态）。
+        return {
+          ...entry,
+          status: 'running',
+          loopSessionId: entry.loopSessionId ?? delta.loopSessionId,
+          updatedAt: now,
+        };
       }
       return {
         id: delta.id,
@@ -387,6 +399,7 @@ export function applyAutoRunEvent(
         used: 0,
         criteria: delta.criteria,
         status: 'running',
+        ...(delta.loopSessionId ? { loopSessionId: delta.loopSessionId } : {}),
         updatedAt: now,
       };
     }
