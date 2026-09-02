@@ -215,7 +215,7 @@ describe('1.5.10：env rebuild/reset 路由与载荷 + env discover 镜像区打
     expect(r.stdout).toContain('docker 镜像（zhishi-env-*）:');
     expect(r.stdout).toContain('pwn  zhishi-env-pwn:latest');
     expect(r.stdout).toContain('fuzz  zhishi-env-fuzz:latest');
-    expect(r.stdout).toContain('docker 容器:');
+    expect(r.stdout).toContain('docker 容器（仅展示');
     expect(r.stdout).toContain('VM:');
   }, 30_000);
 

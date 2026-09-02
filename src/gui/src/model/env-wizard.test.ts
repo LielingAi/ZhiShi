@@ -374,28 +374,27 @@ describe('wizardDiscoveredItems（1.3.7 实机修复）', () => {
     { id: 'docker-kali', kind: 'docker', container: 'kali-2024' },
   ];
 
-  it('docker/VM 两源合并，VM 条目标 isVm（补收 address/user/keyPath 用）', () => {
+  it('1.5.10（B 拍板）：容器不可认领——docker 入参不产行，VM 条目标 isVm（补收 address/user/keyPath 用）', () => {
     const items = wizardDiscoveredItems(
       [{ id: 'c1', name: 'alpine', status: 'Up 2 hours' }],
       [{ id: 'v1', name: 'win11', driver: 'hyperv', state: 'Running' }],
       [],
     );
-    expect(items.map((i) => [i.key, i.isVm])).toEqual([['c1', false], ['v1', true]]);
-    expect(items[0].detail).toBe('docker · Up 2 hours');
-    expect(items[1].detail).toBe('hyperv · Running');
+    // docker 容器不进列表（zhishi 容器经 up 回写登记；容器缺 /workspace 挂载层）
+    expect(items.map((i) => [i.key, i.isVm])).toEqual([['v1', true]]);
+    expect(items[0].detail).toBe('hyperv · Running');
     expect(items.every((i) => i.registeredAs === undefined)).toBe(true);
   });
 
-  it('同族命中已登记 → registeredAs 标注（勾选禁用），detail 带「已登记为 X」', () => {
+  it('同族命中已登记 → registeredAs 标注（勾选禁用），detail 带「已登记为 X」（VM 面）', () => {
     const items = wizardDiscoveredItems(
-      [{ id: 'abc', name: 'kali-2024', status: 'Exited (0)' }],
+      [],
       [{ id: 'v2', name: 'vmware-fuzz.vmx', driver: 'vmware', state: 'unknown', vmx: 'e:/vms/fuzz/vmware-fuzz.vmx' }],
       ENVS,
     );
-    expect(items[0].registeredAs).toBe('docker-kali');
-    expect(items[0].detail).toContain('已登记为 docker-kali');
-    expect(items[1].registeredAs).toBe('fuzz');
-    expect(items[1].detail).toContain('已登记为 fuzz');
+    expect(items).toHaveLength(1);
+    expect(items[0].registeredAs).toBe('fuzz');
+    expect(items[0].detail).toContain('已登记为 fuzz');
   });
 });
 

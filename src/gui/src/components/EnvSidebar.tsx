@@ -31,7 +31,6 @@ import { canRebuildEnv, canResetEnv } from '../model/env-rebuild';
 export function EnvSidebar(): React.JSX.Element {
   const envs = useGuiStore((s) => s.envs);
   const running = useGuiStore((s) => s.running);
-  const discoveredDocker = useGuiStore((s) => s.discoveredDocker);
   const discoveredVm = useGuiStore((s) => s.discoveredVm);
   // 1.5.10：镜像发现条目（zhishi-env-*，本机已有组的镜像行数据源）。
   const discoveredImages = useGuiStore((s) => s.discoveredImages);
@@ -85,7 +84,9 @@ export function EnvSidebar(): React.JSX.Element {
         envs,
         running,
         [
-          ...discoveredDocker.map((d) => ({ id: d.id, name: d.name, state: d.status, driver: 'docker' })),
+          // 1.5.10（B 拍板）：容器不可认领——本机已有只列镜像 + VM；
+          // zhishi 建的容器经 up 回写进登记，不走发现认领（容器缺 /workspace
+          // 挂载层，接进来是半成品）。
           ...discoveredVm.map((v) => ({
             id: v.id,
             name: v.name,
@@ -104,7 +105,7 @@ export function EnvSidebar(): React.JSX.Element {
           })),
         ],
       ),
-    [envs, running, discoveredDocker, discoveredVm, discoveredImages],
+    [envs, running, discoveredVm, discoveredImages],
   );
 
   /** 从 store 最新快照重建侧栏分组（点击重探后重新判定准入）。 */
@@ -114,7 +115,6 @@ export function EnvSidebar(): React.JSX.Element {
       s.envs,
       s.running,
       [
-        ...s.discoveredDocker.map((d) => ({ id: d.id, name: d.name, state: d.status, driver: 'docker' })),
         ...s.discoveredVm.map((v) => ({
           id: v.id,
           name: v.name,
@@ -363,7 +363,7 @@ export function EnvSidebar(): React.JSX.Element {
                   <button
                     className="btn small eb-register"
                     title={
-                      // 1.5.10：docker 一键直登；VM 走向导收 address/凭据/配方
+                      // 1.5.10：VM 走向导收 address/凭据/配方（容器 1.5.10 起不可认领）
                       //（直登拿不到 address，探测/exec 通道需要它）。
                       discoveredVm.some((v) => v.id === it.key)
                         ? `登记 ${it.label}（打开新建环境向导收 address/凭据/配方）`

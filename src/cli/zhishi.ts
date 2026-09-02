@@ -765,7 +765,7 @@ function printEnvDiscover(data: {
   const docker = data.docker ?? [];
   const images = data.images ?? [];
   const vm = data.vm ?? [];
-  console.log('docker 容器:');
+  console.log('docker 容器（仅展示——1.5.10 起容器不可认领，环境由镜像派生）:');
   if (docker.length === 0) {
     console.log('  （无）');
   }

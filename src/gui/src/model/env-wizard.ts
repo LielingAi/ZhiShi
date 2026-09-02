@@ -195,12 +195,11 @@ export function wizardDiscoveredItems(
   vm: DiscoveredVm[],
   envs: EnvEntryLike[],
 ): WizardDiscoveredItem[] {
+  // 1.5.10（B 拍板）：容器不可认领——docker 入参保留但不产行（本机已有只列
+  // 镜像 + VM；zhishi 建的容器经 up 回写进登记，不走发现认领；容器缺
+  // /workspace 挂载层，接进来是半成品）。
+  void docker;
   const rows: Array<{ like: DiscoveredLike; isVm: boolean; fallbackDetail: string }> = [
-    ...docker.map((d) => ({
-      like: { id: d.id, name: d.name, state: d.status, driver: 'docker' },
-      isVm: false,
-      fallbackDetail: `docker · ${d.status ?? 'unknown'}`,
-    })),
     ...vm.map((v) => ({
       like: { id: v.id, name: v.name, state: v.state, driver: v.driver, vmx: v.vmx },
       isVm: true,
