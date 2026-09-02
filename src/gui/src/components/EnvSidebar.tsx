@@ -10,8 +10,9 @@
  * 直接切入已登记身份，防同一 VM/容器重复登记。
  *
  * 1.5.10：「本机已有」接入镜像行（zhishi-env-*，driver 'docker-image'，
- * 带「镜像」徽章）——行操作只有「启动为环境」（environment/up {recipe}，
- * 镜像在则秒开 + 服务端回写登记）；环境行 ⋯ 菜单加「重新构建…」
+ * 带「镜像」徽章）——1.5.13 起无行内按钮，点行即启动为环境
+ * （environment/up {recipe, fresh:true}，镜像派生新容器秒开 + 服务端回写登记）；
+ * 环境行 ⋯ 菜单加「重新构建…」
  * （recipeId 非空）与「重置容器…」（docker 条目），确认模态文案在
  * model/env-rebuild。
  *
@@ -169,8 +170,13 @@ export function EnvSidebar(): React.JSX.Element {
               <div
                 className={`eb-item ${it.key === currentEnvKey ? 'cur' : ''} ${gate.allow || it.registeredAs ? '' : 'gated'}`}
                 key={it.key}
-                title={it.detail}
+                title={it.kind === 'docker-image' ? `${it.detail}——点击启动为环境（派生新容器）` : it.detail}
                 onClick={() => {
+                  // 1.5.13：镜像行点行即启动为环境（不再要行内按钮）。
+                  if (it.kind === 'docker-image') {
+                    void startImageEnv(it.key);
+                    return;
+                  }
                   // 1.3.7 实机修复 A：同族已登记条目点击 = 切入已登记身份（不是再登记）。
                   if (it.registeredAs) {
                     // 1.5.10：目标已停止 → 点行 = 启动（不是切入——切入停止
@@ -224,7 +230,7 @@ export function EnvSidebar(): React.JSX.Element {
                   </span>
                 )}
                 {/* 1.5.10：镜像行徽章——与容器/VM 行区分（无登记语义，
-                    行操作只有「启动为环境」）。 */}
+                    1.5.13 起无按钮，点行即启动为环境）。 */}
                 {it.kind === 'docker-image' && (
                   <span className="cap" title={it.detail}>镜像</span>
                 )}
@@ -345,19 +351,6 @@ export function EnvSidebar(): React.JSX.Element {
                       🗑 删除环境…
                     </button>
                   </div>
-                )}
-                {it.group === 'unreg' && !it.registeredAs && it.kind === 'docker-image' && (
-                  <button
-                    className="btn small eb-register"
-                    title={`启动为环境（environment/up ${it.recipeId ?? ''}——镜像派生新容器，秒开并登记入侧栏）`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      // 1.5.10：镜像 → 环境（run 派生容器 + 服务端回写登记）。
-                      void startImageEnv(it.key);
-                    }}
-                  >
-                    ▶ 启动
-                  </button>
                 )}
                 {it.group === 'unreg' && !it.registeredAs && it.kind !== 'docker-image' && (
                   <button
