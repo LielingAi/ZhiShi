@@ -476,6 +476,40 @@ describe('runAutoRunLoop(空转 → harness 提请 → 继续跑)', () => {
   });
 });
 
+describe('runAutoRunLoop(模型调用失败 → 人工接管，1.5.13 用户拍板)', () => {
+  it('invoke 报错 → paused(provider-error)+决策提请；不静默续跑', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps({
+      invoke: async () => { fake.invokeCount += 1; return { error: '503 Server Overloaded', text: '', loopSessionId: 'ls-1' }; },
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+
+    await waitFor(() => fake.sent.some((s) =>
+      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'provider-error'));
+    expect(record.status).toBe('paused');
+    expect(record.pauseReason).toBe('provider-error');
+    // 只 invoke 了一次——没有静默续跑（旧形态会 sleep 后立刻第二轮）
+    expect(fake.invokeCount).toBe(1);
+
+    // 人工接管：决策面板作答「终止运行」→ stopped
+    const pending = pendingDecisions().filter((d) => d.sessionId === record.loopSessionId);
+    expect(pending).toHaveLength(1);
+    respondDecision(pending[0].decisionId, '终止运行');
+    fake.messages.push({
+      role: 'user',
+      content: '【人的决定】选择: 终止运行',
+      timestamp: Date.now(),
+      decision: { decisionId: pending[0].decisionId, choice: '终止运行' },
+    } as unknown as AgentMessage);
+
+    await done;
+    await loop;
+    expect(record.status).toBe('stopped');
+  });
+});
+
 describe('runAutoRunLoop(预算耗尽 → 续命恢复)', () => {
   it('turns 预算耗尽 → paused(budget)+checkpoint;auto-run/budget 续命 → 恢复推进', async () => {
     const record = makeRecord({ budget: { kind: 'turns', limit: 1, spent: 0 } });

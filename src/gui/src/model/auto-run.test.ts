@@ -400,10 +400,11 @@ describe('budgetKindOf / pauseReasonOf', () => {
     expect(budgetKindOf(null)).toBe('turns');
   });
 
-  it('pause reason 窄化（非法 → null）', () => {
+  it('pause reason 窄化（非法 → null；1.5.13 含 provider-error）', () => {
     expect(pauseReasonOf('stall')).toBe('stall');
     expect(pauseReasonOf('repeated-failures')).toBe('repeated-failures');
     expect(pauseReasonOf('budget')).toBe('budget');
+    expect(pauseReasonOf('provider-error')).toBe('provider-error');
     expect(pauseReasonOf('x')).toBeNull();
     expect(pauseReasonOf(undefined)).toBeNull();
   });

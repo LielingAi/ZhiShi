@@ -89,7 +89,7 @@ function StallPauseRow({ entry }: { entry: AutoRunEntry }): React.JSX.Element {
   if (
     entry.status !== 'paused' ||
     !entry.paused ||
-    (entry.paused.reason !== 'stall' && entry.paused.reason !== 'repeated-failures')
+    (entry.paused.reason !== 'stall' && entry.paused.reason !== 'repeated-failures' && entry.paused.reason !== 'provider-error')
   ) {
     return <></>;
   }
@@ -97,7 +97,9 @@ function StallPauseRow({ entry }: { entry: AutoRunEntry }): React.JSX.Element {
   const title =
     entry.paused.reason === 'stall'
       ? '⏸ 空转检测：连续多轮无新增有效研究记录且阶段未推进'
-      : '⏸ 反复失败：同类工具连续多次 isError——证据与「有把握」冲突';
+      : entry.paused.reason === 'repeated-failures'
+        ? '⏸ 反复失败：同类工具连续多次 isError——证据与「有把握」冲突'
+        : '⏸ 模型调用失败：供应商过载/挂起/中断（1.5.13——不静默续跑，人工接管）';
   return (
     <div className="ar-pause">
       <span className="ar-pause-title">{title}</span>

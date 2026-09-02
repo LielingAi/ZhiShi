@@ -82,7 +82,7 @@ import { workspacePathsEqual } from '../../shared/workspacePath';
 // ---------------------------------------------------------------------------
 
 export type AutoRunStatus = 'running' | 'paused' | 'awaiting-verdict' | 'completed' | 'stopped';
-export type AutoRunPauseReason = 'budget' | 'stall' | 'repeated-failures' | 'decision';
+export type AutoRunPauseReason = 'budget' | 'stall' | 'repeated-failures' | 'decision' | 'provider-error';
 
 /** 预算三选一:turns 轮次 / tokens 估算 token / time 分钟。limit 恒为上限,spent 恒为已耗。 */
 export type AutoRunBudget =
@@ -887,11 +887,37 @@ export async function runAutoRunLoop(
     turn += 1;
     record.turns = turn;
 
-    // 超时错误:后台 turn 仍在跑,稍候再续,降低双 turn 交错窗口。
-    if (result.error && /超时|timeout/i.test(result.error)) {
-      await sleep(Math.min(deps.pollMs * 5, 5000));
-    } else if (result.error) {
-      await sleep(deps.pollMs);
+    // 1.5.13 用户拍板：模型调用失败（供应商过载 503/挂起/中断/超时）不静默
+    // 续跑（原形态：sleep 后下一轮，供应商标配故障时等于空转烧预算）——
+    // 暂停 + 人工接管（决策点：继续/终止）。
+    // 注意：超时失败的 invoke 其后台 turn 可能仍在跑（detach 语义）——人工
+    // 作答的耗时通常已覆盖其残余生命；appendLoopMessages 有文件锁兜底。
+    if (result.error) {
+      record.status = 'paused';
+      record.pauseReason = 'provider-error';
+      record.updatedAt = new Date(deps.now()).toISOString();
+      persist();
+      deps.broadcast('auto-run:paused', {
+        id: record.id,
+        reason: 'provider-error',
+        error: result.error,
+      });
+      const stopNow = await raisePauseDecision(
+        `模型调用失败（${result.error.slice(0, 200)}）——供应商过载/挂起/中断。怎么处理？`,
+        `错误原文：${result.error.slice(0, 300)}`,
+        ctl,
+        deps,
+      );
+      if (stopNow === null) break;
+      record.status = stopNow ? 'stopped' : 'running';
+      record.pauseReason = undefined;
+      record.updatedAt = new Date(deps.now()).toISOString();
+      persist();
+      if (stopNow) {
+        deps.broadcast('auto-run:completed', { id: record.id, outcome: 'stopped' });
+        break;
+      }
+      continue;
     }
     if (ctl.isStopped()) break;
 

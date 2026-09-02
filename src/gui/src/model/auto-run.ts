@@ -48,7 +48,7 @@ export type AutoRunStatus =
   | 'completed'
   | 'stopped';
 
-export type AutoRunPauseReason = 'stall' | 'repeated-failures' | 'budget';
+export type AutoRunPauseReason = 'stall' | 'repeated-failures' | 'budget' | 'provider-error';
 
 /** 验收条件 × 证据预检（verdict-requested 的 GUI 侧形状）。 */
 export interface VerdictCriterion {
@@ -125,7 +125,7 @@ export function budgetKindOf(v: unknown): AutoRunBudgetKind {
 /** paused.reason 窄化（非法/缺失 → null，事件丢弃）。 */
 export function pauseReasonOf(v: unknown): AutoRunPauseReason | null {
   const s = str(v);
-  return s === 'stall' || s === 'repeated-failures' || s === 'budget' ? s : null;
+  return s === 'stall' || s === 'repeated-failures' || s === 'budget' || s === 'provider-error' ? s : null;
 }
 
 // ---------------------------------------------------------------------------
