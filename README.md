@@ -7,7 +7,7 @@
   </picture>
 </p>
 
-**v1.5.13 · 安全研究领域的 agent harness：环境融合、原生工具、原生代码、研究档案。**
+**v1.5.14 · 安全研究领域的 agent harness：环境融合、原生工具、原生代码、研究档案。**
 
 [![Version](https://img.shields.io/github/v/tag/LielingAi/ZhiShi)](https://github.com/LielingAi/ZhiShi/tags)
 [![License](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](LICENSE)
@@ -244,7 +244,7 @@ flowchart LR
 
 | 文档 | 内容 |
 |---|---|
-| `docs/roadmap.md` | 版本任务池（当前线：**1.5.x**——1.5.13 三层模型修正与收口（镜像派生/容器免认领/工作区可见）已发版） |
+| `docs/roadmap.md` | 版本任务池（当前线：**1.5.x**——1.5.14 镜像行点行即启动（按钮移除）已发版） |
 | `docs/user-guide.md` | 使用指南（安装、选环境、配模型、GUI 操作、常见问题） |
 | `docs/expert-import-guide.md` | 专家知识导入指南（命令/字段规范/JSON+YAML 格式，附可导入的 `expert-import.demo.yaml`）；社区条目仓库：[ZhiShiExpertKnowledge](https://github.com/LielingAi/ZhiShiExpertKnowledge) |
 | `docs/design/` | 各版本设计与分析稿（1.1.6–1.2.7、distill-eval、1.3.4 TUI 退役评估） |
