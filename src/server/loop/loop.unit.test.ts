@@ -164,6 +164,42 @@ describe('runLoop', () => {
     expect(r.error).toBe('boom');
     expect(r.text).toBe('');
   });
+
+  // ── 1.5.13 模型静默看门狗 ─────────────────────────────────────────────
+
+  it('模型流式静默超阈值 → error 事件中断（实机：deepseek 挂起 99s 零 token）', async () => {
+    agentLoopMock.mockReset();
+    // 挂起的流：yield 一次后再也不产（模拟挂死的供应商连接）
+    agentLoopMock.mockReturnValue((async function* () {
+      yield { type: 'message_update', message: assistantMessage(''), assistantMessageEvent: { type: 'thinking_start', contentIndex: 0, partial: assistantMessage('') } } as unknown as AgentEvent;
+      await new Promise((r) => setTimeout(r, 200)); // 挂起（超过 50ms 阈值）
+      yield { type: 'agent_end', messages: [assistantMessage('late')] } as unknown as AgentEvent;
+    })());
+    const events = [];
+    for await (const e of runLoop({
+      prompt: 'x', model: fakeModel, models: fakeModels, modelSilenceTimeoutMs: 50,
+    })) events.push(e);
+    expect(events[0].type).toBe('thinking-start');
+    const last = events[events.length - 1];
+    expect(last.type).toBe('error');
+    expect((last as { error: string }).error).toContain('模型响应超时');
+  });
+
+  it('工具执行阶段不计时（长 exec 合法）——静默超阈值照样正常完成', async () => {
+    agentLoopMock.mockReset();
+    agentLoopMock.mockReturnValue((async function* () {
+      yield { type: 'tool_execution_start', toolCallId: 't1', toolName: 'env_exec', args: {} } as unknown as AgentEvent;
+      await new Promise((r) => setTimeout(r, 200)); // 工具执行期挂 200ms（超阈值但不计时）
+      yield { type: 'tool_execution_end', toolCallId: 't1', toolName: 'env_exec', result: {}, isError: false } as unknown as AgentEvent;
+      yield { type: 'agent_end', messages: [assistantMessage('done')] } as unknown as AgentEvent;
+    })());
+    const events = [];
+    for await (const e of runLoop({
+      prompt: 'x', model: fakeModel, models: fakeModels, modelSilenceTimeoutMs: 50,
+    })) events.push(e);
+    expect(events.map((e) => e.type)).toEqual(['tool-call', 'tool-result', 'done']);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+  });
 });
 
 // ---- one-shot ----

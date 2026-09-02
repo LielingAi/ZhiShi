@@ -139,6 +139,9 @@ export interface RunLoopOptions {
    * 原样透传给 pi 的 getSteeringMessages(turn 间轮询,返回 [] = 无注入)。
    */
   getSteeringMessages?: () => Promise<AgentMessage[]>;
+  /** 1.5.13：模型静默看门狗阈值（模型流式阶段无事件的最大容忍；工具执行
+   *  阶段不计时）。缺省 MODEL_SILENCE_TIMEOUT_MS；测试注入小值。 */
+  modelSilenceTimeoutMs?: number;
   maxTokens?: number;
 }
 
@@ -146,6 +149,10 @@ export interface RunLoopOptions {
 export function streamFnFromModels(models: Models): StreamFn {
   return (model, context, options) => models.streamSimple(model, context, options);
 }
+
+/** 1.5.13：模型流式静默看门狗缺省阈值（90s——实机形态：供应商挂起零 token
+ *  99s 无事件；正常流式 chunk 间隔远低于此）。 */
+export const MODEL_SILENCE_TIMEOUT_MS = 90_000;
 
 /**
  * 跑一轮 agent loop（可能含多 turn：工具调用 → 结果回注 → 再调模型），
@@ -188,7 +195,45 @@ export async function* runLoop(options: RunLoopOptions): AsyncIterable<LoopEvent
     streamFnFromModels(options.models),
   );
 
-  for await (const event of stream) {
+  // 1.5.13 模型静默看门狗（实机：deepseek API 挂起 99s 零 token——GUI 永远
+  // 「思考中」）：模型流式阶段连续 modelSilenceTimeoutMs 无任何事件 → 判挂起，
+  // 中断并报明确错误。工具执行阶段不计时（tool_execution_start→end 之间——
+  // 长 env_exec/下载合法地分钟级无事件）。
+  const silenceMs = options.modelSilenceTimeoutMs ?? MODEL_SILENCE_TIMEOUT_MS;
+  const iter = stream[Symbol.asyncIterator]();
+  let inToolExecution = false;
+  for (;;) {
+    let result: IteratorResult<AgentEvent>;
+    if (inToolExecution) {
+      // 工具执行期：纯等，不看门狗
+      result = await iter.next();
+    } else {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const raced = await Promise.race([
+        iter.next().then((r): { kind: 'event'; result: IteratorResult<AgentEvent> } => {
+          clearTimeout(timer);
+          return { kind: 'event', result: r };
+        }),
+        new Promise<{ kind: 'timeout' }>((resolve) => {
+          timer = setTimeout(() => resolve({ kind: 'timeout' }), silenceMs);
+        }),
+      ]);
+      if (raced.kind === 'timeout') {
+        // 中断消费：通知 pi 的 generator 收尾（iter.return 传播取消）。
+        await iter.return?.(undefined).catch(() => {});
+        yield {
+          type: 'error',
+          error: `模型响应超时（${Math.round(silenceMs / 1000)}s 无任何数据流回）——供应商或网络挂起，已中断。请重试或换模型。`,
+        };
+        return;
+      }
+      result = raced.result;
+    }
+    if (result.done) break;
+    const event = result.value;
+    // 工具执行边界（映射前的 pi 事件名）：进入后停表，出来后恢复。
+    if (event.type === 'tool_execution_start') inToolExecution = true;
+    else if (event.type === 'tool_execution_end') inToolExecution = false;
     for (const mapped of mapAgentEvent(event)) {
       yield mapped;
     }
