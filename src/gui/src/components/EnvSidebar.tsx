@@ -349,14 +349,14 @@ export function EnvSidebar(): React.JSX.Element {
                 {it.group === 'unreg' && !it.registeredAs && it.kind === 'docker-image' && (
                   <button
                     className="btn small eb-register"
-                    title={`启动为环境（environment/up ${it.recipeId ?? ''}——镜像在则秒开并登记入侧栏）`}
+                    title={`启动为环境（environment/up ${it.recipeId ?? ''}——镜像派生新容器，秒开并登记入侧栏）`}
                     onClick={(e) => {
                       e.stopPropagation();
                       // 1.5.10：镜像 → 环境（run 派生容器 + 服务端回写登记）。
                       void startImageEnv(it.key);
                     }}
                   >
-                    启动为环境
+                    ▶ 启动
                   </button>
                 )}
                 {it.group === 'unreg' && !it.registeredAs && it.kind !== 'docker-image' && (
