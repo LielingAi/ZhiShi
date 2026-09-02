@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.15] - 2026-09-02
+
+### 修复
+- **auto loop 观察流恒空**：started 事件的 loopSessionId 在 GUI 全链丢失（reducer 不透传/归并不带/start 回包缺）——观察流永不轮询恒空；全链修复
+- **auto loop 终审模态残留**：服务端「仅 awaiting-verdict 态可终审/已作答」= 终审已被消费——客户端关窗并重新对齐状态（不再反复点反复报错）
+- **auto loop 跑完后人工继续无上下文**：run 终态时收官注回同环境交互会话线（目标/结论摘要/报告路径/轨迹线指针），人工下一轮的模型上下文即带 loop 成果
+
 ## [1.5.14] - 2026-09-02
 
 ### 变更
