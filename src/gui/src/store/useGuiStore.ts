@@ -78,6 +78,7 @@ import {
   activeAutoRunOf,
   parseAutoRunList,
   verdictModalOpen,
+  isVerdictConsumedError,
   type AutoRunEntry,
   type AutoRunFormView,
 } from '../model/auto-run';
@@ -1588,6 +1589,18 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     try {
       const res = await api.autoRunVerdict(c, { id, verdict });
       if (!res.success) {
+        // 1.5.13：终审已被消费（服务端口径）→ 关窗 + 重新对齐（loadAutoRunState
+        // 从 list 拉真状态），不把已消费的终审窗留在原地让人反复点（实机回归）。
+        if (isVerdictConsumedError(res.error)) {
+          set((s) =>
+            s.autoRun && s.autoRun.id === id
+              ? { autoRun: { ...s.autoRun, verdict: undefined }, verdictDismissed: true }
+              : { verdictDismissed: true },
+          );
+          state.showToast(`终审已生效（${res.error}）——状态已重新对齐`);
+          void get().loadAutoRunState();
+          return;
+        }
         state.showToast(`提交失败：${res.error ?? '未知错误'}`);
         return;
       }

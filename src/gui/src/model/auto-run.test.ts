@@ -27,6 +27,7 @@ import {
   pauseReasonOf,
   validateAutoRunForm,
   verdictModalOpen,
+  isVerdictConsumedError,
   type AutoRunEntry,
   type AutoRunFormView,
 } from './auto-run';
@@ -546,5 +547,18 @@ describe('verdictModalOpen（A3-2：Esc 链与终审弹窗渲染同一口径）'
   it('无 loop / 无 verdict → 关', () => {
     expect(verdictModalOpen(null, false)).toBe(false);
     expect(verdictModalOpen(autoRunEntryOf({ id: 'ar-2', status: 'running' })!, false)).toBe(false);
+  });
+});
+
+describe('isVerdictConsumedError（1.5.13：终审已被消费的错误形态 → 关窗重新对齐）', () => {
+  it('「仅 awaiting-verdict 态可终审」/「终审已作答」→ true（消费态）', () => {
+    expect(isVerdictConsumedError('仅 awaiting-verdict 态可终审(auto-run/verdict)')).toBe(true);
+    expect(isVerdictConsumedError('终审已作答(幂等:重复 respond 不重复处理)')).toBe(true);
+  });
+
+  it('其他错误（网络/未知/缺参）→ false（不关窗，保留人重试）', () => {
+    expect(isVerdictConsumedError(undefined)).toBe(false);
+    expect(isVerdictConsumedError('未连接 sidecar')).toBe(false);
+    expect(isVerdictConsumedError('run "x" 不存在')).toBe(false);
   });
 });

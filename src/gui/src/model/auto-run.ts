@@ -466,6 +466,18 @@ export function verdictModalOpen(entry: AutoRunEntry | null | undefined, dismiss
   return entry?.verdict !== undefined && !dismissed && entry.status === 'awaiting-verdict';
 }
 
+/**
+ * 1.5.13 实机修复：终审「已被消费」的服务端错误形态（仅 awaiting-verdict
+ * 态可终审 / 终审已作答）——出现即说明这次终审在服务端已生效（继续跑/定稿
+ * 都已发生），客户端必须关窗 + 重新对齐状态，而不是把已消费的终审窗留在
+ * 原地让人反复点（实机：第一次「继续跑」成功后模态残留/重开，第二次点
+ * 任何按钮都撞这个错误）。
+ */
+export function isVerdictConsumedError(error: string | undefined): boolean {
+  if (!error) return false;
+  return error.includes('仅 awaiting-verdict 态可终审') || error.includes('终审已作答');
+}
+
 // ---------------------------------------------------------------------------
 // auto-run/list 解析（重连恢复活跃 loop）
 // ---------------------------------------------------------------------------
