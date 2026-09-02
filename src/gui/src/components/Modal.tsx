@@ -898,6 +898,11 @@ function EnvDetailModal(): React.JSX.Element | null {
           {entry.osFamily && (
             <div className="wiz-confirm-row"><span className="wiz-k">OS</span><span className="wiz-v">{entry.osFamily}</span></div>
           )}
+          {entry.workspace && (
+            <div className="wiz-confirm-row" title="容器内 /workspace 挂载的宿主源目录（1.5.10——成果落盘层）">
+              <span className="wiz-k">工作区</span><span className="wiz-v">{entry.workspace}（→ 容器 /workspace）</span>
+            </div>
+          )}
           {entry.capabilityDomains && entry.capabilityDomains.length > 0 && (
             <div className="wiz-confirm-row">
               <span className="wiz-k">能力（推导）</span>

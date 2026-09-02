@@ -108,6 +108,17 @@ describe('validateEnvironmentEntry', () => {
     }
   });
 
+  it('1.5.10：docker 条目带 workspace（/workspace 宿主源目录）透传', () => {
+    const ok = validateEnvironmentEntry({
+      id: 'pwn-1',
+      kind: 'docker',
+      container: 'zhishi-pwn-a1b2',
+      workspace: 'E:/work/target',
+    });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.entry.workspace).toBe('E:/work/target');
+  });
+
   it('rejects non-string optional fields', () => {
     expect(validateEnvironmentEntry({ id: 'x', kind: 'ssh', host: 'h', user: 1 }).ok).toBe(false);
     expect(validateEnvironmentEntry({ id: 'x', kind: 'ssh', host: 'h', keyPath: {} }).ok).toBe(false);

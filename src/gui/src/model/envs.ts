@@ -22,6 +22,8 @@ export interface EnvEntryLike {
   name?: string;
   /** docker 条目的容器名（1.3.7 实机修复：本机发现去重的 docker 匹配键）。 */
   container?: string;
+  /** docker 条目的 /workspace 宿主源目录（1.5.10——详情模态展示用）。 */
+  workspace?: string;
   /** vm 条目的 VM 名（1.3.7 实机修复：本机发现去重的 vmName 匹配键）。 */
   vmName?: string;
   /** vmware 条目的 vmx 路径（删除确认的驱动判定：有 vmx = 只摘登记）。 */

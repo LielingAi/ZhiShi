@@ -2168,6 +2168,9 @@ async function writebackDockerEnvEntry(
     // 1.3.8 多配方：up 回写初始化绑定集合 [主配方]。
     recipeIds: [recipe.id],
     container: instance.name,
+    // 1.5.10：/workspace 宿主源目录落登记（详情模态「这个容器的 /workspace
+    // 是哪」的展示源；容器 label zhishi.workspace 是运行态事实源）。
+    ...(instance.workspace ? { workspace: instance.workspace } : {}),
     // 探测全集自检(1.3.7 场景 3):构建后当场跑一条批量探测(全配方工具
     // 并集)——声明工具漂移证据落 toolCheck,在场工具→域 ∪ 配方绑定域落
     // capabilityDomains;失败降级为无自检无能力字段,不阻断 up。

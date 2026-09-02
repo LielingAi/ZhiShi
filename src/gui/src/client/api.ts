@@ -48,6 +48,8 @@ export interface EnvEntry {
   capabilityDerivedAt?: string;
   /** 1.5.7：待装工具清单（首跑自动安装进行中；不计入 toolCheck/capabilityTools 的 missing）。 */
   capabilityPending?: string[];
+  /** docker 条目的 /workspace 宿主源目录（1.5.10——详情模态展示用）。 */
+  workspace?: string;
 }
 
 export interface PsInstance {
@@ -226,7 +228,7 @@ export interface SshAddInput {
  *  1.5.10：单数 recipeId → recipeIds 数组（与多配方实际透传对齐）。 */
 export type EnvironmentAddInput =
   | SshAddInput
-  | { id: string; kind: 'docker'; container: string; user?: string; keyPath?: string; recipeIds?: string[] }
+  | { id: string; kind: 'docker'; container: string; user?: string; keyPath?: string; recipeIds?: string[]; workspace?: string }
   | {
       id: string;
       kind: 'vm';

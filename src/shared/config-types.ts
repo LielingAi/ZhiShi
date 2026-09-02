@@ -896,6 +896,12 @@ export interface EnvironmentEntry {
 
   container?: string;
 
+  /** docker：/workspace 的宿主源目录（1.5.10——up/rebuild/reset 回写时落盘，
+   *  详情模态展示「这个容器的 /workspace 是哪」；容器 label zhishi.workspace
+   *  是运行态事实源，本字段是登记镜像）。 */
+
+  workspace?: string;
+
   /** vm：hypervisor 内 VM 名（必填）。 */
 
   vmName?: string;

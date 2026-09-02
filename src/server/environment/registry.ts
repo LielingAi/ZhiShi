@@ -28,7 +28,7 @@ const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const FORBIDDEN_SECRET_FIELDS = ['password', 'passphrase'] as const;
 
 /** Optional free-text fields common to all kinds. */
-const OPTIONAL_STRING_FIELDS = ['name', 'user', 'keyPath', 'passwordRef', 'osFamily', 'recipeId', 'host', 'container', 'vmName', 'address', 'vmx'] as const;
+const OPTIONAL_STRING_FIELDS = ['name', 'user', 'keyPath', 'passwordRef', 'osFamily', 'recipeId', 'host', 'container', 'vmName', 'address', 'vmx', 'workspace'] as const;
 
 function fail(error: string): { ok: false; error: string } {
   return { ok: false, error };
