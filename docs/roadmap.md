@@ -5,6 +5,24 @@
 
 ---
 
+## 1.6.3 —— 技术债务清扫（测量驱动，8 项全修）
+
+**缘起（2026-09-03 用户拍板）**：旧债清单（god file/引擎单例/IO 纪律）实测确认已全部还清后，对当前代码做新债务测量（六维度：文件体量、IO 纪律、模块级状态、变更热度、测试覆盖、遗留挂账），逐条过堂核实（含 file-lock 定性修正：真实风险是「误守死锁」非「误破活锁」——持有者崩溃+pid 复用时 Windows 拒绝破锁致状态文件永久 ConfigBusyError）。用户拍板 8 项全修。
+
+- [ ] **#1 file-lock win32 start-time 检测**：`getPidStartTimeMs` 补 win32 分支（PowerShell CIM `Win32_Process.CreationDate`，仅 stale 判定路径调用）——解「锁主崩溃+pid 复用 → 永久拒绝破锁」（`file-lock.ts:133` TODO）；单测 mock execSync
+- [ ] **#2 fetchRef 消费端**：GUI + CLI 接 `{kind:'ref'}` 解析——服务端写链路（spill 落盘 + `/refs/:id` + GC）1.5.4 已生效，消费端接上后 >256KB payload 可取全文（`sse.ts:563` 挂账）
+- [ ] **#3 会话主干直接测试**：`SessionStore.ts`/`agent-session.ts`/`crash-log.ts`/`routes/sessions.ts`（~2500 行，现仅被 mock 或契约仿写覆盖）补直接单测
+- [ ] **#4 auto-run 记录清理端点**：admin-api 补 delete/clear（现仅 start/stop/budget/verdict/list，记录只增不减，1.6.0 挂账）
+- [ ] **#5 deferred init 可重试**：`index.ts:1367` `markDeferredInitFailed(..., false)` 改可重试路径（re-runner）
+- [ ] **#6 listEvents 1000 饱和**：`auto-run.ts:1416/1465`、`admin-api.ts:2904` 三处 `listResearchEvents({ limit: 1000 })` 改分页或 workspace 过滤前置（1.6.0 挂账）
+- [ ] **#7 docker checkpoint task.md**：`auto-run.ts:1428` docker 快照「暂未支持」补实现（设计 §4 承诺「现场=快照+task.md」的另一半）
+- [ ] **#8 删除镜像端点**：补 image-remove（1.5.10 挂账「下版再议」）
+
+> 边界：每项带测试；不引入新依赖（win32 检测用系统 PowerShell）；不改挂账项的既定取舍（1.4.5「不修」五条、bg reset 不连坐等不翻案）。
+> 验收：全量测试绿 + tsc + eslint + depcruise；每项修复有对应测试证据。
+
+---
+
 ## 1.6.2 —— crash-triager 深挖模式（崩溃变体分析）（完成——dogfood 第二家族复测通过，A 方案零接线盖棺）
 
 **缘起（2026-09-03 用户拍板，五轮讨论收敛）**：1.6.1 三组对照实验判定「成立」（LLM 变体深挖 63s vs 愚蠢回灌 23.2min，设计 `docs/design/experiment-crash-variant.md` §6.5 五条落地建议）——按既定决策把深挖模式产品化进 crash-triager。讨论收敛的设计原则：**深挖 = 源码理解驱动的变体分析**（非「LLM 帮忙 fuzz」）；**零方法论接线**（A 方案——1.6.1 实验证明无 SOP 注入模型自身够用；whitebox 引用属机制外私门，不做）；**机械约束下沉、价值判断上交**（「有源码可读」是唯一硬前提；预算与「值不值得深挖」归 auto loop/人，agent 定义零预算纪律）；**负结果语义净化**（假设耗尽→outcome=fail 落库；预算耗尽被砍不落库——防假负结果污染蒸馏弧）。
