@@ -18,6 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-09-03
+
+> **crash-triager 深挖模式（崩溃变体分析）**——1.6.1 实验判定「成立」后的产品化；dogfood 第二 bug 家族复测通过，A 方案（零方法论接线）盖棺。
+
+### 新增
+- **crash-triager 深挖模式**：单个崩溃类的变体分析——复现基准指纹 → 根因结构化（过门）→ 同族扫描（根因模式→检索模式，含扫描输出收敛纪律）→ 定向构造 + 验证门（崩溃且栈指纹≠种子，硬标准）→ 分流（新崩溃类走批处理入口独立落 research_events；假设耗尽 outcome=fail 落负结果）。有源码可读是唯一硬前提；预算与「值不值得深挖」归委派方，agent 定义零预算纪律
+- **stack-hash.sh 栈指纹工具**（fuzz 配方 examples + fuzz-vm setup 内嵌同文本）：批量取样本栈指纹（ASan SUMMARY+顶帧 / gdb bt 顶 5 帧），供深挖验证门使用
+- fuzz-runner：深挖产出的验证变体落 `fuzz/corpus-in/` 时下一轮带上（变体回灌闭环）
+
+### dogfood 验证（docs/design/experiment-crash-variant.md §7）
+- glibc iconv（CVE-2024-2961）第二 bug 家族复测**通过**：SS2 种子（`2A48`）→ 独立产出 SS3 变体（`2B49`/`2B4A`），污染审计干净；首轮预算耗尽暴露的扫描收敛缺口已修（机制内改进，非知识接线）
+
 ## [1.6.1] - 2026-09-03
 
 > **崩溃变体深挖实验 + AFL 开关文档化**——先实验后立项：三组对照裁决「LLM 变体生成有无增量」，判定成立；1.7.0 立项建议见设计文档。
