@@ -169,9 +169,27 @@ export function pendingDecisions(): DecisionPending[] {
   return [...pending.values()].filter((d) => !d.resolved);
 }
 
-/** 测试/关闭用:清空全部 pending。 */
-export function clearDecisions(): void {
-  pending.clear();
+/**
+ * 按 id 读决策记录(含 resolved)——1.6.0 auto-run 决策注入超时兜底:
+ * 人已作答但注入 turn 卡死(marker 未落地)时,从 resolved 记录读 choice,
+ * 不依赖 marker。
+ */
+export function getDecision(decisionId: string): DecisionPending | undefined {
+  return pending.get(decisionId);
+}
+
+/**
+ * 测试/关闭用:清空 pending。带 sessionId 时只清该 loop 线的条目
+ * (1.6.0 auto-run 终态按线清理,不动其他线的待答决策)。
+ */
+export function clearDecisions(sessionId?: string): void {
+  if (sessionId === undefined) {
+    pending.clear();
+    return;
+  }
+  for (const [id, d] of pending) {
+    if (d.sessionId === sessionId) pending.delete(id);
+  }
 }
 
 // ---------------------------------------------------------------------------

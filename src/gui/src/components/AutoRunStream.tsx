@@ -46,7 +46,12 @@ export function AutoRunStream(): React.JSX.Element {
   const stickRef = useRef(true);
 
   useEffect(() => {
-    if (!loopId) return;
+    // 1.6.0：换 loopId（新 run 接替旧 run）时重置 items——旧 run 的轨迹
+    // 不残留在新 run 的观察流里（清理与缺 loopId 两条路径都清空）。
+    if (!loopId) {
+      setItems([]);
+      return;
+    }
     let cancelled = false;
     const load = async () => {
       const c = getSettingsClient();
@@ -64,6 +69,7 @@ export function AutoRunStream(): React.JSX.Element {
     return () => {
       cancelled = true;
       clearInterval(timer);
+      setItems([]);
     };
   }, [loopId]);
 

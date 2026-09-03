@@ -346,10 +346,14 @@ function resolvePiScenario(): InteractionScenario {
  * broadcast 开关:invoke 通道(headless)传 false——回收照做(杀进程/清
  * 登记不变),但 chat:bg-finished 不广播(契约:headless 不往客户端发
  * 事件,与 buildTurnStack 的 broadcastEvents=false 同口径)。
+ *
+ * 1.6.0 ownerSessionId:turn-end 传调用方线 id,只回收该线发起的 bg
+ * (交互线 turn 结束不杀 auto-run invoke 线的 bg,反之亦然);reset 不传
+ * = 全收(会话清场语义不变)。
  */
 async function reapBgOnLifecyclePoint(
   reason: 'turn-end' | 'reset',
-  opts: { broadcast?: boolean } = {},
+  opts: { broadcast?: boolean; ownerSessionId?: string } = {},
 ): Promise<void> {
   const registry = getBgRegistry();
   if (!registry) return;
@@ -364,6 +368,7 @@ async function reapBgOnLifecyclePoint(
     },
     onWarn: (msg) => console.warn(`[pi-engine] ${msg}`),
     onLog: (msg) => console.log(`[pi-engine] ${msg}(${reason})`),
+    ...(opts.ownerSessionId ? { ownerSessionId: opts.ownerSessionId } : {}),
   });
 }
 
@@ -894,7 +899,8 @@ class ChatEngine {
         // 回收所有仍在跑的 bg 进程。暂定决策,理由与后续方向见 bg-reap.ts
         // 模块头注释。放在最前:回收的快照同步取,防紧接的 promote 竞态;
         // fire-and-forget,kill 失败绝不阻塞收尾(reapAllBgProcesses 不抛)。
-        void reapBgOnLifecyclePoint('turn-end');
+        // 1.6.0:按归属线回收——只杀本交互线发起的 bg,invoke 线的不连坐。
+        void reapBgOnLifecyclePoint('turn-end', { ownerSessionId: turnSessionId });
         this.busy = false;
         this.streamingAssistantId = null;
         this.currentAbort = null;
@@ -1005,8 +1011,11 @@ class ChatEngine {
       // 结构性保证(子 loop 默认工具集只有 env_exec);生命周期广播
       // chat:subagent-started/finished(finished 带结论摘要,截断 200 字,
       // 不带过程),子 loop 工具事件映射 chat:subagent-tool-*。
+      // 1.6.0:ownerSessionId 传本 turn 快照线——bg 登记带归属线,回收按线
+      // 过滤(交互线与 invoke 线互不连坐)。
       tools.push(createEnvBgTool(env, broadcastEvents
         ? {
+            ownerSessionId: sessionId,
             onLifecycle: (ev) => {
               if (ev.kind === 'started') {
                 broadcast('chat:bg-started', { tag: ev.tag, pid: ev.pid, commandPreview: ev.commandPreview });
@@ -1019,7 +1028,7 @@ class ChatEngine {
               }
             },
           }
-        : {}));
+        : { ownerSessionId: sessionId }));
       tools.push(createDelegateTaskTool({
         env,
         resolution,
@@ -1529,7 +1538,8 @@ class ChatEngine {
       // 且其 generateAndApplyTitle 尾段会 broadcast chat:session-title-changed
       // ——invoke 契约零广播);bg 回收照做但不广播(broadcast:false)。
       this.recordGapEvents(failed, blockedToolNames, loopSessionId);
-      void reapBgOnLifecyclePoint('turn-end', { broadcast: false });
+      // 1.6.0:按归属线回收——只杀本 invoke 线发起的 bg,交互线的不连坐。
+      void reapBgOnLifecyclePoint('turn-end', { broadcast: false, ownerSessionId: loopSessionId });
       const lastAssistant = [...doneMessages].reverse().find((m) => m.role === 'assistant');
       const text = lastAssistant
         ? lastAssistant.content.filter((c): c is TextContent => c.type === 'text').map((c) => c.text).join('\n')

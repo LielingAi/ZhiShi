@@ -12,6 +12,7 @@ import {
   parseVerdictPackage,
   activeAutoRunOf,
   applyAutoRunEvent,
+  autoRunEntryAfterVerdictResponse,
   budgetKindOf,
   budgetUsedPct,
   buildAutoRunStartPayload,
@@ -25,6 +26,7 @@ import {
   parseBudgetLimit,
   parseVerdictRequest,
   pauseReasonOf,
+  restoredAutoRunStale,
   validateAutoRunForm,
   verdictModalOpen,
   isVerdictConsumedError,
@@ -400,29 +402,33 @@ describe('budgetKindOf / pauseReasonOf', () => {
     expect(budgetKindOf(null)).toBe('turns');
   });
 
-  it('pause reason 窄化（非法 → null；1.5.13 含 provider-error）', () => {
+  it('pause reason 窄化（非法 → null；1.5.13 含 provider-error；1.6.0 含 decision）', () => {
     expect(pauseReasonOf('stall')).toBe('stall');
     expect(pauseReasonOf('repeated-failures')).toBe('repeated-failures');
     expect(pauseReasonOf('budget')).toBe('budget');
     expect(pauseReasonOf('provider-error')).toBe('provider-error');
+    // 1.6.0：'decision'（模型 request_decision 提请的暂停点）补齐——此前
+    // 窄化丢弃，SSE auto-run:paused{reason:'decision'} 与恢复路径双双不可见。
+    expect(pauseReasonOf('decision')).toBe('decision');
     expect(pauseReasonOf('x')).toBeNull();
     expect(pauseReasonOf(undefined)).toBeNull();
   });
 });
 
 describe('parseAutoRunList / activeAutoRunOf', () => {
+  // 1.6.0：fixture 改用服务端真实 wire 形状（serializeAutoRunRecord 输出形态——
+  // 扁平 pauseReason 字符串 + ISO updatedAt），不再用旧 GUI 形态 p.paused{}。
   const row = {
     id: 'ar-1',
     name: '拿 flag',
     envKey: 'pwn-vm',
     goal: 'g',
-    budget: { kind: 'turns', limit: 50 },
-    used: 5,
+    budget: { kind: 'turns', limit: 50, spent: 5 },
     criteria: ['c'],
     status: 'paused',
     phase: '分析',
-    paused: { reason: 'budget', summary: '耗尽' },
-    updatedAt: 10,
+    pauseReason: 'budget',
+    updatedAt: '2026-09-01T01:00:00.000Z',
   };
 
   it('{data:{runs:[…]}} 形状 → 条目数组（paused/phase 恢复）', () => {
@@ -432,8 +438,9 @@ describe('parseAutoRunList / activeAutoRunOf', () => {
       id: 'ar-1',
       status: 'paused',
       phase: '分析',
-      paused: { reason: 'budget', summary: '耗尽' },
+      paused: { reason: 'budget' },
       used: 5,
+      updatedAt: Date.parse('2026-09-01T01:00:00.000Z'),
     });
   });
 
@@ -450,6 +457,13 @@ describe('parseAutoRunList / activeAutoRunOf', () => {
     expect(activeAutoRunOf({ data: { runs: [row] } })?.id).toBe('ar-1');
     expect(activeAutoRunOf({ data: { runs: [{ id: 'ar-2', status: 'completed' }] } })).toBeNull();
     expect(activeAutoRunOf('nope')).toBeNull();
+  });
+
+  it('旧 GUI 形态 p.paused{reason,summary} 兼容保留（1.6.0 双形）', () => {
+    const list = parseAutoRunList({
+      data: { runs: [{ ...row, pauseReason: undefined, paused: { reason: 'budget', summary: '耗尽' } }] },
+    });
+    expect(list[0].paused).toEqual({ reason: 'budget', summary: '耗尽' });
   });
 
   it('verdict 字段在 list 条目中恢复', () => {
@@ -602,5 +616,239 @@ describe('isVerdictConsumedError（1.5.13：终审已被消费的错误形态 �
     expect(isVerdictConsumedError(undefined)).toBe(false);
     expect(isVerdictConsumedError('未连接 sidecar')).toBe(false);
     expect(isVerdictConsumedError('run "x" 不存在')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1.6.0 全链路审查回归（G 面：② live 证据预检 / ① fail 语义 / ③ paused 形状 /
+// ④ ISO updatedAt + stale 守卫 / ⑤ resumed / ⑥ 终态不复活）
+// ---------------------------------------------------------------------------
+
+describe('parseVerdictRequest — criteriaPrecheck live 接线（1.6.0 ②）', () => {
+  it('live 真实 wire（criteria 字符串数组 + criteriaPrecheck + evidence.refs）→ 逐条 ✓/✗ 正确', () => {
+    // 服务端 auto-run:verdict-requested 广播实况（server/loop/auto-run.ts）。
+    const v = parseVerdictRequest({
+      id: 'ar-1',
+      criteria: ['条件一', '条件二', '条件三'],
+      criteriaPrecheck: [
+        { text: '条件一', status: 'evidence' },
+        { text: '条件二', status: 'partial' },
+        { text: '条件三', status: 'none' },
+      ],
+      evidence: {
+        statement: 'E#1/E#2 支撑条件一',
+        refs: [
+          { id: 1, hit: true, summary: 's1' },
+          { id: 2, hit: true },
+          { id: 3, hit: false },
+        ],
+        hitCount: 2,
+        missCount: 1,
+      },
+    });
+    expect(v.statement).toBe('E#1/E#2 支撑条件一');
+    // evidence / partial → ✓（hasEvidence）；none → ✗；命中引用 E#N 挂有证据条件。
+    expect(v.criteria).toEqual([
+      { text: '条件一', hasEvidence: true, refs: ['E#1', 'E#2'] },
+      { text: '条件二', hasEvidence: true, refs: ['E#1', 'E#2'] },
+      { text: '条件三', hasEvidence: false, refs: [] },
+    ]);
+  });
+
+  it('旧枚举 hit → hasEvidence true（与 parseVerdictPackage 同口径）；status 缺失 → false；空文本行丢弃', () => {
+    const v = parseVerdictRequest({
+      criteriaPrecheck: [
+        { text: 'c1', status: 'hit' },
+        { text: 'c2' },
+        { text: '  ', status: 'evidence' },
+      ],
+    });
+    expect(v.criteria).toEqual([
+      { text: 'c1', hasEvidence: true, refs: [] },
+      { text: 'c2', hasEvidence: false, refs: [] },
+    ]);
+  });
+
+  it('criteriaPrecheck 空数组 → 回退 legacy criteria 解析', () => {
+    const v = parseVerdictRequest({
+      criteria: [{ text: 'x', refs: ['E#1'] }],
+      criteriaPrecheck: [],
+    });
+    expect(v.criteria).toEqual([{ text: 'x', hasEvidence: true, refs: ['E#1'] }]);
+  });
+
+  it('evidence.refs 字符串数组（兼容形态）原样透传；非数组/缺 hit 防御', () => {
+    const v = parseVerdictRequest({
+      criteriaPrecheck: [{ text: 'c', status: 'evidence' }],
+      evidence: { statement: 's', refs: ['E#7', ' E#8 '] },
+    });
+    expect(v.criteria[0].refs).toEqual(['E#7', 'E#8']);
+    const noRefs = parseVerdictRequest({
+      criteriaPrecheck: [{ text: 'c', status: 'evidence' }],
+      evidence: { statement: 's', refs: [{ id: 'x' }, { id: 1, hit: false }] },
+    });
+    expect(noRefs.criteria[0].refs).toEqual([]);
+  });
+});
+
+describe('parseVerdictPackage — partial 同口径（1.6.0 ② 恢复路径）', () => {
+  it('status partial（部分命中）→ hasEvidence true（此前只认 evidence/hit，恢复路径错标 ✗）', () => {
+    const v = parseVerdictPackage({
+      statement: 's',
+      criteriaPrecheck: [
+        { text: 'c1', status: 'partial' },
+        { text: 'c2', status: 'none' },
+      ],
+    })!;
+    expect(v.criteria[0].hasEvidence).toBe(true);
+    expect(v.criteria[1].hasEvidence).toBe(false);
+  });
+});
+
+describe('autoRunEntryAfterVerdictResponse（1.6.0 ①：fail = 注回修正续跑）', () => {
+  const awaiting = entry({
+    status: 'awaiting-verdict',
+    verdict: { criteria: [], statement: 's' },
+  });
+
+  it('fail → running（清 verdict/paused），不再本地翻 stopped', () => {
+    const next = autoRunEntryAfterVerdictResponse(awaiting, 'fail', 42);
+    expect(next).toMatchObject({ status: 'running', updatedAt: 42 });
+    expect(next.verdict).toBeUndefined();
+    expect(next.paused).toBeUndefined();
+  });
+
+  it('continue → running（清 verdict/paused）；pass → completed', () => {
+    const cont = autoRunEntryAfterVerdictResponse(awaiting, 'continue', 42);
+    expect(cont.status).toBe('running');
+    expect(cont.verdict).toBeUndefined();
+    const pass = autoRunEntryAfterVerdictResponse(awaiting, 'pass', 42);
+    expect(pass.status).toBe('completed');
+    // pass 保留 verdict 数据（completed 事件幂等复写前的展示态）。
+    expect(pass.verdict).toBeDefined();
+  });
+});
+
+describe('autoRunEntryOf — 服务端真实 wire 形状（1.6.0 ③④）', () => {
+  // serializeAutoRunRecord 输出形态：扁平 pauseReason 字符串 + ISO 时间戳。
+  const serverRecord = {
+    id: 'ar-1',
+    name: 'n',
+    envKey: 'pwn-vm',
+    goal: 'g',
+    budget: { kind: 'turns', limit: 50, spent: 50 },
+    criteria: ['c1'],
+    status: 'paused',
+    loopSessionId: 'ls-1',
+    pauseReason: 'budget',
+    createdAt: '2026-09-01T00:00:00.000Z',
+    updatedAt: '2026-09-01T01:00:00.000Z',
+    turns: 50,
+  };
+
+  it('扁平 pauseReason=budget → paused 还原（此前只认 p.paused{}，恒丢）', () => {
+    const e = autoRunEntryOf(serverRecord)!;
+    expect(e.paused).toEqual({ reason: 'budget', summary: undefined });
+    expect(e.updatedAt).toBe(Date.parse('2026-09-01T01:00:00.000Z'));
+  });
+
+  it('stall / provider-error / decision 扁平 pauseReason 同样还原', () => {
+    for (const reason of ['stall', 'provider-error', 'decision'] as const) {
+      const e = autoRunEntryOf({ ...serverRecord, pauseReason: reason })!;
+      expect(e.paused?.reason).toBe(reason);
+    }
+  });
+
+  it('扁平 pauseReason 优先于 p.paused 旧形；非枚举簿记值（sidecar-restart）→ 无 paused', () => {
+    const e = autoRunEntryOf({
+      ...serverRecord,
+      pauseReason: 'stall',
+      paused: { reason: 'budget', summary: '旧形' },
+    })!;
+    expect(e.paused?.reason).toBe('stall');
+    const other = autoRunEntryOf({ ...serverRecord, pauseReason: 'sidecar-restart' })!;
+    expect(other.paused).toBeUndefined();
+  });
+
+  it('updatedAt：number 双形态保留；非法/缺失回落 now（④）', () => {
+    expect(autoRunEntryOf({ id: 'r', status: 'running', updatedAt: 123 })!.updatedAt).toBe(123);
+    expect(autoRunEntryOf({ id: 'r', status: 'running', updatedAt: 'not-a-date' }, 999)!.updatedAt).toBe(999);
+    expect(autoRunEntryOf({ id: 'r', status: 'running' }, 999)!.updatedAt).toBe(999);
+  });
+});
+
+describe('restoredAutoRunStale（1.6.0 ④：stale 守卫纯函数）', () => {
+  it('同 id 且本地更新 → stale（不覆盖）', () => {
+    const cur = entry({ updatedAt: 200 });
+    const restored = entry({ updatedAt: 100 });
+    expect(restoredAutoRunStale(cur, restored)).toBe(true);
+  });
+
+  it('恢复快照更新 / 同刻 / 不同 id / 无本地或无恢复 → 不 stale', () => {
+    expect(restoredAutoRunStale(entry({ updatedAt: 100 }), entry({ updatedAt: 200 }))).toBe(false);
+    expect(restoredAutoRunStale(entry({ updatedAt: 100 }), entry({ updatedAt: 100 }))).toBe(false);
+    expect(restoredAutoRunStale(entry({ id: 'a' }), entry({ id: 'b', updatedAt: 0 }))).toBe(false);
+    expect(restoredAutoRunStale(null, entry())).toBe(false);
+    expect(restoredAutoRunStale(entry(), null)).toBe(false);
+  });
+
+  it('ISO 恢复 + 本地较新 → 守卫真正生效（④ 回归：此前 ISO 恒回落 now 致守卫失效）', () => {
+    const restored = autoRunEntryOf({
+      id: 'ar-1',
+      status: 'running',
+      updatedAt: '2026-09-01T00:00:00.000Z',
+    })!;
+    const cur = entry({ id: 'ar-1', updatedAt: Date.parse('2026-09-01T01:00:00.000Z') });
+    expect(restoredAutoRunStale(cur, restored)).toBe(true);
+  });
+});
+
+describe('applyAutoRunEvent — resumed / 终态不复活（1.6.0 ⑤⑥）', () => {
+  it('resumed：paused → running 清暂停点', () => {
+    const pausedEntry = applyAutoRunEvent(entry(), {
+      kind: 'paused',
+      id: 'ar-1',
+      reason: 'budget',
+      summary: '耗尽',
+    }, 1)!;
+    const next = applyAutoRunEvent(pausedEntry, { kind: 'resumed', id: 'ar-1' }, 2)!;
+    expect(next.status).toBe('running');
+    expect(next.paused).toBeUndefined();
+    expect(next.updatedAt).toBe(2);
+  });
+
+  it('resumed：awaiting-verdict → running 清验收包（fail/continue 续跑对齐）', () => {
+    const awaiting = entry({
+      status: 'awaiting-verdict',
+      verdict: { criteria: [], statement: 's' },
+    });
+    const next = applyAutoRunEvent(awaiting, { kind: 'resumed', id: 'ar-1' }, 2)!;
+    expect(next.status).toBe('running');
+    expect(next.verdict).toBeUndefined();
+  });
+
+  it('resumed：completed/stopped 不复活；running 只刷 updatedAt；id 不匹配/null 原样', () => {
+    const done = entry({ status: 'completed' });
+    expect(applyAutoRunEvent(done, { kind: 'resumed', id: 'ar-1' }, 9)).toBe(done);
+    const stopped = entry({ status: 'stopped' });
+    expect(applyAutoRunEvent(stopped, { kind: 'resumed', id: 'ar-1' }, 9)).toBe(stopped);
+    const running = applyAutoRunEvent(entry(), { kind: 'resumed', id: 'ar-1' }, 9)!;
+    expect(running).toMatchObject({ status: 'running', updatedAt: 9 });
+    const e = entry();
+    expect(applyAutoRunEvent(e, { kind: 'resumed', id: 'ar-2' }, 9)).toBe(e);
+    expect(applyAutoRunEvent(null, { kind: 'resumed', id: 'ar-1' }, 9)).toBeNull();
+  });
+
+  it('completed/stopped 态不复活：迟到的 paused/verdict 整条忽略（⑥）', () => {
+    const done = entry({ status: 'completed' });
+    expect(applyAutoRunEvent(done, { kind: 'paused', id: 'ar-1', reason: 'budget' }, 5)).toBe(done);
+    expect(
+      applyAutoRunEvent(done, { kind: 'verdict', id: 'ar-1', verdict: { criteria: [], statement: '' } }, 5),
+    ).toBe(done);
+    const stopped = entry({ status: 'stopped' });
+    expect(applyAutoRunEvent(stopped, { kind: 'paused', id: 'ar-1', reason: 'stall' }, 5)).toBe(stopped);
+    expect(
+      applyAutoRunEvent(stopped, { kind: 'verdict', id: 'ar-1', verdict: { criteria: [], statement: '' } }, 5),
+    ).toBe(stopped);
   });
 });

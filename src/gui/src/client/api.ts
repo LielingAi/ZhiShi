@@ -864,10 +864,12 @@ export function autoRunBudget(
   return client.adminPost<{ success: boolean; error?: string }>('auto-run/budget', input);
 }
 
-/** POST auto-run/verdict { id, verdict }（验收终审三按钮；仅 awaiting-verdict 态）。 */
+/** POST auto-run/verdict { id, verdict, note? }（验收终审三按钮；仅 awaiting-verdict 态）。
+ *  1.6.0：note 终审附注（不通过理由/继续跑补充说明）——服务端 resolveVerdict
+ *  已收，注回 loop 线。 */
 export function autoRunVerdict(
   client: GuiSidecarClient,
-  input: { id: string; verdict: 'pass' | 'fail' | 'continue' },
+  input: { id: string; verdict: 'pass' | 'fail' | 'continue'; note?: string },
 ): Promise<{ success: boolean; error?: string }> {
   return client.adminPost<{ success: boolean; error?: string }>('auto-run/verdict', input);
 }

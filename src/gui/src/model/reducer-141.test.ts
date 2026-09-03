@@ -103,12 +103,16 @@ describe('auto-run:paused 归约（1.4.1）', () => {
     ).toEqual({ kind: 'paused', id: 'ar-1', reason: 'budget', summary: '50 轮耗尽' });
   });
 
-  it('reason=stall / repeated-failures 窄化通过', () => {
+  it('reason=stall / repeated-failures / decision（1.6.0 补齐）窄化通过', () => {
     expect(run('auto-run:paused', { id: 'ar-1', reason: 'stall' }).autoRun).toMatchObject({
       reason: 'stall',
     });
     expect(run('auto-run:paused', { id: 'ar-1', reason: 'repeated-failures' }).autoRun).toMatchObject({
       reason: 'repeated-failures',
+    });
+    // 1.6.0：decision 暂停点（模型 request_decision 提请）——此前窄化丢弃。
+    expect(run('auto-run:paused', { id: 'ar-1', reason: 'decision', decisionIds: ['d-1'] }).autoRun).toMatchObject({
+      reason: 'decision',
     });
   });
 
@@ -180,5 +184,42 @@ describe('auto-run:verdict-requested 归约（1.4.1）', () => {
 
   it('缺 id → 不产出', () => {
     expect(run('auto-run:verdict-requested', { criteria: [] }).autoRun).toBeUndefined();
+  });
+});
+
+describe('auto-run:verdict-requested — criteriaPrecheck live 形状（1.6.0 ②）', () => {
+  it('live payload（criteria + criteriaPrecheck + evidence.refs）→ 逐条 ✓/✗ 归约正确', () => {
+    // 服务端真实广播形状（server/loop/auto-run.ts verdict-requested）。
+    const res = run('auto-run:verdict-requested', {
+      id: 'ar-1',
+      criteria: ['条件一', '条件二'],
+      criteriaPrecheck: [
+        { text: '条件一', status: 'evidence' },
+        { text: '条件二', status: 'none' },
+      ],
+      evidence: {
+        statement: 'E#3 支撑条件一',
+        refs: [{ id: 3, hit: true }, { id: 4, hit: false }],
+        hitCount: 1,
+        missCount: 1,
+      },
+    });
+    expect(res.autoRun?.kind).toBe('verdict');
+    if (res.autoRun?.kind !== 'verdict') throw new Error('unreachable');
+    expect(res.autoRun.verdict.criteria).toEqual([
+      { text: '条件一', hasEvidence: true, refs: ['E#3'] },
+      { text: '条件二', hasEvidence: false, refs: [] },
+    ]);
+    expect(res.autoRun.verdict.statement).toBe('E#3 支撑条件一');
+  });
+});
+
+describe('auto-run:resumed 归约（1.6.0 ⑤）', () => {
+  it('id → resumed 增量（归并语义在 applyAutoRunEvent：paused→running）', () => {
+    expect(run('auto-run:resumed', { id: 'ar-1' }).autoRun).toEqual({ kind: 'resumed', id: 'ar-1' });
+  });
+
+  it('缺 id → 不产出', () => {
+    expect(run('auto-run:resumed', {}).autoRun).toBeUndefined();
   });
 });

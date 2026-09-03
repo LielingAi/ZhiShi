@@ -36,6 +36,13 @@
  * 场景:InteractionScenario 新增 {type:'auto-run'}(system-prompt.ts)——cron
  * 同族的 headless 通道,但文案纠正「不要向用户提问」为「暂停点才提请」
  * (cron 模板原文与本设计的 request_decision 纪律直接冲突,见交付报告)。
+ *
+ * 1.6.0 状态机修复批次(auto loop 全链路审计 S1,逐条见改动处注释):
+ *   ①终审按轮重置;②决策超时语义(未答无限等/已答读 resolved 记录);
+ *   ③重启愈合保留 awaiting-verdict 孤儿终审通道;④resolveVerdict 已停拒绝;
+ *   ⑤waiters 泄漏;⑥activeRuns 终态摘除;⑦终态清本线 pending 决策+声明;
+ *   ⑧time 预算扣除暂停等待墙钟;⑨provider-error persist 前更新 spent;
+ *   ⑩单实例闸 workspace 比较走 workspacePathsEqual。
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -54,8 +61,8 @@ import {
   toolCallNamesOf,
   type ResearchPhase,
 } from './context-manager';
-import { pendingDecisions, requestDecision } from './decision';
-import { takeCompletionDeclaration } from './declare-completion';
+import { pendingDecisions, requestDecision, getDecision, clearDecisions } from './decision';
+import { takeCompletionDeclaration, clearCompletionDeclarations } from './declare-completion';
 import type { PiSendInput } from './chat-engine';
 import type { InteractionScenario } from '../system-prompt';
 
@@ -66,6 +73,7 @@ import { appendLoopMessages, loadLoopSession, newLoopSessionId } from './session
 import { loadArchive } from './archive';
 import { getResearchEventById, listResearchEvents } from '../memory/store';
 import { findEnvironmentEntry, listEnvironments } from '../environment/registry';
+import { envKeyForSelection } from '../environment/env-sessions';
 import { loadConfig } from '../utils/admin-config';
 import { resolveVmxForEntry } from '../environment/vm-guest-exec';
 import { snapshotVm } from '../environment/vm-snapshot';
@@ -174,6 +182,9 @@ export interface AutoRunRecord {
   declaration?: AutoRunDeclaration;
   verdictPackage?: VerdictPackage;
   reportDir?: string;
+  /** 1.6.0 修复⑧:暂停等待(终审/决策/预算续命)墙钟累计 ms——time 预算口径
+   *  = elapsed - pausedMsTotal;序列化兼容缺省(旧记录无此字段按 0)。 */
+  pausedMsTotal?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -329,14 +340,33 @@ export interface BudgetSpendInput {
   turns: number;
   tokens: number;
   elapsedMs: number;
+  /**
+   * 1.6.0:tokens 档校准系数(loop session meta 的 tokenCalibration——
+   * 1.5.3 学习侧写盘的真实/估算比)。缺省/非法 → 1;钳界 [0.8, 6] 与
+   * 学习侧(compaction 口径)一致。
+   */
+  calibration?: number;
+  /** 1.6.0 修复⑧:暂停等待墙钟累计 ms(缺省 0)——time 档从 elapsed 扣除,
+   *  暂停等人(终审/决策/预算续命)不算消耗。 */
+  pausedMs?: number;
 }
 
-/** 预算已耗计算:turns 计轮次 / tokens 计估算 / time 计 wall-clock 分钟。 */
+/** 1.6.0:校准系数钳界——与 1.5.3 学习侧写入时的 [0.8, 6] 同口径。 */
+export function clampTokenCalibration(calibration: number | undefined): number {
+  if (typeof calibration !== 'number' || !Number.isFinite(calibration)) return 1;
+  return Math.min(6, Math.max(0.8, calibration));
+}
+
+/** 预算已耗计算:turns 计轮次 / tokens 计估算×校准系数 / time 计 wall-clock 分钟。 */
 export function computeBudgetSpent(budget: AutoRunBudget, input: BudgetSpendInput): number {
   switch (budget.kind) {
     case 'turns': return input.turns;
-    case 'tokens': return input.tokens;
-    case 'time': return input.elapsedMs / 60_000;
+    // 1.6.0:tokens 档 spent = 原始估算 × 校准系数(缺省 1)——估算系统性
+    // 偏低/偏高时预算不再失准(校准来源见 BudgetSpendInput.calibration)。
+    case 'tokens': return input.tokens * clampTokenCalibration(input.calibration);
+    // 1.6.0 修复⑧:暂停等待墙钟不计入 time 消耗(暂停段由 runner 累加进
+    // record.pausedMsTotal 传入;钳 0 防 pausedMs > elapsed 的脏数据出负值)。
+    case 'time': return Math.max(0, input.elapsedMs - (input.pausedMs ?? 0)) / 60_000;
   }
 }
 
@@ -557,6 +587,8 @@ export function parseAutoRunRecord(content: string): AutoRunRecord | null {
     ...(typeof o.workspace === 'string' ? { workspace: o.workspace } : {}),
     ...(typeof o.turns === 'number' ? { turns: o.turns } : {}),
     ...(typeof o.reportDir === 'string' ? { reportDir: o.reportDir } : {}),
+    // 1.6.0 修复⑧:序列化兼容缺省(旧记录无 pausedMsTotal → 字段缺席,消费侧 ?? 0)。
+    ...(typeof o.pausedMsTotal === 'number' ? { pausedMsTotal: o.pausedMsTotal } : {}),
     ...(o.declaration && typeof o.declaration === 'object'
       ? { declaration: o.declaration as AutoRunDeclaration }
       : {}),
@@ -614,11 +646,13 @@ export function listAutoRunRecordFiles(options: AutoRunStoreOptions = {}): AutoR
 
 /**
  * 重启愈合:sidecar 重启后 runner 已死(对齐 decision pending 的「服务重启
- * 即失效」)——盘上非终态记录(running/paused/awaiting-verdict)标记 stopped,
- * 防「僵尸 running」永挂。**按 workspace 限定**:~/.zhishi/auto-runs 是多
- * 工作区共享目录(Tab-scoped sidecar 各一个),本进程只愈合自己工作区的
- * 孤儿,不动别的 sidecar 的活 run;skipIds 由调用方传内存活动 run 的 id,
- * 防本进程自己的活 run 被盘上愈合误标。返回愈合条数。
+ * 即失效」)——盘上 running/paused 记录标记 stopped,防「僵尸 running」永挂。
+ * 1.6.0 修复③:awaiting-verdict **不愈合**——保留孤儿终审通道
+ * (resolveOrphanedVerdict 按盘上记录结算 pass/fail);标 stopped 会让
+ * 「弹得出但答不了」的终审连兜底结算都走不到。**按 workspace 限定**:
+ * ~/.zhishi/auto-runs 是多工作区共享目录(Tab-scoped sidecar 各一个),本进程
+ * 只愈合自己工作区的孤儿,不动别的 sidecar 的活 run;skipIds 由调用方传内存
+ * 活动 run 的 id,防本进程自己的活 run 被盘上愈合误标。返回愈合条数。
  */
 export async function recoverOrphanedAutoRuns(
   options: AutoRunStoreOptions & { workspace?: string; skipIds?: ReadonlySet<string> } = {},
@@ -626,7 +660,7 @@ export async function recoverOrphanedAutoRuns(
   const skip = options.skipIds ?? new Set<string>();
   const orphaned = listAutoRunRecordFiles(options).filter(
     (r) =>
-      (r.status === 'running' || r.status === 'paused' || r.status === 'awaiting-verdict') &&
+      (r.status === 'running' || r.status === 'paused') &&
       !skip.has(r.id) &&
       (options.workspace === undefined ||
         (typeof r.workspace === 'string' && workspacePathsEqual(r.workspace, options.workspace))),
@@ -656,6 +690,11 @@ export interface AutoRunDeps {
   }) => Promise<{ text: string; error?: string; loopSessionId: string }>;
   /** loop 线全量消息(loadLoopSession(...).messages)。 */
   loadMessages: (loopSessionId: string) => AgentMessage[];
+  /**
+   * 1.6.0:tokens 预算校准系数来源(loadLoopSession(...).meta?.tokenCalibration)。
+   * 可选——不注入按系数 1(原口径);返回 undefined 同样按 1。
+   */
+  loadTokenCalibration?: (loopSessionId: string) => number | undefined;
   /** 本 workspace 的研究事件(任意序;runner 按 ts 过滤)。 */
   listEvents: () => ResearchEvent[];
   resolveEvent: (id: number) => ResearchEvent | null;
@@ -696,6 +735,13 @@ export function withAutoRunDepDefaults(partial: Partial<AutoRunDeps>): AutoRunDe
 
 export type VerdictChoice = 'pass' | 'fail' | 'continue';
 
+/**
+ * waitForWake 返回句柄(1.6.0 修复⑤):Promise + cancel——调用方在
+ * Promise.race 中 sleep 胜出时 cancel 摘除本 waiter,防 internals.waiters
+ * 只增不减(长暂停期间每 pollMs 泄漏一个)。cancel 幂等。
+ */
+export type WakeHandle = Promise<void> & { cancel: () => void };
+
 export interface AutoRunController {
   readonly record: AutoRunRecord;
   isStopped(): boolean;
@@ -703,14 +749,19 @@ export interface AutoRunController {
   requestStop(): void;
   /** 预算续命(仅 paused+reason=budget;新上限必须 > 已耗)。 */
   renewBudget(limit: number): { ok: boolean; error?: string };
-  /** 验收终审(仅 awaiting-verdict)。 */
+  /** 验收终审(仅 awaiting-verdict;1.6.0:run 已停拒绝——防作答被静默丢弃)。 */
   resolveVerdict(verdict: VerdictChoice, note?: string): { ok: boolean; error?: string };
-  /** 端点到来的唤醒信号(事件驱动面)。 */
-  waitForWake(): Promise<void>;
+  /** 端点到来的唤醒信号(事件驱动面;返回句柄带 cancel,见 WakeHandle)。 */
+  waitForWake(): WakeHandle;
   /** 循环收尾(测试/关闭用)。 */
   waitUntilDone(): Promise<void>;
   /** 测试注入:读终审选择。 */
   __getVerdict(): { verdict: VerdictChoice | null; note?: string };
+  /** runner 内部:消费终审后按轮重置(1.6.0 修复①)——下一轮 declare_completion
+   *  能重新弹窗等人作答;幂等闸不受影响(本轮内重复作答仍拒)。 */
+  __resetVerdict(): void;
+  /** 测试注入:当前挂起的 wake waiter 数(1.6.0 修复⑤泄漏回归用)。 */
+  __waiterCount(): number;
   /** runner 内部:循环收尾信号(等待方释放)。 */
   __finish(): void;
 }
@@ -768,6 +819,11 @@ export function createAutoRunController(record: AutoRunRecord): AutoRunControlle
       return { ok: true };
     },
     resolveVerdict(verdict, note) {
+      // 1.6.0 修复④:Esc/停止竞态——runner 已停(wait 已死)时再作答会被静默
+      // 丢弃(internals.verdict 写入无人消费),前置拒绝让调用方拿到明确错误。
+      if (internals.stopped) {
+        return { ok: false, error: 'run 已终止,终审通道已关闭(作答不会被消费)' };
+      }
       if (record.status !== 'awaiting-verdict') {
         return { ok: false, error: '仅 awaiting-verdict 态可终审(auto-run/verdict)' };
       }
@@ -782,9 +838,24 @@ export function createAutoRunController(record: AutoRunRecord): AutoRunControlle
       wake();
       return { ok: true };
     },
-    waitForWake: () => new Promise<void>((resolve) => { internals.waiters.push(resolve); }),
+    waitForWake: () => {
+      let waiter: () => void = () => {};
+      const promise = new Promise<void>((resolve) => {
+        waiter = resolve;
+        internals.waiters.push(waiter);
+      }) as WakeHandle;
+      // 1.6.0 修复⑤:race 落败方由调用方 cancel 摘除(幂等:wake 胜出时
+      // waiters 已整体清空,indexOf 落空为 no-op)。
+      promise.cancel = () => {
+        const i = internals.waiters.indexOf(waiter);
+        if (i >= 0) internals.waiters.splice(i, 1);
+      };
+      return promise;
+    },
     waitUntilDone: () => new Promise<void>((resolve) => { internals.doneResolvers.push(resolve); }),
     __getVerdict: () => ({ verdict: internals.verdict, ...(internals.verdictNote ? { note: internals.verdictNote } : {}) }),
+    __resetVerdict: () => { internals.verdict = null; internals.verdictNote = undefined; },
+    __waiterCount: () => internals.waiters.length,
     __finish: () => finish(),
   };
 }
@@ -835,11 +906,20 @@ export async function runAutoRunLoop(
   let verdictNote: string | undefined;
 
   const persist = (): void => deps.save(record);
+  // wait 只在暂停点(终审/预算续命)使用——1.6.0 修复⑧:进出差额累加进
+  // record.pausedMsTotal,time 预算口径 = elapsed - pausedMsTotal。
   const wait = async (pred: () => boolean): Promise<boolean> => {
-    while (!pred() && !ctl.isStopped()) {
-      await Promise.race([ctl.waitForWake(), sleep(deps.pollMs)]);
+    const pauseStartMs = deps.now();
+    try {
+      while (!pred() && !ctl.isStopped()) {
+        const handle = ctl.waitForWake();
+        await Promise.race([handle, sleep(deps.pollMs)]);
+        handle.cancel(); // 1.6.0 修复⑤:sleep 胜出时摘除 waiter(幂等)
+      }
+      return !ctl.isStopped();
+    } finally {
+      record.pausedMsTotal = (record.pausedMsTotal ?? 0) + Math.max(0, deps.now() - pauseStartMs);
     }
-    return !ctl.isStopped();
   };
 
   deps.broadcast('auto-run:started', {
@@ -848,6 +928,8 @@ export async function runAutoRunLoop(
     envKey: record.envKey,
     goal: record.goal,
     budget: record.budget,
+    // 1.6.0:发完整 criteria 数组(GUI 恢复路径渲染用);criteriaCount 保留兼容。
+    criteria: record.criteria,
     criteriaCount: record.criteria.length,
     loopSessionId,
   });
@@ -896,11 +978,23 @@ export async function runAutoRunLoop(
       record.status = 'paused';
       record.pauseReason = 'provider-error';
       record.updatedAt = new Date(deps.now()).toISOString();
+      // 1.6.0 修复⑨:失败本轮 turn 已 +1,persist 前先同步 budget.spent——
+      // 盘上暂停快照不留「少一轮」的旧值(恢复/续命判断以盘上 spent 为准)。
+      const errCalibration = deps.loadTokenCalibration?.(loopSessionId);
+      record.budget.spent = computeBudgetSpent(record.budget, {
+        turns: turn,
+        tokens: estimateLoopTokens(deps.loadMessages(loopSessionId)),
+        elapsedMs: deps.now() - startedAtMs,
+        pausedMs: record.pausedMsTotal ?? 0,
+        ...(errCalibration !== undefined ? { calibration: errCalibration } : {}),
+      });
       persist();
       deps.broadcast('auto-run:paused', {
         id: record.id,
         reason: 'provider-error',
         error: result.error,
+        // 1.6.0:summary = error 原文(GUI reducer 读 p.summary 展示)。
+        summary: result.error,
       });
       const stopNow = await raisePauseDecision(
         `模型调用失败（${result.error.slice(0, 200)}）——供应商过载/挂起/中断。怎么处理？`,
@@ -917,11 +1011,17 @@ export async function runAutoRunLoop(
         deps.broadcast('auto-run:completed', { id: record.id, outcome: 'stopped' });
         break;
       }
+      // 1.6.0：恢复广播——GUI 观察卡靠它从 paused 翻回 running（此前只有
+      // persist 无事件，观察卡永久停 paused）。
+      deps.broadcast('auto-run:resumed', { id: record.id });
       continue;
     }
     if (ctl.isStopped()) break;
 
     const messages = deps.loadMessages(loopSessionId);
+    // 1.6.0:tokens 预算校准——读 loop session meta 的 tokenCalibration
+    // (1.5.3 学习侧写盘),spent = 原始估算 × 系数(缺省 1,钳 [0.8,6])。
+    const tokenCalibration = deps.loadTokenCalibration?.(loopSessionId);
 
     // 1.4.6 修复：预算消耗在声明分支前更新——达成声明的那一轮也计入 spent
     // （此前声明轮直接进 awaiting-verdict、跳过下方预算段,spent 永远少 1;
@@ -930,6 +1030,8 @@ export async function runAutoRunLoop(
       turns: turn,
       tokens: estimateLoopTokens(messages),
       elapsedMs: deps.now() - startedAtMs,
+      pausedMs: record.pausedMsTotal ?? 0, // 1.6.0 修复⑧:time 档扣除暂停等待墙钟
+      ...(tokenCalibration !== undefined ? { calibration: tokenCalibration } : {}),
     });
 
     // ---- 2. 达成信号(declare_completion)→ awaiting-verdict ----
@@ -960,6 +1062,10 @@ export async function runAutoRunLoop(
       const alive = await wait(() => ctl.__getVerdict().verdict !== null);
       if (!alive) break;
       const decision = ctl.__getVerdict();
+      // 1.6.0 修复①:终审按轮重置——runner 消费后即清零,下一轮 declare_completion
+      // 能重新弹窗等人作答(旧形态残留 verdict 会被下一轮 wait 立即命中、旧答案
+      // 被自动消费)。幂等闸语义不变:本轮内重复作答仍被 resolveVerdict 拒。
+      ctl.__resetVerdict();
       // 1.4.6 修复：终审作答即清 verdictPackage——残留会让恢复路径反复弹
       // 已作答的终审窗(幽灵弹窗,实机实证:作答后第二次点开报「仅 awaiting-
       // verdict 态可终审」)。declaration 陈述保留作历史。
@@ -1000,6 +1106,8 @@ export async function runAutoRunLoop(
       stallStreak = 0;
       record.updatedAt = new Date(deps.now()).toISOString();
       persist();
+      // 1.6.0：恢复广播（verdict 续跑）。
+      deps.broadcast('auto-run:resumed', { id: record.id });
       continue;
     }
 
@@ -1023,6 +1131,8 @@ export async function runAutoRunLoop(
       record.pauseReason = undefined;
       record.updatedAt = new Date(deps.now()).toISOString();
       persist();
+      // 1.6.0：恢复广播（模型提请决策作答后续跑）。
+      deps.broadcast('auto-run:resumed', { id: record.id });
       continue;
     }
 
@@ -1052,6 +1162,8 @@ export async function runAutoRunLoop(
         reason: 'stall',
         consecutiveTurns: stallStreak,
         recentTools: summary,
+        // 1.6.0:summary = 最近动作摘要(GUI reducer 读 p.summary 展示)。
+        summary: summary.length > 0 ? summary.join(' / ') : '(无工具调用)',
       });
       const stopNow = await raisePauseDecision(
         `auto loop 连续 ${stallStreak} 轮无新增有效研究记录且阶段未推进(疑似空转),怎么处理?`,
@@ -1071,6 +1183,8 @@ export async function runAutoRunLoop(
       }
       record.updatedAt = new Date(deps.now()).toISOString();
       persist();
+      // 1.6.0：恢复广播（暂停点决策「继续跑」）。
+      deps.broadcast('auto-run:resumed', { id: record.id });
       continue;
     }
 
@@ -1086,6 +1200,8 @@ export async function runAutoRunLoop(
         reason: 'repeated-failures',
         toolName: failure.toolName,
         streak: failure.streak,
+        // 1.6.0:summary = 工具名 + 连击数(GUI reducer 读 p.summary 展示)。
+        summary: `${failure.toolName} ×${failure.streak}`,
       });
       const stopNow = await raisePauseDecision(
         `工具 ${failure.toolName} 连续失败 ${failure.streak} 次(模型说「有把握」,证据说「反复失败」),怎么处理?`,
@@ -1104,6 +1220,8 @@ export async function runAutoRunLoop(
       }
       record.updatedAt = new Date(deps.now()).toISOString();
       persist();
+      // 1.6.0：恢复广播（暂停点决策「继续跑」）。
+      deps.broadcast('auto-run:resumed', { id: record.id });
       continue;
     }
 
@@ -1112,6 +1230,8 @@ export async function runAutoRunLoop(
       turns: turn,
       tokens: estimateLoopTokens(messages),
       elapsedMs: deps.now() - startedAtMs,
+      pausedMs: record.pausedMsTotal ?? 0, // 1.6.0 修复⑧:time 档扣除暂停等待墙钟
+      ...(tokenCalibration !== undefined ? { calibration: tokenCalibration } : {}),
     });
     record.budget.spent = spent;
     if (isBudgetExhausted(record.budget, spent)) {
@@ -1143,6 +1263,8 @@ export async function runAutoRunLoop(
       // 否则崩溃窗口内盘上仍是 paused,恢复路径误判。
       record.updatedAt = new Date(deps.now()).toISOString();
       persist();
+      // 1.6.0：恢复广播（预算续命续跑）。
+      deps.broadcast('auto-run:resumed', { id: record.id });
       deps.log(`[auto-run] ${record.id} 预算续命到 ${record.budget.limit}(${record.budget.kind})`);
       budgetWarned = false;
       continue;
@@ -1182,6 +1304,11 @@ export async function runAutoRunLoop(
     // 1.5.13：终止也注回交互线（中途成果+终止事实进交互上下文）。
     injectInteractiveWrapUp(record, lastText, `已终止（跑了 ${turn} 轮）`);
   }
+  // 1.6.0 修复⑦:run 终态清理本 loop 线遗留的 pending 决策与达成声明——
+  // 防残留被恢复路径/下同一条线的 run 误消费(按 loopSessionId 过滤,
+  // 不动其他线的待答项)。
+  clearDecisions(loopSessionId);
+  clearCompletionDeclarations(loopSessionId);
   ctl.requestStop(); // 幂等;确保 isStopped 归位(waitUntilDone 依赖)
   ctl.__finish();
 }
@@ -1189,21 +1316,30 @@ export async function runAutoRunLoop(
 /**
  * 等待决策注入完成:全部 decisionId 已 resolved 且 loop 线出现对应 marker
  * (注入 turn 的原子 append 落地 = 注入完成;防 runner 与注入 turn 并发读线)。
- * 上限 decisionWaitTimeoutMs 兜底(注入 turn 卡死/模型不可用时恢复推进)。
+ * 1.6.0 修复② 超时语义——区分「人未答」与「已答但注入 turn 卡死」:
+ *   - 人未答:不设超时,无限等(对齐预算续命 wait() 的人控节奏)——消除
+ *     「未答超时静默续跑」;
+ *   - 已答但 marker 未落地:从全部 resolved 起计 decisionWaitTimeoutMs 兜底,
+ *     超时放行,由调用方(raisePauseDecision)从 resolved pending 记录读
+ *     choice——消除「已答被丢弃 + 10 分钟暂停循环」。
  */
 async function waitForDecisionInjection(
   decisionIds: string[],
   ctl: AutoRunController,
   deps: AutoRunDeps,
 ): Promise<boolean> {
-  const start = deps.now();
+  let allResolvedAtMs: number | null = null;
   const alive = await waitWhile(async () => {
-    const resolved = pendingDecisions().every((d) => !decisionIds.includes(d.decisionId));
+    const allResolved = decisionIds.every((id) =>
+      pendingDecisions().every((d) => d.decisionId !== id));
+    // 人未答:无限等(不启动超时计时)。
+    if (!allResolved) return false;
+    if (allResolvedAtMs === null) allResolvedAtMs = deps.now();
     const messages = deps.loadMessages(ctl.record.loopSessionId);
     const markersLanded = decisionIds.every((id) => findDecisionMarker(messages, id) !== null);
-    if (resolved && markersLanded) return true;
-    if (deps.now() - start > deps.decisionWaitTimeoutMs) {
-      deps.log(`[auto-run] 决策注入等待超时(${deps.decisionWaitTimeoutMs}ms),恢复推进`);
+    if (markersLanded) return true;
+    if (deps.now() - allResolvedAtMs > deps.decisionWaitTimeoutMs) {
+      deps.log(`[auto-run] 决策已作答但注入 turn 卡死(${deps.decisionWaitTimeoutMs}ms 未见 marker),按已答 choice 恢复推进`);
       return true;
     }
     return false;
@@ -1211,15 +1347,25 @@ async function waitForDecisionInjection(
   return alive;
 }
 
+// waitWhile 只在决策暂停等待(waitForDecisionInjection)使用——1.6.0 修复⑧:
+// 暂停段墙钟累加进 record.pausedMsTotal,不计入 time 预算消耗。
 async function waitWhile(
   pred: () => boolean | Promise<boolean>,
   ctl: AutoRunController,
   deps: AutoRunDeps,
 ): Promise<boolean> {
-  while (!(await pred()) && !ctl.isStopped()) {
-    await Promise.race([ctl.waitForWake(), sleep(deps.pollMs)]);
+  const pauseStartMs = deps.now();
+  try {
+    while (!(await pred()) && !ctl.isStopped()) {
+      const handle = ctl.waitForWake();
+      await Promise.race([handle, sleep(deps.pollMs)]);
+      handle.cancel(); // 1.6.0 修复⑤:sleep 胜出时摘除 waiter(幂等)
+    }
+    return !ctl.isStopped();
+  } finally {
+    const rec = ctl.record;
+    rec.pausedMsTotal = (rec.pausedMsTotal ?? 0) + Math.max(0, deps.now() - pauseStartMs);
   }
-  return !ctl.isStopped();
 }
 
 /**
@@ -1245,7 +1391,12 @@ async function raisePauseDecision(
   if (!alive) return null;
   const messages = deps.loadMessages(ctl.record.loopSessionId);
   const marker = findDecisionMarker(messages, rec.decisionId);
-  return marker && marker.choice ? STOP_CHOICE_RE.test(marker.choice) : false;
+  if (marker && marker.choice) return STOP_CHOICE_RE.test(marker.choice);
+  // 1.6.0 修复②:marker 缺失 = 注入 turn 卡死兜底路径——人已作答,从 resolved
+  // pending 记录读 choice(getDecision 含 resolved 条目),不依赖 marker;
+  // 记录也读不到(理论上不应发生)按「继续跑」处理,不卡死循环。
+  const resolved = getDecision(rec.decisionId);
+  return resolved?.resolved && resolved.choice ? STOP_CHOICE_RE.test(resolved.choice) : false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1259,6 +1410,8 @@ export function buildProductionAutoRunDeps(workspace: string, overrides: Partial
     workspace,
     invoke: async (input, options) => invokePiSession(input, options),
     loadMessages: (id) => loadLoopSession(id).messages,
+    // 1.6.0:tokens 预算校准系数 = loop session meta 的 tokenCalibration。
+    loadTokenCalibration: (id) => loadLoopSession(id).meta?.tokenCalibration,
     listEvents: () =>
       listResearchEvents({ limit: 1000 }).filter((e) => workspacePathsEqual(e.workspace, workspace)),
     resolveEvent: (id) => getResearchEventById(id),
@@ -1300,7 +1453,9 @@ async function exportRunReport(
   workspace: string,
 ): Promise<{ ok: boolean; reportDir?: string; error?: string }> {
   const entry = findEnvironmentEntry(listEnvironments(loadConfig()), record.envKey) ?? null;
-  const envId = entry?.id ?? record.envKey.replace(/^(env|recipe):/, '');
+  // 1.6.0:record.envKey 是裸环境 id(validate 经 findEnvironmentEntry 按
+  // e.id 校验),不是 env:<id> 形式的 selection 键——删掉此前的死前缀剥离。
+  const envId = entry?.id ?? record.envKey;
   const resolution = resolveLoopModel();
   const modelId = resolution ? `${resolution.providerId ?? 'custom'}/${resolution.modelId}` : null;
   const result = await exportReport(
@@ -1381,7 +1536,8 @@ async function ensureOrphanRecovery(workspace: string): Promise<void> {
       workspace,
       skipIds: new Set(activeRuns.keys()),
     });
-    if (n > 0) console.log(`[auto-run] 重启愈合:${n} 条本工作区非终态记录标记 stopped(sidecar-restart)`);
+    // 1.6.0 修复③:口径对齐——awaiting-verdict 不再愈合(保留孤儿终审通道)。
+    if (n > 0) console.log(`[auto-run] 重启愈合:${n} 条本工作区 running/paused 记录标记 stopped(sidecar-restart;awaiting-verdict 保留孤儿终审通道)`);
   } catch (err) {
     console.warn('[auto-run] 重启愈合失败(非致命):', err);
   }
@@ -1397,13 +1553,32 @@ function engineWorkspace(): string {  return getPiAgentState().agentDir || proce
  * （appendLoopMessages 落盘——下一个交互轮次的模型上下文即带 loop 成果）。
  * 无绑定 / 绑定线即本 run 线 / 当前选定环境不是 run 的环境 → 静默跳过
  * （不串线）。失败只告警，不影响终态。
+ *
+ * 1.6.0 修复：envKey 口径统一——record.envKey 是裸环境 id（validate 经
+ * findEnvironmentEntry 按 e.id 校验），binding.envKey 是 selection 键
+ * （env:<id>，env-sessions.ts envKeyForSelection 口径）；此前裸比恒不等，
+ * 注回永远静默跳过。getBinding/appendMessages 可注入（测试钉死口径）。
  */
-function injectInteractiveWrapUp(record: AutoRunRecord, lastText: string, outcome: string): void {
+export interface WrapUpInjectDeps {
+  getBinding?: (workspace: string) => { envKey: string; loopSessionId: string } | null;
+  appendMessages?: (loopSessionId: string, messages: AgentMessage[]) => Promise<unknown>;
+}
+
+export function injectInteractiveWrapUp(
+  record: AutoRunRecord,
+  lastText: string,
+  outcome: string,
+  depsOverride: WrapUpInjectDeps = {},
+): void {
+  const getBinding = depsOverride.getBinding ?? getEnvSessionBinding;
+  const appendMessages = depsOverride.appendMessages
+    ?? ((id: string, msgs: AgentMessage[]) => appendLoopMessages(id, msgs));
   try {
     const ws = record.workspace ?? engineWorkspace();
-    const binding = getEnvSessionBinding(ws);
+    const binding = getBinding(ws);
     if (!binding || binding.loopSessionId === record.loopSessionId) return;
-    if (binding.envKey !== record.envKey) return;
+    // 1.6.0:裸 id → selection 键再比(env:<id> 口径,见函数头注释)。
+    if (binding.envKey !== envKeyForSelection({ kind: 'env', id: record.envKey })) return;
     const summary = lastText.trim().slice(0, 600) || '（无）';
     const text = [
       `【auto loop 收官】「${record.name}」${outcome}。`,
@@ -1413,7 +1588,7 @@ function injectInteractiveWrapUp(record: AutoRunRecord, lastText: string, outcom
       record.reportDir ? `报告：${record.reportDir}` : '报告：未生成',
       `loop 轨迹线：${record.loopSessionId}（细节用 recall 工具或历史回看查）。`,
     ].join('\n');
-    void appendLoopMessages(binding.loopSessionId, [
+    void appendMessages(binding.loopSessionId, [
       { role: 'user', content: text, timestamp: Date.now() } as AgentMessage,
     ]).catch((err) => console.warn('[auto-run] 收官注回交互线失败（不影响终态）:', err));
   } catch (err) {
@@ -1440,8 +1615,10 @@ export async function startAutoRun(
   const record: AutoRunRecord = { ...validated.record, workspace };
 
   // 单实例闸:同 workspace 已有非终态 run → 拒绝(先 Esc 再启动新 run)。
+  // 1.6.0 修复⑩:workspace 比较走 workspacePathsEqual(与同文件 listAutoRuns
+  // 口径一致)——原始 === 会把尾斜杠/分隔符差异当不同工作区,闸被绕过。
   const conflict = [...activeRuns.values()].find((a) =>
-    a.record.workspace === workspace &&
+    a.record.workspace !== undefined && workspacePathsEqual(a.record.workspace, workspace) &&
     (a.record.status === 'running' || a.record.status === 'paused' || a.record.status === 'awaiting-verdict'));
   if (conflict) {
     return { success: false, error: `已有运行中的 auto run "${conflict.record.name}"(id=${conflict.record.id}),先 Esc 终止再启动新 run` };
@@ -1459,6 +1636,10 @@ export async function startAutoRun(
     record.updatedAt = new Date().toISOString();
     deps.save(record);
     deps.broadcast('auto-run:completed', { id: record.id, outcome: 'stopped' });
+  }).finally(() => {
+    // 1.6.0 修复⑥:runner 终态(正常收官/停止/异常兜底)即从活动注册表摘除——
+    // 防终态记录永挂内存(stop/renew/verdict 之后走盘上记录语义,与重启后一致)。
+    activeRuns.delete(record.id);
   });
   return { success: true, data: { id: record.id, record } };
 }

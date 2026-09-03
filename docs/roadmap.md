@@ -5,16 +5,18 @@
 
 ---
 
-## 1.6.0 —— auto loop 全链路验证、检查与思考（进行中）
+## 1.6.0 —— auto loop 全链路验证、检查与思考（进行中——审计+修复完成，待用户实机 dogfood 验收）
 
 **缘起（2026-09-03 用户拍板）**：auto loop 自 1.4.1 落地后经历了 1.4.6 复杂任务优化、1.4.7 打磨、1.5.0 检查点、1.5.15 观察流/收官注回/终审关窗、1.5.16 看门狗与人工接管——累计补丁十余处，每个补丁都各自验证过，但**整条状态机从未作为一个整体被完整验证与审视过**。本版对 auto loop 做一次全链路体检：完整验证（每个状态转移实机走通）、检查（逻辑一致性/死状态/竞态/边界）、思考（设计是否偏离初衷——研究员到底怎么用它）。
 
-- [ ] **状态机完整性审查**：枚举 auto loop 全部状态与转移（starting/running/paused（budget/stall/repeated-failures/decision/provider-error）/awaiting-verdict/completed/stopped），逐一确认：每个转移有代码路径、有事件、有 GUI 呈现、有测试覆盖；找出「不可达状态」「回不去状态」「丢事件转移」
-- [ ] **竞态与边界检查**：sidecar 重启愈合、作答与轮次交错、预算与学习校准（1.5.3）交互、detach 超时后台 turn 与下一轮交错、observation 卡与终审模态并发
+- [x] **状态机完整性审查**：枚举 auto loop 全部状态与转移（starting/running/paused（budget/stall/repeated-failures/decision/provider-error）/awaiting-verdict/completed/stopped），逐一确认：每个转移有代码路径、有事件、有 GUI 呈现、有测试覆盖；找出「不可达状态」「回不去状态」「丢事件转移」
+- [x] **竞态与边界检查**：sidecar 重启愈合、作答与轮次交错、预算与学习校准（1.5.3）交互、detach 超时后台 turn 与下一轮交错、observation 卡与终审模态并发
 - [ ] **实机 dogfood 矩阵**：正常达成（pass 出报告）/ 终审 fail 续跑 / 预算耗尽续命 / 空转暂停继续 / 反复失败暂停终止 / provider-error 人工接管 / 供应商挂起看门狗中断 / 中途 Esc 终止 / sidecar 重启恢复——逐场景实机走查记录
 - [ ] **设计对照**：对照 `docs/design/auto-loop-design.md` 的初衷（目标式研究循环、验收条件锁定、人只在暂停点介入）——现状是否漂移；auto loop 与交互会话的边界（收官注回后的形态）是否清晰
 - [ ] **回归 + 文档收口**：发现的问题按严重程度修复或记录在案；auto-loop-design.md 与 roadmap 同步为「现状即文档」
 
+> 实际落地（2026-09-03，四面审计 → 用户复核实锤 → 全修拍板 → 三批修复）：**审计发现 54 条（去重约 30 个独立问题），用户复核后全修**。第一批设计级：①终审按轮重置（controller 加 __resetVerdict，第二轮起终审恢复人可介入——此前旧 verdict 永不清零，第二轮起被自动消费）；②决策超时语义重写（未答不静默续跑——无限等对齐 budget；已答 marker 缺失从 resolved 记录读 choice；消除 10 分钟暂停循环）；③fail 语义统一（GUI 文案改实「注回修正续跑」，不再本地翻 stopped——此前 GUI 说终止服务端续跑，直接误导拍板）；④live 证据预检接线（parseVerdictRequest 认 criteriaPrecheck/evidence.refs——此前 live 弹窗恒「无证据」骗终审人）；⑤收官注回 envKey 口径归一（envKeyForSelection——1.5.13 死链路复活）。第二批闭环：⑥重启愈合与孤儿兜底统一（awaiting-verdict 不再被愈合标 stopped）；⑦paused 形状认扁平 pauseReason + fixture 换真实 wire 形状；⑧updatedAt ISO 解析（stale 守卫复活）；⑨resumed 事件全链（5 个恢复点补广播 + SSE 白名单 + GUI 消费——此前观察卡永久卡 paused）；⑩bg 按归属线回收（不再跨线互杀）；⑪waiters 泄漏修复（WakeHandle cancel）；⑫activeRuns 终态清理 + 终态清线内 pending/声明。第三批一致性：tokens 预算乘校准系数、started 事件发 criteria 数组、paused 补 summary、completed 态不复活、paused reason 'decision' 补齐、fail 加 note 输入、time 预算扣暂停等待、单实例闸 workspacePathsEqual、provider-error persist 前刷新 spent、Esc/resolveVerdict 竞态拒绝、GUI 注释漂移（GET→POST/continue 通道/快照字段）、loadAutoRunState 恢复不重置 verdictDismissed、AutoRunStream 换线重置 items。回归：新增 ~50 单测；全量 2327 测试绿 + tsc + eslint + depcruise 440 模块零违规 + 三构建绿。
+> 记录在案（低优先，未修）：CLI 无 auto-run 命令族（GUI 专用面，不补）；auto-run 记录生命周期无清理端点（设计 §10 挂账，下版再议）；docker checkpoint 的 task.md 未实现（设计 §4 半实现）；stall 的 listEvents limit 1000 饱和与同工作区交互线串线（窄边界）；bg reset 路径全收不连坐（有意保留）。
 > 边界（不做）：auto loop 新功能（本版是验证与审查，不加能力面）；架构重写（god file 拆分不在此列）。
 > 验收：状态机转移图全绿（每个转移实机或测试走通）；dogfood 矩阵逐场景结论落档。
 

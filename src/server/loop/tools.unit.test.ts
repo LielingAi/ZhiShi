@@ -180,6 +180,21 @@ describe('createEnvBgTool', () => {
       }
     });
 
+    it('1.6.0:注入 ownerSessionId → 登记带归属线;不注入 → 字段缺席', async () => {
+      const h = registryHarness();
+      try {
+        const { exec } = scriptedExec(['missing', '  4242\n', 'missing', '  4243\n']);
+        const owned = createEnvBgTool(VM_ENTRY, { exec, registry: h.registry, ownerSessionId: 'ls-invoke' });
+        await owned.execute('p1o', { action: 'start', tag: 'fz-own', command: 'afl-fuzz' } as never);
+        expect(h.registry.get('fz-own')?.ownerSessionId).toBe('ls-invoke');
+        const unowned = createEnvBgTool(VM_ENTRY, { exec, registry: h.registry });
+        await unowned.execute('p1u', { action: 'start', tag: 'fz-free', command: 'afl-fuzz' } as never);
+        expect(h.registry.get('fz-free')?.ownerSessionId).toBeUndefined();
+      } finally {
+        h.cleanup();
+      }
+    });
+
     it('poll 登记过的 tag → 走存活探测通道;running 时登记保留', async () => {
       const h = registryHarness();
       try {

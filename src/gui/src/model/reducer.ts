@@ -872,6 +872,15 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
       return { session, autoRun: { kind: 'verdict', id, verdict: parseVerdictRequest(p) } };
     }
 
+    // 1.6.0：auto-run:resumed——verdict 续跑/暂停恢复/预算续命恢复的统一
+    // 恢复广播（服务端新增）。归并语义（paused/awaiting-verdict → running、
+    // 终态不复活）在 applyAutoRunEvent。
+    case 'auto-run:resumed': {
+      const id = str(p.id);
+      if (!id) return { session };
+      return { session, autoRun: { kind: 'resumed', id } };
+    }
+
     // chat:tool-result-start / chat:tool-result-delta（服务端只发
     // tool-result-complete，增量分支 1.3.10 已删）/ chat:subagent-tool-result-complete
     // / chat:logs：不消费（工具结果只累工具数，见 chat:subagent-tool-use；日志行

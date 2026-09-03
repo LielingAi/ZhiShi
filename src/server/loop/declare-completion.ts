@@ -68,9 +68,16 @@ export function takeCompletionDeclaration(sessionId: string): CompletionDeclarat
   return d;
 }
 
-/** 测试/关闭用:清空全部声明。 */
-export function clearCompletionDeclarations(): void {
-  declarations.clear();
+/**
+ * 测试/关闭用:清空声明。带 sessionId 时只清该 loop 线的声明
+ * (1.6.0 auto-run 终态按线清理,不动其他线的声明)。
+ */
+export function clearCompletionDeclarations(sessionId?: string): void {
+  if (sessionId === undefined) {
+    declarations.clear();
+    return;
+  }
+  declarations.delete(sessionId);
 }
 
 // ---------------------------------------------------------------------------

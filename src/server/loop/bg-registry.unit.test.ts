@@ -61,6 +61,17 @@ describe('纯函数:路径与编解码', () => {
       { tag: 'ok-4', pid: 8, envId: 'e', startedAt: 0, commandPreview: '' },
     ]);
   });
+
+  it('1.6.0 ownerSessionId:往返保留;缺席保持缺席(旧登记兼容)', () => {
+    const withOwner: BgRegistryEntry = { ...ENTRY, ownerSessionId: 'ls-invoke' };
+    expect(parseBgRegistryFile(serializeBgRegistryFile([withOwner]))).toEqual([withOwner]);
+    const parsed = parseBgRegistryFile(serializeBgRegistryFile([ENTRY]));
+    expect(parsed[0].ownerSessionId).toBeUndefined();
+    // 非法形状(非字符串/空串)按缺席处理。
+    const raw = JSON.stringify({ version: 1, entries: [{ ...ENTRY, ownerSessionId: 42 }, { ...ENTRY, tag: 'ok-9', ownerSessionId: '' }] });
+    const out = parseBgRegistryFile(raw);
+    expect(out.map((e) => e.ownerSessionId)).toEqual([undefined, undefined]);
+  });
 });
 
 describe('实例:落盘/恢复/清除', () => {

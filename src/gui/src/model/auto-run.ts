@@ -1,28 +1,37 @@
 /**
- * auto loop agent 的 GUI 纯函数层（1.4.1）。
+ * auto loop agent 的 GUI 纯函数层（1.4.1；1.6.0 全链路审查修订）。
  *
  * 服务端契约（auto-run runner，1.4.1 并行实施，按此消费）：
  *   - POST /chat/auto-run/start   { name, envKey, goal,
  *                                    budget:{ kind:'turns'|'tokens'|'time', limit },
- *                                    criteria[], snapshot?, report? } → { success, id }
+ *                                    criteria[] } → { success, id }
+ *     （1.6.0 注释修正：开局快照/完成报告由服务端无条件执行，载荷不含
+ *     snapshot/report 字段——与 buildAutoRunStartPayload 一致。）
  *   - POST /chat/auto-run/stop    { id }
  *   - POST /chat/auto-run/budget  { id, limit }（加预算 + 续命，服务端加完续跑）
- *   - POST /chat/auto-run/verdict { id, verdict:'pass'|'fail'|'continue' }
- *     （验收终审三按钮；'continue' 同时是 stall/repeated-failures 暂停点的
- *     「继续」通道——契约未给独立 resume 端点）
- *   - GET  /chat/auto-run/list    → 全量记录（重连后恢复活跃 loop 用）
+ *   - POST /chat/auto-run/verdict { id, verdict:'pass'|'fail'|'continue', note? }
+ *     （验收终审三按钮。1.6.0 语义钉死：fail = 注回修正**续跑**（设计 §4，
+ *     服务端 fail/continue 均注回 loop 线继续跑），不是终止；note 为终审
+ *     附注（不通过理由/继续跑补充说明），服务端 resolveVerdict 已收。）
+ *   - POST /chat/auto-run/list    → 全量记录（重连后恢复活跃 loop 用；
+ *     1.6.0 注释修正：与 api.autoRunList 一致走 POST，不是 GET）
  *
  * SSE 事件族（reducer.ts 归约成 AutoRunDelta，本模块做登记表归并）：
  *   auto-run:started / phase-changed / turn-completed /
- *   paused { reason:'stall'|'repeated-failures'|'budget', summary? } /
- *   budget-warning / completed / verdict-requested { id, criteria[], evidence }
+ *   paused { reason:'stall'|'repeated-failures'|'budget'|'decision'|'provider-error' } /
+ *   budget-warning / completed /
+ *   verdict-requested { id, criteria[], criteriaPrecheck[{text,status}], evidence{statement,refs[]} } /
+ *   resumed { id }（1.6.0 新增：verdict 续跑/暂停恢复/预算续命恢复广播——
+ *   多客户端对齐用，本地作答路径已先行翻 running，幂等）
  *
  * 口径说明：
  *   - time 预算单位按分钟（设计文档「2 小时」默认档 → limit=120）；
  *     tokens 档默认 8M；turns 档默认 50。
  *   - verdict-requested 的 criteria 支持字符串或 { text, refs?, hasEvidence? }
- *     对象两种形状；evidence 支持字符串或 { statement? } 对象（防御解析，
- *     服务端字段定稿后仍兼容）。
+ *     对象两种形状；1.6.0 起优先认 criteriaPrecheck（[{text,status}]——
+ *     status evidence/partial（旧枚举 hit 兼容）→ hasEvidence:true）与
+ *     evidence.refs（E#N 口径，恢复路径 parseVerdictPackage 同口径）；
+ *     evidence 支持字符串或 { statement? } 对象（防御解析）。
  *   - 「运行中只能观察」的口径：isAutoRunActive = starting/running/paused/
  *     awaiting-verdict——只有 completed/stopped 才解锁输入与环境切换。
  *
@@ -48,7 +57,7 @@ export type AutoRunStatus =
   | 'completed'
   | 'stopped';
 
-export type AutoRunPauseReason = 'stall' | 'repeated-failures' | 'budget' | 'provider-error';
+export type AutoRunPauseReason = 'stall' | 'repeated-failures' | 'budget' | 'provider-error' | 'decision';
 
 /** 验收条件 × 证据预检（verdict-requested 的 GUI 侧形状）。 */
 export interface VerdictCriterion {
@@ -122,10 +131,12 @@ export function budgetKindOf(v: unknown): AutoRunBudgetKind {
   return s === 'tokens' || s === 'time' ? s : 'turns';
 }
 
-/** paused.reason 窄化（非法/缺失 → null，事件丢弃）。 */
+/** paused.reason 窄化（非法/缺失 → null，事件丢弃）。
+ *  1.6.0：补 'decision'（模型提请决策的暂停点——服务端 AutoRunPauseReason
+ *  五枚举之一，此前 GUI 窄化直接丢弃该暂停事件）。 */
 export function pauseReasonOf(v: unknown): AutoRunPauseReason | null {
   const s = str(v);
-  return s === 'stall' || s === 'repeated-failures' || s === 'budget' || s === 'provider-error' ? s : null;
+  return s === 'stall' || s === 'repeated-failures' || s === 'budget' || s === 'provider-error' || s === 'decision' ? s : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -285,13 +296,64 @@ export function budgetUsedPct(used: number, limit: number): number {
 // ---------------------------------------------------------------------------
 
 /**
+ * criteriaPrecheck.status → hasEvidence（live 与恢复路径同一口径，1.6.0）：
+ * evidence（全命中）/ partial（部分命中）→ true；'hit' 是旧枚举兼容。
+ */
+function precheckHasEvidence(status: string): boolean {
+  return status === 'evidence' || status === 'partial' || status === 'hit';
+}
+
+/**
+ * evidence.refs → E#N 引用数组（1.6.0 live 证据预检接线）。服务端实况：
+ * refs 是 [{ id:number, hit:boolean, summary?… }]（VerdictEvidenceRef）——
+ * 只取命中的，按研究记录 E#N 口径渲染（同决策块 expertRefs 风格）；
+ * 字符串数组（旧/兼容形态）原样透传。
+ */
+function evidenceRefsOf(evidence: unknown): string[] {
+  const raw = rec(evidence).refs;
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const r of raw) {
+    if (typeof r === 'string') {
+      if (r.trim()) out.push(r.trim());
+      continue;
+    }
+    const o = rec(r);
+    if (typeof o.id === 'number' && o.hit === true) out.push(`E#${o.id}`);
+  }
+  return out;
+}
+
+/**
  * criteria：字符串（无证据标记）或对象 { text, refs?, hasEvidence? }。
- * evidence：字符串（模型陈述原文）或对象 { statement? }。
+ * criteriaPrecheck：1.6.0 接线——服务端 live 广播的真实预检形状
+ * [{ text, status:'evidence'|'partial'|'none' }]，在场时优先（criteria
+ * 字符串数组不带预检信息，只用它会全部 ✗）；命中引用的 E#N 徽章挂到
+ * 有证据的条件上（服务端预检聚合是全局口径，逐条件 refs 数据不存在）。
+ * evidence：字符串（模型陈述原文）或对象 { statement?, refs? }。
  * 缺失字段防御回落，不炸。
  */
 export function parseVerdictRequest(payload: unknown): VerdictRequest {
   const p = rec(payload);
+  const evidence = p.evidence;
+  const statement =
+    typeof evidence === 'string'
+      ? evidence
+      : (str(rec(evidence).statement) ?? str(rec(evidence).text) ?? '');
+  const hitRefs = evidenceRefsOf(evidence);
   const criteria: VerdictCriterion[] = [];
+  // 1.6.0：criteriaPrecheck 优先（live 真实 wire 形状）。
+  const precheck = p.criteriaPrecheck;
+  if (Array.isArray(precheck) && precheck.length > 0) {
+    for (const c of precheck) {
+      const r = rec(c);
+      const text = (str(r.text) ?? '').trim();
+      if (!text) continue;
+      const hasEvidence = precheckHasEvidence(str(r.status) ?? '');
+      criteria.push({ text, hasEvidence, refs: hasEvidence ? hitRefs : [] });
+    }
+    return { criteria, statement };
+  }
   const raw = p.criteria;
   if (Array.isArray(raw)) {
     for (const c of raw) {
@@ -310,11 +372,6 @@ export function parseVerdictRequest(payload: unknown): VerdictRequest {
       }
     }
   }
-  const evidence = p.evidence;
-  const statement =
-    typeof evidence === 'string'
-      ? evidence
-      : (str(rec(evidence).statement) ?? str(rec(evidence).text) ?? '');
   return { criteria, statement };
 }
 
@@ -324,6 +381,8 @@ export function parseVerdictRequest(payload: unknown): VerdictRequest {
  * verdictPackage（statement + criteriaPrecheck[{text,status}]），与 SSE
  * verdict-requested 的 verdict 形状不同；缺这个解析，弹窗永远不出
  * （auto loop 卡死在 awaiting-verdict，人无法终审）。
+ * 1.6.0：status 口径与 parseVerdictRequest 对齐——partial（部分命中）
+ * 也算有证据（此前只认 evidence/hit，partial 条件在恢复路径错标 ✗）。
  */
 export function parseVerdictPackage(payload: unknown): VerdictRequest | undefined {
   const p = rec(payload);
@@ -335,8 +394,7 @@ export function parseVerdictPackage(payload: unknown): VerdictRequest | undefine
     const r = rec(c);
     const text = (str(r.text) ?? '').trim();
     if (!text) continue;
-    const status = str(r.status) ?? '';
-    criteria.push({ text, hasEvidence: status === 'evidence' || status === 'hit', refs: [] });
+    criteria.push({ text, hasEvidence: precheckHasEvidence(str(r.status) ?? ''), refs: [] });
   }
   if (criteria.length === 0) return undefined;
   return { criteria, statement };
@@ -363,7 +421,8 @@ export type AutoRunDelta =
   | { kind: 'paused'; id: string; reason: AutoRunPauseReason; summary?: string }
   | { kind: 'budget'; id: string; used?: number; limit?: number }
   | { kind: 'completed'; id: string; summary?: string }
-  | { kind: 'verdict'; id: string; verdict: VerdictRequest };
+  | { kind: 'verdict'; id: string; verdict: VerdictRequest }
+  | { kind: 'resumed'; id: string };
 
 /**
  * 登记表归并：活跃 loop 只有一条（autoRun 顶层单条，非数组）。
@@ -425,6 +484,9 @@ export function applyAutoRunEvent(
     }
     case 'paused': {
       if (!entry || entry.id !== delta.id) return entry;
+      // 1.6.0：completed/stopped 终态不复活——迟到的 paused 事件（乱序/重放）
+      // 只可能是残影，整条忽略（此前会把已完成的 loop 翻回 paused）。
+      if (entry.status === 'completed' || entry.status === 'stopped') return entry;
       return {
         ...entry,
         status: 'paused',
@@ -454,7 +516,25 @@ export function applyAutoRunEvent(
     }
     case 'verdict': {
       if (!entry || entry.id !== delta.id) return entry;
+      // 1.6.0：completed/stopped 终态不复活——迟到的 verdict-requested 残影
+      // 不再把终态翻回 awaiting-verdict（幽灵弹窗同源）。
+      if (entry.status === 'completed' || entry.status === 'stopped') return entry;
       return { ...entry, status: 'awaiting-verdict', verdict: delta.verdict, updatedAt: now };
+    }
+    case 'resumed': {
+      if (!entry || entry.id !== delta.id) return entry;
+      // 1.6.0：auto-run:resumed——verdict 续跑/暂停恢复/预算续命恢复的统一
+      // 恢复广播。本地作答路径已先行翻 running（幂等）；多客户端/断线漏事件
+      // 的对齐靠它：paused → running 清暂停点；awaiting-verdict → running
+      // 清验收包（fail/continue 续跑语义）。终态（completed/stopped）不复活。
+      if (entry.status === 'paused') {
+        return { ...entry, status: 'running', paused: undefined, updatedAt: now };
+      }
+      if (entry.status === 'awaiting-verdict') {
+        return { ...entry, status: 'running', verdict: undefined, updatedAt: now };
+      }
+      if (entry.status === 'completed' || entry.status === 'stopped') return entry;
+      return { ...entry, updatedAt: now };
     }
   }
 }
@@ -509,14 +589,28 @@ function narrowStatus(v: unknown): AutoRunStatus | null {
   return (all as string[]).includes(s) ? (s as AutoRunStatus) : null;
 }
 
+/** 1.6.0：updatedAt 双形态解析——服务端记录落 ISO 字符串（serializeAutoRunRecord
+ *  输出形态，new Date().toISOString()），旧 GUI 形态是 number；Date.parse 失败 → undefined。 */
+function timestampOf(v: unknown): number | undefined {
+  if (typeof v === 'number') return v;
+  const s = str(v);
+  if (!s) return undefined;
+  const t = Date.parse(s);
+  return Number.isNaN(t) ? undefined : t;
+}
+
 /** list 条目 → AutoRunEntry（id/status 缺一即丢弃）。 */
 export function autoRunEntryOf(v: unknown, now = Date.now()): AutoRunEntry | null {
   const p = rec(v);
   const id = str(p.id);
   const status = narrowStatus(p.status);
   if (!id || !status) return null;
+  // 1.6.0 paused 形状修复：服务端真实 wire 是扁平 p.pauseReason（字符串，
+  // AutoRunRecord 字段）——优先认；p.paused.reason 是旧 GUI 形态，保留兼容。
+  // 此前只认 p.paused 对象，恢复路径 paused 字段恒丢（budget/stall/
+  // provider-error/decision 暂停点全部还原不出来）。
   const paused = p.paused !== undefined ? rec(p.paused) : null;
-  const pausedReason = paused ? pauseReasonOf(paused.reason) : null;
+  const pausedReason = pauseReasonOf(p.pauseReason) ?? (paused ? pauseReasonOf(paused.reason) : null);
   const pausedSummary = paused ? str(paused.summary) : undefined;
   const verdict = p.verdict !== undefined
     ? parseVerdictRequest(p.verdict)
@@ -542,8 +636,40 @@ export function autoRunEntryOf(v: unknown, now = Date.now()): AutoRunEntry | nul
     ...(pausedReason ? { paused: { reason: pausedReason, summary: pausedSummary } } : {}),
     ...(verdict ? { verdict } : {}),
     ...(str(p.loopSessionId) ? { loopSessionId: str(p.loopSessionId) } : {}),
-    updatedAt: num(p.updatedAt) ?? now,
+    // 1.6.0：ISO 字符串也认——此前只认 number，服务端记录恒回落 now，
+    // loadAutoRunState 的 stale 守卫（cur.updatedAt > restored.updatedAt）
+    // 因此从不生效（restored.updatedAt 永远是「刚恢复的时刻」）。
+    updatedAt: timestampOf(p.updatedAt) ?? now,
   };
+}
+
+/**
+ * 1.6.0：list 恢复 stale 守卫（loadAutoRunState 用）——同 id 且本地条目
+ * 比恢复快照新（updatedAt 更大）时不覆盖（list 快照落后于在飞 SSE 事件）。
+ * 配合 autoRunEntryOf 的 ISO 解析才真正生效。
+ */
+export function restoredAutoRunStale(
+  cur: AutoRunEntry | null,
+  restored: AutoRunEntry | null,
+): boolean {
+  return !!(restored && cur && restored.id === cur.id && cur.updatedAt > restored.updatedAt);
+}
+
+/**
+ * 1.6.0：终审作答成功后的本地状态迁移（respondAutoRunVerdict 用，纯函数
+ * 便于回归）。语义钉死（设计 §4）：fail = 注回修正**续跑**——与 continue
+ * 同回 running（清暂停点/验收包），不再本地翻 stopped；pass → completed
+ * （服务端 completed 事件到达时幂等复写）。
+ */
+export function autoRunEntryAfterVerdictResponse(
+  entry: AutoRunEntry,
+  verdict: 'pass' | 'fail' | 'continue',
+  now = Date.now(),
+): AutoRunEntry {
+  if (verdict === 'pass') {
+    return { ...entry, status: 'completed', updatedAt: now };
+  }
+  return { ...entry, status: 'running', paused: undefined, verdict: undefined, updatedAt: now };
 }
 
 /** 原始 list 响应（裸数组 / {data:[…]} / {data:{runs:[…]}} / {runs:[…]}）→ 条目。 */

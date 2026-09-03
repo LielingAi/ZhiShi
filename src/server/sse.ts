@@ -130,6 +130,8 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   'auto-run:paused': 'critical',
   'auto-run:budget-warning': 'critical',
   'auto-run:completed': 'critical',
+  // 1.6.0：暂停点恢复广播（paused→running）
+  'auto-run:resumed': 'critical',
   'auto-run:verdict-requested': 'critical',
   'queue:added': 'critical',
   'queue:cancelled': 'critical',

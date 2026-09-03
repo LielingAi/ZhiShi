@@ -54,6 +54,13 @@ export interface BgReapDeps {
   onWarn: (msg: string) => void;
   /** 信息日志（生产接 console.log；测试可省）。 */
   onLog?: (msg: string) => void;
+  /**
+   * 1.6.0：归属线过滤（loopSessionId）——只回收该线发起的 bg，他线的
+   * （auto-run invoke 线 vs 交互线）不被本线 turn 结束连坐。缺省不过滤
+   * （reset 语义 = 全收）。ownerSessionId 缺席的旧条目（重启恢复/1.6.0
+   * 前登记）归属未知，维持旧口径照收。
+   */
+  ownerSessionId?: string;
 }
 
 export interface BgReapSummary {
@@ -68,10 +75,15 @@ export interface BgReapSummary {
 /**
  * 回收登记表里全部 bg 进程。永不 throw（reap 替身抛错也按失败处理）。
  * 遍历的是 list() 快照，迭代中 remove 不影响本次遍历。
+ * 1.6.0：deps.ownerSessionId 给定时只回收该归属线的条目（按线过滤）。
  */
 export async function reapAllBgProcesses(deps: BgReapDeps): Promise<BgReapSummary> {
   const summary: BgReapSummary = { killed: 0, kept: 0, dropped: 0 };
-  const entries = deps.registry.list();
+  // 1.6.0:归属线过滤——登记了归属线且与调用方线不同的条目不碰(他线的
+  // bg 继续跑,由它自己的 turn 结束/reset 回收);归属未知(旧条目)照收。
+  const entries = deps.registry.list().filter(
+    (proc) => !deps.ownerSessionId || !proc.ownerSessionId || proc.ownerSessionId === deps.ownerSessionId,
+  );
   if (entries.length === 0) return summary;
   deps.onLog?.(`回收 bg 进程:${entries.length} 条`);
 

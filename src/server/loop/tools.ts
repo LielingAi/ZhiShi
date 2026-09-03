@@ -103,6 +103,12 @@ export interface CreateEnvBgToolOptions {
    * null，登记降级为 no-op（不报错）。测试注入自建实例。
    */
   registry?: BgRegistry | null;
+  /**
+   * 1.6.0：归属线 loopSessionId——start 登记时写进 bg-registry 条目，回收
+   * 按线过滤（交互 turn 结束不杀 auto-run invoke 线的 bg，反之亦然）。
+   * chat-engine buildTurnStack 传本 turn 的快照线。
+   */
+  ownerSessionId?: string;
 }
 
 /** 结果文本：模型可读。 */
@@ -138,12 +144,14 @@ export function createEnvBgTool(
           if (!r.ok) throw new Error(r.error);
           const commandPreview = params.command.trim().slice(0, 100);
           // Phase 3：登记进宿主登记表（落盘，写失败不致命——见 bg-registry）。
+          // 1.6.0:带归属线 ownerSessionId,回收按线过滤(他线 bg 不连坐)。
           registry?.register({
             tag: r.tag,
             pid: r.pid,
             envId: entry.id,
             startedAt: Date.now(),
             commandPreview,
+            ...(options.ownerSessionId ? { ownerSessionId: options.ownerSessionId } : {}),
           });
           options.onLifecycle?.({
             kind: 'started',

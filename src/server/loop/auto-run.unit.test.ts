@@ -7,7 +7,7 @@
  * 计时全部短轮询(pollMs=10),decision/declaration 用真实内存注册表(纯内存,
  * 不触网),记录落盘用临时目录。
  */
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -28,16 +28,20 @@ import {
   estimateLoopTokens,
   evaluateStall,
   findDecisionMarker,
+  injectInteractiveWrapUp,
   isBudgetExhausted,
   isBudgetWarning,
   listAutoRunRecordFiles,
   loadAutoRunRecord,
   parseAutoRunRecord,
   recoverOrphanedAutoRuns,
+  resetAutoRunRegistryForTest,
   resolveAutoRunVerdict,
   runAutoRunLoop,
   saveAutoRunRecord,
   serializeAutoRunRecord,
+  startAutoRun,
+  stopAutoRun,
   summarizeRecentToolCalls,
   validateAutoRunStart,
   verdictRequestOfRecord,
@@ -45,8 +49,8 @@ import {
   type AutoRunDeps,
   type AutoRunRecord,
 } from './auto-run';
-import { clearCompletionDeclarations, declareCompletion } from './declare-completion';
-import { clearDecisions, pendingDecisions, respondDecision } from './decision';
+import { clearCompletionDeclarations, declareCompletion, takeCompletionDeclaration } from './declare-completion';
+import { clearDecisions, pendingDecisions, requestDecision, respondDecision } from './decision';
 
 let dir: string;
 
@@ -54,11 +58,13 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'zhishi-auto-run-'));
   clearCompletionDeclarations();
   clearDecisions();
+  resetAutoRunRegistryForTest();
 });
 
 afterEach(() => {
   clearCompletionDeclarations();
   clearDecisions();
+  resetAutoRunRegistryForTest();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -252,6 +258,18 @@ describe('computeBudgetSpent / isBudgetExhausted / isBudgetWarning / estimateLoo
     expect(computeBudgetSpent({ kind: 'turns', limit: 9 }, { turns: 3, tokens: 0, elapsedMs: 0 })).toBe(3);
     expect(computeBudgetSpent({ kind: 'tokens', limit: 9 }, { turns: 3, tokens: 400, elapsedMs: 0 })).toBe(400);
     expect(computeBudgetSpent({ kind: 'time', limit: 9 }, { turns: 3, tokens: 0, elapsedMs: 120_000 })).toBe(2);
+  });
+
+  it('1.6.0:tokens 档 spent = 原始估算 × 校准系数(缺省 1,钳 [0.8, 6])', () => {
+    expect(computeBudgetSpent({ kind: 'tokens', limit: 9 }, { turns: 0, tokens: 400, elapsedMs: 0, calibration: 2 })).toBe(800);
+    // 缺省/非法 → 系数 1(原口径)。
+    expect(computeBudgetSpent({ kind: 'tokens', limit: 9 }, { turns: 0, tokens: 400, elapsedMs: 0 })).toBe(400);
+    expect(computeBudgetSpent({ kind: 'tokens', limit: 9 }, { turns: 0, tokens: 400, elapsedMs: 0, calibration: Number.NaN })).toBe(400);
+    // 钳界照 compaction 学习侧 [0.8, 6]。
+    expect(computeBudgetSpent({ kind: 'tokens', limit: 9 }, { turns: 0, tokens: 400, elapsedMs: 0, calibration: 100 })).toBe(2400);
+    expect(computeBudgetSpent({ kind: 'tokens', limit: 9 }, { turns: 0, tokens: 400, elapsedMs: 0, calibration: 0.01 })).toBe(320);
+    // 校准只作用 tokens 档,turns/time 不受影响。
+    expect(computeBudgetSpent({ kind: 'turns', limit: 9 }, { turns: 3, tokens: 0, elapsedMs: 0, calibration: 2 })).toBe(3);
   });
 
   it('耗尽 = spent ≥ limit;警告 = 未耗尽且 ≥ 80%', () => {
@@ -448,8 +466,10 @@ describe('runAutoRunLoop(空转 → harness 提请 → 继续跑)', () => {
     await waitFor(() => fake.sent.some((s) => s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'stall'));
     expect(record.status).toBe('paused');
     expect(record.pauseReason).toBe('stall');
-    const paused = dataOf(fake.sent, 'auto-run:paused') as { recentTools: string[] };
+    const paused = dataOf(fake.sent, 'auto-run:paused') as { recentTools: string[]; summary: string };
     expect(paused.recentTools).toEqual([]);
+    // 1.6.0:paused 带 summary(stall = 最近动作摘要;无工具调用给占位)。
+    expect(paused.summary).toBe('(无工具调用)');
 
     const pending = pendingDecisions().filter((d) => d.sessionId === record.loopSessionId);
     expect(pending).toHaveLength(1);
@@ -490,6 +510,9 @@ describe('runAutoRunLoop(模型调用失败 → 人工接管，1.5.13 用户拍�
       s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'provider-error'));
     expect(record.status).toBe('paused');
     expect(record.pauseReason).toBe('provider-error');
+    // 1.6.0:paused 带 summary(provider-error = error 原文)。
+    const paused = dataOf(fake.sent, 'auto-run:paused') as { summary: string };
+    expect(paused.summary).toBe('503 Server Overloaded');
     // 只 invoke 了一次——没有静默续跑（旧形态会 sleep 后立刻第二轮）
     expect(fake.invokeCount).toBe(1);
 
@@ -572,6 +595,134 @@ describe('runAutoRunLoop(预算耗尽 → 续命恢复)', () => {
     await done;
     await loop;
     expect(record.status).toBe('stopped');
+  });
+});
+
+describe('runAutoRunLoop(反复失败 → paused summary,1.6.0)', () => {
+  it('同类工具 isError 连击 → paused(repeated-failures),summary = 工具名+连击数', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps({ repeatedFailureStreak: 3 });
+    // invoke 返回后 loadMessages 读到尾部 3 连 isError(同工具)。
+    fake.messages.push(
+      msgToolResult({ isError: true }),
+      msgToolResult({ isError: true }),
+      msgToolResult({ isError: true }),
+    );
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+
+    await waitFor(() => fake.sent.some((s) =>
+      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'repeated-failures'));
+    const paused = dataOf(fake.sent, 'auto-run:paused') as { toolName: string; streak: number; summary: string };
+    expect(paused.toolName).toBe('env_exec');
+    expect(paused.streak).toBe(3);
+    expect(paused.summary).toContain('env_exec');
+    expect(paused.summary).toContain('3');
+
+    // 人工作答「终止运行」收尾。
+    const pending = pendingDecisions().filter((d) => d.sessionId === record.loopSessionId);
+    expect(pending).toHaveLength(1);
+    respondDecision(pending[0].decisionId, '终止运行');
+    fake.messages.push({
+      role: 'user',
+      content: '【人的决定】选择: 终止运行',
+      timestamp: Date.now(),
+      decision: { decisionId: pending[0].decisionId, choice: '终止运行' },
+    } as unknown as AgentMessage);
+
+    await done;
+    await loop;
+    expect(record.status).toBe('stopped');
+  });
+});
+
+describe('runAutoRunLoop(auto-run:started 契约,1.6.0)', () => {
+  it('started 广播带 criteria 数组(保留 criteriaCount 兼容)', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps();
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.invokeCount >= 1);
+    const started = dataOf(fake.sent, 'auto-run:started') as { criteria: string[]; criteriaCount: number };
+    expect(started.criteria).toEqual(record.criteria);
+    expect(started.criteriaCount).toBe(record.criteria.length);
+    ctl.requestStop();
+    await done;
+    await loop;
+  });
+});
+
+describe('runAutoRunLoop(tokens 预算 × 校准系数,1.6.0)', () => {
+  it('loadTokenCalibration=2 → spent = 原始估算 × 2', async () => {
+    const record = makeRecord({ budget: { kind: 'tokens', limit: 100_000_000, spent: 0 } });
+    const fake = makeFakeDeps({ loadTokenCalibration: () => 2 });
+    fake.messages.push(msgUser('hello world, 一些内容让估算非零'));
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.sent.some((s) => s.event === 'auto-run:turn-completed'));
+    const raw = estimateLoopTokens(fake.messages);
+    expect(raw).toBeGreaterThan(0);
+    expect(record.budget.spent).toBe(raw * 2);
+    ctl.requestStop();
+    await done;
+    await loop;
+  });
+
+  it('不注入 loadTokenCalibration → 系数 1(原口径)', async () => {
+    const record = makeRecord({ budget: { kind: 'tokens', limit: 100_000_000, spent: 0 } });
+    const fake = makeFakeDeps();
+    fake.messages.push(msgUser('hello world'));
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.sent.some((s) => s.event === 'auto-run:turn-completed'));
+    expect(record.budget.spent).toBe(estimateLoopTokens(fake.messages));
+    ctl.requestStop();
+    await done;
+    await loop;
+  });
+});
+
+describe('injectInteractiveWrapUp(1.6.0 envKey 口径修复)', () => {
+  function collectAppend(): { appended: Array<{ id: string; text: string }>; appendMessages: (id: string, msgs: AgentMessage[]) => Promise<void> } {
+    const appended: Array<{ id: string; text: string }> = [];
+    return {
+      appended,
+      appendMessages: async (id, msgs) => {
+        appended.push({ id, text: String((msgs[0] as { content: unknown }).content) });
+      },
+    };
+  }
+
+  it('binding.envKey=env:<id> 而 record.envKey=裸 id → 注回真实发生', () => {
+    const record = makeRecord({ envKey: 'pwn-vm', reportDir: '/out/r' });
+    const { appended, appendMessages } = collectAppend();
+    injectInteractiveWrapUp(record, '最终结论文本', '已通过验收', {
+      getBinding: () => ({ envKey: 'env:pwn-vm', loopSessionId: 'ls-interactive' }),
+      appendMessages,
+    });
+    expect(appended).toHaveLength(1);
+    expect(appended[0].id).toBe('ls-interactive');
+    expect(appended[0].text).toContain('【auto loop 收官】');
+    expect(appended[0].text).toContain('/out/r');
+  });
+
+  it('跳过条件照旧:无绑定/绑定线即本 run 线/环境不匹配', () => {
+    const record = makeRecord({ envKey: 'pwn-vm' });
+    const { appended, appendMessages } = collectAppend();
+    injectInteractiveWrapUp(record, 'x', '已终止', { getBinding: () => null, appendMessages });
+    injectInteractiveWrapUp(record, 'x', '已终止', {
+      getBinding: () => ({ envKey: 'env:pwn-vm', loopSessionId: record.loopSessionId }),
+      appendMessages,
+    });
+    injectInteractiveWrapUp(record, 'x', '已终止', {
+      getBinding: () => ({ envKey: 'env:other-vm', loopSessionId: 'ls-other' }),
+      appendMessages,
+    });
+    expect(appended).toEqual([]);
   });
 });
 
@@ -723,5 +874,332 @@ describe('resolveAutoRunVerdict — 孤儿记录兜底（1.4.6 走查实证）',
     const rg = await resolveAutoRunVerdict('ghost-run', 'pass', undefined, { dir: dir3 });
     expect(rg.success).toBe(false);
     if (!rg.success) expect(rg.error).toContain('不存在');
+  });
+});
+
+// ===== 1.6.0 auto loop 全链路审计 S1:runner 状态机修复回归 =====
+
+describe('1.6.0 修复①:终审按轮重置(第二轮终审可作答)', () => {
+  it('第二轮 declare_completion 重新弹窗等人作答,不被旧 verdict 自动消费;同轮幂等闸不变', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps({
+      invoke: async () => {
+        fake.invokeCount += 1;
+        // 每轮都声明达成——第二轮终审若被旧 verdict 自动消费,循环会空转刷轮。
+        declareCompletion(record.loopSessionId, `第 ${fake.invokeCount} 轮达成`, []);
+        return { text: 'done', loopSessionId: record.loopSessionId };
+      },
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+
+    // 第一轮终审:continue → 续跑。
+    await waitFor(() => fake.sent.filter((s) => s.event === 'auto-run:verdict-requested').length === 1);
+    expect(ctl.resolveVerdict('continue', '再看看').ok).toBe(true);
+
+    // 第二轮终审弹窗:必须停在 awaiting-verdict 等人——旧实现 internals.verdict
+    // 残留 'continue',wait 立即命中、旧答案被自动消费(不再弹窗等人)。
+    await waitFor(() => fake.sent.filter((s) => s.event === 'auto-run:verdict-requested').length === 2);
+    await new Promise((r) => setTimeout(r, 120));
+    expect(record.status).toBe('awaiting-verdict');
+    expect(fake.invokeCount).toBe(2); // 没有自动续跑第三轮
+    expect(ctl.__getVerdict().verdict).toBeNull(); // 旧 verdict 已按轮重置
+
+    // 同轮幂等闸不变:第一次作答后、runner 消费前的重复作答仍拒(两个同步
+    // 调用在同一 tick,runner 尚未来得及消费)。
+    expect(ctl.resolveVerdict('pass').ok).toBe(true);
+    expect(ctl.resolveVerdict('fail').ok).toBe(false);
+
+    await done;
+    await loop;
+    expect(record.status).toBe('completed');
+  });
+});
+
+describe('1.6.0 修复②:决策超时语义(未答无限等 / 已答读 resolved 记录)', () => {
+  it('人未答:超过 decisionWaitTimeoutMs 也保持 paused,不静默续跑', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps({ stallTurns: 1, decisionWaitTimeoutMs: 60 });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.sent.some((s) =>
+      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'stall'));
+
+    // 超时上限的 4 倍时间仍未答——旧实现此时已静默续跑(running + 第 3 轮)。
+    await new Promise((r) => setTimeout(r, 250));
+    expect(record.status).toBe('paused');
+    expect(fake.invokeCount).toBe(2);
+
+    // 人作答 + marker 落地 → 恢复推进。
+    const pending = pendingDecisions().filter((d) => d.sessionId === record.loopSessionId);
+    respondDecision(pending[0].decisionId, '继续跑');
+    fake.messages.push({
+      role: 'user',
+      content: '【人的决定】选择: 继续跑',
+      timestamp: Date.now(),
+      decision: { decisionId: pending[0].decisionId, choice: '继续跑' },
+    } as unknown as AgentMessage);
+    // 恢复推进的证明 = 起了第 3 轮 invoke(stallTurns=1 时第 3 轮会立刻再
+    // 空转暂停,turn-completed 不会落地,不能等它)。
+    await waitFor(() => fake.invokeCount >= 3);
+
+    ctl.requestStop();
+    await done;
+    await loop;
+    expect(record.status).toBe('stopped');
+  });
+
+  it('人已答但 marker 未落地:超时后从 resolved 记录读 choice(不依赖 marker)', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps({ stallTurns: 1, decisionWaitTimeoutMs: 60 });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.sent.some((s) =>
+      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'stall'));
+    const pending = pendingDecisions().filter((d) => d.sessionId === record.loopSessionId);
+    expect(pending).toHaveLength(1);
+    respondDecision(pending[0].decisionId, '终止运行');
+    // 不推 marker(模拟注入 turn 卡死)——旧实现:超时后 marker 缺失一律按
+    // 「继续跑」(已答被丢弃,done 不会到来);新实现:从 resolved 记录读
+    // 「终止运行」→ stopped 收官。
+    await done;
+    await loop;
+    expect(record.status).toBe('stopped');
+    expect(dataOf(fake.sent, 'auto-run:completed')).toMatchObject({ id: 'run-1', outcome: 'stopped' });
+  });
+});
+
+describe('1.6.0 修复③:重启愈合保留 awaiting-verdict 孤儿终审通道', () => {
+  it('awaiting-verdict 不被标 stopped,愈合后仍可孤儿结算', async () => {
+    const orphan = makeRecord({ id: 'run-av', status: 'awaiting-verdict' });
+    orphan.verdictPackage = buildVerdictPackage({
+      id: orphan.id,
+      criteria: orphan.criteria,
+      declaration: { statement: 's', evidenceRefs: [] },
+      resolveEvent: () => null,
+    });
+    const running = makeRecord({ id: 'run-run', status: 'running' });
+    await saveAutoRunRecord(orphan, { dir });
+    await saveAutoRunRecord(running, { dir });
+
+    const healed = await recoverOrphanedAutoRuns({ dir });
+    expect(healed).toBe(1); // 只愈合 running
+    expect(loadAutoRunRecord('run-run', { dir })!.status).toBe('stopped');
+    expect(loadAutoRunRecord('run-av', { dir })!.status).toBe('awaiting-verdict');
+
+    // 孤儿终审通道仍可达(resolveOrphanedVerdict 按盘上记录结算)。
+    const r = await resolveAutoRunVerdict('run-av', 'pass', undefined, { dir });
+    expect(r.success).toBe(true);
+    expect(loadAutoRunRecord('run-av', { dir })!.status).toBe('completed');
+  });
+});
+
+describe('1.6.0 修复④:resolveVerdict 已停拒绝(Esc 竞态不静默丢弃)', () => {
+  it('requestStop 后 resolveVerdict 返回明确错误,作答不写入', () => {
+    const record = makeRecord({ status: 'awaiting-verdict' });
+    const ctl = createAutoRunController(record);
+    ctl.requestStop();
+    const r = ctl.resolveVerdict('pass');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('已终止');
+    expect(ctl.__getVerdict().verdict).toBeNull();
+  });
+});
+
+describe('1.6.0 修复⑤:waitForWake waiters 不泄漏', () => {
+  it('长暂停期间 race 落败的 waiter 被摘除(挂起 ≤1)', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps({ stallTurns: 1 });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.sent.some((s) =>
+      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'stall'));
+
+    // ~15 个 poll 周期(pollMs=10)——旧实现每周期泄漏一个 waiter(≈15 挂起)。
+    await new Promise((r) => setTimeout(r, 150));
+    expect(ctl.__waiterCount()).toBeLessThanOrEqual(1);
+
+    // 收尾:作答继续 → Esc。
+    const pending = pendingDecisions().filter((d) => d.sessionId === record.loopSessionId);
+    respondDecision(pending[0].decisionId, '继续跑');
+    fake.messages.push({
+      role: 'user',
+      content: '【人的决定】选择: 继续跑',
+      timestamp: Date.now(),
+      decision: { decisionId: pending[0].decisionId, choice: '继续跑' },
+    } as unknown as AgentMessage);
+    ctl.requestStop();
+    await done;
+    await loop;
+  });
+});
+
+describe('1.6.0 修复⑥⑩:startAutoRun 注册表(终态摘除 + 单实例闸路径口径)', () => {
+  let dataDir: string;
+  let prevDataDir: string | undefined;
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'zhishi-ar-registry-'));
+    prevDataDir = process.env.ZHISHI_DATA_DIR;
+    process.env.ZHISHI_DATA_DIR = dataDir;
+    // startAutoRun 的环境校验读真实 config.json(ZHISHI_DATA_DIR 已指向临时目录)。
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ environments: [{ id: 'pwn-vm', kind: 'local' }] }));
+  });
+  afterEach(() => {
+    if (prevDataDir === undefined) delete process.env.ZHISHI_DATA_DIR;
+    else process.env.ZHISHI_DATA_DIR = prevDataDir;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const startInput = { name: 't', envKey: 'pwn-vm', goal: 'g', criteria: ['c'], budget: { kind: 'turns', limit: 50 } };
+
+  it('⑥runner 终态即从 activeRuns 摘除(stop 走「不存在」语义)', async () => {
+    const fake = makeFakeDeps();
+    const started = await startAutoRun(startInput, '/ws', fake.deps);
+    expect(started.success).toBe(true);
+    if (!started.success) return;
+    const id = started.data.id;
+    await waitFor(() => fake.invokeCount >= 1);
+    expect(stopAutoRun(id).success).toBe(true);
+    // 旧行为:终态记录永挂内存,stop 报「已终态」;新行为:摘除后报「不存在」。
+    await waitFor(() => {
+      const r = stopAutoRun(id);
+      return !r.success && r.error.includes('不存在');
+    });
+  });
+
+  it('⑩单实例闸 workspace 比较走 workspacePathsEqual(尾斜杠等价)', async () => {
+    const fake = makeFakeDeps();
+    const first = await startAutoRun(startInput, '/ws', fake.deps);
+    expect(first.success).toBe(true);
+    if (!first.success) return;
+    // 旧实现 === 比较:'/ws/' ≠ '/ws',闸被绕过、第二个 run 起得来。
+    const second = await startAutoRun(startInput, '/ws/', makeFakeDeps().deps);
+    expect(second.success).toBe(false);
+    if (!second.success) expect(second.error).toContain('已有运行中的');
+    // 收尾:停掉第一个 run 并等注册表摘除(防泄漏进后续用例)。
+    stopAutoRun(first.data.id);
+    await waitFor(() => {
+      const r = stopAutoRun(first.data.id);
+      return !r.success && r.error.includes('不存在');
+    });
+  });
+});
+
+describe('1.6.0 修复⑦:run 终态清理本线 pending 决策与声明', () => {
+  it('Esc 后本线 pending/声明清空,其他线不动', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps({
+      invoke: async () => {
+        fake.invokeCount += 1;
+        if (fake.invokeCount === 1) {
+          // 模型提请决策 → runner 进 paused(decision) 等人。
+          requestDecision(
+            { sessionId: record.loopSessionId, question: '方向?', options: ['a', 'b'] },
+            fake.deps.broadcast,
+          );
+        }
+        return { text: 'x', loopSessionId: record.loopSessionId };
+      },
+    });
+    // 其他线的待答决策/声明——不应被本 run 终态清理误伤。
+    requestDecision({ sessionId: 'other-line', question: 'q', options: ['a', 'b'] }, fake.deps.broadcast);
+    declareCompletion('other-line', '其他线声明', []);
+
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.sent.some((s) =>
+      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'decision'));
+    // 模拟终态前未被 runner 消费的晚到声明(同线)。
+    declareCompletion(record.loopSessionId, '晚到的声明', []);
+    ctl.requestStop();
+    await done;
+    await loop;
+
+    expect(pendingDecisions().filter((d) => d.sessionId === record.loopSessionId)).toHaveLength(0);
+    expect(pendingDecisions().some((d) => d.sessionId === 'other-line')).toBe(true);
+    expect(takeCompletionDeclaration(record.loopSessionId)).toBeNull();
+    expect(takeCompletionDeclaration('other-line')).not.toBeNull();
+  });
+});
+
+describe('1.6.0 修复⑧:time 预算扣除暂停等待墙钟', () => {
+  it('纯函数:pausedMs 从 elapsed 扣除(缺省 0、钳负)', () => {
+    expect(computeBudgetSpent({ kind: 'time', limit: 100 }, { turns: 0, tokens: 0, elapsedMs: 70 * 60_000, pausedMs: 60 * 60_000 })).toBe(10);
+    expect(computeBudgetSpent({ kind: 'time', limit: 100 }, { turns: 0, tokens: 0, elapsedMs: 120_000 })).toBe(2);
+    expect(computeBudgetSpent({ kind: 'time', limit: 100 }, { turns: 0, tokens: 0, elapsedMs: 10, pausedMs: 100 })).toBe(0);
+  });
+
+  it('runner 集成:预算暂停 60 分钟虚拟墙钟,续命后 spent 不涨', async () => {
+    let nowMs = 0;
+    const record = makeRecord({ budget: { kind: 'time', limit: 10, spent: 0 } });
+    const fake = makeFakeDeps({
+      now: () => nowMs,
+      invoke: async () => {
+        fake.invokeCount += 1;
+        // 第 2 轮开始时把墙钟推到 10 分钟——本轮收尾必触发预算耗尽暂停。
+        if (fake.invokeCount === 2) nowMs = 10 * 60_000;
+        return { text: 'x', loopSessionId: 'ls-1' };
+      },
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.sent.some((s) =>
+      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'budget'));
+
+    nowMs += 60 * 60_000; // 暂停等人 60 分钟(虚拟墙钟)
+    expect(ctl.renewBudget(1000).ok).toBe(true);
+
+    await waitFor(() => fake.sent.some((s) =>
+      s.event === 'auto-run:turn-completed' && (s.data as { turn: number }).turn >= 3));
+    const tc = [...fake.sent].reverse().find((s) => s.event === 'auto-run:turn-completed')!
+      .data as { budget: { spent?: number } };
+    // spent = (70 总墙钟 - 60 暂停) = 10 分钟;旧口径会算成 70。
+    expect(tc.budget.spent).toBe(10);
+    expect(record.pausedMsTotal).toBe(60 * 60_000);
+
+    ctl.requestStop();
+    await done;
+    await loop;
+    expect(record.status).toBe('stopped');
+  });
+});
+
+describe('1.6.0 修复⑨:provider-error 暂停 persist 前更新 budget.spent', () => {
+  it('失败本轮(turn 已 +1)计入暂停快照的 spent', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps({
+      invoke: async () => {
+        fake.invokeCount += 1;
+        return { error: '503 Server Overloaded', text: '', loopSessionId: 'ls-1' };
+      },
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.sent.some((s) =>
+      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'provider-error'));
+
+    const snap = fake.saved.find((r) => r.pauseReason === 'provider-error');
+    expect(snap?.turns).toBe(1);
+    expect(snap?.budget.spent).toBe(1); // 旧实现:persist 时 spent 仍是 0(少一轮)
+
+    // 收尾:作答终止 → done。
+    const pending = pendingDecisions().filter((d) => d.sessionId === record.loopSessionId);
+    respondDecision(pending[0].decisionId, '终止运行');
+    fake.messages.push({
+      role: 'user',
+      content: '【人的决定】选择: 终止运行',
+      timestamp: Date.now(),
+      decision: { decisionId: pending[0].decisionId, choice: '终止运行' },
+    } as unknown as AgentMessage);
+    await done;
+    await loop;
+    expect(record.status).toBe('stopped');
   });
 });

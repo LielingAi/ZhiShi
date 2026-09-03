@@ -1,10 +1,12 @@
 /**
- * auto loop 运行态观察卡（1.4.1）：会话视图内嵌（stream 之下、状态栏之上）。
+ * auto loop 运行态观察卡（1.4.1；1.6.0 全链路审查修订）：会话视图内嵌
+ * （stream 之下、状态栏之上）。
  *
  *   - 运行中：阶段指示 + 轮次计数 + 预算余量进度条 + 最近结论行 + Esc 提示
- *   - 暂停点：budget → 「加预算」输入 + 续命（auto-run/budget）；stall /
- *     repeated-failures → 摘要 + 「继续 / 终止」（继续走 verdict:'continue'，
- *     契约无独立 resume 端点；终止走终止确认模态，与 Esc 同路径）
+ *   - 暂停点：budget → 「加预算」输入 + 续命（auto-run/budget，服务端加完
+ *     续跑）；stall / repeated-failures / provider-error / decision（1.6.0
+ *     补齐）→ 提示走决策面板作答（raisePauseDecision / request_decision——
+ *     暂停点「继续/终止」由决策面板承载，观察卡只提示 + 提供终止出口）
  *   - 待终审：验收包收起后显示「待终审」指示，点开重答（verdict-requested
  *     到达即自动弹 AutoRunVerdictModal）
  *   - 完成/终止：结果行 + 关闭（清 autoRun）
@@ -89,17 +91,24 @@ function StallPauseRow({ entry }: { entry: AutoRunEntry }): React.JSX.Element {
   if (
     entry.status !== 'paused' ||
     !entry.paused ||
-    (entry.paused.reason !== 'stall' && entry.paused.reason !== 'repeated-failures' && entry.paused.reason !== 'provider-error')
+    (entry.paused.reason !== 'stall' &&
+      entry.paused.reason !== 'repeated-failures' &&
+      entry.paused.reason !== 'provider-error' &&
+      entry.paused.reason !== 'decision')
   ) {
     return <></>;
   }
 
+  // 1.6.0：'decision' 暂停点（模型 request_decision 提请）补齐——此前该形态
+  // 在观察卡无任何提示（窄化层直接丢弃，暂停原因不可见）。
   const title =
     entry.paused.reason === 'stall'
       ? '⏸ 空转检测：连续多轮无新增有效研究记录且阶段未推进'
       : entry.paused.reason === 'repeated-failures'
         ? '⏸ 反复失败：同类工具连续多次 isError——证据与「有把握」冲突'
-        : '⏸ 模型调用失败：供应商过载/挂起/中断（1.5.13——不静默续跑，人工接管）';
+        : entry.paused.reason === 'decision'
+          ? '⏸ 决策点：模型提请人工决策——作答后续跑'
+          : '⏸ 模型调用失败：供应商过载/挂起/中断（1.5.13——不静默续跑，人工接管）';
   return (
     <div className="ar-pause">
       <span className="ar-pause-title">{title}</span>

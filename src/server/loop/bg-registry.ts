@@ -31,6 +31,12 @@ export interface BgRegistryEntry {
   startedAt: number;
   /** 命令摘要（最长 100 字符，人审计用）。 */
   commandPreview: string;
+  /**
+   * 1.6.0：发起线的 loopSessionId（bg 按归属线回收用——交互 turn 结束只杀
+   * 交互线的 bg，auto-run invoke 线收尾只杀 invoke 线的 bg，互不连坐）。
+   * 旧登记（1.6.0 前落盘/重启恢复）缺席 = 归属未知，回收按旧口径照收。
+   */
+  ownerSessionId?: string;
 }
 
 /** 盘上文件形状（version 占位，为未来字段演进留余地）。 */
@@ -108,6 +114,10 @@ export function parseBgRegistryFile(content: string): BgRegistryEntry[] {
         envId: o.envId,
         startedAt: typeof o.startedAt === 'number' ? o.startedAt : 0,
         commandPreview: typeof o.commandPreview === 'string' ? o.commandPreview.slice(0, 100) : '',
+        // 1.6.0:归属线 id 可缺席(旧登记),读回保持缺席语义。
+        ...(typeof o.ownerSessionId === 'string' && o.ownerSessionId.length > 0
+          ? { ownerSessionId: o.ownerSessionId }
+          : {}),
       });
     }
   }

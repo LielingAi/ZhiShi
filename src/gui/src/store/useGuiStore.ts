@@ -70,10 +70,12 @@ import { buildMentionItems, fileCacheKey, fileDirOf, MENTION_DEBOUNCE_MS, parseM
 import { ensureSessionSlot, planSwitch, sessionKey } from '../model/multi-session';
 import {
   applyAutoRunEvent,
+  autoRunEntryAfterVerdictResponse,
   buildAutoRunStartPayload,
   isAutoRunActive,
   optimisticAutoRunEntry,
   parseBudgetLimit,
+  restoredAutoRunStale,
   validateAutoRunForm,
   activeAutoRunOf,
   parseAutoRunList,
@@ -462,7 +464,7 @@ export interface GuiState {
   requestStopAutoRun(): void;
   confirmStopAutoRun(): Promise<void>;
   extendAutoRunBudget(limit: number): Promise<void>;
-  respondAutoRunVerdict(verdict: 'pass' | 'fail' | 'continue'): Promise<void>;
+  respondAutoRunVerdict(verdict: 'pass' | 'fail' | 'continue', note?: string): Promise<void>;
   dismissVerdict(): void;
   openVerdict(): void;
   dismissAutoRunCard(): void;
@@ -1578,7 +1580,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     }
   },
 
-  async respondAutoRunVerdict(verdict: 'pass' | 'fail' | 'continue') {
+  async respondAutoRunVerdict(verdict: 'pass' | 'fail' | 'continue', note?: string) {
     const c = client;
     const state = get();
     const id = state.autoRun?.id;
@@ -1588,7 +1590,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     }
     if (!id) return;
     try {
-      const res = await api.autoRunVerdict(c, { id, verdict });
+      // 1.6.0：note 透传（不通过理由/继续跑补充说明）——服务端 resolveVerdict
+      // 已收，注回 loop 线供模型修正时读。
+      const res = await api.autoRunVerdict(c, { id, verdict, ...(note ? { note } : {}) });
       if (!res.success) {
         // 1.5.13：终审已被消费（服务端口径）→ 关窗 + 重新对齐（loadAutoRunState
         // 从 list 拉真状态），不把已消费的终审窗留在原地让人反复点（实机回归）。
@@ -1605,39 +1609,24 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         state.showToast(`提交失败：${res.error ?? '未知错误'}`);
         return;
       }
-      if (verdict === 'continue') {
-        // 继续跑（验收包「继续」或 stall/repeated-failures 暂停点「继续」）。
-        set((s) =>
-          s.autoRun && s.autoRun.id === id
-            ? {
-                autoRun: {
-                  ...s.autoRun,
-                  status: 'running',
-                  paused: undefined,
-                  verdict: undefined,
-                  updatedAt: Date.now(),
-                },
-                verdictDismissed: true,
-              }
-            : {},
-        );
-        state.showToast('▶ 继续跑');
-        return;
-      }
-      // 终审 pass/fail：本地就地定稿（服务端 completed 事件到达时幂等复写）。
+      // 1.6.0：本地迁移收口到纯函数 autoRunEntryAfterVerdictResponse——
+      // fail = 注回修正**续跑**（设计 §4，服务端 fail/continue 均续跑），
+      // 不再本地翻 stopped；pass → completed（completed 事件幂等复写）。
       set((s) =>
         s.autoRun && s.autoRun.id === id
           ? {
-              autoRun: {
-                ...s.autoRun,
-                status: verdict === 'pass' ? 'completed' : 'stopped',
-                updatedAt: Date.now(),
-              },
+              autoRun: autoRunEntryAfterVerdictResponse(s.autoRun, verdict),
               verdictDismissed: true,
             }
           : {},
       );
-      state.showToast(verdict === 'pass' ? '✓ 验收通过——auto loop 完成' : '⏹ 验收不通过——loop 已终止');
+      state.showToast(
+        verdict === 'pass'
+          ? '✓ 验收通过——auto loop 完成'
+          : verdict === 'fail'
+            ? '⚖ 验收不通过——已注回修正，loop 继续'
+            : '▶ 继续跑',
+      );
     } catch (err) {
       state.showToast(`提交失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1664,15 +1653,15 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     try {
       const raw = await api.autoRunList(c);
       const restored = activeAutoRunOf(raw);
-      const cur = get().autoRun;
       // 同 id 且本地更新 → 不覆盖（list 快照落后于在飞 SSE 事件）。
-      if (restored && cur && restored.id === cur.id && cur.updatedAt > restored.updatedAt) {
+      // 1.6.0：守卫收口到 restoredAutoRunStale；配合 autoRunEntryOf 的 ISO
+      // 解析（服务端记录 updatedAt 是 ISO 字符串）才真正生效。
+      if (restoredAutoRunStale(get().autoRun, restored)) {
         return;
       }
-      set({
-        autoRun: restored,
-        verdictDismissed: restored?.verdict ? false : get().verdictDismissed,
-      });
+      // 1.6.0：恢复不重置 verdictDismissed——已收起的终审窗不再因重连重弹；
+      // 只有新 verdict 事件（SSE 到达）才弹（见上方 autoRun 事件消费）。
+      set({ autoRun: restored });
       // 1.4.6 dogfood 实证：恢复 active run 时按 run 的 loop 线加载研究档案——
       // 缺这步，auto-run 场景研究面板查的是引擎当前会话（空档案，面板恒空）。
       // （已完成 run 的档案不在此恢复——历史档案在历史回看中查看。）
