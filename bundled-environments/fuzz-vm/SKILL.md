@@ -61,6 +61,7 @@ LAF-Intel 与 MOpt 暂不采用的理由）与 docker 版 `fuzz` 配方 SKILL �
 「非默认开关取舍」一节完全相同，按那张表执行。
 
 - VM 里 `AFL_SKIP_CPUFREQ=1` 通常仍需要（guest 的 cpufreq 由 hypervisor 管）
+- `stack-hash.sh`（`/usr/local/bin/`，setup 已装）：批量取样本栈指纹，供 crash-triager 深挖模式的验证门（新崩溃类 = 崩溃且指纹≠种子）使用
 - 快照回滚 = 免费的环境重置：fuzz 搞脏了 guest,`env down` 后下次 `env up` 自动回 `zhishi-clean`
 
 ## 结果怎么采
