@@ -54,6 +54,7 @@ afl-tmin -i <crash> -o crash-min -- ./fuzz_target @@       # 最小化
 
 - 崩溃去重与根因初判交给 `crash-triager`；长跑 fuzz 交给 `fuzz-runner`（subagent，后台跑、结构化回报）。
 - `AFL_SKIP_CPUFREQ=1`、`AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1` 在容器里通常需要。
+- `stack-hash.sh`（`/opt/zhishi/examples/`）：批量取样本栈指纹（ASan SUMMARY+顶帧 / gdb bt 顶 5 帧），供 crash-triager 深挖模式的验证门（新崩溃类 = 崩溃且指纹≠种子）使用。
 
 ## 非默认开关取舍（何时开、为什么）
 

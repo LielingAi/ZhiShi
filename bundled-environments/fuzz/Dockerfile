@@ -33,7 +33,8 @@ ENV AFL_SKIP_CPUFREQ=1 \
 
 COPY setup.sh /opt/zhishi/setup.sh
 COPY examples/libfuzzer-harness.c /opt/zhishi/examples/libfuzzer-harness.c
-RUN chmod +x /opt/zhishi/setup.sh && /opt/zhishi/setup.sh
+COPY examples/stack-hash.sh /opt/zhishi/examples/stack-hash.sh
+RUN chmod +x /opt/zhishi/setup.sh /opt/zhishi/examples/stack-hash.sh && /opt/zhishi/setup.sh
 
 WORKDIR /workspace
 CMD ["tail", "-f", "/dev/null"]
