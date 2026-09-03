@@ -5,15 +5,15 @@
 
 ---
 
-## 1.6.1 —— 崩溃变体深挖实验 + AFL 开关文档化（进行中）
+## 1.6.1 —— 崩溃变体深挖实验 + AFL 开关文档化（完成——实验结论「成立」，建议 1.7.0 立项 crash-triager 深挖模式）
 
 **缘起（2026-09-03 用户拍板）**：colony / Fuzzillai 对照评估中「崩溃变体深挖闭环」被列为 1.7.0 候选，但反证三刀（真实使用中 fuzz 断链未造成过损失；Fuzzillai 同类闭环 0 新 bug 的负证据；零 LLM 成本基线「afl-tmin 回灌」从未被对比过）未过——故**先实验后立项**：用三组对照（LLM 深挖 / 愚蠢回灌 / 空基线）裁决 LLM 变体生成有无增量，通过才进 1.7.0。攻击面地图制品经会话数据测量（重访率≈0）已证伪砍单。设计与判定标准锁定：`docs/design/experiment-crash-variant.md`（标准先于实验提交入库）。
 
-- [ ] **实验方案锁定入库**：判定标准、三组对照、防过拟合纪律先提交（锁时间戳）
-- [ ] **注入靶 + harness 搭建**：真实小型 C 解析器注入同根因兄弟 bug 对（A 给系统 / B 隐藏判定），afl-cc + ASan harness，验证种子稳定触发
-- [ ] **三组对照执行**：A（LLM 深挖，DeepSeek API，≤15 万 token / ≤3h）/ B（afl-tmin 回灌，3h）/ C（空基线，3h）；主实验注入靶，glibc iconv 参考组（记忆污染声明）
-- [ ] **实验报告**：按锁定标准出三选一结论（成立 / 无增量 / 不成立），轨迹归档 `tmp/exp-crash-variant/`，结论与 1.7.0 建议补入设计文档 §6
-- [ ] **AFL 开关文档化**：`fuzz/SKILL.md`、`fuzz-vm/SKILL.md`、`fuzz-runner.md` 补「非默认开关取舍」决策表（cmplog / `-x` / `-use_value_profile=1`；LAF-Intel、MOpt 暂不采用及理由）——只加文档，不改默认行为
+- [x] **实验方案锁定入库**：判定标准、三组对照、防过拟合纪律先提交（b562120）
+- [x] **注入靶 + harness 搭建**：cJSON v1.7.18 注入同根因兄弟 bug 对（escape_track / key_audit，定长全局缓冲写入无边界检查），afl-clang-fast + ASan harness。注入教训：static+只写不读在 -O1 被 DSE 消除，改非 static 解决
+- [x] **三组对照执行**：A（deepseek-v4-flash，63 秒 / 92k tokens 内产出 bug B，1 变体 1 命中 0 假阳性，轨迹零污染）/ B（afl-tmin 回灌，23.2 分钟出 bug B，2.23M execs）/ C（空基线，32.2 分钟出 bug B，3h 未出 bug A）。glibc iconv 参考组未跑（主实验结论已明确，参考组不再改变判定——记录在案）
+- [x] **实验报告**：按锁定标准判定**成立**（A 63s < B 1394s 的 1/2，显著快 22 倍；LLM 增量是速度非独占，诚实边界见设计文档 §6.4）；结论与 1.7.0 建议已补入 §6（立项 crash-triager 深挖模式，5 条落地要点）
+- [x] **AFL 开关文档化**：`fuzz/SKILL.md`、`fuzz-vm/SKILL.md`、`fuzz-runner.md` 补「非默认开关取舍」决策表（cmplog / `-x` / `-use_value_profile=1`；LAF-Intel、MOpt 暂不采用及理由）——只加文档，不改默认行为（5ebd989）
 
 > 边界（不做）：crash-triager 深挖模式的产品化实现（那是实验通过后的 1.7.0 事）；AFL 默认行为变更；任何新工具/store。
 > 验收：实验按锁定标准出明确结论；文档改动 review 通过。
