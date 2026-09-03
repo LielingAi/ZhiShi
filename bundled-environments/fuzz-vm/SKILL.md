@@ -56,6 +56,10 @@ scp -i <keyPath> -r researcher@<address>:~/corpus-out ./
 `afl-fuzz -i corpus-in -o corpus-out` → crashes 研判（gdb / afl-tmin）。
 长跑 fuzz 交给 `fuzz-runner` subagent 后台跑；崩溃去重初判交 `crash-triager`。
 
+非默认开关取舍（cmplog / `-x` 字典 / libFuzzer `-use_value_profile=1` /
+LAF-Intel 与 MOpt 暂不采用的理由）与 docker 版 `fuzz` 配方 SKILL 的
+「非默认开关取舍」一节完全相同，按那张表执行。
+
 - VM 里 `AFL_SKIP_CPUFREQ=1` 通常仍需要（guest 的 cpufreq 由 hypervisor 管）
 - 快照回滚 = 免费的环境重置：fuzz 搞脏了 guest,`env down` 后下次 `env up` 自动回 `zhishi-clean`
 

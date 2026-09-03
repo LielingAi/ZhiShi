@@ -55,6 +55,19 @@ afl-tmin -i <crash> -o crash-min -- ./fuzz_target @@       # 最小化
 - 崩溃去重与根因初判交给 `crash-triager`；长跑 fuzz 交给 `fuzz-runner`（subagent，后台跑、结构化回报）。
 - `AFL_SKIP_CPUFREQ=1`、`AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1` 在容器里通常需要。
 
+## 非默认开关取舍（何时开、为什么）
+
+默认 `afl-fuzz -i corpus-in -o corpus-out -- ./fuzz_target @@` 能覆盖大多数场景。以下开关**按需启用**，不是默认——开之前先确认场景命中：
+
+| 开关 | 何时开 | 代价 | 备注 |
+|---|---|---|---|
+| **cmplog**（`-c <cmplog_bin>`） | 输入有魔数/校验和/长度字段等"比较关卡"卡住变异时（lz4/png/tcpdump 类格式）。需先用 `afl-clang-lto -c`（或 `AFL_LLVM_CMPLOG=1`）额外编一个 cmplog 版二进制 | 多编一次目标 | AFL++ 的比较日志求解器，自动解出比较常量。只有"有源码且能 lto 构建"才可用 |
+| **字典 `-x <file.dict>`** | 输入是结构化文本格式（JSON/XML/SQL/HTTP 等），关键词命中能显著提速 | 几乎为零 | Debian 的 afl++ 包不带官方字典（上游仓库 `dictionaries/` 有）；也可以按目标格式自写十几行关键词 |
+| **libFuzzer `-use_value_profile=1`** | 用 libFuzzer 跑库内目标时 | 几乎为零 | 值覆盖信号——覆盖之外的"数据流"信息，对解析器类目标建议默认开（写进 harness 编译命令） |
+| **LAF-Intel / MOpt（`-L`）** | **暂不采用** | — | LAF-Intel 拆分比较有收益争议且改变目标语义；MOpt 调度未在本环境对照过静态权重基线（Fuzzillai 的 Thompson Sampling 实验同样未完成这个对照）。要用先做单目标 A/B，别默认开 |
+
+判断"比较关卡卡住"的信号：fuzzer_stats 里 execs 很多但 paths 长期不涨（ plateau ），且目标格式已知含魔数/校验字段——这时优先考虑 cmplog，不是换种子。
+
 ## libFuzzer（库内目标,in-process fuzz）
 
 目标是库函数/解析器而不是独立二进制时,libFuzzer 比 AFL++ 快一个量级——
