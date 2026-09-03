@@ -7,7 +7,7 @@
   </picture>
 </p>
 
-**v1.6.2 · 安全研究领域的 agent harness：环境融合、原生工具、原生代码、研究档案。**
+**v1.6.3 · 安全研究领域的 agent harness：环境融合、原生工具、原生代码、研究档案。**
 
 [![Version](https://img.shields.io/github/v/tag/LielingAi/ZhiShi)](https://github.com/LielingAi/ZhiShi/tags)
 [![License](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](LICENSE)
@@ -244,7 +244,7 @@ flowchart LR
 
 | 文档 | 内容 |
 |---|---|
-| `docs/roadmap.md` | 版本任务池（当前线：**1.6.x**——1.6.0 auto loop 全链路审计与修复（54 条发现全修）已发版；1.6.1 崩溃变体深挖实验（判定「成立」）+ AFL 开关文档化；1.6.2 crash-triager 深挖模式（dogfood 第二家族复测通过）） |
+| `docs/roadmap.md` | 版本任务池（当前线：**1.6.x**——1.6.0 auto loop 全链路审计与修复（54 条发现全修）已发版；1.6.1 崩溃变体深挖实验（判定「成立」）+ AFL 开关文档化；1.6.2 crash-triager 深挖模式（dogfood 第二家族复测通过）；1.6.3 技术债务清扫（8 项全修）） |
 | `docs/user-guide.md` | 使用指南（安装、选环境、配模型、GUI 操作、常见问题） |
 | `docs/expert-import-guide.md` | 专家知识导入指南（命令/字段规范/JSON+YAML 格式，附可导入的 `expert-import.demo.yaml`）；社区条目仓库：[ZhiShiExpertKnowledge](https://github.com/LielingAi/ZhiShiExpertKnowledge) |
 | `docs/design/` | 各版本设计与分析稿（1.1.6–1.2.7、distill-eval、1.3.4 TUI 退役评估） |
