@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-09-03
+
+> **崩溃变体深挖实验 + AFL 开关文档化**——先实验后立项：三组对照裁决「LLM 变体生成有无增量」，判定成立；1.7.0 立项建议见设计文档。
+
+### 实验（docs/design/experiment-crash-variant.md）
+- **判定「成立」**：注入靶（cJSON v1.7.18 注入同根因兄弟 bug 对）三组对照——LLM 深挖 63 秒产出隐藏 bug（1 变体 1 命中、0 假阳性、轨迹零污染），愚蠢回灌（afl-tmin）23.2 分钟、空基线 32.2 分钟才出；LLM 增量 = 速度（22 倍）非独占，诚实边界与样本量警告见 §6.4
+- **方法纪律**：判定标准先于实验提交入库（防跑后改口）；注入靶教训——static+只写不读在 -O1 被 DSE 消除，注入验证必须按 fuzz 实际优化等级做
+
+### 文档
+- **AFL 非默认开关取舍决策表**（fuzz / fuzz-vm 配方 SKILL + fuzz-runner）：cmplog（魔数/校验关卡、需 lto 构建）、`-x` 字典（结构化文本格式）、libFuzzer `-use_value_profile=1`（建议默认开）；LAF-Intel / MOpt 暂不采用及理由——只加文档，不改默认行为
+
 ## [1.6.0] - 2026-09-03
 
 > **auto loop 全链路验证与审查**——自 1.4.1 落地后首次整体审计（四面 54 条发现，用户复核拍板全修）。
