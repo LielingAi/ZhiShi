@@ -17,7 +17,7 @@ description: 长跑 fuzz 与崩溃收集。当主 agent 需要对目标二进制
 
 1. **harness**：确认或编写 fuzz harness（AFL++ 的 `afl-cc` 插桩编译目标，或 libFuzzer 风格的 `LLVMFuzzerTestOneInput`）。已有 harness 就补全：覆盖目标解析入口、去掉 nondeterminism（时间/随机种子固定）。编译产物放工作区 `fuzz/build/`。
 2. **语料**：种子语料放 `fuzz/corpus-in/`（没有种子时从目标样例文件/最小合法输入构造几个）；输出目录约定为 `fuzz/corpus-out/`（afl 的 `-i corpus-in -o corpus-out`）。
-3. **启动与监控**：`afl-fuzz -i fuzz/corpus-in -o fuzz/corpus-out -- <target> @@` 后台长跑。周期性（而非持续）检查 `fuzz/corpus-out/default/fuzzer_stats`：execs_done、execs_per_sec、cycles_done、saved_crashes。execs_per_sec 归零或长期无新路径 = 卡住信号，记录后换策略（换字典/换种子/调整 harness）或上报 stuck。
+3. **启动与监控**：`afl-fuzz -i fuzz/corpus-in -o fuzz/corpus-out -- <target> @@` 后台长跑。周期性（而非持续）检查 `fuzz/corpus-out/default/fuzzer_stats`：execs_done、execs_per_sec、cycles_done、saved_crashes。execs_per_sec 归零或长期无新路径 = 卡住信号，记录后换策略（换字典/换种子/调整 harness）或上报 stuck。非默认开关（cmplog / `-x` 字典 / `-use_value_profile`）按 `fuzz` 环境 SKILL 的「非默认开关取舍」表决策——特别是 execs 正常但 paths 长期不涨且目标格式含魔数/校验字段时，优先评估 cmplog。
 4. **崩溃收集**：崩溃在 `fuzz/corpus-out/default/crashes/`（`README.txt` 之外的 `id:*` 文件）。**去重**（信号 + 顶帧站点 hash）后拷入工作区 `fuzz/crashes/unique/`，每个样本附一份 `.meta`（信号、afl id、复现命令）。崩溃的逐类根因研判是 crash-triager 的活，你只做初判（见下）。
 
 ## 产出纪律（回报协议，§3.5）
