@@ -120,7 +120,27 @@ export interface ErrorItem {
   text: string;
 }
 
-export type StreamItem = TurnBlock | DividerItem | ErrorItem;
+/**
+ * 1.6.3 refs 大值外溢占位行（debt #2）。SSE 事件 payload >256KB 时服务端
+ * 改发 `{kind:'ref', id, preview, ...}` 占位（sse.ts::dispatchWithSpillGuard），
+ * 消费端先落本行保住流位置（不重排），异步 GET /refs/:id 取回全文后按原
+ * 事件名原位归约真 payload 并摘除本行；取不到（GC 过期 / 传输失败）本行
+ * 留态降级展示 preview。
+ */
+export interface RefItem {
+  kind: 'ref';
+  /** `ref-<refId>`（refId = 服务端 8 位小写 hex 短 id）。 */
+  id: string;
+  seq: number;
+  /** 原始事件名（取回后按它归约真 payload）。 */
+  event: string;
+  refId: string;
+  sizeBytes: number;
+  preview: string;
+  state: 'loading' | 'expired' | 'failed';
+}
+
+export type StreamItem = TurnBlock | DividerItem | ErrorItem | RefItem;
 
 /** 引擎队列条目（statusbar 队列计数）。 */
 export interface QueueItem {

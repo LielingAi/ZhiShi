@@ -31,6 +31,7 @@ import {
 import { buildHistorySession, filterSessionRows, groupSessionRows } from '../model/history';
 import type { SessionMetaRow } from '../model/history';
 import { TurnView } from './TurnView';
+import { RefLine } from './Stream';
 import { StateHint } from './StateHint';
 
 // ---------------------------------------------------------------------------
@@ -72,6 +73,8 @@ function ViewerItem({ item }: { item: StreamItem }): React.JSX.Element {
           <span className="err-mark">✗</span> {item.text}
         </div>
       );
+    case 'ref':
+      return <RefLine item={item} />;
   }
 }
 

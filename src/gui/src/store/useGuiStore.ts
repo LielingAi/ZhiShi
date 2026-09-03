@@ -89,6 +89,12 @@ import {
   type ArchiveSnapshot,
 } from '../model/archive';
 import { reduceSseEvent } from '../model/reducer';
+import {
+  appendRefPlaceholder,
+  isLargeValueRef,
+  resolveRefPlaceholder,
+  type LargeValueRef,
+} from '../model/ref';
 import { buildSendBody, classifySendResponse, type Ref } from '../model/send';
 import {
   buildTaskRows,
@@ -136,7 +142,7 @@ import type {
   WorkspaceFileEntry,
 } from '../client/api';
 import { resolvePort } from '../client/port';
-import { GuiSidecarClient } from '../client/sse-client';
+import { GuiHttpError, GuiSidecarClient, type SseInput } from '../client/sse-client';
 
 // ---------------------------------------------------------------------------
 // 常量（v19 SLASH 清单，12 条）
@@ -668,13 +674,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     const ac = new AbortController();
     abortController = ac;
     void (async () => {
-      try {
-        for await (const input of c.openSse('/chat/stream', {
-          signal: ac.signal,
-          onReconnect: (_attempt, _cause) => {
-            set({ connectionState: 'reconnecting' });
-          },
-        })) {
+      // 单事件归约管线（原 SSE 循环体原样抽成闭包）——1.6.3 refs 外溢占位
+      // 取回全文后按原事件名重走同一管线，真假 payload 归约口径一致。
+      const handleInput = (input: SseInput): void => {
           const state = get();
           const key = state.currentEnvKey ?? 'host';
           const session = state.sessions[key] ?? emptySession();
@@ -785,6 +787,70 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
               if (next !== rows) set({ historySessions: next });
             }
           }
+      };
+      // 1.6.3 refs 大值外溢（debt #2 消费端）：payload 为 {kind:'ref'} 占位时——
+      //   ① 占位行同步落流位置（时序红线：占位先到位、全文后填充，不重排）；
+      //   ② 异步 GET /refs/:id 取回全文，按原事件名重走 handleInput 原位归约
+      //      （tool-result-complete 按 toolUseId 原位更新；auto-run/archive 等
+      //      登记表按 id 归并，均与到达先后无关）；
+      //   ③ 404（GC/TTL 过期）→ 占位行转 expired 降级展示 preview；传输错误
+      //      → failed。abort（重连/卸载）后到达的结果直接丢弃——重连 replay
+      //      会重建该线。
+      const handleRefPayload = (event: string, ref: LargeValueRef): void => {
+        const key = get().currentEnvKey ?? 'host';
+        set((s) => ({
+          sessions: {
+            ...s.sessions,
+            [key]: appendRefPlaceholder(s.sessions[key] ?? emptySession(), event, ref),
+          },
+        }));
+        void (async () => {
+          try {
+            const text = await c.getRefText(ref.id);
+            if (ac.signal.aborted) return;
+            let payload: unknown;
+            try {
+              payload = JSON.parse(text);
+            } catch {
+              payload = text; // 非 JSON 原文兜底（与 sse-client toInput 同口径）
+            }
+            handleInput({ event, payload });
+            set((s) => ({
+              sessions: {
+                ...s.sessions,
+                [key]: resolveRefPlaceholder(s.sessions[key] ?? emptySession(), ref.id, 'done'),
+              },
+            }));
+          } catch (err) {
+            if (ac.signal.aborted) return;
+            const outcome = err instanceof GuiHttpError && err.status === 404 ? 'expired' : 'failed';
+            console.warn(
+              `[refs] 全文取回失败 event=${event} ref=${ref.id}（${outcome}）:`,
+              err instanceof Error ? err.message : String(err),
+            );
+            set((s) => ({
+              sessions: {
+                ...s.sessions,
+                [key]: resolveRefPlaceholder(s.sessions[key] ?? emptySession(), ref.id, outcome),
+              },
+            }));
+          }
+        })();
+      };
+      try {
+        for await (const input of c.openSse('/chat/stream', {
+          signal: ac.signal,
+          onReconnect: (_attempt, _cause) => {
+            set({ connectionState: 'reconnecting' });
+          },
+        })) {
+          // refs 外溢占位：不走 reduceSseEvent（payload 里没有可归约字段），
+          // 由 handleRefPayload 落占位 + 异步取回后重放真 payload。
+          if (isLargeValueRef(input.payload)) {
+            handleRefPayload(input.event, input.payload);
+            continue;
+          }
+          handleInput(input);
         }
       } catch (err) {
         if (!ac.signal.aborted) {

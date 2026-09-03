@@ -29,6 +29,7 @@ import {
   RESEARCH_TASK_KINDS,
 } from '../shared/research-kinds';
 import { INTEL_POLL_INTERVAL_MS, startIntelProgressPolling } from './intel-progress';
+import { collectRefs, fetchRefBody, formatRefHints, isValidRefId, type RefFetch } from './ref';
 import { isSidecarPortOverride, parseArgs } from './cli-args';
 import { buildExpertDoc, expertEditRoundTrip, parseExpertDoc } from './expert-edit';
 import { importExpertEntries, parseExpertImport } from './expert-import';
@@ -101,6 +102,7 @@ Commands:
   memory    长期记忆检索（search）——distill 蒸馏产物 + 主动沉淀的记忆，按需想起
   expert    专家知识库（list/show/new/edit/rm/search/review/promote/import）——专家审定，决策级依据（1.2.1）
 term      Drive embedded terminal (open/write/read/close)
+  refs      大 payload 外溢占位取回（refs get <id>）——SSE 超大事件的全文（1.6.3）
   widget    Generative UI widget design guidelines (readme)
 config    Read/write application config
 status    Show app running state
@@ -251,6 +253,16 @@ async function callApi(route: string, body: Record<string, unknown> = {}): Promi
 // Output formatting
 // ---------------------------------------------------------------------------
 function printResult(group: string, action: string, result: Record<string, unknown>, jsonMode: boolean, _flags: Record<string, unknown> = {}): void {
+  printResultBody(group, action, result, jsonMode, _flags);
+  // 1.6.3 refs 大值外溢（debt #2）：响应里嵌 {kind:'ref'} 占位时打取回指引
+  // （stderr——stdout 留给数据/json 管线；GUI 走 SSE 自动取回，CLI 靠
+  // `zhishi refs get <id>` 按需取）。
+  const refs = collectRefs(result);
+  if (refs.length > 0) {
+    for (const line of formatRefHints(refs)) console.error(line);
+  }
+}
+function printResultBody(group: string, action: string, result: Record<string, unknown>, jsonMode: boolean, _flags: Record<string, unknown> = {}): void {
   if (jsonMode) {
     console.log(JSON.stringify(result, null, 2));
     return;
@@ -1503,6 +1515,41 @@ const group = positional[0];
   if (group === 'expert') {
     const expertResult = await runExpertCommand(action, positional.slice(2), flags, jsonMode);
     if (!expertResult.success) process.exit(1);
+    return;
+  }
+// refs 大值外溢（1.6.3 debt #2）：SSE 超大事件的全文取回。/refs/:id 在
+  // sidecar 根路径（非 /api/admin），GET 原文直接写 stdout（原是事件
+  // payload 的 JSON 文本，可管道给 jq）；404 = 缺失/GC/TTL 过期 → 降级提示。
+  if (group === 'refs' || group === 'ref') {
+    if (action !== 'get') {
+      console.error(`Error: unknown refs action "${action}"（仅支持 get）。`);
+      console.error('  Usage: zhishi refs get <id>');
+      process.exit(2);
+    }
+    const id = requirePositional(positional[2], 'id', 'refs get');
+    if (!isValidRefId(id)) {
+      console.error(`Error: 非法 ref id "${id}"（应为 8–32 位小写十六进制，见 {kind:'ref'} 占位的 id 字段）。`);
+      process.exit(2);
+    }
+    const res = await fetchRefBody(
+      `http://127.0.0.1:${PORT}`,
+      id,
+      undiciFetch as unknown as RefFetch,
+      adminDispatcher,
+    );
+    if (!res.ok) {
+      if (res.status === 404) {
+        console.error(`Error: ref ${id} 不存在或已过期（refs GC 回收，默认 TTL 1h）——占位里的 preview 是仅存内容。`);
+        process.exit(1);
+      }
+      if (res.status === 0 && (res.error.includes('ECONNREFUSED') || res.error.includes('fetch failed'))) {
+        console.error('Error: Cannot connect to ZhiShi. Is the app running?');
+        process.exit(3);
+      }
+      console.error(`Error: 取回 ref ${id} 失败：${res.error}`);
+      process.exit(1);
+    }
+    process.stdout.write(res.body.endsWith('\n') ? res.body : `${res.body}\n`);
     return;
   }
   // Simple commands (no subcommand)

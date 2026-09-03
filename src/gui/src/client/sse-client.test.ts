@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { GuiSidecarClient, toInput, type GuiFetch, type GuiFetchResponse } from './sse-client';
+import { GuiHttpError, GuiSidecarClient, toInput, type GuiFetch, type GuiFetchResponse } from './sse-client';
 
 describe('toInput', () => {
   it('JSON payload 解析为对象', () => {
@@ -122,5 +122,48 @@ describe('GuiSidecarClient.openSse', () => {
     const client = new GuiSidecarClient({ base: 'http://127.0.0.1:3199', fetchImpl });
     const res = await client.postJson('/chat/send', { text: 'hi' });
     expect(res).toEqual({ success: true, steering: true });
+  });
+});
+
+// ── 1.6.3 refs 大值外溢取回（debt #2 消费端） ──
+
+describe('GuiSidecarClient.getRefText', () => {
+  it('200 → 返回原文（GET base + /refs/<id>，根路径非 /api/admin）', async () => {
+    let seenUrl = '';
+    const fetchImpl: GuiFetch = async (url) => {
+      seenUrl = url;
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: () => 'application/json' },
+        json: async () => ({}),
+        text: async () => '{"toolUseId":"t1","content":"FULL"}',
+        body: null,
+      };
+    };
+    const client = new GuiSidecarClient({ base: 'http://127.0.0.1:3199', fetchImpl });
+    const body = await client.getRefText('ab12cd34');
+    expect(seenUrl).toBe('http://127.0.0.1:3199/refs/ab12cd34');
+    expect(body).toBe('{"toolUseId":"t1","content":"FULL"}');
+  });
+
+  it('404（GC/TTL 过期）→ 抛 GuiHttpError(404)，消费端据此走 expired 降级', async () => {
+    const fetchImpl: GuiFetch = async () => ({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      headers: { get: () => 'application/json' },
+      json: async () => ({ error: 'ref not found or expired' }),
+      text: async () => '{"error":"ref not found or expired"}',
+      body: null,
+    });
+    const client = new GuiSidecarClient({ base: 'http://127.0.0.1:3199', fetchImpl });
+    const err = await client.getRefText('dead0000').then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(GuiHttpError);
+    expect((err as GuiHttpError).status).toBe(404);
   });
 });
