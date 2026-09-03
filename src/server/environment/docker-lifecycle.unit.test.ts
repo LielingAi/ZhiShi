@@ -2,11 +2,11 @@
  * 安全研究员版 P1 E4 — docker 环境生命周期 unit tests.
  *
  * 全部通过注入的 exec 断言命令组装与输出解析，绝不真调 docker。
- * 覆盖：镜像 tag / 容器名约定、build/run/stop/rm/ps/images 参数组装、
+ * 覆盖：镜像 tag / 容器名约定、build/run/stop/rm/ps/images/rmi 参数组装、
  * `docker ps` 输出解析（含 Windows 路径 workspace）、docker 不可用的
  * 清晰错误（复用 E1 探测语义）、VM 配方的内部路由错误拦截、build/run 失败路径、
  * 1.5.10 三层模型（envUp 四分支 / down 只 stop 不 rm / rebuild / reset /
- * 镜像发现解析）。
+ * 镜像发现解析）、1.6.3 #8 镜像删除。
  */
 import { describe, expect, it } from 'vitest';
 
@@ -17,6 +17,7 @@ import {
   buildDockerPsAllArgs,
   buildDockerPsArgs,
   buildDockerPsByRecipeArgs,
+  buildDockerRmiArgs,
   buildDockerRunArgs,
   containerNameFor,
   dockerContainerRunning,
@@ -25,6 +26,7 @@ import {
   envPs,
   envPsAll,
   envRebuild,
+  envRemoveImage,
   envReset,
   envRmContainer,
   envUp,
@@ -604,6 +606,27 @@ describe('1.5.10 镜像发现 — envImages / parseDockerImages', () => {
       exec: async () => ({ exitCode: 1, stdout: '', stderr: 'Cannot connect to the Docker daemon' }),
     });
     expect(down.ok).toBe(false);
+  });
+});
+
+describe('1.6.3 #8 镜像删除 — envRemoveImage / buildDockerRmiArgs', () => {
+  it('buildDockerRmiArgs 组装 `docker rmi <image>`（不带 -f，容器引用由 daemon/admin 闸拒）', () => {
+    expect(buildDockerRmiArgs('zhishi-env-pwn:latest')).toEqual(['rmi', 'zhishi-env-pwn:latest']);
+  });
+
+  it('envRemoveImage 经注入 exec 实删成功；失败给可读错误（绝不抛错）', async () => {
+    const { exec, calls } = scriptedExec([ok('Untagged: zhishi-env-pwn:latest\nDeleted: sha256:abc')]);
+    const result = await envRemoveImage('zhishi-env-pwn:latest', { exec });
+    expect(result).toEqual({ ok: true, removed: 'zhishi-env-pwn:latest' });
+    expect(calls).toEqual([['docker', 'rmi', 'zhishi-env-pwn:latest']]);
+
+    const conflict = await envRemoveImage('zhishi-env-pwn:latest', {
+      exec: async () => ({ exitCode: 1, stdout: '', stderr: 'conflict: unable to remove repository reference (must force) - container b1c2 is using it' }),
+    });
+    expect(conflict.ok).toBe(false);
+    if (conflict.ok) return;
+    expect(conflict.error).toContain('docker rmi 失败');
+    expect(conflict.error).toContain('container b1c2 is using it');
   });
 });
 

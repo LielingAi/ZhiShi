@@ -62,11 +62,45 @@ export function markDeferredInitFailed(phase: string, error: unknown, retryable 
 }
 
 /**
- * Reset to pending — used by the optional /health/ready/retry endpoint.
- * Caller is responsible for actually re-running deferred init afterwards.
+ * Reset to pending — test helper and building block for the retry path.
+ * The /health/ready/retry endpoint uses `tryBeginDeferredInitRetry`
+ * instead, which couples this reset with the concurrency guard atomically.
  */
 export function resetDeferredInitForRetry(): void {
   state = { kind: 'pending' };
+}
+
+/**
+ * Retry coordinator (1.6.3 debt #5 — deferred init 不可重试).
+ *
+ * `POST /health/ready/retry` calls `tryBeginDeferredInitRetry`; on
+ * `started: true` the caller MUST re-run deferred init (from `phase`
+ * onward) and call `endDeferredInitRetry` in a `finally`.
+ *
+ * Concurrency: the check-and-set below is synchronous, so on Node's
+ * single thread two concurrent POSTs can never both observe
+ * `started: true`. While a retry is in flight the original init is
+ * guaranteed finished — `failed` is only ever set in the init runner's
+ * terminal catch — so a phase can never run twice in parallel.
+ */
+let retryInProgress = false;
+
+export type DeferredInitRetryBegin =
+  | { started: true; phase: string }
+  | { started: false; reason: 'already-ready' | 'init-in-progress' | 'retry-in-progress' };
+
+export function tryBeginDeferredInitRetry(): DeferredInitRetryBegin {
+  if (retryInProgress) return { started: false, reason: 'retry-in-progress' };
+  if (state.kind === 'ready') return { started: false, reason: 'already-ready' };
+  if (state.kind !== 'failed') return { started: false, reason: 'init-in-progress' };
+  retryInProgress = true;
+  const phase = state.phase;
+  state = { kind: 'pending' };
+  return { started: true, phase };
+}
+
+export function endDeferredInitRetry(): void {
+  retryInProgress = false;
 }
 
 /**
@@ -131,4 +165,5 @@ export function buildGateResponseBody(): { status: number; body: Record<string, 
 /** Test-only reset. Not exported via the barrel. */
 export function __resetReadinessForTests(): void {
   state = { kind: 'pending' };
+  retryInProgress = false;
 }

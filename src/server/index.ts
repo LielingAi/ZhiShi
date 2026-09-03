@@ -49,9 +49,11 @@ import { installCrashDiagnostics, isStdioBroken, markStdioBroken } from './crash
 import {
   buildGateResponseBody,
   buildReadyResponseBody,
+  endDeferredInitRetry,
   markDeferredInitFailed,
   markDeferredInitReady,
   setDeferredInitPhase,
+  tryBeginDeferredInitRetry,
 } from './readiness-state';
 import { getActiveUnifiedLogPath } from './UnifiedLogger';
 import { getActiveSessionLogPath } from './AgentLogger';
@@ -255,6 +257,8 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'environment/reset') return await api.handleEnvironmentReset(payload as Parameters<typeof api.handleEnvironmentReset>[0]);
   if (route === 'environment/ps') return await api.handleEnvironmentPs();
   if (route === 'environment/discover') return await api.handleEnvironmentDiscover();
+  // 1.6.3 #8：本机镜像删除（docker rmi 语义；登记环境占用/容器引用拒绝）
+  if (route === 'environment/image-remove') return await api.handleEnvironmentImageRemove(payload as Parameters<typeof api.handleEnvironmentImageRemove>[0]);
   // 1.3.7 场景 3：能力集合重推 + 回写（GUI 手动刷新入口）
   if (route === 'environment/capability-refresh') return await api.handleEnvironmentCapabilityRefresh(payload as Parameters<typeof api.handleEnvironmentCapabilityRefresh>[0]);
   // 1.3.8 多配方：绑定集合整体替换（含主配方，不进域裁决）
@@ -285,6 +289,8 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'auto-run/budget') return api.handleAutoRunBudget(payload as Parameters<typeof api.handleAutoRunBudget>[0]);
   if (route === 'auto-run/verdict') return api.handleAutoRunVerdict(payload as Parameters<typeof api.handleAutoRunVerdict>[0]);
   if (route === 'auto-run/list') return await api.handleAutoRunList(payload as Parameters<typeof api.handleAutoRunList>[0]);
+  // 1.6.3 #4：auto-run 记录清理（终态连盘删除；活跃拒绝）
+  if (route === 'auto-run/clear') return await api.handleAutoRunClear(payload as Parameters<typeof api.handleAutoRunClear>[0]);
 // Environment selection（安全研究员版 P1 T4，D17 首屏选定的持久化）
   if (route === 'environment/select') return await api.handleEnvironmentSelect(payload as Parameters<typeof api.handleEnvironmentSelect>[0]);
   if (route === 'environment/current') return api.handleEnvironmentCurrent(payload as Parameters<typeof api.handleEnvironmentCurrent>[0]);
@@ -451,17 +457,22 @@ const currentAgentDir = await ensureAgentDir(agentDir);
   // /health is exempt so the sidecar becomes "healthy" from Rust's
   // perspective the moment the HTTP server accepts TCP connections —
   // letting the frontend render the Tab UI while deferred init still runs.
-  let resolveDeferredInit!: () => void;
-  let rejectDeferredInit!: (e: unknown) => void;
-  const deferredInitPromise: Promise<void> = new Promise((res, rej) => {
-    resolveDeferredInit = res;
-    rejectDeferredInit = rej;
-  });
-  // Route handlers that need agent state call `await awaitDeferredInit()`.
-  // Exposed on globalThis so the hono fetch handler (below) can reach it
-  // without changing signatures.
-  (globalThis as { __zhishiDeferredInit?: Promise<void> }).__zhishiDeferredInit =
-    deferredInitPromise;
+  // The readiness state machine (readiness-state.ts) is the authority for
+  // gating; this promise stays exposed on globalThis for any legacy awaiter.
+  // Each deferred-init run (first boot + every /health/ready/retry) installs
+  // a fresh promise so a resolved/rejected run never goes stale.
+  const createDeferredInitPromise = (): { resolve: () => void; reject: (e: unknown) => void } => {
+    let resolve!: () => void;
+    let reject!: (e: unknown) => void;
+    const promise: Promise<void> = new Promise((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    (globalThis as { __zhishiDeferredInit?: Promise<void> }).__zhishiDeferredInit =
+      promise;
+    return { resolve, reject };
+  };
+  createDeferredInitPromise();
 // M4c: openai-bridge 已删除——bridge 处理器不复存在。
 console.log(`[startup] HTTP server binding to 127.0.0.1:${port}...`);
 const httpServer = honoServe({
@@ -574,12 +585,22 @@ const httpServer = honoServe({
         const { status, body } = buildReadyResponseBody();
         return jsonResponse(body, status);
       }
-      // (removed) `POST /health/ready/retry` — pre-0.2.0 endpoint that reset
-      // DeferredInitState to `pending` and returned 202 promising a re-run,
-      // but no in-process re-runner exists (the deferred init block is a
-      // single IIFE). The renderer never observed progress and was misled.
-      // Retry today is a process restart; if/when an extracted re-callable
-      // init lands we can reintroduce a real retry endpoint.
+      // POST /health/ready/retry — 1.6.3 debt #5: real in-process re-runner.
+      // Re-runs deferred init from the failed phase onward (runDeferredInit
+      // is hoisted below). Bypasses the gate like the other /health routes —
+      // when init has failed the gate would 503 this very recovery path.
+      // Idempotent: ready → 200 no-op; pending/phase or an in-flight retry
+      // → 409 (the state machine's coordinator is an atomic check-and-set,
+      // so concurrent POSTs can never start two runners).
+      if (pathname === '/health/ready/retry' && request.method === 'POST') {
+        const attempt = tryBeginDeferredInitRetry();
+        if (!attempt.started) {
+          const status = attempt.reason === 'already-ready' ? 200 : 409;
+          return jsonResponse({ retried: false, reason: attempt.reason }, status);
+        }
+        void runDeferredInit(attempt.phase).finally(endDeferredInitRetry);
+        return jsonResponse({ retried: true, fromPhase: attempt.phase, state: 'pending' }, 202);
+      }
 // 📦 Pattern 2 §2.3.1 — Large-value ref retrieval. SSE / IPC payloads
       // over the spill threshold leave a `{kind:'ref', id, ...}` placeholder
       // here; consumers fetch the full body via this endpoint. Streamed via
@@ -1197,27 +1218,41 @@ return new Response('Not Found', { status: 404 });
   //   3. initializeAgent — the big one
   //   4. boot banner — prints with fully resolved state
   // Pattern 4: track which phase is running so /health/ready can report
-  // {phase: 'migration' | 'skill-seed' | 'sdk-init' | ...} on failure.
-  let currentInitPhase = 'startup';
-  const deferredInitStarted = nowMs();
-  let initPhaseStarted = deferredInitStarted;
-  const emitDeferredPhaseDone = (phase: string) => {
+  // {phase: 'cleanup' | 'skill-seed' | 'socks-bridge' | 'sdk-init'} on failure.
+  //
+  // 1.6.3 debt #5: the runner is a re-callable function, not a single-shot
+  // IIFE. `POST /health/ready/retry` invokes it with `fromPhase` = the failed
+  // phase; phases before it are skipped (they completed) and the failed one
+  // re-runs. First boot calls it with no argument (full run).
+  async function runDeferredInit(fromPhase?: string): Promise<void> {
+    // Fresh promise per run — see createDeferredInitPromise above.
+    const { resolve: resolveDeferredInit, reject: rejectDeferredInit } = createDeferredInitPromise();
+    let currentInitPhase = fromPhase ?? 'startup';
+    const deferredInitStarted = nowMs();
+    let initPhaseStarted = deferredInitStarted;
+    const emitDeferredPhaseDone = (phase: string) => {
+      emitPerfTrace({
+        trace: 'sidecar_boot',
+        phase: 'deferred_init_phase_done',
+        durationMs: elapsedMs(initPhaseStarted),
+        status: 'ok',
+        detail: { phase, port },
+      });
+    };
     emitPerfTrace({
       trace: 'sidecar_boot',
-      phase: 'deferred_init_phase_done',
-      durationMs: elapsedMs(initPhaseStarted),
+      phase: 'deferred_init_start',
       status: 'ok',
-      detail: { phase, port },
+      detail: { port, sessionId: initialSessionId ?? 'new', retryFrom: fromPhase ?? null },
     });
-  };
-  emitPerfTrace({
-    trace: 'sidecar_boot',
-    phase: 'deferred_init_start',
-    status: 'ok',
-    detail: { port, sessionId: initialSessionId ?? 'new' },
-  });
-  (async () => {
+    // Phase gate: on retry, skip phases that already completed. Phase bodies
+    // are idempotent by design (content-hash seeds, guarded timers), so
+    // re-running the failed phase and everything after it is safe.
+    const PHASE_ORDER = ['cleanup', 'skill-seed', 'socks-bridge', 'sdk-init'];
+    const startIdx = fromPhase ? Math.max(0, PHASE_ORDER.indexOf(fromPhase)) : 0;
+    const shouldRunPhase = (phase: string) => PHASE_ORDER.indexOf(phase) >= startIdx;
     try {
+      if (shouldRunPhase('cleanup')) {
       currentInitPhase = 'cleanup';
       setDeferredInitPhase(currentInitPhase);
       initPhaseStarted = nowMs();
@@ -1276,6 +1311,8 @@ return new Response('Not Found', { status: 404 });
         console.warn('[migration] runtimeConfig scrub failed (non-fatal):', err instanceof Error ? err.message : String(err));
       }
       emitDeferredPhaseDone('cleanup');
+      }
+      if (shouldRunPhase('skill-seed')) {
 currentInitPhase = 'skill-seed';
       setDeferredInitPhase(currentInitPhase);
       initPhaseStarted = nowMs();
@@ -1313,12 +1350,16 @@ currentInitPhase = 'skill-seed';
 // #296 — install the backend auto-title trigger into the turn-hooks slot
       // BEFORE any turn can complete (initializeAgent / pre-warm run below).
       installAutoTitleHook();
-emitDeferredPhaseDone('skill-seed');
+      emitDeferredPhaseDone('skill-seed');
+      }
+      if (shouldRunPhase('socks-bridge')) {
 currentInitPhase = 'socks-bridge';
       setDeferredInitPhase(currentInitPhase);
       initPhaseStarted = nowMs();
       await initSocksBridgeFromEnv();
       emitDeferredPhaseDone('socks-bridge');
+      }
+      if (shouldRunPhase('sdk-init')) {
 currentInitPhase = 'sdk-init';
       setDeferredInitPhase(currentInitPhase);
       initPhaseStarted = nowMs();
@@ -1329,6 +1370,7 @@ currentInitPhase = 'sdk-init';
       await initPiChatEngine(currentAgentDir);
       console.log(`[startup] loop engine: ${isPiEngine() ? 'pi (M4c 默认)' : 'sdk (default)'}`);
       emitDeferredPhaseDone('sdk-init');
+      }
 // ── Sidecar Boot Banner: single-line for AI grep ──
       {
         const model = getSessionModel() || '?';
@@ -1364,13 +1406,14 @@ markDeferredInitReady();
         },
       });
       // Pattern 4: capture the phase for /health/ready's structured 503.
-      // retryable=false until we have a real re-runner (TODO above).
-      markDeferredInitFailed(currentInitPhase, err, false);
+      // retryable=true — POST /health/ready/retry re-runs from this phase.
+      markDeferredInitFailed(currentInitPhase, err, true);
       rejectDeferredInit(err);
       // Don't re-throw — the server stays up so /health/* keeps responding
       // and the renderer can render the failure state instead of timing out.
     }
-  })();
+  }
+  void runDeferredInit();
 // Kick off interactive-shell PATH detection in the background.
   // `warmupShellPath()` uses async `execFile` so it never blocks the event loop
   // (unlike the old `execSync` path, which starved TCP accept for 3–5s while
