@@ -21,11 +21,13 @@ import {
   __resetReadinessForTests,
   buildGateResponseBody,
   buildReadyResponseBody,
+  endDeferredInitRetry,
   getDeferredInitState,
   markDeferredInitFailed,
   markDeferredInitReady,
   resetDeferredInitForRetry,
   setDeferredInitPhase,
+  tryBeginDeferredInitRetry,
 } from '../readiness-state';
 
 beforeEach(() => {
@@ -125,5 +127,85 @@ describe('Pattern 4 — readiness state machine', () => {
     markDeferredInitFailed('socks-bridge', new Error('upstream offline'), true);
     const r = buildReadyResponseBody();
     expect(r.body.retryable).toBe(true);
+  });
+});
+
+describe('Pattern 4 retry coordinator — POST /health/ready/retry backing logic', () => {
+  it('(g) begin from failed: captures the failed phase and resets state to pending', () => {
+    setDeferredInitPhase('sdk-init');
+    markDeferredInitFailed('sdk-init', new Error('pre-warm timeout'), true);
+
+    const attempt = tryBeginDeferredInitRetry();
+    expect(attempt).toEqual({ started: true, phase: 'sdk-init' });
+    // State is reset: /health/ready reports warming-up again, not failed.
+    expect(getDeferredInitState().kind).toBe('pending');
+    const r = buildReadyResponseBody();
+    expect(r.status).toBe(503);
+    expect(r.body.state).toBe('pending');
+    endDeferredInitRetry();
+  });
+
+  it('(h) concurrency: a second begin while a retry is in flight is refused; after end + new failure it can begin again', () => {
+    markDeferredInitFailed('skill-seed', new Error('disk full'), true);
+
+    const first = tryBeginDeferredInitRetry();
+    expect(first.started).toBe(true);
+
+    // Concurrent duplicate POST — must not start a second runner.
+    const dup = tryBeginDeferredInitRetry();
+    expect(dup).toEqual({ started: false, reason: 'retry-in-progress' });
+
+    endDeferredInitRetry();
+
+    // Retry failed again → state failed → a new retry may begin.
+    markDeferredInitFailed('skill-seed', new Error('disk still full'), true);
+    const second = tryBeginDeferredInitRetry();
+    expect(second).toEqual({ started: true, phase: 'skill-seed' });
+    endDeferredInitRetry();
+  });
+
+  it('(i) begin is only meaningful from failed: ready → already-ready; pending/phase → init-in-progress', () => {
+    // pending (initial boot running)
+    let attempt = tryBeginDeferredInitRetry();
+    expect(attempt).toEqual({ started: false, reason: 'init-in-progress' });
+
+    // mid-init phase
+    setDeferredInitPhase('socks-bridge');
+    attempt = tryBeginDeferredInitRetry();
+    expect(attempt).toEqual({ started: false, reason: 'init-in-progress' });
+
+    // ready — nothing to retry, state untouched
+    markDeferredInitReady();
+    attempt = tryBeginDeferredInitRetry();
+    expect(attempt).toEqual({ started: false, reason: 'already-ready' });
+    expect(getDeferredInitState().kind).toBe('ready');
+  });
+
+  it('(j) full retry cycle: failed 503 (retryable=true) → begin → phases run again → ready 200', () => {
+    // Boot run fails at sdk-init; structured 503 advertises retryable.
+    setDeferredInitPhase('sdk-init');
+    markDeferredInitFailed('sdk-init', new Error('SDK handshake failed'), true);
+    let r = buildReadyResponseBody();
+    expect(r.status).toBe(503);
+    expect(r.body).toMatchObject({ state: 'failed', phase: 'sdk-init', retryable: true });
+
+    // Endpoint begins the retry; runner re-enters the failed phase.
+    const attempt = tryBeginDeferredInitRetry();
+    expect(attempt).toEqual({ started: true, phase: 'sdk-init' });
+    try {
+      // The failed state was reset, so phase transitions are live again
+      // (they are no-ops while `failed` is sticky).
+      setDeferredInitPhase('sdk-init');
+      expect(getDeferredInitState()).toEqual({ kind: 'phase', phase: 'sdk-init' });
+      markDeferredInitReady();
+    } finally {
+      endDeferredInitRetry();
+    }
+
+    // /health/ready recovers to 200; the gate opens.
+    r = buildReadyResponseBody();
+    expect(r.status).toBe(200);
+    expect(r.body.state).toBe('ready');
+    expect(buildGateResponseBody()).toBeNull();
   });
 });

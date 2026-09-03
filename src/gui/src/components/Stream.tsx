@@ -8,8 +8,32 @@ import type React from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { selectCurrentSession, useGuiStore } from '../store/useGuiStore';
-import type { StreamItem } from '../model/blocks';
+import type { RefItem, StreamItem } from '../model/blocks';
+import { formatRefSize } from '../model/ref';
 import { TurnView } from './TurnView';
+
+/** refs 大值外溢占位行（1.6.3 debt #2）：loading 取回中；expired/failed
+ *  降级展示 preview（全文不可得——GC 或传输失败）。 */
+export function RefLine({ item }: { item: RefItem }): React.JSX.Element {
+  const label = `大 payload（${item.event} · ${formatRefSize(item.sizeBytes)}）`;
+  if (item.state === 'loading') {
+    return (
+      <div className="ref-line">
+        <span className="spinner" /> ⤓ {label}取回全文中…
+      </div>
+    );
+  }
+  return (
+    <div className="ref-line stale">
+      <div>
+        ⚠ {label}
+        {item.state === 'expired' ? '全文已过期被回收（refs GC）' : '全文取回失败'}
+        ——仅存预览：
+      </div>
+      <pre className="ref-preview">{item.preview.slice(0, 2000)}</pre>
+    </div>
+  );
+}
 
 function ItemView({ item }: { item: StreamItem }): React.JSX.Element {
   switch (item.kind) {
@@ -27,6 +51,8 @@ function ItemView({ item }: { item: StreamItem }): React.JSX.Element {
           <span className="err-mark">✗</span> {item.text}
         </div>
       );
+    case 'ref':
+      return <RefLine item={item} />;
   }
 }
 

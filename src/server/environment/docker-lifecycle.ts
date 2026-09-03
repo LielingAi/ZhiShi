@@ -31,6 +31,7 @@
  *   envPs()                  → docker ps --filter label=zhishi.env 解析成实例列表
  *   envImages()              → docker images zhishi-env-* 镜像发现（1.5.10，
  *                              非 zhishi-env-* 不纳管——记录在案边界）
+ *   envRemoveImage(image)    → docker rmi（1.6.3 #8 镜像删除；安全闸在 admin 层）
  *
  * VM 配方（base: vm）不走这里——由 environment/vm-lifecycle.ts 的 vmrun
  * 驱动接管（P2）；本模块收到 VM 配方说明 admin-api 路由错了，报内部错误。
@@ -412,6 +413,33 @@ export async function envImages(
     };
   }
   return { ok: true, images: parseDockerImages(result.stdout) };
+}
+
+/**
+ * `docker rmi <image>`（按镜像名/ID）。不带 -f——有容器引用时 daemon 侧拒绝，
+ * admin 层另有前置安全闸（登记环境占用/容器引用检查）给可读错误。
+ */
+export function buildDockerRmiArgs(image: string): string[] {
+  return ['rmi', image];
+}
+
+/**
+ * 1.6.3 #8：删除本机镜像（docker rmi 语义，environment/image-remove 的实体
+ * 通道）。复用 EnvResult 契约，失败给可读错误，绝不抛错。
+ */
+export async function envRemoveImage(
+  image: string,
+  options: LifecycleOptions = {},
+): Promise<EnvResult<{ removed: string }>> {
+  const exec = options.exec ?? defaultDockerExec;
+  const result = await exec(['docker', ...buildDockerRmiArgs(image)], DOCKER_RUN_TIMEOUT_MS);
+  if (result.exitCode !== 0 || result.error) {
+    return {
+      ok: false,
+      error: `docker rmi 失败（镜像 "${image}"）：\n${outputTail(result)}`,
+    };
+  }
+  return { ok: true, removed: image };
 }
 
 // ---------------------------------------------------------------------------

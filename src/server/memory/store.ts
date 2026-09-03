@@ -35,6 +35,7 @@ import {
   RESEARCH_TASK_KINDS,
 } from '../../shared/research-kinds';
 import type { ResearchBugClass, ResearchOutcome, ResearchTaskKind } from '../../shared/research-kinds';
+import { workspacePathsEqual } from '../../shared/workspacePath';
 
 // ===== Types =====
 
@@ -1135,10 +1136,18 @@ export function getResearchEventById(
   return row ? toResearchEvent(row) : null;
 }
 
-/** 查询研究事件：taskKind/outcome 过滤，按时间倒序，limit 截断（默认 50）。 */
+/** 查询研究事件：taskKind/outcome/workspace 过滤，按时间倒序，limit 截断（默认 50）。 */
 export function listResearchEvents(opts?: {
   taskKind?: ResearchTaskKind;
   outcome?: ResearchOutcome;
+  /**
+   * 1.6.3 修复（auto-run stall 判定样本饱和）：workspace 过滤**前置**于
+   * limit——调用方先 limit 再按 workspace 过滤时，全局事件超 limit 后本
+   * 工作区事件被挤出截断窗口，过滤结果变成错样本。比较走
+   * workspacePathsEqual（#320 口径：分隔符/尾斜杠/Windows 大小写等价），
+   * SQL 表达不了该归一化，故在 JS 侧过滤、limit 在过滤后生效。
+   */
+  workspace?: string;
   limit?: number;
   baseDir?: string;
 }): ResearchEvent[] {
@@ -1148,10 +1157,16 @@ export function listResearchEvents(opts?: {
   if (opts?.taskKind) { clauses.push('task_kind = ?'); params.push(opts.taskKind); }
   if (opts?.outcome) { clauses.push('outcome = ?'); params.push(opts.outcome); }
   const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+  // workspace 过滤在 JS 侧（见上），SQL 不下 LIMIT——否则又是「先截断后过滤」。
+  const sql = opts?.workspace !== undefined
+    ? `SELECT * FROM research_events ${where} ORDER BY ts DESC, id DESC`
+    : `SELECT * FROM research_events ${where} ORDER BY ts DESC, id DESC LIMIT ?`;
   const rows = db(opts?.baseDir ?? getZhiShiDataDir())
-    .prepare(`SELECT * FROM research_events ${where} ORDER BY ts DESC, id DESC LIMIT ?`)
-    .all(...params, limit) as ResearchEventRow[];
-  return rows.map(toResearchEvent);
+    .prepare(sql)
+    .all(...(opts?.workspace !== undefined ? params : [...params, limit])) as ResearchEventRow[];
+  const events = rows.map(toResearchEvent);
+  if (opts?.workspace === undefined) return events;
+  return events.filter((e) => workspacePathsEqual(e.workspace, opts.workspace)).slice(0, limit);
 }
 
 /** 安全蒸馏弧（D3）原料：未结算（未蒸馏）的研究事件，按时间正序——老的先蒸馏。 */

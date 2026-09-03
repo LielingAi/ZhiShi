@@ -17,6 +17,8 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { ResearchEvent } from '../memory/store';
 import {
   autoRunFilePath,
+  buildDockerTaskMd,
+  buildDockerTaskMdWriteCommand,
   buildFirstTurnText,
   buildNextTurnText,
   buildVerdictPackage,
@@ -46,9 +48,12 @@ import {
   validateAutoRunStart,
   verdictRequestOfRecord,
   withAutoRunDepDefaults,
+  writeDockerTaskMdCheckpoint,
   type AutoRunDeps,
   type AutoRunRecord,
 } from './auto-run';
+import type { EnvironmentEntry } from '../../shared/config-types';
+import type { EnvExec, EnvExecProcessResult } from './env-exec';
 import { clearCompletionDeclarations, declareCompletion, takeCompletionDeclaration } from './declare-completion';
 import { clearDecisions, pendingDecisions, requestDecision, respondDecision } from './decision';
 
@@ -1201,5 +1206,150 @@ describe('1.6.0 修复⑨:provider-error 暂停 persist 前更新 budget.spent',
     await done;
     await loop;
     expect(record.status).toBe('stopped');
+  });
+});
+
+// ===== 1.6.3 #7:docker checkpoint 留现场(环境内 task.md) =====
+
+describe('docker checkpoint task.md(1.6.3 #7)', () => {
+  const dockerEntry = (overrides: Partial<EnvironmentEntry> = {}): EnvironmentEntry => ({
+    id: 'pwn-box',
+    kind: 'docker',
+    container: 'zhishi-pwn-abcd1234',
+    createdAt: '2026-08-26T00:00:00.000Z',
+    ...overrides,
+  });
+
+  /** 从注入 exec 收到的 argv 里取 bash -lc 的命令体,解出 base64 载荷。 */
+  const decodeWrittenContent = (argv: string[]): string => {
+    const cmdIdx = argv.indexOf('-lc');
+    expect(cmdIdx).toBeGreaterThan(-1);
+    const m = /^printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \/workspace\/task\.md$/.exec(argv[cmdIdx + 1]);
+    expect(m, `命令形态不符:${argv[cmdIdx + 1]}`).not.toBeNull();
+    return Buffer.from(m![1], 'base64').toString('utf-8');
+  };
+
+  it('buildDockerTaskMd:目标/验收条件/当前状态/关键上下文齐全', () => {
+    const record = makeRecord({
+      status: 'paused',
+      pauseReason: 'budget',
+      turns: 7,
+      budget: { kind: 'turns', limit: 50, spent: 7 },
+      reportDir: '/ws/reports/run-1',
+    });
+    const md = buildDockerTaskMd(record);
+    expect(md).toContain('# task.md');
+    expect(md).toContain('- 任务:demo(run id: run-1)');
+    expect(md).toContain('- 环境:pwn-vm');
+    expect(md).toContain('拿到 flag');
+    expect(md).toContain('1. 输出 flag{…}');
+    expect(md).toContain('2. PoC 稳定复现 3 次');
+    expect(md).toContain('- 运行状态:paused(暂停原因:budget)');
+    expect(md).toContain('- 已完成轮次:7');
+    expect(md).toContain('- 预算:turns 已耗 7 / 上限 50');
+    expect(md).toContain('- loop 轨迹线:ls-1');
+    expect(md).toContain('- 宿主工作区:/ws');
+    expect(md).toContain('- 报告:/ws/reports/run-1');
+    expect(md.endsWith('\n')).toBe(true);
+  });
+
+  it('buildDockerTaskMd:可缺省字段缺席时不留空行项', () => {
+    const md = buildDockerTaskMd(makeRecord({ workspace: undefined, reportDir: undefined, turns: undefined }));
+    expect(md).not.toContain('宿主工作区');
+    expect(md).not.toContain('报告:');
+    expect(md).toContain('- 已完成轮次:0');
+  });
+
+  it('buildDockerTaskMdWriteCommand:base64 往返无损(引号/换行/UTF-8)', () => {
+    const content = '含 \'单引号\' 与 "双引号"\n多行\n中文内容 flag{uäg}';
+    const cmd = buildDockerTaskMdWriteCommand(content);
+    const m = /^printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \/workspace\/task\.md$/.exec(cmd);
+    expect(m).not.toBeNull();
+    expect(Buffer.from(m![1], 'base64').toString('utf-8')).toBe(content);
+  });
+
+  it('容器在跑:docker exec 写入 /workspace/task.md → ok', async () => {
+    const calls: string[][] = [];
+    const exec: EnvExec = async (argv) => {
+      calls.push(argv);
+      return { exitCode: 0, stdout: '', stderr: '' } satisfies EnvExecProcessResult;
+    };
+    const record = makeRecord();
+    const r = await writeDockerTaskMdCheckpoint(dockerEntry(), record, { exec });
+    expect(r).toEqual({ ok: true });
+    expect(calls).toHaveLength(1);
+    // docker exec 通道(buildDockerExecArgv 形态):docker exec <container> bash -lc <cmd>
+    expect(calls[0].slice(0, 3)).toEqual(['docker', 'exec', 'zhishi-pwn-abcd1234']);
+    expect(decodeWrittenContent(calls[0])).toBe(buildDockerTaskMd(record));
+  });
+
+  it('容器已停止(exec 失败)+ 条目有 workspace:降级写宿主 bind-mount 源目录,告警不丢现场', async () => {
+    const exec: EnvExec = async () => ({
+      exitCode: 1, stdout: '', stderr: 'Error response from daemon: Container is not running',
+    });
+    const hostWrites: Array<{ path: string; content: string }> = [];
+    const warnings: string[] = [];
+    const record = makeRecord();
+    const r = await writeDockerTaskMdCheckpoint(
+      dockerEntry({ workspace: '/host/ws' }),
+      record,
+      { exec, hostWrite: (path, content) => { hostWrites.push({ path, content }); }, log: (m) => warnings.push(m) },
+    );
+    expect(r).toEqual({ ok: true });
+    expect(hostWrites).toHaveLength(1);
+    expect(hostWrites[0].path).toBe(join('/host/ws', 'task.md'));
+    expect(hostWrites[0].content).toBe(buildDockerTaskMd(record));
+    expect(warnings.some((w) => w.includes('降级写宿主侧'))).toBe(true);
+  });
+
+  it('容器内非零退出码(写失败)同样走降级', async () => {
+    const exec: EnvExec = async () => ({ exitCode: 1, stdout: '', stderr: 'permission denied' });
+    const hostWrites: string[] = [];
+    const r = await writeDockerTaskMdCheckpoint(
+      dockerEntry({ workspace: '/host/ws' }),
+      makeRecord(),
+      { exec, hostWrite: (path) => { hostWrites.push(path); }, log: () => {} },
+    );
+    expect(r).toEqual({ ok: true });
+    expect(hostWrites).toEqual([join('/host/ws', 'task.md')]);
+  });
+
+  it('容器写不进且条目无 workspace 登记:ok:false 可读错误(run 状态不受影响由调用方口径保证)', async () => {
+    const exec: EnvExec = async () => ({ exitCode: 1, stdout: '', stderr: 'not running' });
+    const r = await writeDockerTaskMdCheckpoint(dockerEntry(), makeRecord(), { exec, log: () => {} });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain('无法降级');
+      expect(r.error).toContain('not running');
+    }
+  });
+
+  it('容器写不进且宿主降级写也失败:ok:false,两侧错误都在', async () => {
+    const exec: EnvExec = async () => ({ exitCode: 1, stdout: '', stderr: 'not running' });
+    const r = await writeDockerTaskMdCheckpoint(
+      dockerEntry({ workspace: '/host/ws' }),
+      makeRecord(),
+      {
+        exec,
+        hostWrite: () => { throw new Error('EROFS: read-only file system'); },
+        log: () => {},
+      },
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain('not running');
+      expect(r.error).toContain('EROFS');
+    }
+  });
+
+  it('缺 container 定位锚的 docker 条目:execInEnvironment 解析失败也走降级/报错,不抛', async () => {
+    const hostWrites: string[] = [];
+    const r = await writeDockerTaskMdCheckpoint(
+      dockerEntry({ container: undefined, workspace: '/host/ws' }),
+      makeRecord(),
+      { hostWrite: (path) => { hostWrites.push(path); }, log: () => {} },
+    );
+    expect(r).toEqual({ ok: true });
+    expect(hostWrites).toEqual([join('/host/ws', 'task.md')]);
   });
 });

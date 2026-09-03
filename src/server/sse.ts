@@ -560,10 +560,10 @@ export function broadcast(event: string, data: unknown): void {
 // （~/.zhishi/refs/<id>），线上改发 {kind:'ref', id, preview, ...} 占位引用，
 // 全量体由消费端走 GET /refs/:id 取回。
 //
-// 消费端待接（刻意记录）：当前 GUI/CLI 尚无 fetchRef / {kind:'ref'} 解析端——
-// 服务端写链路（落盘 + /refs/:id + startRefsGc）真实生效；消费端接上前，客户
-// 端在超大 payload 处会看到 ref 占位而非全量 JSON。这正是红线的取舍：宁可占位
-// 也不让 MB 级 JSON 进 IPC 桥拖死 sidecar。
+// 消费端（1.6.3 debt #2 已接）：GUI 在 store SSE 循环识别 {kind:'ref'}——
+// 先落占位行保序，异步 GET /refs/:id 取回全文后按原事件名原位归约（model/ref.ts
+// + useGuiStore::handleRefPayload）；CLI 侧 printResult 深扫响应打取回指引 +
+// `zhishi refs get <id>` 按需取回（src/cli/ref.ts）。
 //
 // spill 是异步落盘；SSE 消费端是结构化状态机（tool-result 必须先于
 // message-complete 等），故 spill 在飞期间到达的后续事件经 spillTail 串行

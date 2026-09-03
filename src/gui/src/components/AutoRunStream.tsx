@@ -16,6 +16,7 @@ import * as api from '../client/api';
 import { buildHistorySession } from '../model/history';
 import type { StreamItem } from '../model/blocks';
 import { TurnView } from './TurnView';
+import { RefLine } from './Stream';
 
 function ObsItem({ item }: { item: StreamItem }): React.JSX.Element {
   switch (item.kind) {
@@ -33,6 +34,8 @@ function ObsItem({ item }: { item: StreamItem }): React.JSX.Element {
           <span className="err-mark">✗</span> {item.text}
         </div>
       );
+    case 'ref':
+      return <RefLine item={item} />;
   }
 }
 

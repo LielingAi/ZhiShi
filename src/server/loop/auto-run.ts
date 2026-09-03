@@ -84,6 +84,8 @@ import { resolveLoopModel } from './pi-provider';
 import { runLoopText } from './loop';
 import { getEntryById, hasExpertDb, openExpertStore } from '../expert/store';
 import { workspacePathsEqual } from '../../shared/workspacePath';
+import type { EnvironmentEntry } from '../../shared/config-types';
+import { execInEnvironment, type EnvExec } from './env-exec';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -700,8 +702,13 @@ export interface AutoRunDeps {
   resolveEvent: (id: number) => ResearchEvent | null;
   /** 终审注回:把 verdict/应答作为 user 消息追加进 loop 线(jsonl 可追溯)。 */
   appendUserMessage: (loopSessionId: string, text: string) => Promise<void>;
-  /** 开局/checkpoint 快照(best-effort:失败告警不阻断)。 */
-  snapshot: (envKey: string) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * 开局/checkpoint 留现场(best-effort:失败告警不阻断)。vm 走 vmrun 快照;
+   * docker 无快照机制,写环境内 task.md(1.6.3 #7,设计 §4「现场在环境快照
+   * + task.md」)——内容来自 record(目标/验收条件/当前状态/关键上下文),
+   * 故第二参带 record。
+   */
+  snapshot: (envKey: string, record: AutoRunRecord) => Promise<{ ok: boolean; error?: string }>;
   /** verdict=pass 时自动出报告(复用 report/export 链路)。 */
   exportReport: (record: AutoRunRecord) => Promise<{ ok: boolean; reportDir?: string; error?: string }>;
   broadcast: (event: string, data: unknown) => void;
@@ -936,7 +943,7 @@ export async function runAutoRunLoop(
 
   // 开局快照(best-effort:失败告警不阻断,设计 §3)。
   try {
-    const snap = await deps.snapshot(record.envKey);
+    const snap = await deps.snapshot(record.envKey, record);
     if (!snap.ok) deps.log(`[auto-run] 开局快照失败(继续运行):${snap.error ?? 'unknown'}`);
   } catch (err) {
     deps.log(`[auto-run] 开局快照异常(继续运行):${err instanceof Error ? err.message : String(err)}`);
@@ -1237,7 +1244,7 @@ export async function runAutoRunLoop(
     if (isBudgetExhausted(record.budget, spent)) {
       // checkpoint:开局快照同款(best-effort,失败告警)。
       try {
-        const snap = await deps.snapshot(record.envKey);
+        const snap = await deps.snapshot(record.envKey, record);
         if (!snap.ok) deps.log(`[auto-run] checkpoint 快照失败:${snap.error ?? 'unknown'}`);
       } catch (err) {
         deps.log(`[auto-run] checkpoint 快照异常:${err instanceof Error ? err.message : String(err)}`);
@@ -1400,6 +1407,109 @@ async function raisePauseDecision(
 }
 
 // ---------------------------------------------------------------------------
+// docker 留现场(1.6.3 #7:task.md;设计 §4「现场在环境快照 + task.md」)
+// ---------------------------------------------------------------------------
+
+/**
+ * docker 环境没有 vmrun 快照机制——auto-run 的「开局/checkpoint 留现场」
+ * 对 docker 落成容器内 /workspace/task.md:任务目标 + 验收条件 + 当前状态
+ * + 关键上下文。恢复侧走既有 taskmd 通道读回(refs.ts 探测序列含
+ * ./task.md,容器 WORKDIR 即 /workspace),不发明新机制。
+ * 格式:设计文档无约定,人可读 markdown 分节(目标/验收条件/当前状态/
+ * 关键上下文),对齐档案投影的分节风格。
+ */
+export function buildDockerTaskMd(record: AutoRunRecord): string {
+  const budget = record.budget;
+  const lines = [
+    '# task.md — auto loop 留现场(zhishi auto-run)',
+    '',
+    '> 本文件由 zhishi auto-run 在开局/checkpoint 自动写入——docker 环境无快照机制,',
+    '> 现场 = 容器文件系统(容器持久,stop/start 续上)+ 本文件',
+    '> (设计 docs/design/auto-loop-design.md §4「现场在环境快照 + task.md」)。',
+    '> 恢复:重新发起 auto run,或普通会话用 @taskmd 引用本文件继续。',
+    '',
+    `- 任务:${record.name}(run id: ${record.id})`,
+    `- 环境:${record.envKey}`,
+    `- 更新时间:${record.updatedAt}`,
+    '',
+    '## 目标',
+    '',
+    record.goal,
+    '',
+    '## 验收条件(研究员定义、启动即锁定)',
+    '',
+    ...record.criteria.map((c, i) => `${i + 1}. ${c}`),
+    '',
+    '## 当前状态',
+    '',
+    `- 运行状态:${record.status}${record.pauseReason ? `(暂停原因:${record.pauseReason})` : ''}`,
+    `- 已完成轮次:${record.turns ?? 0}`,
+    `- 预算:${budget.kind} 已耗 ${budget.spent ?? 0} / 上限 ${budget.limit}`,
+    '',
+    '## 关键上下文',
+    '',
+    `- loop 轨迹线:${record.loopSessionId}(宿主侧 loop-sessions;recall 工具/历史回看可查)`,
+    ...(record.workspace ? [`- 宿主工作区:${record.workspace}`] : []),
+    ...(record.reportDir ? [`- 报告:${record.reportDir}`] : []),
+  ];
+  return `${lines.join('\n')}\n`;
+}
+
+/** 容器内写 task.md 的命令:base64 传输(引号/换行/UTF-8 全免疫)经 bash -lc 落盘。 */
+export function buildDockerTaskMdWriteCommand(content: string): string {
+  const b64 = Buffer.from(content, 'utf-8').toString('base64');
+  return `printf '%s' '${b64}' | base64 -d > /workspace/task.md`;
+}
+
+export interface DockerTaskMdCheckpointOptions {
+  /** 测试注入:env 通道(生产 defaultEnvExec 经 execInEnvironment)。 */
+  exec?: EnvExec;
+  /** 测试注入:宿主侧降级写(默认 writeFileSync)。 */
+  hostWrite?: (path: string, content: string) => void;
+  /** 测试注入:告警通道(默认 console.warn)。 */
+  log?: (msg: string) => void;
+}
+
+/**
+ * docker checkpoint:往容器内 /workspace 写 task.md。容器可能已停止
+ * (checkpoint 发生在长跑后,容器随时可能被 down)——写不进去走降级:
+ * docker 的 /workspace 是宿主 bind mount(entry.workspace 是 1.5.10 登记
+ * 的宿主源目录),直接写宿主侧同一文件,效果与容器内写一致;只告警不丢
+ * 状态。两条路都不通才 ok:false(run 状态本就不受影响——记录已落盘,
+ * 调用方对 snapshot 失败也只告警)。
+ */
+export async function writeDockerTaskMdCheckpoint(
+  entry: EnvironmentEntry,
+  record: AutoRunRecord,
+  options: DockerTaskMdCheckpointOptions = {},
+): Promise<{ ok: boolean; error?: string }> {
+  const log = options.log ?? ((msg: string) => console.warn(msg));
+  const hostWrite = options.hostWrite ?? ((p: string, c: string) => writeFileSync(p, c, 'utf-8'));
+  const content = buildDockerTaskMd(record);
+  let reason: string;
+  try {
+    const r = await execInEnvironment(entry, buildDockerTaskMdWriteCommand(content), {
+      ...(options.exec ? { exec: options.exec } : {}),
+    });
+    if (r.ok && r.exitCode === 0) return { ok: true };
+    reason = r.ok ? `容器内写入退出码 ${r.exitCode}:${r.stderr.trim().slice(0, 200)}` : r.error;
+  } catch (err) {
+    reason = `环境执行异常:${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (entry.workspace) {
+    const hostPath = join(entry.workspace, 'task.md');
+    try {
+      hostWrite(hostPath, content);
+      log(`[auto-run] docker checkpoint 容器内写 task.md 失败(${reason})——已降级写宿主侧 ${hostPath}(bind mount 同一文件)`);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: `容器内写 task.md 失败(${reason});宿主侧降级写 ${hostPath} 也失败:${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+  return { ok: false, error: `容器内写 task.md 失败(${reason}),且条目无 workspace 登记(宿主源目录未知)无法降级——run 状态不受影响(记录已落盘)` };
+}
+
+// ---------------------------------------------------------------------------
 // 生产接线(admin-api 薄调用;单测不触)
 // ---------------------------------------------------------------------------
 
@@ -1412,20 +1522,24 @@ export function buildProductionAutoRunDeps(workspace: string, overrides: Partial
     loadMessages: (id) => loadLoopSession(id).messages,
     // 1.6.0:tokens 预算校准系数 = loop session meta 的 tokenCalibration。
     loadTokenCalibration: (id) => loadLoopSession(id).meta?.tokenCalibration,
+    // 1.6.3 修复(#6):workspace 过滤前置进 store(limit 在过滤后生效)——
+    // 全局事件超 limit 后 stall 判定不再基于截断错样本。
     listEvents: () =>
-      listResearchEvents({ limit: 1000 }).filter((e) => workspacePathsEqual(e.workspace, workspace)),
+      listResearchEvents({ limit: 1000, workspace }),
     resolveEvent: (id) => getResearchEventById(id),
     appendUserMessage: async (id, text) => {
       await appendLoopMessages(id, [
         { role: 'user', content: text, timestamp: Date.now() } as AgentMessage,
       ]);
     },
-    snapshot: async (envKey) => {
+    snapshot: async (envKey, record) => {
       const config = loadConfig();
       const entry = findEnvironmentEntry(listEnvironments(config), envKey);
       if (!entry) return { ok: false, error: `环境 "${envKey}" 未登记` };
       if (entry.kind === 'docker') {
-        return { ok: false, error: `docker 环境 "${envKey}" 快照暂未支持(留现场用环境内 task.md + 越界提取)` };
+        // 1.6.3 #7:docker 无快照机制——留现场 = 容器内 /workspace/task.md
+        // (容器持久,stop/start 续现场,1.5.10 三层模型;设计 §4)。
+        return writeDockerTaskMdCheckpoint(entry, record);
       }
       const resolved = entry.kind === 'vm'
         ? resolveVmxForEntry(entry, { templates: config.vmTemplates })
@@ -1462,7 +1576,7 @@ async function exportRunReport(
     { workspace, sanitize: false, env: { envId, entry } },
     {
       listWorkspaceEvents: (ws) =>
-        listResearchEvents({ limit: 1000 }).filter((e) => workspacePathsEqual(e.workspace, ws)),
+        listResearchEvents({ limit: 1000, workspace: ws }),
       findLoopSessionId: () => record.loopSessionId,
       loadTranscript: (loopSessionId) => buildLoopTranscript(loopSessionId),
       // 1.4.4 研究档案交付投影：auto-run 线同样从档案派生成果章节。

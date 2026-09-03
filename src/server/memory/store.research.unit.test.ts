@@ -144,6 +144,32 @@ describe('research_events：recordResearchEvent / listResearchEvents', () => {
     expect(listResearchEvents({ baseDir: dir, limit: 2 }).map((r) => r.summary)).toEqual(['s4', 's3']);
   });
 
+  it('workspace 过滤前置:limit 在过滤后生效(1.6.3 #6 截断错样本回归)', () => {
+    // 本工作区只有最老的 2 条,其余工作区 3 条更新——旧形态「先 limit 3
+    // 再按 workspace 过滤」会把本工作区事件挤出截断窗口,过滤出 0~1 条
+    // 错样本(auto-run stall 判定由此失真);过滤前置后拿到全部 2 条。
+    recordResearchEvent({ workspace: '/ws/mine', taskKind: 'binary', outcome: 'success', summary: 'mine-1' }, dir, NOW - 4000);
+    recordResearchEvent({ workspace: '/ws/mine', taskKind: 'binary', outcome: 'fail', summary: 'mine-2' }, dir, NOW - 3000);
+    recordResearchEvent({ workspace: '/ws/other', taskKind: 'binary', outcome: 'success', summary: 'other-1' }, dir, NOW - 2000);
+    recordResearchEvent({ workspace: '/ws/other', taskKind: 'binary', outcome: 'success', summary: 'other-2' }, dir, NOW - 1000);
+    recordResearchEvent({ workspace: '/ws/other', taskKind: 'binary', outcome: 'success', summary: 'other-3' }, dir, NOW);
+
+    const rows = listResearchEvents({ baseDir: dir, workspace: '/ws/mine', limit: 3 });
+    expect(rows.map((r) => r.summary)).toEqual(['mine-2', 'mine-1']);
+    // 过滤后仍按 limit 截断(语义:本工作区最新 N 条)。
+    expect(listResearchEvents({ baseDir: dir, workspace: '/ws/other', limit: 2 }).map((r) => r.summary))
+      .toEqual(['other-3', 'other-2']);
+  });
+
+  it('workspace 比较走 workspacePathsEqual(尾斜杠等价);与其他过滤可叠加', () => {
+    recordResearchEvent({ workspace: '/ws/mine', taskKind: 'binary', outcome: 'success', summary: 's1' }, dir, NOW - 1000);
+    recordResearchEvent({ workspace: '/ws/mine', taskKind: 'ctf', outcome: 'stuck', summary: 's2' }, dir, NOW);
+
+    expect(listResearchEvents({ baseDir: dir, workspace: '/ws/mine/' })).toHaveLength(2);
+    expect(listResearchEvents({ baseDir: dir, workspace: '/ws/mine', taskKind: 'ctf' }).map((r) => r.summary)).toEqual(['s2']);
+    expect(listResearchEvents({ baseDir: dir, workspace: '/ws/absent' })).toHaveLength(0);
+  });
+
   it('老库无损：既有 memory.db 无 research_events 表，openDb 迁移建表后可正常读写', () => {
     // 手工造一个只有老表的 memory.db（模拟 D1 之前的数据库）。
     resetMemoryStoreForTest();

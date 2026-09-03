@@ -27,7 +27,7 @@ import { managementApi } from './utils/management-api';
 // 1.3.2 任务二 #5：task/list 行 conclusion 字段的数据源（cron 结论登记）。
 import { taskConclusionFor } from './cron/task-conclusions';
 // Localhost loopback timeout for management / sidecar self-calls.
-import { existsSync , mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync } from 'fs';
+import { existsSync , mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync } from 'fs';
 import { ensureDirSync } from './utils/fs-utils';
 import { resolveSshTarget, execInEnvironment, buildScpArgv } from './loop/env-exec';
 import { buildToolCheckScript, parseToolCheckOutput } from './environment/recipes';
@@ -47,12 +47,15 @@ import { provisionEnvironment } from './environment/provision';
 import { requestBoundaryAsk } from './loop/boundary-ask';
 // 1.4.1 auto loop agent(design docs/design/auto-loop-design.md)。
 import {
+  autoRunFilePath,
+  defaultAutoRunsDir,
   listAutoRuns,
   renewAutoRunBudget,
   resolveAutoRunVerdict,
   startAutoRun,
   stopAutoRun,
   verdictRequestOfRecord,
+  type AutoRunStatus,
 } from './loop/auto-run';
 import { detectOsFamilyFromVmx } from './environment/os-family';
 import {
@@ -72,7 +75,6 @@ import { resolveLoopModel } from './loop/pi-provider';
 import { runLoopText } from './loop/loop';
 import { buildLoopTranscript } from './loop/transcript';
 import { exportReport } from './report/export';
-import { workspacePathsEqual } from '../shared/workspacePath';
 import { loadEnabledAgents } from './agents/agent-loader';
 import { getZhiShiDataDir } from './utils/app-dirs';
 import { join } from 'path';
@@ -143,9 +145,11 @@ import {
   envPs,
   envPsAll,
   envRebuild,
+  envRemoveImage,
   envReset,
   envRmContainer,
   envUp,
+  imageTagFor,
   type DiscoveredDocker,
   type DiscoveredDockerImage,
   type EnvInstance,
@@ -2900,8 +2904,10 @@ export async function handleReportExport(payload: {
   const result = await exportReport(
     { workspace, sanitize, env: { envId, entry } },
     {
-      listWorkspaceEvents: (ws) =>
-        listResearchEvents({ limit: 1000 }).filter((e) => workspacePathsEqual(e.workspace, ws)),
+      // 1.6.3 #6：workspace 过滤前置到查询层（store listResearchEvents 的
+      // workspace 参数）——旧口径「limit 1000 先截断再事后 filter」在长研究里
+      // 摸顶，别的工作区事件挤占窗口导致本工作区结果失真。
+      listWorkspaceEvents: (ws) => listResearchEvents({ limit: 1000, workspace: ws }),
       findLoopSessionId: (ws) =>
         getEnvSessionLine(loadEnvSessionsMap(), ws, envKey)?.loopSessionId,
       loadTranscript: (loopSessionId) => buildLoopTranscript(loopSessionId),
@@ -3011,6 +3017,37 @@ export async function handleAutoRunList(payload: { workspace?: unknown }): Promi
       }),
     },
   };
+}
+/** 活跃态（不可清理）：running/paused/awaiting-verdict；终态 = completed/stopped。 */
+const AUTO_RUN_ACTIVE_STATUSES: ReadonlySet<AutoRunStatus> = new Set(['running', 'paused', 'awaiting-verdict']);
+/** `auto-run/clear` — 1.6.3 #4 记录清理：auto-runs 目录只增不减的收口。
+ *  id 指定删单条；缺省清全部终态记录（可按 workspace 过滤，口径照
+ *  auto-run/list）。活跃（running/paused/awaiting-verdict）记录拒绝删除
+ *  （4xx 可读错误）——先 Esc 终止再清理。状态判定走 listAutoRuns 的合并
+ *  视图（内存活动记录覆盖盘上），删除对象是落盘文件（连带 .lock）。 */
+export async function handleAutoRunClear(payload: { id?: unknown; workspace?: unknown }): Promise<AdminResponse> {
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  const workspace = typeof payload.workspace === 'string' && payload.workspace.trim()
+    ? payload.workspace.trim()
+    : undefined;
+  const records = await listAutoRuns(workspace);
+  const removeRecordFile = (rid: string): void => {
+    const file = autoRunFilePath(rid, defaultAutoRunsDir());
+    rmSync(file, { force: true });
+    rmSync(`${file}.lock`, { force: true });
+  };
+  if (id) {
+    const record = records.find((r) => r.id === id);
+    if (!record) return { success: false, error: `auto run "${id}" 不存在（auto-run/list 查看记录）` };
+    if (AUTO_RUN_ACTIVE_STATUSES.has(record.status)) {
+      return { success: false, error: `auto run "${id}" 仍在 ${record.status} 态（活跃）——先 Esc 终止（auto-run/stop）再清理` };
+    }
+    removeRecordFile(id);
+    return { success: true, data: { removed: [id] } };
+  }
+  const terminal = records.filter((r) => !AUTO_RUN_ACTIVE_STATUSES.has(r.status));
+  for (const r of terminal) removeRecordFile(r.id);
+  return { success: true, data: { removed: terminal.map((r) => r.id) } };
 }
 /** `environment/rm` — 拆除环境（P2 B4 / B3 多驱动 + D22）。vmware 直连
  * 语义：rm = 只摘登记（removeEnvironmentEntry），**绝不删用户 VM 文件**——
@@ -3462,6 +3499,64 @@ export async function handleEnvironmentDiscover(): Promise<AdminResponse> {
       : []),
   ];
   return { success: true, data: { docker, vm, images } };
+}
+/**
+ * `environment/image-remove` — 1.6.3 #8：删除本机 docker 镜像（docker rmi
+ * 语义，发现面「本机已有」镜像行的删除入口）。安全闸两道：
+ *  ① zhishi 登记在册的 docker 环境正在使用的镜像（按条目 recipeId 推导
+ *     zhishi-env-<recipe> 镜像名）→ 拒绝并指明占用环境；
+ *  ② 任何容器（含已退出）引用该镜像 → 拒绝并指明容器（docker rmi 不带 -f
+ *     本来也会拒，这里前置给人可读的说明）。
+ * 镜像名匹配吃 docker 缺省 tag 语义（`name` ≈ `name:latest`）。
+ */
+/** image-remove 的 docker 通道（生产 = envPsAll 容器引用检查 + envRemoveImage
+ *  实删）。模块级可替换——admin 接线测试注入假通道，绝不真调 docker。 */
+export interface ImageRemoveOps {
+  psAll: () => Promise<EnvResult<{ instances: DiscoveredDocker[] }>>;
+  rmImage: (image: string) => Promise<EnvResult<{ removed: string }>>;
+}
+const defaultImageRemoveOps: ImageRemoveOps = {
+  psAll: () => envPsAll(),
+  rmImage: (image) => envRemoveImage(image),
+};
+let imageRemoveOpsImpl: ImageRemoveOps = defaultImageRemoveOps;
+/** 测试注入 image-remove 通道（传 null 复位为生产通道）。 */
+export function __setImageRemoveOpsForTests(ops: ImageRemoveOps | null): void {
+  imageRemoveOpsImpl = ops ?? defaultImageRemoveOps;
+}
+/** docker 缺省 tag 语义的镜像引用匹配：`name` 与 `name:latest` 同一镜像。 */
+function imageRefMatches(query: string, imageRef: string): boolean {
+  return query === imageRef || `${query}:latest` === imageRef || `${imageRef}:latest` === query;
+}
+export async function handleEnvironmentImageRemove(payload: {
+  id?: unknown;
+}): Promise<AdminResponse> {
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!id) return { success: false, error: 'Missing required argument: <id>' };
+  // 安全闸①：登记在册的 docker 环境占用（条目 recipeId → 镜像名）。
+  const usedBy = listEnvironments(loadConfig()).filter((e) =>
+    e.kind === 'docker' && typeof e.recipeId === 'string' && imageRefMatches(id, imageTagFor(e.recipeId)));
+  if (usedBy.length > 0) {
+    return {
+      success: false,
+      error: `镜像 "${id}" 正被已登记环境 ${usedBy.map((e) => `"${e.id}"`).join('、')} 使用——先 zhishi env rm <环境id> 拆除环境再删镜像`,
+    };
+  }
+  // 安全闸②：容器引用（含已退出）。探测失败（docker 不可用）放行——rmImage
+  // 会拿到 daemon 侧的可读错误（口径照 environment/rm 的探测失败放行）。
+  const ps = await imageRemoveOpsImpl.psAll();
+  if (ps.ok) {
+    const refs = ps.instances.filter((i) => imageRefMatches(id, i.image));
+    if (refs.length > 0) {
+      return {
+        success: false,
+        error: `镜像 "${id}" 仍被容器 ${refs.map((i) => `"${i.name}"`).join('、')} 引用——先删除引用它的容器（zhishi env rm / docker rm）再删镜像`,
+      };
+    }
+  }
+  const r = await imageRemoveOpsImpl.rmImage(id);
+  if (!r.ok) return { success: false, error: r.error };
+  return { success: true, data: { removed: r.removed } };
 }
 /** `environment/adopt` — 模板认领（P2 V6）：把一台已有系统的 VM 自动养成
  * 配方模板（连通 → guest 初始化 → setup.sh → 关机 → 快照），产出落

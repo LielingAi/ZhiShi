@@ -5,6 +5,26 @@
 
 ---
 
+## 1.6.3 —— 技术债务清扫（测量驱动，8 项全修）（完成）
+
+**缘起（2026-09-03 用户拍板）**：旧债清单（god file/引擎单例/IO 纪律）实测确认已全部还清后，对当前代码做新债务测量（六维度：文件体量、IO 纪律、模块级状态、变更热度、测试覆盖、遗留挂账），逐条过堂核实（含 file-lock 定性修正：真实风险是「误守死锁」非「误破活锁」——持有者崩溃+pid 复用时 Windows 拒绝破锁致状态文件永久 ConfigBusyError）。用户拍板 8 项全修。
+
+- [x] **#1 file-lock win32 start-time 检测**：`getPidStartTimeMs` 补 win32 分支（PowerShell `Get-Process.StartTime`，仅 stale 判定路径调用；通道失败仍保守拒破）——pid-reuse 测试在 Windows 从 skip 变实跑（e29a8c4；附带归一该测试文件损坏的 `\r\r\n` 行尾）
+- [x] **#2 fetchRef 消费端**：GUI 占位行同步落位 + 自动取回后按原事件名原位归约（时序不破），CLI `zhishi refs get <id>` + printResult 深扫指引；GC/404 双端降级（b5ca8f6）
+- [x] **#3 会话主干直接测试**：SessionStore/agent-session/crash-log/routes-sessions 补 70 例直接单测（9f2eb98）；上报疑点 3 条（migrateToJsonl 并存清理分支疑似死代码、saveSessionMessages 吞写盘错误、crash-log 进程级状态不随 ZHISHI_DATA_DIR 重置）——记录在案未修
+- [x] **#4 auto-run 记录清理端点**：`auto-run/clear`——id 删单条 / 缺省清终态（可 workspace 过滤）；活跃（running/paused/awaiting-verdict）拒删返回可读 4xx（f8481e1）
+- [x] **#5 deferred init 可重试**：`POST /health/ready/retry`——原子协调器防并发重试，从失败 phase 起重跑、跳过已完成 phase；503 结构化带 retryable:true（f8481e1）
+- [x] **#6 listEvents 1000 饱和**：`listResearchEvents` 加可选 `workspace` 参数（过滤前置：SQL 不下 LIMIT、JS 侧 workspacePathsEqual 过滤后 slice；limit 语义修正为「本工作区最新 N 条」），三处调用点对齐（f8481e1 + 9257b4e）
+- [x] **#7 docker checkpoint task.md**：`buildDockerTaskMd` + 容器内 base64 写入 `/workspace/task.md`；容器停止降级写宿主 bind-mount 同一文件（现场不丢 + 告警）；恢复读回走既有 taskmd/env_exec 通道（9257b4e）
+- [x] **#8 删除镜像端点**：`environment/image-remove`——双安全闸（登记环境占用拒删 / 任何容器引用拒删），docker rmi 不带 -f（f8481e1）
+
+> 实际落地：8 项全修，新增 131 测试（2458 全绿）+ tsc + eslint + depcruise 450 模块零违规 + GUI 构建绿。
+
+> 边界：每项带测试；不引入新依赖（win32 检测用系统 PowerShell）；不改挂账项的既定取舍（1.4.5「不修」五条、bg reset 不连坐等不翻案）。
+> 验收：全量测试绿 + tsc + eslint + depcruise；每项修复有对应测试证据。
+
+---
+
 ## 1.6.2 —— crash-triager 深挖模式（崩溃变体分析）（完成——dogfood 第二家族复测通过，A 方案零接线盖棺）
 
 **缘起（2026-09-03 用户拍板，五轮讨论收敛）**：1.6.1 三组对照实验判定「成立」（LLM 变体深挖 63s vs 愚蠢回灌 23.2min，设计 `docs/design/experiment-crash-variant.md` §6.5 五条落地建议）——按既定决策把深挖模式产品化进 crash-triager。讨论收敛的设计原则：**深挖 = 源码理解驱动的变体分析**（非「LLM 帮忙 fuzz」）；**零方法论接线**（A 方案——1.6.1 实验证明无 SOP 注入模型自身够用；whitebox 引用属机制外私门，不做）；**机械约束下沉、价值判断上交**（「有源码可读」是唯一硬前提；预算与「值不值得深挖」归 auto loop/人，agent 定义零预算纪律）；**负结果语义净化**（假设耗尽→outcome=fail 落库；预算耗尽被砍不落库——防假负结果污染蒸馏弧）。

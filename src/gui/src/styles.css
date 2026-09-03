@@ -246,6 +246,17 @@ kbd {
 .divider-line::before, .divider-line::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .error-line { color: var(--red); font-size: 12.5px; padding: 2px 0; margin-bottom: 8px; }
 .error-line .err-mark { font-weight: 700; }
+/* refs 大值外溢占位行（1.6.3 debt #2）：取回中=暗色行；降级=琥珀 + preview 块 */
+.ref-line {
+  display: flex; align-items: center; gap: 8px; color: var(--text-dim);
+  font-family: var(--mono); font-size: 12px; padding: 2px 0; margin-bottom: 8px;
+}
+.ref-line.stale { display: block; color: var(--amber); }
+.ref-preview {
+  margin: 4px 0 0; padding: 6px 8px; max-height: 160px; overflow: auto;
+  background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 4px;
+  color: var(--text-dim); font-size: 11px; white-space: pre-wrap; word-break: break-all;
+}
 .ready-line {
   display: flex; align-items: center; gap: 8px; color: var(--muted);
   font-family: var(--mono); font-size: 12px; padding: 2px 0 8px;

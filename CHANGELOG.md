@@ -18,6 +18,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-09-03
+
+> **技术债务清扫（测量驱动，8 项全修）**——新债务六维度测量 + 逐条过堂后立项，旧三笔债（god file/引擎单例/IO 纪律）实测确认已还清。
+
+### 修复
+- **file-lock win32 start-time 检测**：PowerShell `Get-Process.StartTime` 补平台分支——解「锁主崩溃 + pid 复用 → Windows 永久拒绝破锁、状态文件 ConfigBusyError 卡死」；通道失败仍保守拒破（#1）
+- **auto-run 记录清理端点**：`auto-run/clear`（id 删单条 / 清终态可 workspace 过滤；活跃拒删）（#4）
+- **deferred init 可重试**：`POST /health/ready/retry`，从失败 phase 起重跑、原子协调防并发（#5）
+- **listResearchEvents workspace 过滤前置**：limit 语义修正为「本工作区最新 N 条」，三处调用点对齐（#6）
+- **docker checkpoint task.md**：容器内 base64 写入；容器停止降级写宿主 bind-mount，现场不丢（#7）
+- **删除镜像端点**：`environment/image-remove`，登记环境占用 / 容器引用双闸拒删（#8）
+
+### 新增
+- **fetchRef 消费端**：>256KB SSE payload 从占位符变可取全文——GUI 占位行同步落位 + 自动取回原位归约（时序不破），CLI `zhishi refs get <id>`；GC/404 双端降级（#2，1.5.4 挂账收口）
+- **会话持久化主干直接测试 70 例**：SessionStore / agent-session / crash-log / routes-sessions（此前 ~2500 行零直接测试）（#3）
+
 ## [1.6.2] - 2026-09-03
 
 > **crash-triager 深挖模式（崩溃变体分析）**——1.6.1 实验判定「成立」后的产品化；dogfood 第二 bug 家族复测通过，A 方案（零方法论接线）盖棺。

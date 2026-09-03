@@ -154,6 +154,26 @@ export class GuiSidecarClient {
     return this.postJson<T>(`/api/admin/${route.replace(/^\/+/, '')}`, body);
   }
 
+  /**
+   * refs 大值外溢取回（1.6.3 debt #2）：GET /refs/:id（sidecar 根路径，非
+   * /api/admin）取外溢 payload 原文（sse.ts 外溢的是事件 payload 的 JSON
+   * 文本，调用方自行 JSON.parse）。404（缺失/GC/TTL 过期）抛
+   * GuiHttpError(404)——消费端据此走「已过期」降级；传输错误抛
+   * GuiConnectionError。
+   */
+  async getRefText(id: string): Promise<string> {
+    let res: GuiFetchResponse;
+    try {
+      res = await this.fetchImpl(this.url(`/refs/${encodeURIComponent(id)}`), { method: 'GET' });
+    } catch (err) {
+      throw this.normalizeTransport(err);
+    }
+    if (!res.ok) {
+      throw new GuiHttpError(res.status, `GET /refs/${id}: HTTP ${res.status} ${res.statusText}`);
+    }
+    return res.text();
+  }
+
   private normalizeTransport(err: unknown): GuiClientError {
     if (isTransportFailure(err)) {
       return new GuiConnectionError(

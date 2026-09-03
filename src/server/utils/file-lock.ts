@@ -78,7 +78,9 @@ function delay(ms: number): Promise<void> {
  *   - Linux: parse `/proc/<pid>/stat` field 22 (starttime in clock ticks),
  *           combined with `/proc/uptime` to convert to absolute ms.
  *   - macOS: `ps -p <pid> -o lstart=` (string date), parse via Date.
- *   - Windows: skipped (no cheap way without extra deps; rely on age alone).
+ *   - Windows: PowerShell `(Get-Process -Id <pid>).StartTime`（仅 stale 判定
+ *     路径调用，常态获取锁不经过——spawn 成本 ~百 ms 可接受；失败回 null 走
+ *     保守拒绝破锁）。
  */
 /** Linux clock-tick frequency (CLK_TCK). Read once via `getconf` and cached
  *  for the process lifetime. Falls back to 100 (the default on every Linux
@@ -130,8 +132,20 @@ function getPidStartTimeMs(pid: number): number | null {
       const parsed = Date.parse(out);
       return Number.isFinite(parsed) ? parsed : null;
     }
-    // Windows / other: not supported here. TODO: use wmic or PowerShell if
-    // needed; for now we fall back to age-only stale detection.
+    if (process.platform === 'win32') {
+      // PowerShell Get-Process .StartTime → ISO 8601 (UTC)。pid 来自 owner 文件
+      // 的 \d+ 正则捕获，无注入面。spawn 仅发生在 stale 判定（age > staleMs）
+      // 路径，正常加锁不付这个成本。
+      if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+      const out = execSync(
+        `powershell -NoProfile -NonInteractive -Command "(Get-Process -Id ${pid}).StartTime.ToUniversalTime().ToString('o')"`,
+        { stdio: ['ignore', 'pipe', 'ignore'] },
+      ).toString().trim();
+      if (!out) return null;
+      const parsed = Date.parse(out);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    // 其他平台：不支持，回 null（stale 判定走保守路径）。
     return null;
   } catch {
     return null;
@@ -246,17 +260,13 @@ function tryBreakStaleLock(lockPath: string, staleMs: number): boolean {
             // start_time matches — owner is genuinely alive, refuse to break.
             return false;
           }
-          // start_time check unsupported on this platform.
+          // start_time check unsupported/failed on this platform.
           //
-          // Windows is the only platform where `getPidStartTimeMs` returns
-          // null for an alive pid (Linux uses /proc, macOS uses `ps -p
-          // -o lstart=`). On Windows we therefore have no second signal to
-          // distinguish "legitimate long-running writer" from "pid-recycled
-          // by an unrelated process". Refusing to age-only break is the
-          // conservative choice — Codex flagged the previous behavior as a
-          // potential silent eviction of long-config-write holders. The Rust
-          // helper has full Windows pid+start-time support; once Node grows
-          // an equivalent (e.g. via PowerShell or wmic), we can lift this.
+          // 1.6.3 起 Windows 也有 PowerShell 通道（见 getPidStartTimeMs），
+          // 走到这里 = 该通道也失败了（PowerShell 不可用/超时/输出不可解析）。
+          // 此时没有任何第二信号区分「合法长写者」与「pid 被复用」——保守起
+          // 见拒绝 age-only 破锁（Codex 曾指出旧行为可能静默驱逐长配置写持
+          // 有者）。Rust helper 在 Windows 有完整 pid+start-time 支持。
           if (process.platform === 'win32') return false;
         }
 

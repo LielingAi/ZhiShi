@@ -65,7 +65,23 @@ beforeAll(async () => {
       }
       captured.push({ url: req.url ?? '', body });
       res.setHeader('content-type', 'application/json');
-      if (req.url === '/api/admin/expert/drafts') {
+      if (req.url === '/refs/aaaa1111') {
+        // 1.6.3 refs 消费端：根路径 /refs/:id 取外溢全文（非 /api/admin）。
+        res.end(JSON.stringify({ toolUseId: 't1', content: 'BIG-OUTPUT' }));
+      } else if (req.url === '/refs/dead0000') {
+        // GC/TTL 过期 → 404（large-value-store 契约）。
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: 'ref not found or expired' }));
+      } else if (req.url === '/api/admin/config/get') {
+        // printResult 深扫用例：响应里嵌 {kind:'ref'} 占位。
+        res.end(JSON.stringify({
+          success: true,
+          data: {
+            key: 'k',
+            value: { kind: 'ref', id: 'ab12cd34', sizeBytes: 300 * 1024, mimetype: 'application/json', preview: 'HEAD', expiresAt: Date.now() + 3_600_000 },
+          },
+        }));
+      } else if (req.url === '/api/admin/expert/drafts') {
         res.end(JSON.stringify({ success: true, data: { drafts: [DRAFT] } }));
       } else if (req.url === '/api/admin/environment/discover') {
         // 1.5.10 发现面契约：docker 容器 / docker 镜像（docker-image 驱动）/ VM 三区。
@@ -227,6 +243,36 @@ describe('1.5.10：env rebuild/reset 路由与载荷 + env discover 镜像区打
     expect(parsed.success).toBe(true);
     expect(parsed.data.images.map((i) => i.recipeId)).toEqual(['pwn', 'fuzz']);
     expect(parsed.data.images[0].driver).toBe('docker-image');
+  }, 30_000);
+});
+
+describe('1.6.3 refs 大值外溢消费端（debt #2）', () => {
+  it('refs get <id> → GET 根路径 /refs/<id> 并原样打印全文', async () => {
+    captured = [];
+    const r = await runCli(['refs', 'get', 'aaaa1111']);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('BIG-OUTPUT');
+    expect(captured.some((c) => c.url === '/refs/aaaa1111')).toBe(true);
+  }, 30_000);
+
+  it('refs get 已 GC 的 ref（404）→ 退出 1 + 过期降级提示', async () => {
+    const r = await runCli(['refs', 'get', 'dead0000']);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('不存在或已过期');
+  }, 30_000);
+
+  it('refs get 非法 id → 退出 2 且不发请求', async () => {
+    captured = [];
+    const r = await runCli(['refs', 'get', 'ZZ!!']);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('非法 ref id');
+    expect(captured.some((c) => c.url.startsWith('/refs/'))).toBe(false);
+  }, 30_000);
+
+  it("printResult 深扫：响应嵌 {kind:'ref'} 占位 → stderr 打取回指引", async () => {
+    const r = await runCli(['config', 'get', 'k']);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain('zhishi refs get ab12cd34');
   }, 30_000);
 });
 
