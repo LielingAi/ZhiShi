@@ -327,8 +327,10 @@ fn merge_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 // ai-security +pyrit）；③ tools[] 全部改真实二进制名（toolCheck 依赖）。
 // 注意 seed-if-missing：已落盘的老配方目录不覆盖——v6 的配方修正只触达
 // 新安装与缺失自愈，老用户拿到的只是新增的 pentest-vm。
+// v7（1.6.4 M1）：新增 pwn-win 配方（Windows 用户态漏洞研究 VM——首个
+// os_family: windows 配方，初始化脚本为 setup.ps1）。
 
-const ENVIRONMENT_RECIPES_VERSION: &str = "6";
+const ENVIRONMENT_RECIPES_VERSION: &str = "7";
 
 /// 配方源目录的判定：bundled-environments/ 下的子目录且含 SKILL.md
 /// （与 Node 侧 src/server/environment/recipes.ts 的扫描口径一致——无

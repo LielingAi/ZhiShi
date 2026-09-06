@@ -5,8 +5,10 @@
  *
  *   <recipesRoot>/<name>/
  *     Dockerfile    # 基础镜像 + 工具集 + 服务（docker 配方必需）
- *     setup.sh      # 初始化：装依赖、部署目标、起服务、自检
+ *     setup.sh      # 初始化：装依赖、部署目标、起服务、自检（linux guest）
+ *     setup.ps1     # 同上，Windows guest（1.6.4；frontmatter os_family: windows）
  *     SKILL.md      # frontmatter: name/description/base(docker|vm)/tools[]
+ *                   #   /os_family(linux|windows，缺省 linux)/firstRunTools[]
  *                   # 正文教方法（何时用、怎么进、结果怎么采、怎么收尾）
  *
  * 配方抽象对两类基底同构：docker 配方 = Dockerfile + setup.sh + SKILL.md；
@@ -34,6 +36,11 @@ export type RecipeBase = 'docker' | 'vm';
 
 export const RECIPE_BASES: readonly RecipeBase[] = ['docker', 'vm'];
 
+/** 配方的 guest OS 家族（frontmatter os_family；缺省 linux）。 */
+export type RecipeOsFamily = 'linux' | 'windows';
+
+export const RECIPE_OS_FAMILIES: readonly RecipeOsFamily[] = ['linux', 'windows'];
+
 /** VM 配方的驱动引擎（frontmatter vm_engine；缺省 vmware）。 */
 export type VmEngine = 'vmware' | 'hyperv' | 'virtualbox';
 
@@ -57,6 +64,9 @@ export interface RecipeFrontmatter {
   vm_snapshot?: string;
   /** vm 配方：驱动引擎（缺省 vmware；hyperv = Export-VM 导出目录模板，virtualbox = 已注册 VM 名模板）。 */
   vm_engine?: VmEngine;
+  /** 1.6.4：guest OS 家族（缺省 linux）。windows 配方的初始化脚本用
+   *  setup.ps1（PowerShell），provision 补齐链路据此选包装与预检语义。 */
+  os_family?: RecipeOsFamily;
 }
 
 /** 一个已扫描的配方；invalid 配方保留已解析字段 + 原因列表。 */
@@ -81,6 +91,8 @@ export interface EnvironmentRecipe {
   vmSnapshot?: string;
   /** vm 配方：驱动引擎（frontmatter vm_engine；缺省 vmware）。 */
   vmEngine?: VmEngine;
+  /** 1.6.4：guest OS 家族（frontmatter os_family；缺省 linux）。 */
+  osFamily?: RecipeOsFamily;
   /**
    * 正文工作流摘要（1.2.5「用」）：SKILL.md 正文（frontmatter 之后）提炼，
    * 供能力清单注入段在工具名后携带——只给裸工具名 agent 不知道何时用/怎么进。
@@ -221,6 +233,14 @@ export function parseRecipeFrontmatter(content: string): {
     }
   }
 
+  if (source.os_family !== undefined) {
+    if (typeof source.os_family === 'string' && RECIPE_OS_FAMILIES.includes(source.os_family as RecipeOsFamily)) {
+      frontmatter.os_family = source.os_family as RecipeOsFamily;
+    } else {
+      errors.push(`非法 os_family：${JSON.stringify(source.os_family)}（可选：${RECIPE_OS_FAMILIES.join(' / ')}；缺省 linux）`);
+    }
+  }
+
   return { frontmatter, errors };
 }
 
@@ -239,6 +259,11 @@ export function validateRecipe(
   if (!frontmatter.base) reasons.push('SKILL.md frontmatter 缺少 base（docker | vm）');
   if (frontmatter.base === 'docker' && !presentFiles.has('Dockerfile')) {
     reasons.push('docker 配方缺少 Dockerfile');
+  }
+  // 1.6.4：windows vm 配方的初始化脚本是 setup.ps1（缺失则养成/补齐链
+  // 路无脚本可跑——声明了 os_family: windows 就必须给）。
+  if (frontmatter.base === 'vm' && frontmatter.os_family === 'windows' && !presentFiles.has('setup.ps1')) {
+    reasons.push('windows vm 配方缺少 setup.ps1（PowerShell 初始化脚本）');
   }
   return reasons;
 }
@@ -279,6 +304,7 @@ export function buildRecipe(
     vmUser: frontmatter.vm_user,
     vmSnapshot: frontmatter.vm_snapshot,
     vmEngine: frontmatter.vm_engine,
+    osFamily: frontmatter.os_family,
     valid: reasons.length === 0,
     invalidReasons: reasons,
   };

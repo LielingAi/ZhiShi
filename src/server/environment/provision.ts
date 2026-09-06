@@ -6,6 +6,8 @@
  * 环境（ssh/docker/vm-address）重放配方的安装脚本——
  *
  *   - VM 配方 → setup.sh（自带 apt/pip sudo 安装段，1.4.9 已幂等化）；
+ *     windows VM 配方（1.6.4，frontmatter os_family: windows）→ setup.ps1
+ *     （PowerShell 安装段，提升会话预检 + EncodedCommand 包装）；
  *   - docker 配方 → provision.sh（可选的裸机/VM 通用安装脚本，与
  *     Dockerfile 安装段同源——Dockerfile RUN 提取翻译是脆弱转换，不做）；
  *   - 两者皆无 → 明确报错（该配方无裸机安装脚本）。
@@ -25,6 +27,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { EnvironmentEntry } from '../../shared/config-types';
+import { psEncode } from './os-family';
 import type { EnvironmentRecipe } from './recipes';
 
 /** provision 执行通道签名（与 env-exec 的 execInEnvironment 同形的最小子集）。 */
@@ -44,11 +47,17 @@ const SUDO_PRECHECK_TIMEOUT_MS = 15_000;
 // ---------------------------------------------------------------------------
 
 /** 配方 → 安装脚本（纯路径判定；存在性由调用方读盘确认）。
- *  VM 配方 → setup.sh；docker 配方 → provision.sh（可选的裸机安装脚本）。 */
-export function provisionScriptCandidate(recipe: Pick<EnvironmentRecipe, 'dir' | 'base'>): { path: string; source: 'setup' | 'provision' } {
+ *  VM 配方 → setup.sh（linux guest）/ setup.ps1（1.6.4：os_family=windows）；
+ *  docker 配方 → provision.sh（可选的裸机安装脚本，恒 posix）。 */
+export function provisionScriptCandidate(
+  recipe: Pick<EnvironmentRecipe, 'dir' | 'base' | 'osFamily'>,
+): { path: string; source: 'setup' | 'provision'; scriptFamily: 'posix' | 'windows' } {
+  if (recipe.base === 'vm' && recipe.osFamily === 'windows') {
+    return { path: join(recipe.dir, 'setup.ps1'), source: 'setup', scriptFamily: 'windows' };
+  }
   return recipe.base === 'vm'
-    ? { path: join(recipe.dir, 'setup.sh'), source: 'setup' }
-    : { path: join(recipe.dir, 'provision.sh'), source: 'provision' };
+    ? { path: join(recipe.dir, 'setup.sh'), source: 'setup', scriptFamily: 'posix' }
+    : { path: join(recipe.dir, 'provision.sh'), source: 'provision', scriptFamily: 'posix' };
 }
 
 /** 脚本是否含 sudo 调用（决定是否做免密预检）。 */
@@ -59,8 +68,30 @@ export function scriptNeedsSudo(script: string): boolean {
 /** base64 包装传输 + CR 剥离：`base64 -d | tr -d '\r' | bash`——多行脚本过
  *  ssh argv 的稳态形态。tr 兜底 CRLF 源文件：core.autocrlf=true 的 Windows
  *  检出会把仓库里的 setup.sh 写成 CRLF，bash 读到 `set -euo pipefail\r`
- *  直接炸（2026-08-29 实机：用户点「补齐环境」报 pipefail invalid option）。 */
-export function wrapProvisionCommand(script: string): string {
+ *  直接炸（2026-08-29 实机：用户点「补齐环境」报 pipefail invalid option）。
+ *
+ *  windows 分支（1.6.4）：脚本经双层 base64 进 PowerShell——脚本本体
+ *  utf8-base64 嵌进一个固定 ps 引导脚本（落 %TEMP%\zhishi-provision.ps1
+ *  后执行、带回退出码、收尾删文件），引导脚本整体再 utf16le-base64 给
+ *  -EncodedCommand——任何引号/CRLF/特殊字符都不破壳（与 os-family.ts 的
+ *  双 base64 纪律同构）。落盘带 BOM（[Text.Encoding]::UTF8）——PS 5.1 对
+ *  无 BOM 的 .ps1 按 ANSI 读，中文注释/字符串直接乱码炸解析（1.6.4 实机
+ *  语法验证抓出）。退出码语义：脚本 `exit N` 直接终结 powershell
+ *  进程（退出码对）；自然结束时按 `$?` 折算（$LASTEXITCODE 不可靠——
+ *  脚本抛错时它可能仍是上一个本机命令的旧值， null 还会让 exit 变 0）。 */
+export function wrapProvisionCommand(script: string, scriptFamily: 'posix' | 'windows' = 'posix'): string {
+  if (scriptFamily === 'windows') {
+    const b64 = Buffer.from(script, 'utf8').toString('base64');
+    const bootstrap =
+      `$b64='${b64}';` +
+      `$p=Join-Path $env:TEMP 'zhishi-provision.ps1';` +
+      `[IO.File]::WriteAllText($p,[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)),[Text.Encoding]::UTF8);` +
+      `& $p;` +
+      `if ($?) { $code = 0 } else { $code = 1 };` +
+      `Remove-Item $p -ErrorAction SilentlyContinue;` +
+      `exit $code`;
+    return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${psEncode(bootstrap)}`;
+  }
   return `echo ${Buffer.from(script, 'utf8').toString('base64')} | base64 -d | tr -d '\\r' | bash`;
 }
 
@@ -86,7 +117,9 @@ export interface ProvisionResult {
 
 /**
  * 对一个已有环境重放配方的安装脚本。流程：解析脚本（VM→setup.sh /
- * docker→provision.sh）→ sudo 免密预检（脚本含 sudo 时）→ base64 包装执行。
+ * windows VM→setup.ps1 / docker→provision.sh）→ 提权预检（posix 脚本含
+ * sudo 时查 `sudo -n true` 免密；windows ps1 恒查提升会话——装系统级
+ * 工具绕不开）→ 包装执行（posix base64|bash；windows EncodedCommand）。
  * 不做的事：按工具补齐（无 per-tool 粒度）、密码通道（凭据不进链路）。
  */
 export async function provisionEnvironment(
@@ -100,32 +133,39 @@ export async function provisionEnvironment(
       ok: false,
       error:
         recipe.base === 'vm'
-          ? `配方 "${recipe.id}" 缺 setup.sh`
+          ? `配方 "${recipe.id}" 缺 ${candidate.scriptFamily === 'windows' ? 'setup.ps1' : 'setup.sh'}`
           : `配方 "${recipe.id}" 是容器配方且无 provision.sh（裸机安装脚本）——Dockerfile 的安装段不能重放到裸机/VM，需要为该配方补 provision.sh`,
     };
   }
   const script = readFileSync(candidate.path, 'utf8');
 
-  if (scriptNeedsSudo(script)) {
+  // 提权预检：posix 只在脚本含 sudo 时查免密；windows 的 ps1 安装（choco/
+  // winget/可选功能）恒需提升会话——`net session` 无提升必非零（语言无关
+  // 的硬判据，whoami /groups 的组成员≠提升令牌）。
+  const needsElevation = candidate.scriptFamily === 'windows' || scriptNeedsSudo(script);
+  if (needsElevation) {
+    const precheckCmd = candidate.scriptFamily === 'windows' ? 'net session >NUL 2>&1' : 'sudo -n true';
     let pre;
     try {
-      pre = await deps.exec(entry, 'sudo -n true', { timeoutMs: SUDO_PRECHECK_TIMEOUT_MS });
+      pre = await deps.exec(entry, precheckCmd, { timeoutMs: SUDO_PRECHECK_TIMEOUT_MS });
     } catch (err) {
-      return { ok: false, source: candidate.source, scriptPath: candidate.path, error: `sudo 免密预检通道异常：${err instanceof Error ? err.message : String(err)}` };
+      return { ok: false, source: candidate.source, scriptPath: candidate.path, error: `提权预检通道异常：${err instanceof Error ? err.message : String(err)}` };
     }
     if (!pre.ok || pre.exitCode !== 0) {
       return {
         ok: false,
         source: candidate.source,
         scriptPath: candidate.path,
-        error: `环境 "${entry.id}" 的用户 sudo 需要密码——补齐链路不落凭据，请给该用户配免密 sudo 后重试`,
+        error: candidate.scriptFamily === 'windows'
+          ? `环境 "${entry.id}" 的当前会话不是提升（管理员）会话——补齐链路不落凭据，请用管理员用户/提升通道后重试`
+          : `环境 "${entry.id}" 的用户 sudo 需要密码——补齐链路不落凭据，请给该用户配免密 sudo 后重试`,
       };
     }
   }
 
   let r;
   try {
-    r = await deps.exec(entry, wrapProvisionCommand(script), { timeoutMs: PROVISION_TIMEOUT_MS });
+    r = await deps.exec(entry, wrapProvisionCommand(script, candidate.scriptFamily), { timeoutMs: PROVISION_TIMEOUT_MS });
   } catch (err) {
     return { ok: false, source: candidate.source, scriptPath: candidate.path, error: `provision 通道异常：${err instanceof Error ? err.message : String(err)}` };
   }

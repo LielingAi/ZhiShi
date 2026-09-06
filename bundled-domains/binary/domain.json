@@ -4,6 +4,7 @@
   "recipes": [
     "pwn",
     "pwn-vm",
+    "pwn-win",
     "fuzz",
     "fuzz-vm",
     "rev"

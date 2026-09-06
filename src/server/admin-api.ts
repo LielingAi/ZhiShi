@@ -2107,10 +2107,13 @@ export async function handleEnvironmentUp(payload: {
               recipeIds: [recipe.id],
               vmName: instance.name,
               ...(entryVmx ? { vmx: entryVmx } : {}),
-              // OS 家族:vmx 静态判定(guestOS 字段),读不到缺省 linux。
+              // OS 家族:vmx 静态判定(guestOS 字段);读不到回落配方声明
+              // os_family(1.6.4——pwn-win 等 windows 配方声明即事实),再缺省 linux。
               ...(entryVmx && detectOsFamilyFromVmx(entryVmx)
                 ? { osFamily: detectOsFamilyFromVmx(entryVmx)! }
-                : {}),
+                : recipe.osFamily
+                  ? { osFamily: recipe.osFamily }
+                  : {}),
               ...(instance.address ? { address: instance.address } : {}),
               ...(user ? { user } : {}),
               ...(keyPath ? { keyPath } : {}),

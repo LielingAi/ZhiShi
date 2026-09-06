@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { scanRecipes, aggregateRecipeTools } from './recipes';
 
 // 守卫测试：bundled-environments/ 里的出厂配方必须全部可解析、合法。
@@ -9,8 +10,8 @@ const BUNDLED_ROOT = resolve(process.cwd(), 'bundled-environments');
 describe('bundled environment recipes（出厂配方守卫）', () => {
   const recipes = scanRecipes(BUNDLED_ROOT);
 
-  it('dev / pwn / fuzz / rev / pwn-vm / fuzz-vm / code-audit / pentest / pentest-vm / ai-security 十个配方齐备', () => {
-    expect(recipes.map((r) => r.id).sort()).toEqual(['ai-security', 'code-audit', 'dev', 'fuzz', 'fuzz-vm', 'pentest', 'pentest-vm', 'pwn', 'pwn-vm', 'rev']);
+  it('dev / pwn / fuzz / rev / pwn-vm / pwn-win / fuzz-vm / code-audit / pentest / pentest-vm / ai-security 十一个配方齐备', () => {
+    expect(recipes.map((r) => r.id).sort()).toEqual(['ai-security', 'code-audit', 'dev', 'fuzz', 'fuzz-vm', 'pentest', 'pentest-vm', 'pwn', 'pwn-vm', 'pwn-win', 'rev']);
   });
 
   it('全部 valid（无 invalidReasons）', () => {
@@ -37,6 +38,17 @@ describe('bundled environment recipes（出厂配方守卫）', () => {
     const pwnVm = recipes.find((r) => r.id === 'pwn-vm');
     expect(pwnVm?.base).toBe('vm');
     expect(pwnVm?.vmUser).toBeTruthy();
+  });
+
+  it('pwn-win（1.6.4）：os_family=windows + setup.ps1 在场 + 快照相机', () => {
+    const pwnWin = recipes.find((r) => r.id === 'pwn-win');
+    expect(pwnWin?.base).toBe('vm');
+    expect(pwnWin?.osFamily).toBe('windows');
+    expect(pwnWin?.vmUser).toBeTruthy();
+    expect(pwnWin?.vmSnapshot).toBe('zhishi-clean');
+    // validateRecipe 已保证 setup.ps1 在场（否则 invalid，上面全 valid 用例会炸）；
+    // 这里再直接读盘守一次（防 validate 规则被改坏）。
+    expect(existsSync(join(BUNDLED_ROOT, 'pwn-win', 'setup.ps1'))).toBe(true);
   });
 
   it('关键工具聚合可达（gdb/ROPgadget/afl-fuzz/clang——均为真实二进制名，toolCheck 依赖）', () => {

@@ -144,6 +144,40 @@ describe('firstRunTools（1.5.7 首跑安装工具声明）', () => {
   });
 });
 
+describe('os_family（1.6.4 配方 OS 家族声明）', () => {
+  const WIN_VM_SKILL = VALID_VM_SKILL.replace('base: vm', 'base: vm\nos_family: windows');
+
+  it('解析 os_family: windows 并透传到 EnvironmentRecipe', () => {
+    const { frontmatter, errors } = parseRecipeFrontmatter(WIN_VM_SKILL);
+    expect(errors).toEqual([]);
+    expect(frontmatter.os_family).toBe('windows');
+    const recipe = buildRecipe('win-range', '/x/win-range', WIN_VM_SKILL, new Set(['SKILL.md', 'setup.ps1']));
+    expect(recipe.valid).toBe(true);
+    expect(recipe.osFamily).toBe('windows');
+  });
+
+  it('缺省 → undefined（缺省即 linux，存量配方零迁移）', () => {
+    const { frontmatter } = parseRecipeFrontmatter(VALID_VM_SKILL);
+    expect(frontmatter.os_family).toBeUndefined();
+  });
+
+  it('非法值 → invalidReasons，不炸扫描', () => {
+    const content = VALID_VM_SKILL.replace('base: vm', 'base: vm\nos_family: darwin');
+    const { frontmatter, errors } = parseRecipeFrontmatter(content);
+    expect(errors.some((e) => e.includes('os_family'))).toBe(true);
+    expect(frontmatter.os_family).toBeUndefined();
+  });
+
+  it('windows vm 配方缺 setup.ps1 → invalid（初始化脚本必须给）', () => {
+    const { frontmatter } = parseRecipeFrontmatter(WIN_VM_SKILL);
+    expect(validateRecipe(frontmatter, new Set(['SKILL.md'])).some((r) => r.includes('setup.ps1'))).toBe(true);
+    expect(validateRecipe(frontmatter, new Set(['SKILL.md', 'setup.ps1']))).toEqual([]);
+    // linux vm 配方不受影响（无 setup 脚本要求）
+    const { frontmatter: linuxFm } = parseRecipeFrontmatter(VALID_VM_SKILL);
+    expect(validateRecipe(linuxFm, new Set(['SKILL.md']))).toEqual([]);
+  });
+});
+
 describe('validateRecipe', () => {
   it('accepts a complete docker recipe', () => {
     const { frontmatter } = parseRecipeFrontmatter(VALID_DOCKER_SKILL);
