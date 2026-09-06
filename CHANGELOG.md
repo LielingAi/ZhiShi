@@ -18,6 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.5] - 2026-09-06
+
+> **凭据门槛消除（密码引导 → 密钥落地）**——VM/SSH 环境登记不再要求用户懂密钥：缺 `--key-path` 时现场输一次登录密码（不落盘），自动生成密钥对并把公钥推进目标，长期凭据仍只有密钥（D-T4 红线不动）。「一次密码，永久密钥」。
+
+### 新增
+- **密钥引导（key-bootstrap）**：`environment/add` 接受瞬传 `password`（registry 校验前剥离，不落 config.json）——ssh/联网 VM 走 plink 密码通道推公钥（复用 adopt 的签名验证 + hostkey 钉指纹件）；linux 幂等写 `~/.ssh/authorized_keys`；windows 按管理员 SID 双落点（管理员 → `administrators_authorized_keys` + icacls 钉 ACL）；断网 Windows VM 走 vmrun 客户机通道（log/code 文件核对）
+- **CLI `env add` 密码引导**：缺 `--key-path` 时现场隐藏输入登录密码（非 TTY 不堵脚本）；`env add`/`env exec`/`env push` 的密码重试纪律统一
+- **GUI 新建向导密码引导区**：SSH 接入步骤加密码框（type=password，不落盘），校验放宽为「密钥路径 / 登录密码 至少其一」，确认页显引导说明不回显密码本体
+
+### 明确不做
+- 密码持久化主链（passwordRef + plink/SSH_ASKPASS 全链适配）——工程量与攻击面双涨且无真实场景支撑；断网 Linux VM 的密码推送（无通用通道，指向 `env adopt`）
+
 ## [1.6.4] - 2026-09-06
 
 > **Windows VM 漏洞研究环境**——Windows 上的漏洞挖掘/验证/复现达到与 Linux 环境同等体验。目标画像：源码可见 + 闭源、纯用户态、VMware 优先。三层落地：通道层（M0）→ 养成层（M1/M2）→ 工作流层（M3）。里程碑代码全部完成；实机验收（真 Windows VM 走 adopt/fuzz demo）待用户实测。

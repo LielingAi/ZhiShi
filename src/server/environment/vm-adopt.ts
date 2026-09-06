@@ -245,8 +245,9 @@ export function hostKeyFingerprintFromKeyscan(line: string): string | undefined 
   return `SHA256:${fp}`;
 }
 
-/** 取 guest 全部 host key 指纹，keyscan 失败/无 key 返回 undefined。 */
-async function resolveHostKeyFingerprints(exec: VmExec, address: string): Promise<string[] | undefined> {
+/** 取 guest 全部 host key 指纹，keyscan 失败/无 key 返回 undefined。
+ *  1.6.5 导出：key-bootstrap 的 plink 推送复用同一钉指纹纪律。 */
+export async function resolveHostKeyFingerprints(exec: VmExec, address: string): Promise<string[] | undefined> {
   const scan = await exec(['ssh-keyscan', '-T', '10', '-t', 'ed25519,ecdsa,rsa', address], SSH_PROBE_TIMEOUT_MS);
   if (scan.exitCode !== 0 || scan.error) return undefined;
   const fps = scan.stdout
@@ -579,6 +580,10 @@ async function defaultExec(argv: string[], timeoutMs: number): Promise<VmExecRes
     clearTimeout(timer);
   }
 }
+
+/** 1.6.5 导出：key-bootstrap（plink/ssh-keyscan/vmrun/ssh-keygen 混用）与
+ *  adopt 共用同一生产 exec——二进制解析纪律（vmrun/plink 兜底路径）一致。 */
+export { defaultExec as defaultAdoptExec };
 
 /**
  * 选/造密钥对：--key-path 给定且 <path>.pub 存在 → 用之；否则现有默认

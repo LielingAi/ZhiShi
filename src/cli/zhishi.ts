@@ -121,6 +121,7 @@ Examples:
   zhishi env list                           # named environments (id/kind/target/user)
   zhishi env add --kind ssh --id dev-box --host 10.0.0.8 --user root --key-path ~/.ssh/id_ed25519
                                             # 1.5.10 起还可透传 --recipe-ids a,b --os-family linux|windows --vmx <模板.vmx>
+                                            # 1.6.5：缺 --key-path 时现场输入一次登录密码即可自动配置密钥（密码不落盘）
   zhishi env open dev-box                   # open env in embedded terminal (term open --cmd)
   zhishi env remove dev-box
   zhishi env bind-recipes dev-box --recipes pwn,fuzz
@@ -1571,6 +1572,20 @@ const group = positional[0];
     const restArgs = positional.slice(2);
     const body = buildRequestBody(group, action, restArgs, flags, passthroughArgs);
     const route = buildRoute(group, action, restArgs);
+// `env add` 密钥引导（1.6.5）：ssh/vm 条目缺 --key-path 时现场隐藏输入
+    // 登录密码 → 服务端推公钥（密码瞬传不落盘；回车跳过=维持旧行为，登记
+    // 一个无 keyPath 的条目）。非 TTY 不询问（脚本场景不堵）。
+    if (
+      group === 'env' &&
+      action === 'add' &&
+      body &&
+      ((body as Record<string, unknown>).kind === 'ssh' || (body as Record<string, unknown>).kind === 'vm') &&
+      !(body as Record<string, unknown>).keyPath &&
+      process.stdin.isTTY
+    ) {
+      const bootstrapPw = await promptHiddenInput('未提供 --key-path。输入登录密码以自动配置密钥（生成密钥对并推公钥进目标；密码现场使用不落盘，直接回车跳过）: ');
+      if (bootstrapPw) (body as Record<string, unknown>).password = bootstrapPw;
+    }
 // `task update` notification merge (issue #205 cross-review): Rust
     // `TaskStore::update` REPLACES `notification` wholesale when the field
     // is present, so a partial CLI patch like `--notificationDesktop false`

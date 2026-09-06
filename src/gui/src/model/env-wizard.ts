@@ -61,6 +61,9 @@ export interface WizardParams {
   sshHost: string;
   sshUser: string;
   sshKeyPath: string;
+  /** 1.6.5 密钥引导：缺 keyPath 时现场给一次密码（瞬传服务端自动生成密钥对，
+   *  不落 config.json；条目只落生成的 keyPath）。 */
+  sshPassword: string;
   /** 字符串表单值；payload 构造时转 number（空 = 缺省 22，不下发）。 */
   sshPort: string;
   sshName: string;
@@ -88,6 +91,7 @@ export function initialWizardParams(): WizardParams {
     sshHost: '',
     sshUser: '',
     sshKeyPath: '',
+    sshPassword: '',
     sshPort: '',
     sshName: '',
     sshOsFamily: '',
@@ -150,8 +154,13 @@ export function wizardStepError(state: EnvWizardState): string | null {
     }
     if (state.source === 'discovered') return p.discoveredKey ? null : '请勾选一个本机条目';
     if (state.source === 'ssh') {
-      if (!p.sshHost.trim() || !p.sshUser.trim() || !p.sshKeyPath.trim()) {
-        return 'host / 用户 / 密钥路径 必填';
+      // 1.6.5 密钥引导：host/user 必填；keyPath 与 password 至少其一
+      // （缺 keyPath 时服务端用 password 现场生成密钥对并推公钥）。
+      if (!p.sshHost.trim() || !p.sshUser.trim()) {
+        return 'host / 用户 必填';
+      }
+      if (!p.sshKeyPath.trim() && !p.sshPassword.trim()) {
+        return '密钥路径 / 登录密码 至少其一';
       }
       if (p.sshPort.trim()) {
         const port = Number(p.sshPort.trim());
@@ -241,6 +250,8 @@ export type WizardPayload =
         host: string;
         user?: string;
         keyPath?: string;
+        /** 1.6.5 密钥引导：瞬传密码（不落盘；与 keyPath 同给由服务端拦）。 */
+        password?: string;
         port?: number;
         name?: string;
         osFamily?: 'linux' | 'windows';
@@ -295,7 +306,9 @@ export function buildWizardPayload(state: EnvWizardState): WizardPayload | null 
   const host = p.sshHost.trim();
   const user = p.sshUser.trim();
   const keyPath = p.sshKeyPath.trim();
-  if (!host || !user || !keyPath) return null;
+  const password = p.sshPassword.trim();
+  // 1.6.5 密钥引导：keyPath 空则不带 keyPath 键，password 非空则透传（瞬传）。
+  if (!host || !user || (!keyPath && !password)) return null;
   const port = p.sshPort.trim() ? Number(p.sshPort.trim()) : undefined;
   if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) return null;
   return {
@@ -305,7 +318,8 @@ export function buildWizardPayload(state: EnvWizardState): WizardPayload | null 
       kind: 'ssh',
       host,
       user,
-      keyPath,
+      ...(keyPath ? { keyPath } : {}),
+      ...(password ? { password } : {}),
       ...(port !== undefined ? { port } : {}),
       ...(p.sshName.trim() ? { name: p.sshName.trim() } : {}),
       ...(p.sshOsFamily ? { osFamily: p.sshOsFamily } : {}),
@@ -419,7 +433,12 @@ export function wizardSummaryRows(
   } else if (state.source === 'ssh') {
     const p = state.params;
     rows.push({ label: '主机', value: `${p.sshUser.trim()}@${p.sshHost.trim()}${p.sshPort.trim() ? `:${p.sshPort.trim()}` : ''}` });
-    rows.push({ label: '密钥路径', value: p.sshKeyPath.trim() });
+    // 1.6.5 密钥引导：keyPath 空而 password 非空 → 只显引导说明行，不回显密码本体。
+    if (p.sshKeyPath.trim()) {
+      rows.push({ label: '密钥路径', value: p.sshKeyPath.trim() });
+    } else if (p.sshPassword.trim()) {
+      rows.push({ label: '凭据', value: '密码引导（自动生成密钥，密码不落盘）' });
+    }
     const capRow = capabilityRowFor(
       (e) => e.id === buildSshEnvId(p.sshHost, p.sshUser),
       ctx.envs,

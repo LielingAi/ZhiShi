@@ -532,6 +532,16 @@ function NewEnvModal(): React.JSX.Element | null {
           />
         </div>
         <div>
+          <div className="f-label">登录密码（可选——缺密钥时用于自动配置，现场使用不落盘）</div>
+          <input
+            className="f-input"
+            type="password"
+            placeholder="缺 keyPath 时服务端自动生成密钥并推公钥"
+            value={p.sshPassword}
+            onChange={(e) => wizardSetParam('sshPassword', e.target.value)}
+          />
+        </div>
+        <div>
           <div className="f-label">端口 port（可选，缺省 22）</div>
           <input
             className="f-input"
@@ -562,7 +572,7 @@ function NewEnvModal(): React.JSX.Element | null {
           </select>
         </div>
         {recipeSelect(p.sshRecipeIds, 'sshRecipeIds', '绑定配方（可选——决定域归属）')}
-        <div className="m-note">host / 用户 / 密钥路径 必填 · 密码不走正门（keyPath 引用）</div>
+        <div className="m-note">host / 用户 必填 · 密钥路径 / 登录密码 至少其一（密码仅现场引导用，不落盘）</div>
       </div>
     );
   } else if (wizard.step === 3) {
