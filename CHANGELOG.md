@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.6] - 2026-09-06
+
+> **环境改名（别名）**——环境条目可改名：只动 `name` 显示名，id 身份不变（env-sessions/selection/会话锚零迁移）。
+
+### 新增
+- **`environment/rename` 端点 + `zhishi env rename <id> <新名称>`**：改名/设别名；空名清除别名回显 id
+- **GUI 侧栏「✏ 重命名…」**：环境行 ⋯ 菜单入口，模态预填当前名，改名即刷新
+
 ## [1.6.5] - 2026-09-06
 
 > **凭据门槛消除（密码引导 → 密钥落地）**——VM/SSH 环境登记不再要求用户懂密钥：缺 `--key-path` 时现场输一次登录密码（不落盘），自动生成密钥对并把公钥推进目标，长期凭据仍只有密钥（D-T4 红线不动）。「一次密码，永久密钥」。
