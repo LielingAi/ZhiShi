@@ -29,7 +29,7 @@ import { taskConclusionFor } from './cron/task-conclusions';
 // Localhost loopback timeout for management / sidecar self-calls.
 import { existsSync , mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync } from 'fs';
 import { ensureDirSync } from './utils/fs-utils';
-import { resolveSshTarget, execInEnvironment, buildScpArgv } from './loop/env-exec';
+import { resolveSshTarget, execInEnvironment, buildScpArgv, buildScpUploadArgv } from './loop/env-exec';
 import { buildToolCheckScript, parseToolCheckOutput } from './environment/recipes';
 import {
   CAPABILITY_PROBE_TIMEOUT_MS,
@@ -57,7 +57,7 @@ import {
   verdictRequestOfRecord,
   type AutoRunStatus,
 } from './loop/auto-run';
-import { detectOsFamilyFromVmx } from './environment/os-family';
+import { detectOsFamilyFromVmx, osFamilyOf } from './environment/os-family';
 import {
   loadDomainManifests,
   resolveBundledDir,
@@ -194,6 +194,7 @@ import {
 import {
   resolveVmxForEntry,
   vmGuestExec,
+  vmPushToGuest,
 } from './environment/vm-guest-exec';
 import {
   vmTemplateBuild,
@@ -2356,7 +2357,7 @@ export async function runEnvProbeWithCapabilities(
     return { capabilityDomains: bound, capabilityDerivedAt: new Date().toISOString() };
   }
   try {
-    const r = await capabilityExecImpl(entry, buildToolCheckScript(surface), {
+    const r = await capabilityExecImpl(entry, buildToolCheckScript(surface, osFamilyOf(entry)), {
       timeoutMs: CAPABILITY_PROBE_TIMEOUT_MS,
     });
     if (!r.ok) return {};
@@ -2877,8 +2878,77 @@ export async function handleEnvironmentExtract(payload: {
     if (exitCode !== 0) {
       return { success: false, error: `scp 提取失败(exit=${exitCode}):\n${stderr.trim().split('\n').slice(-3).join('\n')}` };
     }
-    const base = guestPath.replace(/\/+$/, '').split('/').pop() ?? 'extracted';
+    // 1.6.4：basename 兼容 Windows guest 路径（`C:\work\poc.exe` 按 `\` 切）。
+    const base = guestPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? 'extracted';
     return { success: true, data: { savedTo: join(destDir, base) } };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+/** `environment/push` — 传入通道（1.6.4 M0）：把宿主文件送进环境，extract
+ * 的反向。两通道按条目形态分派：
+ *   - 有 address（ssh 条目 / 联网 VM）→ scp 上传（D-T4 只用 keyPath）；
+ *   - 断网 VM（kind=vm 无 address）→ vmrun copyFileToGuest（只认 guest 密码，
+ *     瞬传不落盘，缺密码报「guest 密码」标记由 CLI 现场询问重试）。
+ * 不过 boundary-ask：写入落在环境内（界内，快照可回滚），宿主侧只是读——
+ * agent 本就持有宿主文件读能力，无特权增量（与 extract 写宿主必问相反）。
+ * docker 条目不做（容器传入走 docker cp，不进本端点）。 */
+export async function handleEnvironmentPush(payload: {
+  id?: string;
+  hostPath?: string;
+  guestPath?: string;
+  workspace?: string;
+  guestUser?: string;
+  guestPassword?: string;
+}): Promise<AdminResponse> {
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!id) return { success: false, error: 'Missing required argument: <id>' };
+  const hostPath = typeof payload.hostPath === 'string' ? payload.hostPath.trim() : '';
+  if (!hostPath) return { success: false, error: 'Missing required argument: <hostPath>(宿主文件路径)' };
+  const guestPath = typeof payload.guestPath === 'string' ? payload.guestPath.trim() : '';
+  if (!guestPath) return { success: false, error: 'Missing required argument: <guestPath>(环境内目标路径)' };
+  const entry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
+  if (!entry) return { success: false, error: `未找到环境 "${id}"` };
+  const workspace = typeof payload.workspace === 'string' && payload.workspace.trim()
+    ? payload.workspace.trim()
+    : process.cwd();
+  const absHostPath = resolve(workspace, hostPath);
+
+  // 断网 VM → vmrun 客户机通道（唯一传入路径）。
+  if (entry.kind === 'vm' && !entry.address) {
+    const result = await vmPushToGuest(entry, absHostPath, guestPath, {
+      guestUser: typeof payload.guestUser === 'string' && payload.guestUser.trim() ? payload.guestUser.trim() : undefined,
+      guestPassword: typeof payload.guestPassword === 'string' && payload.guestPassword ? payload.guestPassword : undefined,
+    }, { templates: loadConfig().vmTemplates });
+    if (!result.ok) return { success: false, error: result.error };
+    return { success: true, data: { pushedTo: result.guestPath, via: 'vmrun' } };
+  }
+
+  // 联网环境（ssh 条目 / 联网 VM）→ scp 上传。
+  const resolved = resolveSshTarget(entry);
+  if (!resolved.ok) {
+    return {
+      success: false,
+      error: `环境 "${id}"（kind=${entry.kind}）不支持 push——${resolved.error}；docker 容器请用 docker cp`,
+    };
+  }
+  const argv = buildScpUploadArgv(resolved.target, absHostPath, guestPath);
+  const proc = spawnSubprocess([resolveCommand(argv[0]), ...argv.slice(1)], {
+    env: augmentedProcessEnv(),
+    stdin: 'ignore',
+    stdout: 'pipe',
+    stderr: 'pipe',
+    windowsHide: true,
+  });
+  const stderrPromise = new Response(proc.stderr).text();
+  const timer = setTimeout(() => proc.kill(), 120_000);
+  try {
+    const exitCode = await proc.exited;
+    const stderr = await stderrPromise;
+    if (exitCode !== 0) {
+      return { success: false, error: `scp 传入失败(exit=${exitCode}):\n${stderr.trim().split('\n').slice(-3).join('\n')}` };
+    }
+    return { success: true, data: { pushedTo: guestPath, via: 'scp' } };
   } finally {
     clearTimeout(timer);
   }

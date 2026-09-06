@@ -370,39 +370,55 @@ export function buildToolCheckCommand(tools: string[]): string {
 }
 
 /**
- * 声明词 → 探测命令映射（1.2.5「配」——词汇错位修正）。
+ * 声明词 → 探测命令映射（1.2.5「配」——词汇错位修正；1.6.4 加 windows 分支）。
  *
  * 配方 SKILL.md 的 tools[] 允许两种形态，本表只收后者：
- * - 真实二进制名（rg、gdb、semgrep……）——直接 `command -v <名>`，不进表；
+ * - 真实二进制名（rg、gdb、semgrep……）——直接按族 `command -v`/`where`，不进表；
  * - 包/能力名（pwntools、universal-ctags……）——二进制名与包名不同，
- *   或根本不是二进制（python 包），`command -v` 必假 MISS。
+ *   或根本不是二进制（python 包），`command -v`/`where` 必假 MISS。
  *
  * 探测命令以退出码判有无（0 = 有）。注意 pwndbg 用 `gdb -batch`：
  * 非 batch 模式下 `pi import` 抛错 gdb 仍继续并以 0 退出（假 OK）；
  * -batch 遇命令错误以非零退出，才是可用的判据。
+ * windows 分支是 cmd.exe 语义（两族执行通道最终都落 `cmd /c`——见
+ * os-family.ts 的 psShellWrapper/psCaptureScript）：`where` 替代
+ * `command -v`（PATHEXT 感知，.bat/.cmd 也能命中），python 无 3 后缀。
  */
-export const TOOL_PROBE_COMMANDS: Readonly<Record<string, string>> = {
-  pwntools: 'python3 -c "import pwn"',
-  pwndbg: 'gdb -q -batch -ex "pi import pwndbg"',
-  ripgrep: 'command -v rg',
-  'universal-ctags': 'command -v ctags',
-  ghidra: 'command -v analyzeHeadless',
-  binutils: 'command -v objdump',
-  nodejs: 'command -v node',
+export const TOOL_PROBE_COMMANDS: Readonly<Record<string, { posix: string; windows: string }>> = {
+  pwntools: { posix: 'python3 -c "import pwn"', windows: 'python -c "import pwn"' },
+  pwndbg: { posix: 'gdb -q -batch -ex "pi import pwndbg"', windows: 'gdb -q -batch -ex "pi import pwndbg"' },
+  ripgrep: { posix: 'command -v rg', windows: 'where rg' },
+  'universal-ctags': { posix: 'command -v ctags', windows: 'where ctags' },
+  ghidra: { posix: 'command -v analyzeHeadless', windows: 'where analyzeHeadless' },
+  binutils: { posix: 'command -v objdump', windows: 'where objdump' },
+  nodejs: { posix: 'command -v node', windows: 'where node' },
 };
 
 /**
- * 完整自检脚本：统一 PATH 前缀（非交互 ssh 不读 ~/.profile，~/.local/bin
- * 不在 PATH——pip --user 装的 pwntools 等会假 MISS；docker bash -lc 下
- * 无害），然后逐工具探测：映射表命中的用映射命令，未命中的复用
- * buildToolCheckCommand 的 `command -v` 循环。输出协议不变——每行
+ * 完整自检脚本：逐工具探测——映射表命中的用映射命令，未命中的按族
+ * `command -v`（posix）/ `where`（windows）。输出协议两族不变——每行
  * `OK:<声明词>` / `MISS:<声明词>`，由 parseToolCheckOutput 解析。
+ *
+ * posix 分支统一 PATH 前缀（非交互 ssh 不读 ~/.profile，~/.local/bin
+ * 不在 PATH——pip --user 装的 pwntools 等会假 MISS；docker bash -lc 下
+ * 无害）。windows 分支无此举：Windows OpenSSH 会话自带用户 PATH，且
+ * Windows 无 ~/.local/bin 惯例。
  */
-export function buildToolCheckScript(tools: string[]): string {
+export function buildToolCheckScript(tools: string[], family: 'linux' | 'windows' = 'linux'): string {
+  if (family === 'windows') {
+    // cmd.exe 语义：`&` 连语句（cmd 无 `;` 分隔符），NUL 吞输出；echo 不带
+    // 引号（cmd 的 echo 原样输出引号，会破 OK:/MISS: 协议）。
+    return tools
+      .map((tool) => {
+        const probe = TOOL_PROBE_COMMANDS[tool]?.windows ?? `where ${tool}`;
+        return `${probe} >NUL 2>&1 && echo OK:${tool} || echo MISS:${tool}`;
+      })
+      .join(' & ');
+  }
   const parts: string[] = ['export PATH="$HOME/.local/bin:$PATH"'];
   const unmapped: string[] = [];
   for (const tool of tools) {
-    const probe = TOOL_PROBE_COMMANDS[tool];
+    const probe = TOOL_PROBE_COMMANDS[tool]?.posix;
     if (probe === undefined) {
       unmapped.push(tool);
     } else {

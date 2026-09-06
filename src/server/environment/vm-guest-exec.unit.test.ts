@@ -18,6 +18,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import type { EnvironmentEntry } from './registry';
 import {
   buildCopyFromGuestArgs,
+  buildCopyToGuestArgs,
   buildDeleteGuestFileArgs,
   buildGuestCaptureScript,
   buildGuestExecArgs,
@@ -26,6 +27,7 @@ import {
   resolveVmxForEntry,
   resolveVmxForVmName,
   vmGuestExec,
+  vmPushToGuest,
   GUEST_EXEC_TIMEOUT_MS,
 } from './vm-guest-exec';
 import type { VmExec, VmExecResult } from './vm-lifecycle';
@@ -100,6 +102,9 @@ function makeScriptedExec(ctx: HandlerContext) {
       writeFileSync(hostPath, content);
       return ok();
     }
+    if (argv.includes('copyFileToGuest')) {
+      return ok();
+    }
     if (argv.includes('deleteFileInGuest')) {
       return ok();
     }
@@ -134,6 +139,27 @@ describe('command assembly (pure)', () => {
     expect(buildDeleteGuestFileArgs(VMX, 'researcher', 'pw', GUEST_CODE)).toEqual([
       '-T', 'ws', '-gu', 'researcher', '-gp', 'pw',
       'deleteFileInGuest', VMX, GUEST_CODE,
+    ]);
+  });
+
+  it('buildGuestExecArgs(windows)：powershell -EncodedCommand（utf16le-b64 可解码回原脚本）', () => {
+    const args = buildGuestExecArgs(VMX, 'researcher', 'pw', 'echo hi', 'windows');
+    expect(args.slice(0, 10)).toEqual([
+      '-T', 'ws',
+      '-gu', 'researcher',
+      '-gp', 'pw',
+      'runProgramInGuest', VMX,
+      '-activeWindow', '-interactive',
+    ]);
+    expect(args.slice(10, 14)).toEqual(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass']);
+    expect(args[14]).toBe('-EncodedCommand');
+    expect(Buffer.from(args[15]!, 'base64').toString('utf16le')).toBe('echo hi');
+  });
+
+  it('buildCopyToGuestArgs（1.6.4 传入通道）：host → guest 参数序', () => {
+    expect(buildCopyToGuestArgs(VMX, 'researcher', 'pw', 'C:\\work\\poc.exe', 'C:/target/poc.exe')).toEqual([
+      '-T', 'ws', '-gu', 'researcher', '-gp', 'pw',
+      'copyFileToGuest', VMX, 'C:\\work\\poc.exe', 'C:/target/poc.exe',
     ]);
   });
 
@@ -392,5 +418,139 @@ describe('vmGuestExec orchestration', () => {
     }, { exec, hostTmpDir, runId: () => RUN_ID, templates: TEMPLATES });
     expect(result.ok).toBe(true);
     expect(timeouts[2]).toBe(GUEST_EXEC_TIMEOUT_MS);
+  });
+});
+
+describe('vmGuestExec windows 分支（1.6.4：OS 家族分派）', () => {
+  const WIN_OUT = `C:\\Windows\\Temp\\zhishi-exec-${RUN_ID}.out`;
+  const WIN_CODE = `C:\\Windows\\Temp\\zhishi-exec-${RUN_ID}.code`;
+
+  it('happy path：PS_TEMP 临时路径 + powershell -EncodedCommand 包装，输出协议不变', async () => {
+    const hostTmpDir = makeTempRoot();
+    const ctx: HandlerContext = { hostTmpDir, outContent: 'pwned\r\n', codeContent: '0', runningVmx: [VMX] };
+    const { exec, calls } = makeScriptedExec(ctx);
+    const result = await vmGuestExec(
+      makeEntry({ osFamily: 'windows' }),
+      'whoami /priv',
+      { guestPassword: 'pw' },
+      { exec, hostTmpDir, runId: () => RUN_ID, templates: TEMPLATES },
+    );
+    expect(result).toEqual({ ok: true, stdout: 'pwned\r\n', exitCode: 0 });
+
+    // 序列不变：probe → list → run → copy ×2 → delete ×2
+    expect(calls).toHaveLength(7);
+    const run = calls[2]!;
+    expect(run[7]).toBe('runProgramInGuest');
+    // windows 包装：powershell.exe … -EncodedCommand <utf16le-b64>
+    expect(run.slice(9, 14)).toEqual(['-activeWindow', '-interactive', 'powershell.exe', '-NoProfile', '-ExecutionPolicy']);
+    expect(run[14]).toBe('Bypass');
+    expect(run[15]).toBe('-EncodedCommand');
+    const decoded = Buffer.from(run[16]!, 'base64').toString('utf16le');
+    // psCaptureScript 语义：cmd /c 执行用户命令，输出/退出码落 PS_TEMP 临时文件
+    expect(decoded).toContain('cmd /c');
+    expect(decoded).toContain(WIN_OUT);
+    expect(decoded).toContain(WIN_CODE);
+
+    // 取回与清理走同一对 windows 临时路径
+    expect(calls[3]!.slice(7, 10)).toEqual(['copyFileFromGuest', VMX, WIN_OUT]);
+    expect(calls[4]!.slice(7, 10)).toEqual(['copyFileFromGuest', VMX, WIN_CODE]);
+    expect(calls[5]!.slice(7)).toEqual(['deleteFileInGuest', VMX, WIN_OUT]);
+    expect(calls[6]!.slice(7)).toEqual(['deleteFileInGuest', VMX, WIN_CODE]);
+  });
+
+  it('guest 命令非零退出：exitCode 原样带回（与 linux 同语义）', async () => {
+    const hostTmpDir = makeTempRoot();
+    const { exec } = makeScriptedExec({ hostTmpDir, outContent: '', codeContent: '1', runningVmx: [VMX] });
+    const result = await vmGuestExec(
+      makeEntry({ osFamily: 'windows' }),
+      'exit 1',
+      { guestPassword: 'pw' },
+      { exec, hostTmpDir, runId: () => RUN_ID, templates: TEMPLATES },
+    );
+    expect(result).toEqual({ ok: true, stdout: '', exitCode: 1 });
+  });
+});
+
+describe('vmPushToGuest（1.6.4 传入通道：copyFileToGuest）', () => {
+  const baseInput = { guestPassword: 'pw' };
+
+  function makeHostFile(): { hostTmpDir: string; hostPath: string } {
+    const hostTmpDir = makeTempRoot();
+    const hostPath = join(hostTmpDir, 'poc.exe');
+    writeFileSync(hostPath, 'MZ-fake');
+    return { hostTmpDir, hostPath };
+  }
+
+  it('happy path：probe → list → copyFileToGuest（host 路径在前，guest 路径在后）', async () => {
+    const { hostTmpDir, hostPath } = makeHostFile();
+    const { exec, calls } = makeScriptedExec({ hostTmpDir, runningVmx: [VMX] });
+    const result = await vmPushToGuest(makeEntry(), hostPath, 'C:/target/poc.exe', baseInput, {
+      exec, hostTmpDir, templates: TEMPLATES,
+    });
+    expect(result).toEqual({ ok: true, guestPath: 'C:/target/poc.exe' });
+    expect(calls).toHaveLength(3);
+    expect(calls[2]!.slice(0, 7)).toEqual(['vmrun', '-T', 'ws', '-gu', 'researcher', '-gp', 'pw']);
+    expect(calls[2]!.slice(7)).toEqual(['copyFileToGuest', VMX, hostPath, 'C:/target/poc.exe']);
+  });
+
+  it('宿主文件不存在 → 通道前置之前先报（不碰 vmrun）', async () => {
+    const hostTmpDir = makeTempRoot();
+    const { exec, calls } = makeScriptedExec({ hostTmpDir });
+    const result = await vmPushToGuest(makeEntry(), join(hostTmpDir, 'nope.bin'), 'C:/target/nope.bin', baseInput, {
+      exec, hostTmpDir, templates: TEMPLATES,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('宿主文件不存在');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('非 vm 条目 / 缺 guest 密码 → 可读错误（与 exec 同一纪律）', async () => {
+    const { hostPath } = makeHostFile();
+    const r1 = await vmPushToGuest(makeEntry({ kind: 'ssh', host: '10.0.0.8' }), hostPath, '/tmp/x', baseInput, {});
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.error).toContain('不是 VM');
+
+    const r2 = await vmPushToGuest(makeEntry(), hostPath, '/tmp/x', {}, { templates: TEMPLATES });
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.error).toContain('guest 密码');
+  });
+
+  it('VM 未运行 / 认证失败 → 分类文案（含「guest 密码」标记供 CLI 重试）', async () => {
+    const { hostTmpDir, hostPath } = makeHostFile();
+    const stopped = makeScriptedExec({ hostTmpDir, runningVmx: ['C:\\other\\x.vmx'] });
+    const r1 = await vmPushToGuest(makeEntry(), hostPath, 'C:/t', baseInput, {
+      exec: stopped.exec, hostTmpDir, templates: TEMPLATES,
+    });
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.error).toContain('未在运行');
+
+    const authFail: VmExec = async (argv) => {
+      const joined = argv.join(' ');
+      if (argv.length === 2 && argv[1] === 'list') return ok('Total running VMs: 1\n');
+      if (joined === 'vmrun -T ws list') return ok(`Total running VMs: 1\n${VMX}\n`);
+      if (argv.includes('copyFileToGuest')) return fail('Error: Invalid user name or password');
+      throw new Error(`unexpected exec: ${joined}`);
+    };
+    const r2 = await vmPushToGuest(makeEntry(), hostPath, 'C:/t', baseInput, {
+      exec: authFail, hostTmpDir, templates: TEMPLATES,
+    });
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.error).toContain('guest 密码');
+  });
+
+  it('guest 目标父目录不存在 → not-found 文案指引（vmrun 不建目录）', async () => {
+    const { hostTmpDir, hostPath } = makeHostFile();
+    const notFound: VmExec = async (argv) => {
+      const joined = argv.join(' ');
+      if (argv.length === 2 && argv[1] === 'list') return ok('Total running VMs: 1\n');
+      if (joined === 'vmrun -T ws list') return ok(`Total running VMs: 1\n${VMX}\n`);
+      if (argv.includes('copyFileToGuest')) return fail('Error: A file was not found');
+      throw new Error(`unexpected exec: ${joined}`);
+    };
+    const result = await vmPushToGuest(makeEntry(), hostPath, 'C:/no-such-dir/poc.exe', baseInput, {
+      exec: notFound, hostTmpDir, templates: TEMPLATES,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('不建目录');
   });
 });

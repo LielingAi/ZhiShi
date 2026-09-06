@@ -53,8 +53,8 @@ describe('isKnownCommand / acceptsInlineArgs', () => {
     expect(isKnownCommand('etc')).toBe(false);
   });
 
-  it('inline 白名单：snapshot/rollback/extract/intel/decide 在列；rewind/fork 不在', () => {
-    for (const c of ['snapshot', 'rollback', 'extract', 'intel', 'decide']) {
+  it('inline 白名单：snapshot/rollback/extract/push/intel/decide 在列；rewind/fork 不在', () => {
+    for (const c of ['snapshot', 'rollback', 'extract', 'push', 'intel', 'decide']) {
       expect(acceptsInlineArgs(c)).toBe(true);
     }
     expect(acceptsInlineArgs('rewind')).toBe(false);

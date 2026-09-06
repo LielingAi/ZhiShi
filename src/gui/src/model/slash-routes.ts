@@ -7,6 +7,7 @@
  *   /snapshot → admin environment/snapshot { id, name? }
  *   /rollback → admin environment/rollback { id, snapshot }
  *   /extract  → admin environment/extract { id, guestPath, workspace }
+ *   /push     → admin environment/push { id, hostPath, guestPath, workspace }
  *   /rewind   → POST /chat/rewind { userMessageId }（wire 消息 id，从
  *               replay 的 user 消息 srvId 拿——见 rewindTargets）
  *   /fork     → POST /sessions/fork { messageId }（forkPiChat，busy 拒绝）
@@ -29,6 +30,7 @@ export type SlashCommandName =
   | 'snapshot'
   | 'rollback'
   | 'extract'
+  | 'push'
   | 'rewind'
   | 'fork'
   | 'queue'
@@ -78,6 +80,14 @@ export const SLASH_ROUTES: Record<SlashCommandName, SlashRoute> = {
     needsArgs: 'path',
     argTitle: '回收环境内文件到宿主',
     argPlaceholder: '环境内绝对路径，如 /work/flag.txt',
+  },
+  push: {
+    command: 'push',
+    endpoint: { kind: 'admin', route: 'environment/push' },
+    needsEnv: true,
+    needsArgs: 'path',
+    argTitle: '传入宿主文件到环境',
+    argPlaceholder: '宿主路径 → 环境内路径，如 ./poc.exe C:/work/poc.exe（空格分隔两段）',
   },
   rewind: {
     command: 'rewind',
@@ -224,6 +234,13 @@ export function slashPayload(
       return { id: ctx.envKey, snapshot: arg?.trim() ?? '' };
     case 'extract':
       return { id: ctx.envKey, guestPath: arg?.trim() ?? '', workspace: ctx.workspace ?? undefined };
+    case 'push': {
+      // 1.6.4 M0 传入通道：arg 按空白切成两段（宿主路径 → 环境内路径）。
+      // 缺段给空串，由服务端报错文案引导（断网 VM 走 vmrun 需要 guest 密码，
+      // 服务端文案会引导改用 CLI zhishi env push，GUI 原样展示）。
+      const [hostPath = '', guestPath = ''] = (arg ?? '').trim().split(/\s+/).filter(Boolean);
+      return { id: ctx.envKey, hostPath, guestPath, workspace: ctx.workspace ?? undefined };
+    }
     case 'rewind':
       return { userMessageId: arg?.trim() ?? '' };
     case 'fork':

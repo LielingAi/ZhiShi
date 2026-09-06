@@ -159,6 +159,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'snapshot', detail: '给当前环境打快照 [名]', group: '环境' },
   { name: 'rollback', detail: '回滚到快照 <名>', group: '环境' },
   { name: 'extract', detail: '回收环境内文件到宿主 <路径>', group: '环境' },
+  { name: 'push', detail: '传入宿主文件到环境 <宿主路径> <环境内路径>', group: '环境' },
   { name: 'rewind', detail: '回退到历史消息', group: '线程' },
   { name: 'fork', detail: '从某条消息分叉出新线程', group: '线程' },
   { name: 'queue', detail: '查看/取消排队消息', group: '线程' },
@@ -241,7 +242,7 @@ export interface ModalState {
   kind: ModalKind;
   /** boot/adopt 关联的配方 id。 */
   recipeId?: string;
-  /** slash-args / pick-message 关联的命令名（rewind/fork/snapshot/rollback/extract/export）。 */
+  /** slash-args / pick-message 关联的命令名（rewind/fork/snapshot/rollback/extract/push/export）。 */
   command?: SlashCommandName;
   /** promote（入专家库）预填。 */
   prefill?: PromotePrefill;
@@ -2924,7 +2925,8 @@ async function runSlashCommand(
     }
     case 'snapshot':
     case 'rollback':
-    case 'extract': {
+    case 'extract':
+    case 'push': {
       set({
         modal: {
           kind: 'slash-args',
@@ -2959,7 +2961,7 @@ async function runSlashCommand(
   }
 }
 
-/** 参数收集完成后的执行（snapshot/rollback/extract/rewind/fork/export）。 */
+/** 参数收集完成后的执行（snapshot/rollback/extract/push/rewind/fork/export）。 */
 async function executeSlash(
   get: () => GuiState,
   _set: (partial: Partial<GuiState>) => void,
@@ -3041,12 +3043,17 @@ async function executeSlash(
   }
   try {
     if (route.endpoint.kind === 'admin') {
-      const res = await c.adminPost<{ success: boolean; error?: string }>(route.endpoint.route, payload);
+      const res = await c.adminPost<{
+        success: boolean;
+        error?: string;
+        /** /push 成功返回（environment/push 契约）：目标路径与通道。 */
+        data?: { pushedTo?: string; via?: 'scp' | 'vmrun' };
+      }>(route.endpoint.route, payload);
       if (!res.success) {
         s.showToast(`/${command} 失败：${res.error ?? '未知错误'}`);
         return;
       }
-      toastSlashSuccess(s, command, arg);
+      toastSlashSuccess(s, command, arg, res.data);
     } else {
       if (route.command === 'rewind') {
         const res = await api.chatRewind(c, String(payload.userMessageId));
@@ -3073,7 +3080,12 @@ async function executeSlash(
   }
 }
 
-function toastSlashSuccess(s: GuiState, command: SlashCommandName, arg: string): void {
+function toastSlashSuccess(
+  s: GuiState,
+  command: SlashCommandName,
+  arg: string,
+  data?: { pushedTo?: string; via?: 'scp' | 'vmrun' },
+): void {
   if (command === 'snapshot') {
     s.showToast(arg.trim() ? `✓ 快照 ${arg.trim()} 已建立` : '✓ 快照已建立');
     return;
@@ -3084,5 +3096,10 @@ function toastSlashSuccess(s: GuiState, command: SlashCommandName, arg: string):
   }
   if (command === 'extract') {
     s.showToast(`✓ 已回收 ${arg.trim()} 到宿主 output/extracted/`);
+    return;
+  }
+  if (command === 'push') {
+    const dest = data?.pushedTo ?? '环境';
+    s.showToast(`✓ 已传入到 ${dest}${data?.via ? `（${data.via}）` : ''}`);
   }
 }

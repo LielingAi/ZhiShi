@@ -20,7 +20,7 @@
 
 import { readFileSync } from 'node:fs';
 
-import type { EnvironmentEntry } from './registry';
+import type { EnvironmentEntry } from '../../shared/config-types';
 
 export type OsFamily = 'linux' | 'windows';
 

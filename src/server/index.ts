@@ -281,6 +281,8 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'environment/snapshot') return await api.handleEnvironmentSnapshot(payload as Parameters<typeof api.handleEnvironmentSnapshot>[0]);
   if (route === 'environment/rollback') return await api.handleEnvironmentRollback(payload as Parameters<typeof api.handleEnvironmentRollback>[0]);
   if (route === 'environment/extract') return await api.handleEnvironmentExtract(payload as Parameters<typeof api.handleEnvironmentExtract>[0]);
+  // 1.6.4 M0 传入通道（extract 的反向：scp 上传 / vmrun copyFileToGuest）
+  if (route === 'environment/push') return await api.handleEnvironmentPush(payload as Parameters<typeof api.handleEnvironmentPush>[0]);
   // 1.2.0 研究交付——一键出报告（组装 → 敏感扫描 → 一次批准 → 回收 → 填肉 → 落盘）
   if (route === 'report/export') return await api.handleReportExport(payload as Parameters<typeof api.handleReportExport>[0]);
   // 1.4.1 auto loop agent（design auto-loop-design.md；runner 在 loop/auto-run.ts）

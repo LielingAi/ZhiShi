@@ -23,6 +23,7 @@ export const INLINE_ARG_COMMANDS: ReadonlySet<string> = new Set<SlashCommandName
   'snapshot',
   'rollback',
   'extract',
+  'push',
   'intel',
   'decide',
 ]);

@@ -259,6 +259,21 @@ describe('resolveEnvOpenCommand', () => {
     expect(r).toEqual({ ok: true, cmd: 'docker exec -it pwn-box bash' });
   });
 
+  it('docker windows 容器 → cmd.exe（1.6.4：windows 容器没有 bash）', () => {
+    const r = resolveEnvOpenCommand({
+      id: 'win-box', kind: 'docker', container: 'win-core', osFamily: 'windows', createdAt: 'x',
+    });
+    expect(r).toEqual({ ok: true, cmd: 'docker exec -it win-core cmd.exe' });
+  });
+
+  it('ssh/vm 带 address 不带远端命令——尊重远端默认 shell（含 windows）', () => {
+    const r = resolveEnvOpenCommand({
+      id: 'win-range', kind: 'vm', vmName: 'win11', address: '192.168.56.20',
+      user: 'researcher', osFamily: 'windows', createdAt: 'x',
+    });
+    expect(r).toEqual({ ok: true, cmd: 'ssh researcher@192.168.56.20' });
+  });
+
   it('vm with address behaves like ssh (user/keyPath supported)', () => {
     const r = resolveEnvOpenCommand({
       id: 'range', kind: 'vm', vmName: 'win11-range', address: '192.168.56.10',

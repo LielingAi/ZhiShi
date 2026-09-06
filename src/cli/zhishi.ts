@@ -141,6 +141,9 @@ Examples:
   zhishi env reset <env-id> [--cwd PATH]    # 镜像不动，给 docker 环境换干净容器（现场重置，1.5.10）
   zhishi env discover                       # 只读发现本机环境（docker 容器/镜像 + VM；1.5.10 起含 zhishi-env-* 镜像区）
   zhishi env exec <env-id> -- <command...>  # isolated VM one-shot exec via vmrun guest channel (P2)
+  zhishi env push <env-id> <host-file> <guest-path> [--guest-user u]
+                                            # push a host file into env (1.6.4): scp for networked envs,
+                                            # vmrun copyFileToGuest for isolated VMs (guest password prompted)
   zhishi agent list                          # agent 清单（1.3.9 起交互会话迁至 GUI；agent 仅子命令）
   zhishi agent show <agent-id>              # effective defaults for a workspace
   zhishi task list
@@ -1635,12 +1638,12 @@ const group = positional[0];
         result = await callApi(route, { ...(body as Record<string, unknown>), password });
       }
     }
-// `env exec` 缺 guest 密码 / 认证失败 → 现场隐藏输入 guest 密码，带
-    // guestPassword 重试一次（P2 B2：vmrun 客户机通道只认密码；密码不落盘、
-    // 不进 shell 历史、不进命令行参数）。
+// `env exec` / `env push` 缺 guest 密码 / 认证失败 → 现场隐藏输入 guest 密码，
+    // 带 guestPassword 重试一次（P2 B2 / 1.6.4：vmrun 客户机通道只认密码；
+    // 密码不落盘、不进 shell 历史、不进命令行参数）。
     if (
       group === 'env' &&
-      action === 'exec' &&
+      (action === 'exec' || action === 'push') &&
       !result.success &&
       typeof result.error === 'string' &&
       result.error.includes('guest 密码') &&
@@ -1992,6 +1995,21 @@ function buildRequestBody(
         id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'env-id', 'env exec', 'id'),
         command: passthrough.join(' '),
         guestUser: flags.guestUser,
+      };
+    }
+    if (action === 'push') {
+      // 传入通道（1.6.4 M0）：zhishi env push <env-id> <宿主路径> <环境内路径>
+      // [--guest-user u]。联网环境走 scp；断网 VM 走 vmrun copyFileToGuest
+      // （只认 guest 密码——不走 flag 防 shell 历史泄漏，缺密码/认证失败由主
+      // 流程现场隐藏输入后带 guestPassword 重试，与 env exec 同一纪律）。
+      // workspace 与 env up 一致：无 --cwd 回退进程 cwd（相对宿主路径在
+      // server 侧按它解析）。
+      return {
+        id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'env-id', 'env push', 'id'),
+        hostPath: requirePositional(rest[1], 'host-file', 'env push', 'host-file'),
+        guestPath: requirePositional(rest[2], 'guest-path', 'env push', 'guest-path'),
+        guestUser: flags.guestUser,
+        workspace: String(flags.cwd || process.cwd()).trim(),
       };
     }
     if (action === 'adopt') {

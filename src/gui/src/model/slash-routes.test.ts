@@ -23,6 +23,7 @@ describe('slashRoute（命令 → 端点映射）', () => {
     expect(slashRoute('snapshot')?.endpoint).toEqual({ kind: 'admin', route: 'environment/snapshot' });
     expect(slashRoute('rollback')?.endpoint).toEqual({ kind: 'admin', route: 'environment/rollback' });
     expect(slashRoute('extract')?.endpoint).toEqual({ kind: 'admin', route: 'environment/extract' });
+    expect(slashRoute('push')?.endpoint).toEqual({ kind: 'admin', route: 'environment/push' });
   });
 
   it('线程命令走 HTTP 端点', () => {
@@ -54,6 +55,31 @@ describe('slashPayload', () => {
       guestPath: '/work/flag.txt',
       workspace: '/work',
     });
+  });
+
+  it('push：arg 按空白切两段（hostPath → guestPath），带 workspace', () => {
+    expect(slashPayload(SLASH_ROUTES.push, envCtx, './poc.exe C:/work/poc.exe')).toEqual({
+      id: 'pwn@docker',
+      hostPath: './poc.exe',
+      guestPath: 'C:/work/poc.exe',
+      workspace: '/work',
+    });
+  });
+
+  it('push：缺段给空串（服务端报错文案引导），宿主未锚定 → null', () => {
+    expect(slashPayload(SLASH_ROUTES.push, envCtx, './poc.exe')).toEqual({
+      id: 'pwn@docker',
+      hostPath: './poc.exe',
+      guestPath: '',
+      workspace: '/work',
+    });
+    expect(slashPayload(SLASH_ROUTES.push, envCtx, '')).toEqual({
+      id: 'pwn@docker',
+      hostPath: '',
+      guestPath: '',
+      workspace: '/work',
+    });
+    expect(slashPayload(SLASH_ROUTES.push, hostCtx, './poc.exe /work/poc.exe')).toBeNull();
   });
 
   it('rewind / fork：wire 消息 id 载荷', () => {
