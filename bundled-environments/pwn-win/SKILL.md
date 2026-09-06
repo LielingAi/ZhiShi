@@ -72,14 +72,23 @@ osFamily 由 vmx guestOS 静态判定，读不到回落配方声明的 `os_famil
 
 ## 标准工作流
 
-- **目录约定**：工作目录 `C:\zhishi-work\`（corpus/ crashes/ targets/；
+- **目录约定**：工作目录 `C:\zhishi-work\`（corpus/ crashes/ targets/ bin/；
   setup.ps1 已建并加 Defender 排除——fuzz 语料不被实时扫描拖慢/误杀）
 - **源码 fuzz**：clang-cl `/fsanitize=fuzzer,address` 构建 harness →
   语料进 corpus/ → 长跑（env_bg 后台）→ 崩溃落 crashes/ → cdb 分拣
 - **闭源 fuzz**：WinAFL（可选段）——DynamoRIO 插桩 + 目标函数偏移定位
   （per-target 人工环节）→ winafl-cmin 精简语料 → 同上回收
-- **崩溃 triage**：`cdb -c "!analyze -v; kb; q"` 批处理；!exploitable 初判
-  可利用性；TTD trace（`ttd.exe -launch`）录一次随便回放
+- **崩溃 triage**：`cdb -g -G -c ".lastevent; .ecxr; r; kb 5; q" <target> <样本>`
+  批处理取现场（异常码/寄存器/顶帧）；批量栈指纹用
+  `powershell -File C:\zhishi-work\bin\stack-hash.ps1 -TargetExe <exe> -Samples <样本...>`
+  （ASan 输出与 cdb 双通道，crash-triager 深挖的验证门同 Linux 语义）；
+  有 !exploitable（msec.dll）时 `!analyze -v; !exploitable` 拿可利用性参考
+- **PageHeap（堆破坏显形器）**：`gflags /p /enable <target.exe> /full` 开
+  （堆越界写提前变 AV）；调完 `gflags /p /disable <target.exe>` 关——
+  开着会拖慢 fuzz 吞吐，别带进长跑
+- **TTD（复现阶段的杀器）**：`ttd.exe -launch -out C:\zhishi-work\traces <program>`
+  录 trace，之后 `cdb` 加载 `.run` 文件任意回放（`!tt <addr>` 时间旅行到
+  任意指令）——比 Linux 的 rr 稳，一次录制无限复现
 - **符号**：`_NT_SYMBOL_PATH` 已配 MS 公共符号服务器（setup.ps1 落用户环境变量）
 
 ## 结果怎么采

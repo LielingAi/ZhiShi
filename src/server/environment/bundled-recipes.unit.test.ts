@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { scanRecipes, aggregateRecipeTools } from './recipes';
 
@@ -48,7 +48,12 @@ describe('bundled environment recipes（出厂配方守卫）', () => {
     expect(pwnWin?.vmSnapshot).toBe('zhishi-clean');
     // validateRecipe 已保证 setup.ps1 在场（否则 invalid，上面全 valid 用例会炸）；
     // 这里再直接读盘守一次（防 validate 规则被改坏）。
-    expect(existsSync(join(BUNDLED_ROOT, 'pwn-win', 'setup.ps1'))).toBe(true);
+    const ps1 = join(BUNDLED_ROOT, 'pwn-win', 'setup.ps1');
+    expect(existsSync(ps1)).toBe(true);
+    // UTF-8 BOM 守卫：PS 5.1 对无 BOM 的 .ps1 按 ANSI 读，中文注释乱码炸解析
+    // （1.6.4 实机抓出；编辑器/工具链改写文件时 BOM 容易丢）。
+    const head = readFileSync(ps1).subarray(0, 3);
+    expect([...head]).toEqual([0xef, 0xbb, 0xbf]);
   });
 
   it('关键工具聚合可达（gdb/ROPgadget/afl-fuzz/clang——均为真实二进制名，toolCheck 依赖）', () => {

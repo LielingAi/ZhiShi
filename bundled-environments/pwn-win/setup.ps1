@@ -79,7 +79,7 @@ if (Get-Command cdb -ErrorAction SilentlyContinue) {
 Write-Step '== 环境配置 =='
 # 工作目录约定 + Defender 排除（fuzz 语料不被实时扫描拖慢/误杀）
 $workDir = 'C:\zhishi-work'
-foreach ($sub in @('', 'corpus', 'crashes', 'targets')) {
+foreach ($sub in @('', 'corpus', 'crashes', 'targets', 'bin')) {
   $p = if ($sub) { Join-Path $workDir $sub } else { $workDir }
   if (-not (Test-Path $p)) { New-Item -ItemType Directory -Path $p | Out-Null }
 }
@@ -88,6 +88,103 @@ try {
   Write-Step "Defender 排除项已加：$workDir"
 } catch {
   Write-Host "[pwn-win] WARN: Defender 排除项未加上（$($_.Exception.Message)）——fuzz 性能可能受损"
+}
+
+# stack-hash.ps1 落 bin 并进用户 PATH（崩溃指纹工具，crash-triager 验证门用；
+# 内嵌同文本写出——provision/adopt 只上传 setup.ps1 本体，examples/ 不会随行进
+# guest，同 fuzz-vm setup.sh 的单文件惯例）。
+$stackHashDst = 'C:\zhishi-work\bin\stack-hash.ps1'
+@'
+# stack-hash.ps1 — Windows 版批量栈指纹（1.6.4 M3）
+# 与 fuzz 配方 examples/stack-hash.sh 同语义同输出协议，供 crash-triager
+# 深挖模式的验证门使用（新崩溃类 = 崩溃 且 指纹 ≠ 基准指纹）。
+#
+# 用法:
+#   powershell -File stack-hash.ps1 -TargetExe <exe> -Samples <file...>
+#       样本作 argv[1]（目标从文件读的典型形态）
+#   ... -TargetExe <exe> -TargetArgs 'arg1 @@ arg3' -Samples <file...>
+#       参数模板，@@ 替换为样本路径
+#
+# 输出（与 .sh 版同一协议）: 每行 <sample>\t<指纹hash>\t<指纹描述>
+# 指纹优先取 ASan（SUMMARY 类型 + 首个目标帧——clang-cl /fsanitize=address
+# 的输出格式与 Linux 一致），其次 cdb 通道（.lastevent 异常码 + kb 顶 5 帧，
+# 地址归一化——ASLR 下同一站点指纹稳定）。
+[CmdletBinding()]
+param(
+  [Parameter(Mandatory = $true)][string]$TargetExe,
+  [string]$TargetArgs = '',
+  [Parameter(Mandatory = $true)][string[]]$Samples
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Continue' # 单样本失败不拖垮整批（坏样本 → no-crash 行）
+
+# 指纹文本 → 8 位 hash（SHA1 前缀；cksum 的 Windows 等价，只要求稳定）。
+function Get-FpHash([string]$text) {
+  $sha = [System.Security.Cryptography.SHA1]::Create()
+  try {
+    return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text)))).Replace('-', '').Substring(0, 8).ToLower()
+  } finally {
+    $sha.Dispose()
+  }
+}
+
+# ASan 输出解析（两平台同格式）：SUMMARY 类型 + 首个源码帧（去地址）。
+function Get-AsanFingerprint([string]$out) {
+  if ($out -notmatch 'SUMMARY: AddressSanitizer') { return $null }
+  $sum = ([regex]::Match($out, 'SUMMARY: AddressSanitizer: [^\r\n]+')).Value -replace '^SUMMARY: AddressSanitizer: ', ''
+  $frame = ([regex]::Match($out, '(?m)#[0-9]+ \S+ in [^\r\n]+')).Value -replace '0x[0-9a-fA-F]+', ''
+  return "asan:$($sum.Split(' ')[0])|$frame"
+}
+
+# cdb 通道：异常码 + kb 顶 5 帧（地址归一化，取 module!func 站点）。
+function Get-CdbFingerprint([string[]]$targetArgv) {
+  $cdbOut = & cdb -g -G -c '.lastevent; kb 5; q' @targetArgv 2>&1 | Out-String
+  $code = ''
+  $m = [regex]::Match($cdbOut, '(?i)code ([0-9a-f]{8})')
+  if ($m.Success) { $code = $m.Groups[1].Value }
+  $frames = @()
+  foreach ($line in ($cdbOut -split "`n")) {
+    # kb 帧行：地址列 + module!func+0xoff
+    $fm = [regex]::Match($line.Trim(), '([A-Za-z0-9_.]+![A-Za-z0-9_.<>?@]+)(\+0x[0-9a-f]+)?')
+    if ($fm.Success -and $fm.Groups[1].Value -notmatch '^(ntdll|KERNEL32|KERNELBASE|ucrtbase)!') {
+      $frames += $fm.Groups[1].Value
+    }
+    if ($frames.Count -ge 5) { break }
+  }
+  if ($frames.Count -eq 0 -and -not $code) { return $null }
+  return "cdb:$code|$($frames -join '|')"
+}
+
+foreach ($s in $Samples) {
+  $argv = @()
+  if ($TargetArgs -match '@@') {
+    $argv = ($TargetArgs -split ' ') | ForEach-Object { $_ -replace '@@', $s }
+  } elseif ($TargetArgs) {
+    $argv = ($TargetArgs -split ' ') + $s
+  } else {
+    $argv = @($s)
+  }
+  $fp = $null
+  # 直跑一遍取 ASan 输出（进程自己打印）；非 ASan 构建直崩也进 cdb 通道
+  $direct = & $TargetExe @argv 2>&1 | Out-String
+  $fp = Get-AsanFingerprint $direct
+  if (-not $fp) {
+    $fp = Get-CdbFingerprint (@($TargetExe) + $argv)
+  }
+  if ($fp) {
+    $h = Get-FpHash $fp
+    $desc = $fp
+    if ($desc.Length -gt 160) { $desc = $desc.Substring(0, 160) }
+    Write-Output "$s`t$h`t$desc"
+  } else {
+    Write-Output "$s`tno-crash`t-"
+  }
+}
+'@ | Out-File -FilePath $stackHashDst -Encoding utf8 # utf8 带 BOM（PS 5.1 无 BOM 按 ANSI 读）
+Write-Step "stack-hash.ps1 → $stackHashDst"
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if ($userPath -notlike '*zhishi-work\bin*') {
+  [Environment]::SetEnvironmentVariable('Path', "$userPath;C:\zhishi-work\bin", 'User')
 }
 
 # MS 公共符号服务器（用户级，不影响其他用户）
