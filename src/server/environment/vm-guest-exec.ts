@@ -23,9 +23,11 @@
  * 救不了它。密码由 CLI 现场输入 → POST 体瞬传 → 进程参数瞬现，绝不落盘；
  * 缺密码时报含「guest 密码」标记的错误，CLI 据此现场询问后重试一次。
  *
- * v1 只支持 Linux guest（/bin/bash 包装）；Windows guest 报「后续版本」
- * 引导。guest OS 判定不做——包装脚本在 Windows 上会以通道错误形式失败，
- * 由 classifyGuestExecFailure 兜底成可读错误。
+ * 1.6.4：OS 家族分派——linux 走 /bin/bash 包装，windows 走 powershell.exe
+ * -EncodedCommand（OS 抽象层 psCaptureScript，两族最终都在 guest 内
+ * cmd /c 执行用户命令）。家族来源 entry.osFamily（缺省 linux，vmx guestOS
+ * 静态判定在登记/up 时写入）；判错了 guest 内 shell 不存在，以 not-found
+ * 通道错误形式失败，由 classifyGuestExecFailure 兜底成可读错误。
  *
  * 结构照 vm-lifecycle.ts：命令组装/输出解析是纯函数；所有进程调用走可
  * 注入的 `VmExec`，单测绝不真调 vmrun。host 侧临时文件是真 fs（测试用
@@ -33,7 +35,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EnvironmentEntry } from './registry';
@@ -150,6 +152,28 @@ export function buildDeleteGuestFileArgs(
     '-gp', guestPassword,
     'deleteFileInGuest', vmx,
     guestPath,
+  ];
+}
+
+/**
+ * 1.6.4 传入通道：`copyFileToGuest <vmx> <host 路径> <guest 路径>`——
+ * 与 copyFileFromGuest 同凭据形态（-gu/-gp）。PoC/语料/样本传入断网隔离
+ * VM 的唯一通道（无 address 时 scp 不存在）。目标父目录必须已存在（vmrun
+ * 不建目录），缺失时以 not-found 通道错误返回。
+ */
+export function buildCopyToGuestArgs(
+  vmx: string,
+  guestUser: string,
+  guestPassword: string,
+  hostPath: string,
+  guestPath: string,
+): string[] {
+  return [
+    '-T', 'ws',
+    '-gu', guestUser,
+    '-gp', guestPassword,
+    'copyFileToGuest', vmx,
+    hostPath, guestPath,
   ];
 }
 
@@ -279,37 +303,27 @@ function toolsNotRunningError(tail: string): string {
   );
 }
 
+/** guest 通道就绪后的上下文（vmGuestExec / vmPushToGuest 共用前置的产物）。 */
+interface GuestChannel {
+  exec: VmExec;
+  vmx: string;
+  guestUser: string;
+  guestPassword: string;
+}
+
 /**
- * guest-exec 编排：前置校验 → 解析 vmx → 确认运行中 → runProgramInGuest
- * （包装脚本把 stdout/退出码落 guest 临时文件）→ copyFileFromGuest 取回
- * → 解析退出码 → 删 guest/host 临时文件。
- *
- * 返回 { ok: true, stdout, exitCode }：guest 命令非零退出原样带给调用方；
- * ok: false 只表示通道失败（Tools 没跑 / 认证失败 / VM 未运行等）。
+ * vmrun 客户机通道共用前置（1.6.4 提取——exec 与 push 同一段）：密码校验
+ * （vmrun 只认密码，keyPath 救不了）→ VMware 可用性 → vmx 解析 → guest
+ * 用户收敛 → VM 运行中确认（vmrun list 精确命中）。
  */
-export async function vmGuestExec(
+async function prepareGuestChannel(
   entry: EnvironmentEntry,
-  command: string,
-  input: GuestExecInput = {},
-  options: GuestExecOptions = {},
-): Promise<EnvResult<{ stdout: string; exitCode: number }>> {
-  if (entry.kind !== 'vm') {
-    return { ok: false, error: `环境 "${entry.id}" 不是 VM（kind=${entry.kind}）——guest-exec 只服务断网隔离 VM` };
-  }
-  if (entry.address) {
-    return {
-      ok: false,
-      error:
-        `环境 "${entry.id}" 已配置 address（${entry.address}）——请走 SSH 通道：zhishi env open ${entry.id}；` +
-        'guest-exec 只服务无 address 的断网隔离 VM',
-    };
-  }
+  input: GuestExecInput,
+  options: GuestExecOptions,
+): Promise<EnvResult<GuestChannel>> {
   const vmName = entry.vmName?.trim();
   if (!vmName) {
     return { ok: false, error: `环境 "${entry.id}" 缺少 vmName（kind=vm 必填）` };
-  }
-  if (!command.trim()) {
-    return { ok: false, error: '缺少要执行的命令（zhishi env exec <env-id> -- <command...>）' };
   }
 
   // vmrun 客户机通道只认密码——keyPath 救不了它（vmrun 不支持密钥认证）。
@@ -346,9 +360,60 @@ export async function vmGuestExec(
       ok: false,
       error:
         `VM "${vmName}" 未在运行（${vmx} 不在 vmrun list 里）。\n` +
-        '先启动 VM（zhishi env up <配方>，或在 Workstation 里手动启动），启动后等 VMware Tools 就绪再 exec。',
+        '先启动 VM（zhishi env up <配方>，或在 Workstation 里手动启动），启动后等 VMware Tools 就绪再试。',
     };
   }
+
+  return { ok: true, exec, vmx, guestUser, guestPassword };
+}
+
+/** copyFileToGuest / copyFileFromGuest 的通道失败分类文案（共用 classifier）。 */
+function guestChannelFailureError(op: string, result: VmExecResult, guestUser: string): string {
+  const tail = outputTail(result);
+  switch (classifyGuestExecFailure(result)) {
+    case 'auth':
+      return authFailureError(guestUser, tail);
+    case 'tools-not-running':
+      return toolsNotRunningError(tail);
+    case 'not-found':
+      return `${op} 目标未找到（guest 侧父目录/路径不存在？vmrun 不建目录；Windows 路径建议正斜杠 C:/...）：\n${tail}`;
+    default:
+      return `${op} 失败（guest-exec 通道错误）：\n${tail}`;
+  }
+}
+
+/**
+ * guest-exec 编排：前置校验 → 共用通道前置 → runProgramInGuest
+ * （包装脚本把 stdout/退出码落 guest 临时文件）→ copyFileFromGuest 取回
+ * → 解析退出码 → 删 guest/host 临时文件。
+ *
+ * 返回 { ok: true, stdout, exitCode }：guest 命令非零退出原样带给调用方；
+ * ok: false 只表示通道失败（Tools 没跑 / 认证失败 / VM 未运行等）。
+ */
+export async function vmGuestExec(
+  entry: EnvironmentEntry,
+  command: string,
+  input: GuestExecInput = {},
+  options: GuestExecOptions = {},
+): Promise<EnvResult<{ stdout: string; exitCode: number }>> {
+  if (entry.kind !== 'vm') {
+    return { ok: false, error: `环境 "${entry.id}" 不是 VM（kind=${entry.kind}）——guest-exec 只服务断网隔离 VM` };
+  }
+  if (entry.address) {
+    return {
+      ok: false,
+      error:
+        `环境 "${entry.id}" 已配置 address（${entry.address}）——请走 SSH 通道：zhishi env open ${entry.id}；` +
+        'guest-exec 只服务无 address 的断网隔离 VM',
+    };
+  }
+  if (!command.trim()) {
+    return { ok: false, error: '缺少要执行的命令（zhishi env exec <env-id> -- <command...>）' };
+  }
+
+  const prepared = await prepareGuestChannel(entry, input, options);
+  if (!prepared.ok) return { ok: false, error: prepared.error };
+  const { exec, vmx, guestUser, guestPassword } = prepared;
 
   // 临时文件路径（guest 侧按 OS 家族分派 + host 侧 tmpdir，同名随机段）。
   const runId = (options.runId ?? (() => randomBytes(4).toString('hex')))();
@@ -440,4 +505,40 @@ export async function vmGuestExec(
   }
 
   return { ok: true, stdout, exitCode };
+}
+
+/**
+ * 1.6.4 传入通道编排（environment/push 的断网 VM 分支）：共用通道前置 →
+ * copyFileToGuest。与 vmGuestExec 不同：本函数服务一切 VM（有无 address
+ * 皆可——调用方 admin-api 已把有 address 的路由去 scp，这里是兜底也是
+ * 断网 VM 的唯一传入通道）。
+ *
+ * host 文件存在性在通道前置之前先查（比在 guest 侧报 not-found 可读）。
+ */
+export async function vmPushToGuest(
+  entry: EnvironmentEntry,
+  hostPath: string,
+  guestPath: string,
+  input: GuestExecInput = {},
+  options: GuestExecOptions = {},
+): Promise<EnvResult<{ guestPath: string }>> {
+  if (entry.kind !== 'vm') {
+    return { ok: false, error: `环境 "${entry.id}" 不是 VM（kind=${entry.kind}）——vmrun 传入通道只服务 VM 条目` };
+  }
+  if (!existsSync(hostPath)) {
+    return { ok: false, error: `宿主文件不存在：${hostPath}` };
+  }
+
+  const prepared = await prepareGuestChannel(entry, input, options);
+  if (!prepared.ok) return { ok: false, error: prepared.error };
+  const { exec, vmx, guestUser, guestPassword } = prepared;
+
+  const copyResult = await exec(
+    ['vmrun', ...buildCopyToGuestArgs(vmx, guestUser, guestPassword, hostPath, guestPath)],
+    GUEST_EXEC_FILE_OP_TIMEOUT_MS,
+  );
+  if (copyResult.exitCode !== 0 || copyResult.error) {
+    return { ok: false, error: guestChannelFailureError('copyFileToGuest 传入', copyResult, guestUser) };
+  }
+  return { ok: true, guestPath };
 }

@@ -346,6 +346,24 @@ export function buildScpArgv(target: SshTarget, guestPath: string, destDir: stri
   ];
 }
 
+/**
+ * 1.6.4 传入通道（联网环境分支）：宿主文件 scp 进环境。旗标形态与
+ * buildScpArgv 严格同构（accept-new / BatchMode / D-T4 只用 keyPath）——
+ * 两个方向只差参数顺序。Windows guest 的 guestPath 建议正斜杠
+ * （C:/work/poc.exe——远端 scp 解析反斜杠路径不稳）。
+ */
+export function buildScpUploadArgv(target: SshTarget, hostPath: string, guestPath: string): string[] {
+  return [
+    'scp',
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', 'BatchMode=yes',
+    ...(target.keyPath ? ['-i', target.keyPath] : []),
+    ...(target.port ? ['-P', String(target.port)] : []),
+    hostPath,
+    `${target.destination}:${guestPath}`,
+  ];
+}
+
 export interface TruncatedOutput {
   text: string;
   truncated: boolean;

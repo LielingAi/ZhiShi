@@ -36,3 +36,25 @@ zhishi research log --task-kind binary --outcome <success|fail|stuck> \
 - outcome 语义：`success` = 产出 ≥1 类去重崩溃或按目标跑满约定时长；`fail` = harness/环境构建不起来；`stuck` = 能跑但长期无产出且换过策略仍无效。
 - bug_class 初判不准就**不填**（别硬套），留给 crash-triager。
 - 最终文本回报格式：`outcome | bug_class(可空) | 一行 summary | trajectory_ref 路径`。
+
+## Windows 目标（pwn-win 环境，1.6.4 M3）
+
+目标在 Windows VM 时流程骨架不变（harness → 语料 → 后台长跑 → 崩溃收集），
+引擎换面。guest 内目录约定 `C:\zhishi-work\`（corpus/ crashes/ targets/，
+Defender 排除已配）；与工作区之间用 `zhishi env push`（传入）/ `/extract`
+（回收）搬运——VM 回滚会清现场，**崩溃先回收再 down**。
+
+**源码可见（主线）**：clang-cl + libFuzzer 与 Linux 同构——
+`clang-cl /fsanitize=fuzzer,address harness.cpp target.lib /Fe:fuzzer.exe`，
+长跑 `fuzzer.exe C:\zhishi-work\corpus -artifact_prefix=C:\zhishi-work\crashes\`
+（env_bg 后台），崩溃落 `crash-*` 文件。语料精简 `-merge=1`、超时
+`-timeout=`、字典 `-dict=` 语义全同。监控看 stdout 的 `NEW`/脉冲行（无
+fuzzer_stats——libFuzzer 没有那东西，Linux 上同理）。
+
+**闭源（WinAFL，可选段）**：`afl-fuzz.exe -i corpus-in -o corpus-out
+-D C:\tools\dynamorio\bin64 -t 20000 -- -coverage_module target.exe
+-target_offset 0x1234 -fuzz_iterations 5000 -- target.exe @@`。
+**harness 选型与目标函数定位是 per-target 的人工环节**（选高频解析入口、
+不含初始化/退出的函数；偏移用 Ghidra/cdb 定）——做主 agent 委派来的人文
+件里写清这两样，你只做执行与收敛：winafl-cmin 精简语料、崩溃去重
+（stack-hash.ps1 指纹）、`fuzz/crashes/unique/` 同语义落工作区。

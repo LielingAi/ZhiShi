@@ -494,3 +494,151 @@ describe('配方工具自检挂点（1.2.5「配」——快照之前）', () =>
     expect(calls.some((c) => c.includes('snapshot'))).toBe(true);
   });
 });
+
+describe('Windows adopt（1.6.4 M2：vmrun 引导 → SSH 公钥接管）', () => {
+  /** windows fixture：vmx 带 guestOS（家族静态判定）+ 配方带 setup.ps1。 */
+  function makeWinFixture() {
+    const root = makeTempRoot();
+    const vmx = join(root, 'win10.vmx');
+    writeFileSync(vmx, 'displayName = "win10"\nguestOS = "windows9-64"\nethernet0.generatedAddress = "00:0c:29:ab:cd:ef"\n');
+    const keyPath = join(root, 'id_ed25519');
+    writeFileSync(keyPath, 'fake-private-key');
+    writeFileSync(`${keyPath}.pub`, 'ssh-ed25519 AAAA fake\n');
+    const recipeDir = join(root, 'recipe-win');
+    mkdirSync(recipeDir, { recursive: true });
+    writeFileSync(join(recipeDir, 'setup.ps1'), 'Write-Host ok\n');
+    const recipe: EnvironmentRecipe = {
+      id: 'pwn-win', dir: recipeDir, name: 'pwn-win', base: 'vm',
+      tools: ['git'], vmUser: 'researcher', vmSnapshot: 'zhishi-clean',
+      osFamily: 'windows', valid: true, invalidReasons: [],
+    };
+    return { root, vmx, keyPath, recipe };
+  }
+
+  /** copyFileFromGuest 副作用：把约定内容写到 host 路径（argv 末位）。 */
+  const copySideEffect = (content: string) => (argv: string[]) => {
+    writeFileSync(argv[argv.length - 1]!, content);
+    return ok();
+  };
+
+  it('happy path：vmrun 引导（EncodedCommand）→ 取回 code/log → researcher 自检 → setup.ps1 → 自检 → shutdown → 快照', async () => {
+    const { vmx, keyPath, recipe } = makeWinFixture();
+    const { exec, calls } = scriptedExec([
+      ok('Total running VMs: 0\n'),                 // ensureVmwareAvailable probe
+      ok(`Total running VMs: 1\n${vmx}\n`),         // running check
+      ok('10.0.0.56\n'),                             // getGuestIPAddress
+      ok(),                                          // runProgramInGuest bootstrap
+      copySideEffect('0'),                           // copyFileFromGuest code
+      copySideEffect('openssh-server capability installed\nBOOTSTRAP_OK\n'), // log
+      ok(), ok(),                                    // deleteFileInGuest ×2
+      ok(),                                          // ssh probe researcher（公钥接管）
+      ok(),                                          // scp setup.ps1
+      ok('ready\n'),                                 // ssh powershell setup.ps1
+      ok('OK:git\n'),                                // 配方工具自检（windows where 协议）
+      ok(),                                          // ssh shutdown /s /t 0
+      ok('Total running VMs: 0\n'),                  // waitUntilStopped
+      ok(),                                          // snapshot
+    ]);
+    const result = await vmTemplateAdopt(recipe, { vmx, keyPath, password: 'Admin!23' }, { exec });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.channel).toBe('password');
+    expect(result.address).toBe('10.0.0.56');
+    expect(result.template).toEqual({ vmx, user: 'researcher', keyPath, snapshot: 'zhishi-clean' });
+
+    // 引导调用：vmrun runProgramInGuest + powershell -EncodedCommand，内容可解码
+    const boot = calls.find((c) => c.includes('runProgramInGuest'));
+    expect(boot).toBeDefined();
+    expect(boot!.slice(1, 7)).toEqual(['-T', 'ws', '-gu', 'Administrator', '-gp', 'Admin!23']);
+    expect(boot).toContain('powershell.exe');
+    const encIdx = boot!.indexOf('-EncodedCommand');
+    const decoded = Buffer.from(boot![encIdx + 1]!, 'base64').toString('utf16le');
+    expect(decoded).toContain('Add-WindowsCapability');
+    expect(decoded).toContain('administrators_authorized_keys');
+    expect(decoded).toContain('S-1-5-32-544'); // 管理员组按 SID 定位（本地化免疫）
+    expect(decoded).toContain('ssh-ed25519 AAAA fake');
+
+    // setup.ps1 经 scp 上传 + powershell -File 执行；关机用 shutdown
+    expect(calls.some((c) => c[0] === 'scp' && c.some((a) => a.includes('setup.ps1')))).toBe(true);
+    expect(calls.some((c) => c[0] === 'ssh' && c.some((a) => a.includes('powershell -NoProfile -ExecutionPolicy Bypass -File')))).toBe(true);
+    expect(calls.some((c) => c[0] === 'ssh' && c.some((a) => a.includes('shutdown /s /t 0')))).toBe(true);
+    // 不走 plink（Windows 通道里没有它）
+    expect(calls.some((c) => c[0] === 'plink')).toBe(false);
+  });
+
+  it('缺 guest 密码 → 双标记错误（CLI adopt/exec 两个重试条件都接得住），不进引导', async () => {
+    const { vmx, keyPath, recipe } = makeWinFixture();
+    const { exec, calls } = scriptedExec([
+      ok('Total running VMs: 0\n'),
+      ok(`Total running VMs: 1\n${vmx}\n`),
+      ok('10.0.0.56\n'),
+    ]);
+    const result = await vmTemplateAdopt(recipe, { vmx, keyPath }, { exec });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('公钥登录不通');
+      expect(result.error).toContain('guest 密码');
+    }
+    expect(calls.some((c) => c.includes('runProgramInGuest'))).toBe(false);
+  });
+
+  it('引导认证失败 → 「guest 密码」标记；Tools 未跑 → 装 VMware Tools 指引', async () => {
+    const { vmx, keyPath, recipe } = makeWinFixture();
+    const auth = scriptedExec([
+      ok('Total running VMs: 0\n'),
+      ok(`Total running VMs: 1\n${vmx}\n`),
+      ok('10.0.0.56\n'),
+      fail('Error: Invalid user name or password'),
+    ]);
+    const r1 = await vmTemplateAdopt(recipe, { vmx, keyPath, password: 'wrong' }, { exec: auth.exec });
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.error).toContain('guest 密码');
+
+    const noTools = scriptedExec([
+      ok('Total running VMs: 0\n'),
+      ok(`Total running VMs: 1\n${vmx}\n`),
+      ok('10.0.0.56\n'),
+      fail('Error: VMware Tools are not running'),
+    ]);
+    const r2 = await vmTemplateAdopt(recipe, { vmx, keyPath, password: 'pw' }, { exec: noTools.exec });
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.error).toContain('VMware Tools');
+  });
+
+  it('引导脚本 guest 内失败（code=1 + 日志尾部）→ 报错不接管', async () => {
+    const { vmx, keyPath, recipe } = makeWinFixture();
+    const { exec, calls } = scriptedExec([
+      ok('Total running VMs: 0\n'),
+      ok(`Total running VMs: 1\n${vmx}\n`),
+      ok('10.0.0.56\n'),
+      ok(),
+      copySideEffect('1'),
+      copySideEffect('FAILED: Add-WindowsCapability 0x800f0954\n'),
+      ok(), ok(),
+    ]);
+    const result = await vmTemplateAdopt(recipe, { vmx, keyPath, password: 'pw' }, { exec });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('Windows 引导脚本');
+      expect(result.error).toContain('0x800f0954');
+    }
+    expect(calls.some((c) => c[0] === 'ssh')).toBe(false); // 没走到 SSH 接管
+  });
+
+  it('researcher 公钥自检失败 → administrators_authorized_keys 指引', async () => {
+    const { vmx, keyPath, recipe } = makeWinFixture();
+    const { exec } = scriptedExec([
+      ok('Total running VMs: 0\n'),
+      ok(`Total running VMs: 1\n${vmx}\n`),
+      ok('10.0.0.56\n'),
+      ok(),
+      copySideEffect('0'),
+      copySideEffect('BOOTSTRAP_OK\n'),
+      ok(), ok(),
+      fail('Permission denied (publickey)'),  // researcher ssh probe
+    ]);
+    const result = await vmTemplateAdopt(recipe, { vmx, keyPath, password: 'pw' }, { exec });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('administrators_authorized_keys');
+  });
+});

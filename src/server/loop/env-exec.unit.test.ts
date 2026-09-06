@@ -15,6 +15,7 @@ import {
   buildPtyDockerExecArgv,
   buildPtySpawnSpec,
   buildPtySshArgv,
+  buildScpUploadArgv,
   buildSshArgv,
   execInEnvironment,
   interactiveShellScript,
@@ -176,6 +177,30 @@ describe('buildSshArgv', () => {
     const argv = buildSshArgv({ destination: 'h', host: 'h' }, 'id', { controlMaster: false });
     expect(argv).not.toContain('-i');
     expect(argv).not.toContain('-p');
+  });
+});
+
+describe('buildScpUploadArgv（1.6.4 传入通道：extract 的反向）', () => {
+  it('旗标与 buildScpArgv 同构；host 路径在前、destination:guestPath 收尾', () => {
+    const argv = buildScpUploadArgv(
+      { destination: 'researcher@10.0.0.8', host: '10.0.0.8', keyPath: '/home/me/.ssh/id_ed25519', port: 2222 },
+      'C:\\work\\poc.exe',
+      'C:/target/poc.exe',
+    );
+    const s = argv.join(' ');
+    expect(argv[0]).toBe('scp');
+    expect(s).toContain('BatchMode=yes');
+    expect(s).toContain('StrictHostKeyChecking=accept-new');
+    expect(argv[argv.indexOf('-i') + 1]).toBe('/home/me/.ssh/id_ed25519');
+    expect(argv[argv.indexOf('-P') + 1]).toBe('2222');
+    expect(argv[argv.length - 2]).toBe('C:\\work\\poc.exe');
+    expect(argv[argv.length - 1]).toBe('researcher@10.0.0.8:C:/target/poc.exe');
+  });
+
+  it('缺 keyPath/port → 不带 -i/-P', () => {
+    const argv = buildScpUploadArgv({ destination: 'u@h', host: 'h' }, '/tmp/a.bin', '/tmp/b.bin');
+    expect(argv).not.toContain('-i');
+    expect(argv).not.toContain('-P');
   });
 });
 

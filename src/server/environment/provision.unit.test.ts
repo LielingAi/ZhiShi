@@ -1,10 +1,11 @@
 /**
- * provision.unit.test.ts — 1.4.9 已有环境补齐链路单测。
+ * provision.unit.test.ts — 1.4.9 已有环境补齐链路单测（1.6.4 加 windows 分支）。
  *
- * 覆盖：脚本解析（VM→setup.sh / docker→provision.sh / 缺失报错）、sudo
- * 免密预检（不免密短路不进场）、base64 包装可还原、执行结果映射
- * （通道失败 / 非零退出 + 日志尾部 / 成功）。全部注入假 exec 与临时配方
- * 目录，零真实 IO 通道。
+ * 覆盖：脚本解析（VM→setup.sh / windows VM→setup.ps1 / docker→provision.sh /
+ * 缺失报错）、提权预检（posix sudo 免密 / windows net session 提升会话）、
+ * base64 包装可还原（posix 管道 / windows EncodedCommand 双层 base64）、执行
+ * 结果映射（通道失败 / 非零退出 + 日志尾部 / 成功）。全部注入假 exec 与
+ * 临时配方目录，零真实 IO 通道。
  */
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -37,8 +38,8 @@ afterEach(() => {
 
 const ENTRY: EnvironmentEntry = { id: 'pwn-vm', kind: 'vm', address: '192.168.1.10', createdAt: '' };
 
-function recipe(id: string, base: 'docker' | 'vm'): EnvironmentRecipe {
-  return { id, dir: join(dir, id), name: id, base, tools: [], valid: true, invalidReasons: [] };
+function recipe(id: string, base: 'docker' | 'vm', osFamily?: 'linux' | 'windows'): EnvironmentRecipe {
+  return { id, dir: join(dir, id), name: id, base, tools: [], ...(osFamily ? { osFamily } : {}), valid: true, invalidReasons: [] };
 }
 
 function withFile(r: EnvironmentRecipe, name: string, content: string): EnvironmentRecipe {
@@ -59,8 +60,13 @@ function fakeExec(routes: Array<{ match: RegExp; res: { ok: boolean; exitCode?: 
 }
 
 describe('纯函数 — 脚本解析 / 包装 / sudo 判定', () => {
-  it('VM 配方 → setup.sh；docker 配方 → provision.sh', () => {
+  it('VM 配方 → setup.sh；windows VM 配方 → setup.ps1；docker 配方 → provision.sh', () => {
     expect(provisionScriptCandidate(recipe('pwn-vm', 'vm')).source).toBe('setup');
+    expect(provisionScriptCandidate(recipe('pwn-vm', 'vm')).scriptFamily).toBe('posix');
+    const win = provisionScriptCandidate(recipe('pwn-win', 'vm', 'windows'));
+    expect(win.source).toBe('setup');
+    expect(win.scriptFamily).toBe('windows');
+    expect(win.path).toContain('setup.ps1');
     expect(provisionScriptCandidate(recipe('code-audit', 'docker')).source).toBe('provision');
     expect(provisionScriptCandidate(recipe('code-audit', 'docker')).path).toContain('provision.sh');
   });
@@ -85,6 +91,21 @@ describe('纯函数 — 脚本解析 / 包装 / sudo 判定', () => {
     const b64 = cmd.slice('echo '.length, cmd.indexOf(' | '));
     const decoded = Buffer.from(b64, 'base64').toString('utf8').replace(/\r/g, '');
     expect(decoded).toBe('set -euo pipefail\nsudo apt-get update\n');
+  });
+
+  it('wrapProvisionCommand(windows)：EncodedCommand 双层 base64 可还原，含 $? 退出码折算', () => {
+    const script = '# pwn-win\nWrite-Host "你好"\nNew-Item C:\\x -ItemType Directory\r\n';
+    const cmd = wrapProvisionCommand(script, 'windows');
+    expect(cmd.startsWith('powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ')).toBe(true);
+    const encoded = cmd.slice('powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand '.length);
+    const bootstrap = Buffer.from(encoded, 'base64').toString('utf16le');
+    // 引导脚本：落 %TEMP%\zhishi-provision.ps1 → 执行 → $? 折算退出码 → 清理
+    expect(bootstrap).toContain('zhishi-provision.ps1');
+    expect(bootstrap).toContain('if ($?) { $code = 0 } else { $code = 1 }');
+    // 内层 utf8-base64 还原出原脚本（CRLF 也原样——PowerShell 对 CRLF 免疫）
+    const inner = /\$b64='([A-Za-z0-9+/=]+)'/.exec(bootstrap);
+    expect(inner).not.toBeNull();
+    expect(Buffer.from(inner![1]!, 'base64').toString('utf8')).toBe(script);
   });
 
   it('logTail：超长截尾保留尾部', () => {
@@ -156,5 +177,34 @@ describe('provisionEnvironment（假 exec 通道）', () => {
     const out = await provisionEnvironment(ENTRY, r, { exec });
     expect(out.ok).toBe(false);
     expect(out.error).toBe('ssh 不通');
+  });
+
+  it('windows VM 配方缺 setup.ps1 → 明确报错（1.6.4）', async () => {
+    const out = await provisionEnvironment(ENTRY, recipe('pwn-win', 'vm', 'windows'), { exec: fakeExec([]).exec });
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('setup.ps1');
+  });
+
+  it('windows ps1：恒做提升预检（net session），非提升 → 不进场', async () => {
+    const r = withFile(recipe('pwn-win', 'vm', 'windows'), 'setup.ps1', 'Write-Host x');
+    const { exec, calls } = fakeExec([{ match: /^net session/, res: { ok: true, exitCode: 1 } }]);
+    const out = await provisionEnvironment(ENTRY, r, { exec });
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('提升');
+    expect(calls).toHaveLength(1); // 只有预检，主脚本没跑
+    expect(calls[0]).toContain('net session');
+  });
+
+  it('windows ps1：预检通过 → EncodedCommand 包装执行，成功闭环', async () => {
+    const r = withFile(recipe('pwn-win', 'vm', 'windows'), 'setup.ps1', 'Write-Host install');
+    const { exec, calls } = fakeExec([{ match: /./, res: { ok: true, exitCode: 0, stdout: 'done' } }]);
+    const out = await provisionEnvironment(ENTRY, r, { exec });
+    expect(out.ok).toBe(true);
+    expect(out.source).toBe('setup');
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toContain('net session');
+    // fakeExec 只记命令前 60 字符——断言落在截断点内（EncodedCommand 形态
+    // 的完整断言在纯函数用例里）。
+    expect(calls[1]).toContain('powershell -NoProfile -ExecutionPolic');
   });
 });

@@ -9,7 +9,7 @@
  *     （modal kind 'ssh' 无触发点，submitSsh 的 id 拼 user@host 过不了
  *     registry 校验）
  *   - adopt：environment/adopt（真实——连通 → 初始化 → 快照 → vmTemplates）
- *   - slash-args：/snapshot /rollback /extract 的参数收集
+ *   - slash-args：/snapshot /rollback /extract /push 的参数收集
  *   - pick-message：/rewind /fork 的消息选择（wire id 来源：replay srvId）
  *   - env-remove：环境删除确认（1.3.7 补口；驱动文案/确认强度在
  *     model/env-remove——hyperv/vbox 删 VM 实例形态需输入环境名二次确认）
@@ -213,7 +213,7 @@ function AdoptModal({ recipeId }: { recipeId: string }): React.JSX.Element {
   );
 }
 
-// ── 1.3.1 ④：slash 参数收集（snapshot/rollback/extract） ───────────────
+// ── 1.3.1 ④：slash 参数收集（snapshot/rollback/extract/push） ──────────
 
 function SlashArgsModal(): React.JSX.Element | null {
   const modal = useGuiStore((s) => s.modal);

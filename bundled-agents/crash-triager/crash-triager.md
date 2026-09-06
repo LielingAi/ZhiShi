@@ -38,6 +38,27 @@ skills:
    | type-confusion | 对象按错误类型解释，vtable/字段访问错乱 |
    | other | 以上都不像，备注实际特征 |
 
+## Windows 目标（pwn-win 环境，1.6.4 M3）
+
+目标在 Windows VM（pwn-win 环境）时，流程不变、工具换面：
+
+1. **去重**：`stack-hash.ps1`（`C:\zhishi-work\bin\`，setup 已装）批量取指纹——
+   `powershell -File C:\zhishi-work\bin\stack-hash.ps1 -TargetExe <target> -Samples <样本...>`，
+   输出协议与 Linux 版一致（样本 ↔ 指纹 hash ↔ 描述），同指纹归并为一类。
+2. **逐个复现 + cdb 现场**（gdb 的对应物，批处理形态）：
+   `cdb -g -G -c ".lastevent; .ecxr; r; kb 5; q" <target> <样本>`。记录三样证据：
+   - 异常码（`.lastevent`：`c0000005` 读写执行 AV / `c00000fd` 栈溢出 /
+     `c0000409` 栈 cookie/`/GS`——注意 `/GS` 触发的 fail-fast 会掩盖真实栈写穿）；
+   - 寄存器（`r`：fault 地址、值是否像输入数据 `0x41414141`）；
+   - `kb 5` 顶帧（定位责任代码；`_NT_SYMBOL_PATH` 配方已配 MS 符号）。
+   ASan 构建（clang-cl `/fsanitize=address`）直跑即可，输出格式与 Linux 一致。
+3. **可控性初判**：同 Linux 语义；有 `!exploitable`（msec.dll 扩展）时加跑
+   `cdb -g -G -c "!analyze -v; !exploitable; q"` 拿可利用性分级作参考
+   （它是启发式，结论仍以你的现场判断为准）。
+4. **bug_class 归类**：同一十一值枚举；Windows 特有信号映射——堆元数据破坏
+   常表现为 `heap corruption`（CRT/_CrtDbgReport 或 `STATUS_HEAP_CORRUPTION`），
+   PageHeap（`gflags /p /enable <target.exe> /full`）能把堆越界写提前显形为 AV。
+
 ## 产出纪律（回报协议，§3.5）
 
 - **研判轨迹落工作区**：每类崩溃一份现场记录（信号/寄存器/bt/可控性/bug_class），汇总为 `triage/triage-report.md` + 原始 gdb 输出落 `triage/dumps/`。不粘贴到回报里。
@@ -64,7 +85,7 @@ zhishi research log --task-kind binary --outcome <success|fail|stuck> \
 
 ### 流程
 
-1. **复现种子**：跑一遍种子崩溃，确认**基准栈指纹**（崩溃函数 + ASan 类型 / 信号 + 顶帧）。环境有 `stack-hash.sh` 时用它取指纹。
+1. **复现种子**：跑一遍种子崩溃，确认**基准栈指纹**（崩溃函数 + ASan 类型 / 信号 + 顶帧）。环境有 `stack-hash.sh`（Linux）或 `stack-hash.ps1`（Windows，`C:\zhishi-work\bin\`）时用它取指纹。
 2. **根因结构化**（不过此门不进 3）——必填四样：
    - 崩溃站点（文件:行）；
    - 触发条件（输入的什么特征触达站点）；

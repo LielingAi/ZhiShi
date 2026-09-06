@@ -27,6 +27,7 @@
 import type { EnvironmentEntry } from '../../shared/config-types';
 import type { DomainManifest } from '../../shared/domain-manifest';
 import { buildToolCheckScript } from './recipes';
+import { osFamilyOf } from './os-family';
 import type { EnvironmentRecipe } from './recipes';
 
 /** 能力探测的执行通道签名（与 env-exec 的 execInEnvironment 同形的最小子集；
@@ -259,7 +260,9 @@ export async function probeEnvironmentCapabilities(
   if (surface.length > 0) {
     let stdout: string;
     try {
-      const r = await deps.exec(entry, buildToolCheckScript(surface), {
+      // 1.6.4：探测脚本按条目 OS 家族分派（windows → cmd 语义的 where 协议；
+      // 此前恒 posix，Windows 条目探测必全 MISS）。
+      const r = await deps.exec(entry, buildToolCheckScript(surface, osFamilyOf(entry)), {
         timeoutMs: CAPABILITY_PROBE_TIMEOUT_MS,
       });
       if (!r.ok) return undefined; // 通道失败 → 不写能力字段（pending 同样不动）

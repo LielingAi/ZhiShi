@@ -201,12 +201,31 @@ describe('probeEnvironmentCapabilities（注入 exec，不真连）', () => {
     expect(r?.capabilityMissing).toEqual([]);
   });
 
+  it('windows 条目 → 探测脚本走 cmd 语义（1.6.4 osFamily 分派），解析协议不变', async () => {
+    let seen = '';
+    const r = await probeEnvironmentCapabilities({ ...ENTRY, osFamily: 'windows' }, {
+      recipes: RECIPES,
+      manifests: MANIFESTS,
+      exec: (_e, script) => {
+        seen = script;
+        return Promise.resolve({ ok: true as const, stdout: 'OK:nmap\n' });
+      },
+      now: fixedNow,
+    });
+    // cmd 语义的 where 探测；无 posix 的 PATH 前缀
+    expect(seen).toContain('where nmap >NUL 2>&1 && echo OK:nmap || echo MISS:nmap');
+    expect(seen).not.toContain('export PATH');
+    // 解析协议两族一致：OK:nmap → pentest 域
+    expect(r?.capabilityDomains).toEqual(['binary', 'pentest']);
+  });
+
   it('通道失败 → undefined（不写能力字段，保 baseline）', async () => {
     const failExec = () => Promise.resolve({ ok: false as const, stdout: '' });
     const r = await probeEnvironmentCapabilities(ENTRY, {
       recipes: RECIPES,
       manifests: MANIFESTS,
       exec: failExec,
+
     });
     expect(r).toBeUndefined();
   });

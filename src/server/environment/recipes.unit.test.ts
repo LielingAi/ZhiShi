@@ -144,6 +144,40 @@ describe('firstRunTools（1.5.7 首跑安装工具声明）', () => {
   });
 });
 
+describe('os_family（1.6.4 配方 OS 家族声明）', () => {
+  const WIN_VM_SKILL = VALID_VM_SKILL.replace('base: vm', 'base: vm\nos_family: windows');
+
+  it('解析 os_family: windows 并透传到 EnvironmentRecipe', () => {
+    const { frontmatter, errors } = parseRecipeFrontmatter(WIN_VM_SKILL);
+    expect(errors).toEqual([]);
+    expect(frontmatter.os_family).toBe('windows');
+    const recipe = buildRecipe('win-range', '/x/win-range', WIN_VM_SKILL, new Set(['SKILL.md', 'setup.ps1']));
+    expect(recipe.valid).toBe(true);
+    expect(recipe.osFamily).toBe('windows');
+  });
+
+  it('缺省 → undefined（缺省即 linux，存量配方零迁移）', () => {
+    const { frontmatter } = parseRecipeFrontmatter(VALID_VM_SKILL);
+    expect(frontmatter.os_family).toBeUndefined();
+  });
+
+  it('非法值 → invalidReasons，不炸扫描', () => {
+    const content = VALID_VM_SKILL.replace('base: vm', 'base: vm\nos_family: darwin');
+    const { frontmatter, errors } = parseRecipeFrontmatter(content);
+    expect(errors.some((e) => e.includes('os_family'))).toBe(true);
+    expect(frontmatter.os_family).toBeUndefined();
+  });
+
+  it('windows vm 配方缺 setup.ps1 → invalid（初始化脚本必须给）', () => {
+    const { frontmatter } = parseRecipeFrontmatter(WIN_VM_SKILL);
+    expect(validateRecipe(frontmatter, new Set(['SKILL.md'])).some((r) => r.includes('setup.ps1'))).toBe(true);
+    expect(validateRecipe(frontmatter, new Set(['SKILL.md', 'setup.ps1']))).toEqual([]);
+    // linux vm 配方不受影响（无 setup 脚本要求）
+    const { frontmatter: linuxFm } = parseRecipeFrontmatter(VALID_VM_SKILL);
+    expect(validateRecipe(linuxFm, new Set(['SKILL.md']))).toEqual([]);
+  });
+});
+
 describe('validateRecipe', () => {
   it('accepts a complete docker recipe', () => {
     const { frontmatter } = parseRecipeFrontmatter(VALID_DOCKER_SKILL);
@@ -372,16 +406,16 @@ describe('配方工具自检(声明 vs 实装)', () => {
   });
 });
 
-describe('声明词 → 探测命令映射（1.2.5「配」）', () => {
-  it('TOOL_PROBE_COMMANDS:七个能力名的探测命令', () => {
+describe('声明词 → 探测命令映射（1.2.5「配」；1.6.4 双族）', () => {
+  it('TOOL_PROBE_COMMANDS:七个能力名的探测命令(posix/windows 双形态)', () => {
     expect(TOOL_PROBE_COMMANDS).toEqual({
-      pwntools: 'python3 -c "import pwn"',
-      pwndbg: 'gdb -q -batch -ex "pi import pwndbg"',
-      ripgrep: 'command -v rg',
-      'universal-ctags': 'command -v ctags',
-      ghidra: 'command -v analyzeHeadless',
-      binutils: 'command -v objdump',
-      nodejs: 'command -v node',
+      pwntools: { posix: 'python3 -c "import pwn"', windows: 'python -c "import pwn"' },
+      pwndbg: { posix: 'gdb -q -batch -ex "pi import pwndbg"', windows: 'gdb -q -batch -ex "pi import pwndbg"' },
+      ripgrep: { posix: 'command -v rg', windows: 'where rg' },
+      'universal-ctags': { posix: 'command -v ctags', windows: 'where ctags' },
+      ghidra: { posix: 'command -v analyzeHeadless', windows: 'where analyzeHeadless' },
+      binutils: { posix: 'command -v objdump', windows: 'where objdump' },
+      nodejs: { posix: 'command -v node', windows: 'where node' },
     });
   });
 
@@ -411,6 +445,24 @@ describe('声明词 → 探测命令映射（1.2.5「配」）', () => {
     expect(mixed).toContain('command -v rg >/dev/null 2>&1 && echo "OK:ripgrep" || echo "MISS:ripgrep"');
     expect(mixed).toContain(`for t in 'gdb';`);
     expect(buildToolCheckScript([])).toBe('export PATH="$HOME/.local/bin:$PATH"');
+  });
+
+  it('buildToolCheckScript(windows):cmd 语义——where 探测、& 连接、无 PATH 前缀', () => {
+    const script = buildToolCheckScript(['gdb', 'ripgrep', 'pwntools'], 'windows');
+    // 实名 → where；能力名 → windows 映射（python 无 3 后缀）
+    expect(script).toContain('where gdb >NUL 2>&1 && echo OK:gdb || echo MISS:gdb');
+    expect(script).toContain('where rg >NUL 2>&1 && echo OK:ripgrep || echo MISS:ripgrep');
+    expect(script).toContain('python -c "import pwn" >NUL 2>&1 && echo OK:pwntools || echo MISS:pwntools');
+    // cmd 无 `;` 分隔符；echo 不带引号（cmd echo 原样输出引号会破协议）
+    expect(script).toContain(' & ');
+    expect(script).not.toContain(';');
+    expect(script).not.toContain('"OK:');
+    // 无 posix 的 PATH 前缀（Windows OpenSSH 会话自带用户 PATH）
+    expect(script).not.toContain('export PATH');
+  });
+
+  it('buildToolCheckScript(windows):空清单产出空串(posix 空清单仍有 PATH 前缀)', () => {
+    expect(buildToolCheckScript([], 'windows')).toBe('');
   });
 
   it('脚本输出与 parseToolCheckOutput 协议对齐:OK/MISS:<声明词>', () => {

@@ -8,8 +8,10 @@
 ```
 bundled-environments/<name>/
   Dockerfile    # 基础镜像 + 工具集 + 服务（docker 配方必需）
-  setup.sh      # 初始化：装依赖、部署目标、起服务、自检
+  setup.sh      # 初始化：装依赖、部署目标、起服务、自检（linux guest）
+  setup.ps1     # 同上，Windows guest（1.6.4；frontmatter os_family: windows 时必需）
   SKILL.md      # frontmatter: name / description / base(docker|vm) / tools[]
+                #   / os_family(linux|windows，缺省 linux) / firstRunTools[]
                 # 正文教方法：何时用、怎么进、结果怎么采、怎么收尾
 ```
 

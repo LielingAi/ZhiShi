@@ -12,6 +12,7 @@
  */
 
 import type { EnvironmentEntry, EnvironmentKind } from '../../shared/config-types';
+import { osFamilyOf } from './os-family';
 
 export type { EnvironmentEntry, EnvironmentKind };
 
@@ -215,16 +216,23 @@ export function envTagForEntry(entry: EnvironmentEntry): string {
 /**
  * Resolve an entry to the command string that `zhishi env open` feeds into
  * `term open --cmd`:
- *   ssh    → ssh [-i keyPath] [user@]host
- *   docker → docker exec -it <container> bash
- *   vm     → address ? ssh [-i keyPath] [user@]address : error（指向 env exec 的 guest-exec 通道）
+ *   ssh    → ssh [-i keyPath] [user@]host（不带远端命令——尊重远端默认 shell：
+ *            Windows OpenSSH 默认 cmd.exe，管理员可能已配 powershell）
+ *   docker → docker exec -it <container> <shell>（shell 按 osFamily：windows
+ *            容器没有 bash，给 cmd.exe）
+ *   vm     → address ? ssh [-i keyPath] [user@]address（同 ssh 的默认 shell 纪律）
+ *            : error（指向 env exec 的 guest-exec 通道）
  */
 export function resolveEnvOpenCommand(entry: EnvironmentEntry): EnvResult<{ cmd: string }> {
   switch (entry.kind) {
     case 'ssh':
       return { ok: true, cmd: buildSshCommand(entry.host!, entry.user, entry.keyPath, entry.port) };
-    case 'docker':
-      return { ok: true, cmd: `docker exec -it ${quoteArg(entry.container!)} bash` };
+    case 'docker': {
+      // 1.6.4：osFamily 消费——windows 容器（nanoserver/windowsservercore 系）
+      // 只有 cmd.exe（powershell 都未必有），硬写 bash 必炸。
+      const shell = osFamilyOf(entry) === 'windows' ? 'cmd.exe' : 'bash';
+      return { ok: true, cmd: `docker exec -it ${quoteArg(entry.container!)} ${shell}` };
+    }
     case 'vm':
       if (entry.address) {
         return { ok: true, cmd: buildSshCommand(entry.address, entry.user, entry.keyPath, entry.port) };

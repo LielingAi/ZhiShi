@@ -177,6 +177,30 @@ describe('1.5.10 一致性：env add 新旗标透传 + env bind-recipes 路由/�
   }, 30_000);
 });
 
+describe('1.6.4 M0：env push 路由与载荷（传入通道）', () => {
+  it('env push <id> <host> <guest> → /api/admin/environment/push { id, hostPath, guestPath, workspace, guestUser? }', async () => {
+    captured = [];
+    const r = await runCli(['env', 'push', 'win-box', 'C:\\work\\poc.exe', 'C:/target/poc.exe', '--guest-user', 'analyst']);
+    expect(r.stderr).not.toContain('ECONNREFUSED');
+    expect(r.code).toBe(0);
+    const req = captured.find((c) => c.url === '/api/admin/environment/push');
+    expect(req).toBeDefined();
+    expect(req!.body.id).toBe('win-box');
+    expect(req!.body.hostPath).toBe('C:\\work\\poc.exe');
+    expect(req!.body.guestPath).toBe('C:/target/poc.exe');
+    expect(req!.body.workspace).toBe(process.cwd());
+    expect(req!.body.guestUser).toBe('analyst');
+  }, 30_000);
+
+  it('env push 缺 <guest-path> → 用法报错且不发请求', async () => {
+    captured = [];
+    const r = await runCli(['env', 'push', 'win-box', 'C:\\work\\poc.exe']);
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain('guest-path');
+    expect(captured.some((c) => c.url === '/api/admin/environment/push')).toBe(false);
+  }, 30_000);
+});
+
 describe('1.5.10：env rebuild/reset 路由与载荷 + env discover 镜像区打印', () => {
   it('env rebuild <recipe> → /api/admin/environment/rebuild { recipe, workspace=cwd }', async () => {
     captured = [];

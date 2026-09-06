@@ -22,23 +22,38 @@
  * 绝不落盘；落盘的只有 keyPath 引用。
  *
  * 自动化地板：guest 至少要有 sshd 或 VMware Tools 之一；两者皆无的裸 VM
- * 报清晰错误（控制台手装 openssh-server 后再来）。v1 仅支持 apt 系
+ * 报清晰错误（控制台手装 openssh-server 后再来）。Linux 仅支持 apt 系
  * （Debian/Ubuntu）guest。
+ *
+ * 1.6.4 M2——Windows guest 路径：冷启动没有 sshd，整条引导走 **vmrun
+ * 客户机通道**（VMware Tools + 管理员密码，powershell -EncodedCommand）：
+ * 启用 OpenSSH Server 可选功能 → 起 sshd + 防火墙 → 建 researcher（管理员
+ * 组，随机密码不持久）→ 公钥落 administrators_authorized_keys（SID 定位
+ * 管理员组，icacls 钉 ACL）→ SSH 公钥通道接管（setup.ps1 / 自检 / 关机）。
+ * 家族判定：vmx guestOS 静态读取 → 回落配方 os_family → 缺省 linux。
  *
  * 结构照 vm-lifecycle.ts：命令/脚本组装与输出解析是纯函数，进程调用走
  * 可注入 Exec，单测绝不真碰 vmrun/ssh/plink。
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
-import { homedir, platform } from 'node:os';
+import { homedir, platform, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { augmentedProcessEnv, resolveCommand } from '../utils/env-utils';
 import { getZhiShiDataDir } from '../utils/app-dirs';
 import { spawn as spawnSubprocess } from '../utils/subprocess';
+import { detectOsFamilyFromVmx, type OsFamily } from './os-family';
 import type { EnvironmentRecipe } from './recipes';
 import { buildToolCheckScript, parseToolCheckOutput } from './recipes';
+import {
+  buildCopyFromGuestArgs,
+  buildDeleteGuestFileArgs,
+  buildGuestExecArgs,
+  classifyGuestExecFailure,
+  parseGuestExitCode,
+} from './vm-guest-exec';
 import {
   buildVmrunGetIpArgs,
   buildVmrunListArgs,
@@ -395,10 +410,94 @@ export function buildProvisionScript(opts: { sudoPassword?: string; pubkey: stri
   ].join(' && \\\n  ');
 }
 
-/** 关机命令：guest 内 poweroff（researcher 有 NOPASSWD sudo）。 */
-export function buildGuestPoweroffCommand(): string {
-  return 'sudo -n poweroff';
+/** 关机命令：guest 内 poweroff（researcher 有 NOPASSWD sudo）；
+ *  windows（1.6.4）：shutdown /s /t 0（researcher 在管理员组）。 */
+export function buildGuestPoweroffCommand(family: OsFamily = 'linux'): string {
+  return family === 'windows' ? 'shutdown /s /t 0' : 'sudo -n poweroff';
 }
+
+// ---------------------------------------------------------------------------
+// 1.6.4 M2 — Windows guest 引导（vmrun 客户机通道开路，SSH 公钥接管）
+// ---------------------------------------------------------------------------
+
+/** Windows 引导的临时文件（log/code 成对，读完即删）。 */
+export const WIN_BOOTSTRAP_LOG = 'C:\\Windows\\Temp\\zhishi-adopt-bootstrap.log';
+export const WIN_BOOTSTRAP_CODE = 'C:\\Windows\\Temp\\zhishi-adopt-bootstrap.code';
+
+/**
+ * Windows 引导脚本（PS 5.1 兼容，幂等，经 runProgramInGuest 的
+ * powershell -EncodedCommand 执行）。职责：OpenSSH Server 可选功能 →
+ * sshd 自启 + 防火墙 → researcher 用户（管理员组，随机密码——只公钥
+ * 登录，密码不进任何持久面）→ 公钥落 administrators_authorized_keys
+ * （sshd_config 的 Match Group administrators 块指向它；管理员用户的 key
+ * 放用户目录 .ssh 会被 sshd 无视）。
+ *
+ * 本地化免疫：管理员组用 SID S-1-5-32-544 定位（中文系统是「管理员」）；
+ * icacls 授权同样用 SID（*S-1-5-32-544 / *S-1-5-18）。
+ * 输出纪律：runProgramInGuest 不回传 stdout/退出码——脚本自写 log 与
+ * code 文件（0/1），宿主 copyFileFromGuest 取回核对 BOOTSTRAP_OK。
+ */
+export function buildWindowsBootstrapScript(opts: { pubkey: string; newUserPassword: string }): string {
+  const pub = opts.pubkey.replace(/'/g, "''");
+  const pw = opts.newUserPassword.replace(/'/g, "''");
+  return `
+$ErrorActionPreference = 'Stop'
+$log = '${WIN_BOOTSTRAP_LOG}'
+$codeFile = '${WIN_BOOTSTRAP_CODE}'
+function Log($m) { Add-Content -Path $log -Value $m }
+try {
+  # OpenSSH Server 可选功能（已装跳过）
+  $cap = Get-WindowsCapability -Online -Name 'OpenSSH.Server*'
+  if ($cap.State -ne 'Installed') {
+    Add-WindowsCapability -Online -Name $cap.Name | Out-Null
+    Log 'openssh-server capability installed'
+  }
+  Set-Service -Name sshd -StartupType Automatic
+  Start-Service sshd
+  # 防火墙（能力安装一般自带 OpenSSH-Server-In-TCP，启用兜底）
+  $fw = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
+  if ($fw) {
+    Enable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP'
+  } else {
+    New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
+  }
+  # researcher 用户（管理员组按 SID 定位——本地化免疫）
+  if (-not (Get-LocalUser -Name '${RESEARCH_USER}' -ErrorAction SilentlyContinue)) {
+    $sec = ConvertTo-SecureString '${pw}' -AsPlainText -Force
+    New-LocalUser -Name '${RESEARCH_USER}' -Password $sec -PasswordNeverExpires | Out-Null
+    Log 'researcher created'
+  }
+  $admins = (Get-LocalGroup -SID 'S-1-5-32-544').Name
+  if (-not (Get-LocalGroupMember -Group $admins -Member '${RESEARCH_USER}' -ErrorAction SilentlyContinue)) {
+    Add-LocalGroupMember -Group $admins -Member '${RESEARCH_USER}'
+  }
+  # 公钥 → administrators_authorized_keys（ACL 只留 Administrators/SYSTEM）
+  $keyFile = 'C:\\ProgramData\\ssh\\administrators_authorized_keys'
+  $pub = '${pub}'
+  if (-not ((Test-Path $keyFile) -and ((Get-Content $keyFile -Raw) -match [regex]::Escape($pub)))) {
+    Add-Content -Path $keyFile -Value $pub
+  }
+  icacls $keyFile /inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F' | Out-Null
+  Restart-Service sshd
+  Log 'BOOTSTRAP_OK'
+  [IO.File]::WriteAllText($codeFile, '0')
+} catch {
+  Log ('FAILED: ' + $_.Exception.Message)
+  [IO.File]::WriteAllText($codeFile, '1')
+}
+`.trim();
+}
+
+/**
+ * 配方 setup.ps1 在 guest 内的执行命令（researcher 公钥 SSH 通道，远端默认
+ * shell 是 cmd——直接调 powershell -File）。脚本经 scp 落在 Windows Temp。
+ */
+export function buildWindowsSetupCommand(): string {
+  return 'powershell -NoProfile -ExecutionPolicy Bypass -File C:/Windows/Temp/zhishi-setup.ps1';
+}
+
+/** setup.ps1 的 guest 侧落点（scp 上传目标；正斜杠——远端 scp 解析反斜杠不稳）。 */
+export const WIN_SETUP_GUEST_PATH = 'C:/Windows/Temp/zhishi-setup.ps1';
 
 /**
  * 配方工具自检（1.2.5「配」——adopt/build 共用）：声明的工具真在
@@ -410,10 +509,13 @@ export async function runGuestToolCheck(
   exec: VmExec,
   target: SshTarget,
   recipe: EnvironmentRecipe,
+  family: OsFamily = 'linux',
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   if (recipe.tools.length === 0) return { ok: true };
   const r = await exec(
-    buildSshExecArgs(target, buildToolCheckScript(recipe.tools)),
+    // 1.6.4：探测脚本按家族分派（windows → cmd where 协议，远端默认 shell
+    // 是 cmd.exe，直接可跑）。
+    buildSshExecArgs(target, buildToolCheckScript(recipe.tools, family)),
     SSH_EXEC_TIMEOUT_MS,
   );
   if (r.error || r.exitCode !== 0) {
@@ -437,6 +539,10 @@ export async function runGuestToolCheck(
 
 export const SSH_PROBE_TIMEOUT_MS = 20_000;
 export const SSH_EXEC_TIMEOUT_MS = 10 * 60_000; // apt 装包可能慢
+/** 1.6.4 Windows：Add-WindowsCapability 拉组件可能慢（WSUS/Windows Update）。 */
+export const WIN_BOOTSTRAP_TIMEOUT_MS = 15 * 60_000;
+/** 1.6.4 Windows：setup.ps1 的 choco 装包（ghidra 等大件）给足余量。 */
+export const WIN_SETUP_TIMEOUT_MS = 30 * 60_000;
 export const POWEROFF_WAIT_MS = 120_000;
 export const POWEROFF_POLL_MS = 3_000;
 
@@ -534,6 +640,109 @@ async function waitUntilStopped(exec: VmExec, vmx: string, timeoutMs: number): P
   return false;
 }
 
+/**
+ * 1.6.4 Windows adopt 中段：vmrun 客户机通道引导（OpenSSH + researcher +
+ * 公钥）→ SSH 公钥通道接管（自检 → setup.ps1）。成功返回 null；
+ * 失败返回用户可读错误（认证类带「公钥登录不通」「guest 密码」双标记——
+ * CLI 两个重试条件都能接）。
+ */
+async function windowsAdoptMiddle(params: {
+  recipe: EnvironmentRecipe;
+  input: AdoptInput;
+  exec: VmExec;
+  pubkey: string;
+  researcherTarget: SshTarget;
+}): Promise<string | null> {
+  const { recipe, input, exec, pubkey, researcherTarget } = params;
+  const adminUser = input.user?.trim() || 'Administrator';
+  const adminPassword = input.password ?? '';
+  if (!adminPassword) {
+    return (
+      `Windows guest 尚无 SSH 通道，adopt 经 vmrun 客户机通道引导（VMware Tools + guest 管理员密码）。\n` +
+      `公钥登录不通：重跑本命令并在提示时输入 ${adminUser} 的 guest 密码（现场使用、不落盘）；` +
+      '如非默认管理员账号，用 --user 指定。'
+    );
+  }
+
+  // 1. 引导：runProgramInGuest 跑 powershell 引导脚本（输出纪律：脚本自写
+  //    log/code 文件，runProgramInGuest 不回传这些）。
+  const script = buildWindowsBootstrapScript({
+    pubkey,
+    // researcher 只用公钥登录——本地密码随机生成、瞬现于引导脚本，不落任何盘。
+    newUserPassword: randomBytes(16).toString('base64'),
+  });
+  const run = await exec(
+    ['vmrun', ...buildGuestExecArgs(input.vmx, adminUser, adminPassword, script, 'windows')],
+    WIN_BOOTSTRAP_TIMEOUT_MS,
+  );
+  if (run.exitCode !== 0 || run.error) {
+    const tail = (run.stderr || run.stdout || run.error || '').trim().split('\n').slice(-5).join('\n');
+    switch (classifyGuestExecFailure(run)) {
+      case 'auth':
+        return `guest 认证失败（用户 "${adminUser}"，vmrun 报 Invalid user name or password）——guest 密码不对或用户不存在。公钥登录不通：重跑并在提示时输入正确的 guest 密码。\n${tail}`;
+      case 'tools-not-running':
+        return `VMware Tools 未在 guest 运行——Windows adopt 的引导通道（vmrun 客户机通道）以 Tools 为地板，请在 guest 控制台装 VMware Tools 后重试。\n${tail}`;
+      default:
+        return `Windows 引导执行失败（vmrun runProgramInGuest）：\n${tail}`;
+    }
+  }
+
+  // 2. 取回引导结果（code/log 成对），收尾删双方临时文件。
+  const hostCode = join(tmpdir(), `zhishi-adopt-${randomBytes(4).toString('hex')}.code`);
+  const hostLog = `${hostCode}.log`;
+  try {
+    const copyCode = await exec(
+      ['vmrun', ...buildCopyFromGuestArgs(input.vmx, adminUser, adminPassword, WIN_BOOTSTRAP_CODE, hostCode)],
+      120_000,
+    );
+    if (copyCode.exitCode !== 0 || copyCode.error || !existsSync(hostCode)) {
+      return `引导结果取回失败（copyFileFromGuest ${WIN_BOOTSTRAP_CODE}）：${(copyCode.stderr || copyCode.stdout || copyCode.error || '').trim()}`;
+    }
+    const code = parseGuestExitCode(readFileSync(hostCode, 'utf-8'));
+    let logTail = '';
+    const copyLog = await exec(
+      ['vmrun', ...buildCopyFromGuestArgs(input.vmx, adminUser, adminPassword, WIN_BOOTSTRAP_LOG, hostLog)],
+      120_000,
+    );
+    if (copyLog.exitCode === 0 && !copyLog.error && existsSync(hostLog)) {
+      logTail = readFileSync(hostLog, 'utf-8').trim().split('\n').slice(-8).join('\n');
+    }
+    if (code !== 0 || !logTail.includes('BOOTSTRAP_OK')) {
+      return `Windows 引导脚本在 guest 内失败（code=${code ?? '?'}）：\n${logTail || '（无引导日志）'}`;
+    }
+  } finally {
+    for (const guestPath of [WIN_BOOTSTRAP_CODE, WIN_BOOTSTRAP_LOG]) {
+      try {
+        await exec(['vmrun', ...buildDeleteGuestFileArgs(input.vmx, adminUser, adminPassword, guestPath)], 120_000);
+      } catch { /* best effort */ }
+    }
+    try { rmSync(hostCode, { force: true }); rmSync(hostLog, { force: true }); } catch { /* best effort */ }
+  }
+
+  // 3. SSH 公钥通道接管——researcher 自检。
+  if (!(await execOk(exec, buildSshProbeArgs(researcherTarget), SSH_PROBE_TIMEOUT_MS))) {
+    return (
+      'researcher 已建但公钥登录自检失败——检查 C:\\ProgramData\\ssh\\administrators_authorized_keys ' +
+      '（管理员用户的 key 必须落这里而非用户目录 .ssh，且 ACL 只留 Administrators/SYSTEM）。'
+    );
+  }
+
+  // 4. 配方 setup.ps1（若带）：scp 上传 → ssh 执行。
+  const setupPs1 = join(recipe.dir, 'setup.ps1');
+  if (existsSync(setupPs1)) {
+    const scpOk = await execOk(exec, buildScpArgs(setupPs1, researcherTarget, WIN_SETUP_GUEST_PATH), SSH_EXEC_TIMEOUT_MS);
+    if (!scpOk) return 'setup.ps1 上传 guest 失败（scp）';
+    const setupResult = await exec(
+      buildSshExecArgs(researcherTarget, buildWindowsSetupCommand()),
+      WIN_SETUP_TIMEOUT_MS,
+    );
+    if (setupResult.exitCode !== 0 || setupResult.error) {
+      return `配方 setup.ps1 在 guest 内执行失败：\n${(setupResult.stderr || setupResult.stdout).trim().split('\n').slice(-8).join('\n')}`;
+    }
+  }
+  return null;
+}
+
 /** 拿 guest 地址：Tools 优先，DHCP 租约文件（MAC 反查）兜底。 */
 async function resolveGuestAddress(
   exec: VmExec,
@@ -625,7 +834,24 @@ export async function vmTemplateAdopt(
   });
   if (!keyMaterial.ok) return { ok: false, error: keyMaterial.error };
 
+  // 家族分派（1.6.4）：vmx guestOS 静态判定 → 配方 os_family 声明回落 →
+  // 缺省 linux。researcher 公钥目标两族共用。
+  const family: OsFamily = detectOsFamilyFromVmx(input.vmx) ?? recipe.osFamily ?? 'linux';
+  const researcherTarget: SshTarget = { user: RESEARCH_USER, address, keyPath: keyMaterial.keyPath };
   let channel: 'key' | 'password' | null = null;
+
+  if (family === 'windows') {
+    // Windows：guest 无 sshd 冷启动——整条引导走 vmrun 客户机通道
+    // （VMware Tools + 管理员密码），公钥通道接管后跑 setup.ps1。
+    const middleError = await windowsAdoptMiddle({
+      recipe, input, exec,
+      pubkey: keyMaterial.pubkey,
+      researcherTarget,
+    });
+    if (middleError) return { ok: false, error: middleError };
+    channel = 'password';
+  } else {
+  // 3. 连通：公钥优先，密码（plink）兜底
   let plinkHostkey: string[] | undefined;
   const keyProbe = await exec(
     buildSshProbeArgs({ user: loginUser, address, keyPath: keyMaterial.keyPath }),
@@ -693,7 +919,6 @@ export async function vmTemplateAdopt(
   }
 
   // 换 researcher + 公钥通道跑配方 setup.sh（若配方带）
-  const researcherTarget: SshTarget = { user: RESEARCH_USER, address, keyPath: keyMaterial.keyPath };
   if (!(await execOk(exec, buildSshProbeArgs(researcherTarget), SSH_PROBE_TIMEOUT_MS))) {
     return { ok: false, error: 'researcher 用户已建但公钥登录自检失败——guest 初始化可能不完整，请检查 /etc/sudoers.d/zhishi-researcher 与 authorized_keys' };
   }
@@ -715,13 +940,14 @@ export async function vmTemplateAdopt(
       };
     }
   }
+  }
 
   // 4.5 配方工具自检：缺工具不定型（不做快照、报错，避免固化坏现场）
-  const toolCheck = await runGuestToolCheck(exec, researcherTarget, recipe);
+  const toolCheck = await runGuestToolCheck(exec, researcherTarget, recipe, family);
   if (!toolCheck.ok) return toolCheck;
 
   // 5. 定型：关机 → 快照
-  const poweroffArgv = buildSshExecArgs(researcherTarget, buildGuestPoweroffCommand());
+  const poweroffArgv = buildSshExecArgs(researcherTarget, buildGuestPoweroffCommand(family));
   await exec(poweroffArgv, SSH_PROBE_TIMEOUT_MS).catch(() => undefined); // poweroff 会断连，失败无所谓
   if (!(await waitUntilStopped(exec, input.vmx, POWEROFF_WAIT_MS))) {
     const stopResult = await exec(['vmrun', ...buildVmrunStopArgs(input.vmx)], VMRUN_STOP_TIMEOUT_MS);

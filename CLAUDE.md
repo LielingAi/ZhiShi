@@ -42,7 +42,7 @@
 
 - `bundled-skills/` — 13 个内置技能：agent-browser / ai-security / app-automation / binary-exploit / download-anything / native-code-loop / pentest / range-ops / task-alignment / task-implement / vuln-triage / whitebox-audit / zhishi-cli
 
-- `bundled-environments/` — 环境类型（P1 E4 起）：ai-security / code-audit / dev / fuzz / fuzz-vm / pentest / pwn / pwn-vm / rev（docker / VM）。新增环境类型 = 建目录 + bump `ENVIRONMENT_RECIPES_VERSION`（src-tauri/src/commands.rs）
+- `bundled-environments/` — 环境类型（P1 E4 起）：ai-security / code-audit / dev / fuzz / fuzz-vm / pentest / pentest-vm / pwn / pwn-vm / pwn-win / rev（docker / VM；pwn-win 为首个 Windows guest 配方，初始化脚本 setup.ps1）。新增环境类型 = 建目录 + bump `ENVIRONMENT_RECIPES_VERSION`（src-tauri/src/commands.rs）
 
 - `bundled-agents/` — 内置 subagent 定义（P1 A1 起）：fuzz-runner / crash-triager / vuln-hunter / hypothesis-tester / critic
 

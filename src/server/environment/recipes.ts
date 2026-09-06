@@ -5,8 +5,10 @@
  *
  *   <recipesRoot>/<name>/
  *     Dockerfile    # 基础镜像 + 工具集 + 服务（docker 配方必需）
- *     setup.sh      # 初始化：装依赖、部署目标、起服务、自检
+ *     setup.sh      # 初始化：装依赖、部署目标、起服务、自检（linux guest）
+ *     setup.ps1     # 同上，Windows guest（1.6.4；frontmatter os_family: windows）
  *     SKILL.md      # frontmatter: name/description/base(docker|vm)/tools[]
+ *                   #   /os_family(linux|windows，缺省 linux)/firstRunTools[]
  *                   # 正文教方法（何时用、怎么进、结果怎么采、怎么收尾）
  *
  * 配方抽象对两类基底同构：docker 配方 = Dockerfile + setup.sh + SKILL.md；
@@ -34,6 +36,11 @@ export type RecipeBase = 'docker' | 'vm';
 
 export const RECIPE_BASES: readonly RecipeBase[] = ['docker', 'vm'];
 
+/** 配方的 guest OS 家族（frontmatter os_family；缺省 linux）。 */
+export type RecipeOsFamily = 'linux' | 'windows';
+
+export const RECIPE_OS_FAMILIES: readonly RecipeOsFamily[] = ['linux', 'windows'];
+
 /** VM 配方的驱动引擎（frontmatter vm_engine；缺省 vmware）。 */
 export type VmEngine = 'vmware' | 'hyperv' | 'virtualbox';
 
@@ -57,6 +64,9 @@ export interface RecipeFrontmatter {
   vm_snapshot?: string;
   /** vm 配方：驱动引擎（缺省 vmware；hyperv = Export-VM 导出目录模板，virtualbox = 已注册 VM 名模板）。 */
   vm_engine?: VmEngine;
+  /** 1.6.4：guest OS 家族（缺省 linux）。windows 配方的初始化脚本用
+   *  setup.ps1（PowerShell），provision 补齐链路据此选包装与预检语义。 */
+  os_family?: RecipeOsFamily;
 }
 
 /** 一个已扫描的配方；invalid 配方保留已解析字段 + 原因列表。 */
@@ -81,6 +91,8 @@ export interface EnvironmentRecipe {
   vmSnapshot?: string;
   /** vm 配方：驱动引擎（frontmatter vm_engine；缺省 vmware）。 */
   vmEngine?: VmEngine;
+  /** 1.6.4：guest OS 家族（frontmatter os_family；缺省 linux）。 */
+  osFamily?: RecipeOsFamily;
   /**
    * 正文工作流摘要（1.2.5「用」）：SKILL.md 正文（frontmatter 之后）提炼，
    * 供能力清单注入段在工具名后携带——只给裸工具名 agent 不知道何时用/怎么进。
@@ -221,6 +233,14 @@ export function parseRecipeFrontmatter(content: string): {
     }
   }
 
+  if (source.os_family !== undefined) {
+    if (typeof source.os_family === 'string' && RECIPE_OS_FAMILIES.includes(source.os_family as RecipeOsFamily)) {
+      frontmatter.os_family = source.os_family as RecipeOsFamily;
+    } else {
+      errors.push(`非法 os_family：${JSON.stringify(source.os_family)}（可选：${RECIPE_OS_FAMILIES.join(' / ')}；缺省 linux）`);
+    }
+  }
+
   return { frontmatter, errors };
 }
 
@@ -239,6 +259,11 @@ export function validateRecipe(
   if (!frontmatter.base) reasons.push('SKILL.md frontmatter 缺少 base（docker | vm）');
   if (frontmatter.base === 'docker' && !presentFiles.has('Dockerfile')) {
     reasons.push('docker 配方缺少 Dockerfile');
+  }
+  // 1.6.4：windows vm 配方的初始化脚本是 setup.ps1（缺失则养成/补齐链
+  // 路无脚本可跑——声明了 os_family: windows 就必须给）。
+  if (frontmatter.base === 'vm' && frontmatter.os_family === 'windows' && !presentFiles.has('setup.ps1')) {
+    reasons.push('windows vm 配方缺少 setup.ps1（PowerShell 初始化脚本）');
   }
   return reasons;
 }
@@ -279,6 +304,7 @@ export function buildRecipe(
     vmUser: frontmatter.vm_user,
     vmSnapshot: frontmatter.vm_snapshot,
     vmEngine: frontmatter.vm_engine,
+    osFamily: frontmatter.os_family,
     valid: reasons.length === 0,
     invalidReasons: reasons,
   };
@@ -370,39 +396,55 @@ export function buildToolCheckCommand(tools: string[]): string {
 }
 
 /**
- * 声明词 → 探测命令映射（1.2.5「配」——词汇错位修正）。
+ * 声明词 → 探测命令映射（1.2.5「配」——词汇错位修正；1.6.4 加 windows 分支）。
  *
  * 配方 SKILL.md 的 tools[] 允许两种形态，本表只收后者：
- * - 真实二进制名（rg、gdb、semgrep……）——直接 `command -v <名>`，不进表；
+ * - 真实二进制名（rg、gdb、semgrep……）——直接按族 `command -v`/`where`，不进表；
  * - 包/能力名（pwntools、universal-ctags……）——二进制名与包名不同，
- *   或根本不是二进制（python 包），`command -v` 必假 MISS。
+ *   或根本不是二进制（python 包），`command -v`/`where` 必假 MISS。
  *
  * 探测命令以退出码判有无（0 = 有）。注意 pwndbg 用 `gdb -batch`：
  * 非 batch 模式下 `pi import` 抛错 gdb 仍继续并以 0 退出（假 OK）；
  * -batch 遇命令错误以非零退出，才是可用的判据。
+ * windows 分支是 cmd.exe 语义（两族执行通道最终都落 `cmd /c`——见
+ * os-family.ts 的 psShellWrapper/psCaptureScript）：`where` 替代
+ * `command -v`（PATHEXT 感知，.bat/.cmd 也能命中），python 无 3 后缀。
  */
-export const TOOL_PROBE_COMMANDS: Readonly<Record<string, string>> = {
-  pwntools: 'python3 -c "import pwn"',
-  pwndbg: 'gdb -q -batch -ex "pi import pwndbg"',
-  ripgrep: 'command -v rg',
-  'universal-ctags': 'command -v ctags',
-  ghidra: 'command -v analyzeHeadless',
-  binutils: 'command -v objdump',
-  nodejs: 'command -v node',
+export const TOOL_PROBE_COMMANDS: Readonly<Record<string, { posix: string; windows: string }>> = {
+  pwntools: { posix: 'python3 -c "import pwn"', windows: 'python -c "import pwn"' },
+  pwndbg: { posix: 'gdb -q -batch -ex "pi import pwndbg"', windows: 'gdb -q -batch -ex "pi import pwndbg"' },
+  ripgrep: { posix: 'command -v rg', windows: 'where rg' },
+  'universal-ctags': { posix: 'command -v ctags', windows: 'where ctags' },
+  ghidra: { posix: 'command -v analyzeHeadless', windows: 'where analyzeHeadless' },
+  binutils: { posix: 'command -v objdump', windows: 'where objdump' },
+  nodejs: { posix: 'command -v node', windows: 'where node' },
 };
 
 /**
- * 完整自检脚本：统一 PATH 前缀（非交互 ssh 不读 ~/.profile，~/.local/bin
- * 不在 PATH——pip --user 装的 pwntools 等会假 MISS；docker bash -lc 下
- * 无害），然后逐工具探测：映射表命中的用映射命令，未命中的复用
- * buildToolCheckCommand 的 `command -v` 循环。输出协议不变——每行
+ * 完整自检脚本：逐工具探测——映射表命中的用映射命令，未命中的按族
+ * `command -v`（posix）/ `where`（windows）。输出协议两族不变——每行
  * `OK:<声明词>` / `MISS:<声明词>`，由 parseToolCheckOutput 解析。
+ *
+ * posix 分支统一 PATH 前缀（非交互 ssh 不读 ~/.profile，~/.local/bin
+ * 不在 PATH——pip --user 装的 pwntools 等会假 MISS；docker bash -lc 下
+ * 无害）。windows 分支无此举：Windows OpenSSH 会话自带用户 PATH，且
+ * Windows 无 ~/.local/bin 惯例。
  */
-export function buildToolCheckScript(tools: string[]): string {
+export function buildToolCheckScript(tools: string[], family: 'linux' | 'windows' = 'linux'): string {
+  if (family === 'windows') {
+    // cmd.exe 语义：`&` 连语句（cmd 无 `;` 分隔符），NUL 吞输出；echo 不带
+    // 引号（cmd 的 echo 原样输出引号，会破 OK:/MISS: 协议）。
+    return tools
+      .map((tool) => {
+        const probe = TOOL_PROBE_COMMANDS[tool]?.windows ?? `where ${tool}`;
+        return `${probe} >NUL 2>&1 && echo OK:${tool} || echo MISS:${tool}`;
+      })
+      .join(' & ');
+  }
   const parts: string[] = ['export PATH="$HOME/.local/bin:$PATH"'];
   const unmapped: string[] = [];
   for (const tool of tools) {
-    const probe = TOOL_PROBE_COMMANDS[tool];
+    const probe = TOOL_PROBE_COMMANDS[tool]?.posix;
     if (probe === undefined) {
       unmapped.push(tool);
     } else {
