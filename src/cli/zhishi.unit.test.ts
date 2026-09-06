@@ -177,6 +177,26 @@ describe('1.5.10 一致性：env add 新旗标透传 + env bind-recipes 路由/�
   }, 30_000);
 });
 
+describe('1.6.6：env rename 路由与载荷（别名）', () => {
+  it('env rename <id> <名称> → /api/admin/environment/rename { id, name }', async () => {
+    captured = [];
+    const r = await runCli(['env', 'rename', 'dev-box', '旧靶机']);
+    expect(r.stderr).not.toContain('ECONNREFUSED');
+    expect(r.code).toBe(0);
+    const req = captured.find((c) => c.url === '/api/admin/environment/rename');
+    expect(req).toBeDefined();
+    expect(req!.body).toEqual({ id: 'dev-box', name: '旧靶机' });
+  }, 30_000);
+
+  it('env rename 缺 <id> → 用法报错且不发请求', async () => {
+    captured = [];
+    const r = await runCli(['env', 'rename']);
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain('env-id');
+    expect(captured.some((c) => c.url === '/api/admin/environment/rename')).toBe(false);
+  }, 30_000);
+});
+
 describe('1.6.4 M0：env push 路由与载荷（传入通道）', () => {
   it('env push <id> <host> <guest> → /api/admin/environment/push { id, hostPath, guestPath, workspace, guestUser? }', async () => {
     captured = [];

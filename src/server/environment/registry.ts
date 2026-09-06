@@ -179,6 +179,33 @@ export function removeEnvironmentEntry(
   return { ok: true, entries: entries.filter((e) => e.id !== id), removed: target };
 }
 
+/**
+ * 1.6.6：改名（别名）——只动 `name`（显示名），id 是身份（env-sessions /
+ * selection / 会话锚全挂 id）绝不改。name 置空 = 清除别名（回显 id）。
+ * Does not mutate the input list.
+ */
+export function renameEnvironmentEntry(
+  list: readonly EnvironmentEntry[] | undefined,
+  id: string,
+  name: string,
+): EnvResult<{ entries: EnvironmentEntry[] }> {
+  const entries = list ?? [];
+  if (!findEnvironmentEntry(entries, id)) {
+    return fail(`未找到环境 "${id}"（zhishi env list 查看已有环境）`);
+  }
+  const trimmed = name.trim();
+  return {
+    ok: true,
+    entries: entries.map((e) => {
+      if (e.id !== id) return e;
+      const next = { ...e };
+      if (trimmed) next.name = trimmed;
+      else delete next.name;
+      return next;
+    }),
+  };
+}
+
 /** Quote one argument when it contains whitespace or quotes. */
 function quoteArg(value: string): string {
   return /[\s"']/.test(value) ? JSON.stringify(value) : value;

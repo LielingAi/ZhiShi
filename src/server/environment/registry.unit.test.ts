@@ -16,6 +16,7 @@ import {
   findEnvironmentEntry,
   listEnvironments,
   removeEnvironmentEntry,
+  renameEnvironmentEntry,
   resolveEnvOpenCommand,
   validateEnvironmentEntry,
 } from './registry';
@@ -352,5 +353,33 @@ describe('port field (P2 B5)', () => {
     // 无 port 时不出现 -p
     const plain = resolveEnvOpenCommand({ id: 's2', kind: 'ssh', host: 'h', createdAt: '' });
     expect(plain.ok && plain.cmd).toBe('ssh h');
+  });
+});
+
+describe('renameEnvironmentEntry（1.6.6 别名：只动 name，id 不改）', () => {
+  it('改名 → name 更新，id 与其余字段原样；不清空列表其他项', () => {
+    const list = [sshEntry(), { id: 'x', kind: 'docker' as const, container: 'c', name: '旧名', createdAt: 't' }];
+    const r = renameEnvironmentEntry(list, 'x', '新别名');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const target = r.entries.find((e) => e.id === 'x');
+    expect(target?.name).toBe('新别名');
+    expect(target?.container).toBe('c');
+    expect(r.entries).toHaveLength(2);
+    // 输入列表不被 mutate
+    expect(list[1]!.name).toBe('旧名');
+  });
+
+  it('空名（含全空白）→ 清除别名（name 字段删除，回显 id）', () => {
+    const list = [{ id: 'x', kind: 'docker' as const, container: 'c', name: '旧名', createdAt: 't' }];
+    const r = renameEnvironmentEntry(list, 'x', '   ');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.entries[0]).not.toHaveProperty('name');
+  });
+
+  it('未找到 id → 清晰错误', () => {
+    const r = renameEnvironmentEntry([], 'ghost', 'n');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('ghost');
   });
 });

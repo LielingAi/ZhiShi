@@ -223,6 +223,7 @@ export type ModalKind =
   | 'env-detail'
   | 'env-rebuild'
   | 'env-reset'
+  | 'env-rename'
   | 'auto-run-start'
   | 'auto-run-stop';
 
@@ -260,6 +261,8 @@ export interface ModalState {
   envRebuild?: EnvRebuildTarget;
   /** 1.5.10：env-reset 模态的重置目标（文案见 model/env-rebuild）。 */
   envReset?: EnvResetTarget;
+  /** 1.6.6：env-rename 模态的改名目标（name = 当前别名，预填用；空则预填 id）。 */
+  envRename?: { id: string; label: string; name?: string };
 }
 
 export interface DrawerState {
@@ -426,6 +429,10 @@ export interface GuiState {
   requestEnvReset(target: EnvResetTarget): void;
   /** 1.5.10：确认重置（environment/reset → 成功 refreshSidebar + toast；失败保留模态）。 */
   confirmEnvReset(): Promise<void>;
+  /** 1.6.6：环境行 ⋯「重命名…」入口——开改名模态（只动 name 显示名，id 身份不变）。 */
+  requestEnvRename(target: { id: string; label: string; name?: string }): void;
+  /** 1.6.6：确认改名（environment/rename → 成功用 data.environments 刷新 + toast；失败保留模态）。 */
+  confirmEnvRename(name: string): Promise<void>;
   /** 1.3.8 多配方：侧栏 ℹ 入口——开环境详情模态（登记条目快照）。 */
   openEnvDetail(envId: string): void;
   /** 1.3.8 多配方：应用绑定集合（environment/bind-recipes → 成功关模态 + refreshSidebar + toast）。 */
@@ -1123,6 +1130,40 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       state.showToast(`✓ 已停止 ${target.label}`);
     } catch (err) {
       state.showToast(`停止失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  // ── 1.6.6 环境别名：重命名（environment/rename——只动 name 显示名，id 身份不变） ──
+
+  requestEnvRename(target) {
+    set({ modal: { kind: 'env-rename', envRename: target } });
+  },
+
+  async confirmEnvRename(name) {
+    const c = client;
+    const state = get();
+    const target = state.modal?.envRename;
+    if (!target) return;
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    const trimmed = name.trim();
+    try {
+      const res = await api.environmentRename(c, { id: target.id, name: trimmed });
+      if (!res.success) {
+        // 失败保留模态（可重试/取消），toast 服务端错误原文。
+        state.showToast(`改名失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set({ modal: null });
+      // 服务端返回最新全量列表——直接写回环境状态（同 environment/list 口径）；
+      // 缺 data 的旧 sidecar 回落 refreshSidebar。
+      if (res.data?.environments) set({ envs: res.data.environments });
+      else void state.refreshSidebar();
+      state.showToast(trimmed ? `✓ 已改名为 ${trimmed}` : '✓ 已清除别名');
+    } catch (err) {
+      state.showToast(`改名失败：${err instanceof Error ? err.message : String(err)}`);
     }
   },
 

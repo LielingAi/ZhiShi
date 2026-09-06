@@ -17,6 +17,8 @@
  *     model/env-down——1.5.10 起 docker 停止=暂停（stop 不 rm，现场保留））
  *   - env-rebuild / env-reset：显式重建/重置确认（1.5.10 镜像为主三层模型，
  *     文案在 model/env-rebuild）
+ *   - env-rename：环境别名改名（1.6.6；environment/rename——只动 name 显示
+ *     名，id 身份不变；留空 = 清除别名回显 id）
  *   - 向导 Step 2/3：配方生命周期差异（1.3.8 ③a，model/env-wizard::
  *     recipeLifecycleNote）+ 打法摘要 workflowSummary 默认折叠（1.3.8 ③b）
  */
@@ -853,8 +855,69 @@ function EnvRemoveModal(): React.JSX.Element | null {
   );
 }
 
-// ── 1.3.8 多配方：环境详情（只读信息 + 配方绑定管理；绑定=展示/构建来源） ──
+// ── 1.6.6 环境别名：改名（只动 name 显示名，id 身份不变） ────────────────
 
+function EnvRenameModal(): React.JSX.Element | null {
+  const modal = useGuiStore((s) => s.modal);
+  const closeModal = useGuiStore((s) => s.closeModal);
+  const confirmEnvRename = useGuiStore((s) => s.confirmEnvRename);
+  // 预填当前别名（无别名预填 id——在 store 快照上取初值，仿 slash-args 本地受控输入）。
+  const [name, setName] = useState(() => {
+    const t = useGuiStore.getState().modal?.envRename;
+    return t?.name ?? t?.id ?? '';
+  });
+  const [busy, setBusy] = useState(false);
+
+  const target = modal?.envRename;
+  if (!target) return null;
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await confirmEnvRename(name);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal">
+        <div className="m-head">
+          <span className="m-title">
+            重命名 <b className="m-env-name">{target.label}</b>
+          </span>
+          <span className="m-sub">environment/rename · id {target.id} 不变</span>
+          <button className="m-close" onClick={closeModal}>✕</button>
+        </div>
+        <div className="m-body">
+          <div className="f-label">显示名（留空 = 清除别名，回显 id）</div>
+          <input
+            className="f-input"
+            autoFocus
+            placeholder={target.id}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void submit();
+              }
+            }}
+          />
+          <div className="m-actions">
+            <button className="btn" onClick={closeModal}>取消</button>
+            <button className="btn primary" disabled={busy} onClick={() => void submit()}>
+              确认
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 1.3.8 多配方：环境详情（只读信息 + 配方绑定管理；绑定=展示/构建来源） ──
 function EnvDetailModal(): React.JSX.Element | null {
   const modal = useGuiStore((s) => s.modal);
   const recipes = useGuiStore((s) => s.recipes);
@@ -1223,6 +1286,8 @@ export function Modal(): React.JSX.Element | null {
       return <EnvRebuildModal />;
     case 'env-reset':
       return <EnvResetModal />;
+    case 'env-rename':
+      return <EnvRenameModal />;
     case 'auto-run-start':
     case 'auto-run-stop':
       return <AutoRunModal />;

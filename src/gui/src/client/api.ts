@@ -386,6 +386,15 @@ export function environmentRemove(
   return client.adminPost('environment/rm', input);
 }
 
+/** 1.6.6 环境别名：改名只动 name 显示名（id 身份不变；name 空串 = 清除别名
+ *  回显 id）。成功 data.environments 是最新全量列表（同 environment/list 口径）。 */
+export function environmentRename(
+  client: GuiSidecarClient,
+  input: { id: string; name: string },
+): Promise<{ success: boolean; error?: string; data?: { environments?: EnvEntry[]; id?: string; name?: string } }> {
+  return client.adminPost('environment/rename', input);
+}
+
 export interface CurrentEnvResult {
   success: boolean;
   error?: string;

@@ -124,6 +124,7 @@ Examples:
                                             # 1.6.5：缺 --key-path 时现场输入一次登录密码即可自动配置密钥（密码不落盘）
   zhishi env open dev-box                   # open env in embedded terminal (term open --cmd)
   zhishi env remove dev-box
+  zhishi env rename dev-box "旧靶机"       # 改名/别名（1.6.6：只动显示名，id 不变；空名清除别名）
   zhishi env bind-recipes dev-box --recipes pwn,fuzz
                                             # 整体替换环境的多配方绑定集合（主配方恒在，1.5.10）
   zhishi env recipes                        # environment recipes (valid + invalid reasons)
@@ -2106,6 +2107,14 @@ function buildRequestBody(
     }
     if (action === 'remove') {
       return { id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'env-id', 'env remove', 'id') };
+    }
+    if (action === 'rename') {
+      // 1.6.6 改名（别名）：zhishi env rename <id> <新名称>（空串清除别名；
+      // 只动 name 显示名，id 身份不改）
+      return {
+        id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'env-id', 'env rename', 'id'),
+        name: rest[1] ?? '',
+      };
     }
     if (action === 'open') {
       // 与 term open 一致：无 --cwd 时回退进程 cwd，保证 workspacePath 存在。

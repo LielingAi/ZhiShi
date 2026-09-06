@@ -137,6 +137,7 @@ import {
   findEnvironmentEntry,
   listEnvironments,
   removeEnvironmentEntry,
+  renameEnvironmentEntry,
   resolveEnvOpenCommand,
   envTagForEntry,
   validateEnvironmentEntry,
@@ -1989,6 +1990,29 @@ export async function handleEnvironmentAdd(
       return { ...config, environments: added.entries };
     });
     return { success: true, data: { environments: saved.environments, added: entry } };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+/** `environment/rename` — 改名（别名，1.6.6）：只动 name（显示名），id 是
+ * 身份绝不改（env-sessions/selection/会话锚全挂 id）。name 空串 = 清除别名
+ * （回显 id）。 */
+export async function handleEnvironmentRename(payload: {
+  id?: string;
+  name?: string;
+}): Promise<AdminResponse> {
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!id) return { success: false, error: 'Missing required argument: <id>' };
+  if (typeof payload.name !== 'string') {
+    return { success: false, error: 'Missing required argument: <name>（新名称；空串 = 清除别名回显 id）' };
+  }
+  try {
+    const saved = await atomicModifyConfig((config) => {
+      const renamed = renameEnvironmentEntry(listEnvironments(config), id, payload.name as string);
+      if (!renamed.ok) throw new Error(renamed.error);
+      return { ...config, environments: renamed.entries };
+    });
+    return { success: true, data: { environments: saved.environments, id, name: payload.name.trim() } };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }

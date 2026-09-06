@@ -276,6 +276,8 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'environment/install') return await api.handleEnvironmentInstall(payload as Parameters<typeof api.handleEnvironmentInstall>[0]);
   if (route === 'environment/build') return await api.handleEnvironmentBuild(payload as Parameters<typeof api.handleEnvironmentBuild>[0]);
   if (route === 'environment/rm') return await api.handleEnvironmentRm(payload as Parameters<typeof api.handleEnvironmentRm>[0]);
+  // 1.6.6 改名（别名：只动 name，id 是身份不改）
+  if (route === 'environment/rename') return await api.handleEnvironmentRename(payload as Parameters<typeof api.handleEnvironmentRename>[0]);
   if (route === 'environment/exec') return await api.handleEnvironmentExec(payload as Parameters<typeof api.handleEnvironmentExec>[0]);
   // W1(design-spec §6.1/§6.4)— 环境快照/回滚(vmware vmrun;docker 暂未支持)
   if (route === 'environment/snapshot') return await api.handleEnvironmentSnapshot(payload as Parameters<typeof api.handleEnvironmentSnapshot>[0]);

@@ -14,7 +14,8 @@
  * （environment/up {recipe, fresh:true}，镜像派生新容器秒开 + 服务端回写登记）；
  * 环境行 ⋯ 菜单加「重新构建…」
  * （recipeId 非空）与「重置容器…」（docker 条目），确认模态文案在
- * model/env-rebuild。
+ * model/env-rebuild；1.6.6 起加「重命名…」（environment/rename，环境
+ * 别名——只动 name 显示名，id 身份不变）。
  *
  * 准入判定在 model/envs.ts（分组）+ model/access-gate.ts（点击拦截/启动
  * 按钮可见性，纯函数已单测）；本组件只接线到 store。
@@ -47,6 +48,8 @@ export function EnvSidebar(): React.JSX.Element {
   const startImageEnv = useGuiStore((s) => s.startImageEnv);
   const requestEnvRebuild = useGuiStore((s) => s.requestEnvRebuild);
   const requestEnvReset = useGuiStore((s) => s.requestEnvReset);
+  // 1.6.6：⋯ 菜单「重命名…」（环境别名，只动 name 显示名）。
+  const requestEnvRename = useGuiStore((s) => s.requestEnvRename);
   const openEnvDetail = useGuiStore((s) => s.openEnvDetail);
   const openNewEnv = useGuiStore((s) => s.openNewEnv);
   const setPage = useGuiStore((s) => s.setPage);
@@ -326,6 +329,17 @@ export function EnvSidebar(): React.JSX.Element {
                         🧩 补齐环境（缺 {it.capability!.toolsMissing!.length} 项）
                       </button>
                     )}
+                    {/* 1.6.6：环境别名改名（只动 name，id 身份不变；预填当前别名）。 */}
+                    <button
+                      className="eb-menu-item"
+                      onClick={() => {
+                        setMenuFor(null);
+                        const entry = envs.find((e) => e.id === it.key);
+                        requestEnvRename({ id: it.key, label: it.label, name: entry?.name });
+                      }}
+                    >
+                      ✏ 重命名…
+                    </button>
                     <button
                       className="eb-menu-item"
                       onClick={() => {
