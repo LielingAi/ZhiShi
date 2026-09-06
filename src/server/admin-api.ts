@@ -58,6 +58,19 @@ import {
   type AutoRunStatus,
 } from './loop/auto-run';
 import { detectOsFamilyFromVmx, osFamilyOf } from './environment/os-family';
+import { bootstrapKeyForTarget, type KeyBootstrapTarget, type KeyBootstrapOutcome, type KeyBootstrapOptions } from './environment/key-bootstrap';
+
+/** 密钥引导实现（1.6.5）——模块级可替换，admin 接线测试注入假引导，绝不真连目标。 */
+type KeyBootstrapFn = (
+  target: KeyBootstrapTarget,
+  password: string,
+  options: KeyBootstrapOptions,
+) => Promise<EnvResult<KeyBootstrapOutcome>>;
+let keyBootstrapImpl: KeyBootstrapFn = bootstrapKeyForTarget;
+/** 测试注入密钥引导（传 null 复位为生产实现）。 */
+export function __setKeyBootstrapForTests(fn: KeyBootstrapFn | null): void {
+  keyBootstrapImpl = fn ?? bootstrapKeyForTarget;
+}
 import {
   loadDomainManifests,
   resolveBundledDir,
@@ -1909,11 +1922,18 @@ export function handleEnvironmentList(): AdminResponse {
   });
   return { success: true, data: { environments } };
 }
-/** `environment/add` — validate then persist a new entry (id must be unique). */
+/** `environment/add` — validate then persist a new entry (id must be unique).
+ *  1.6.5 密钥引导：keyPath 缺省且带了瞬传 password → 先经密码通道推公钥
+ *  （bootstrapKeyForTarget），生成的 keyPath 落条目；password 在 validate
+ *  之前剥离（registry 的 FORBIDDEN_SECRET_FIELDS 会拒——它是纯校验器，
+ *  不认识「瞬传」语义，剥离是本 handler 的职责）。引导失败 → 整体不登记。 */
 export async function handleEnvironmentAdd(
   payload: Record<string, unknown>,
 ): Promise<AdminResponse> {
-  const validated = validateEnvironmentEntry(payload);
+  const bootstrapPassword = typeof payload.password === 'string' && payload.password ? payload.password : undefined;
+  const cleanPayload = { ...payload };
+  delete cleanPayload.password;
+  const validated = validateEnvironmentEntry(cleanPayload);
   if (!validated.ok) return { success: false, error: validated.error };
   const entry = { ...validated.entry, createdAt: new Date().toISOString() };
   // OS 家族自动判定:vm 条目带 vmx 且未显式声明 → 读 .vmx 的 guestOS
@@ -1921,6 +1941,31 @@ export async function handleEnvironmentAdd(
   if (entry.kind === 'vm' && entry.vmx && !entry.osFamily) {
     const detected = detectOsFamilyFromVmx(entry.vmx);
     if (detected) entry.osFamily = detected;
+  }
+  if (bootstrapPassword) {
+    if (!entry.keyPath && (entry.kind === 'ssh' || entry.kind === 'vm')) {
+      const boot = await keyBootstrapImpl(
+        {
+          kind: entry.kind,
+          host: entry.host,
+          address: entry.address,
+          user: entry.user ?? '',
+          port: entry.port,
+          osFamily: osFamilyOf(entry),
+          vmx: entry.vmx,
+          vmName: entry.vmName,
+          id: entry.id,
+        },
+        bootstrapPassword,
+        { keysDir: join(getZhiShiDataDir(), 'keys'), templates: loadConfig().vmTemplates },
+      );
+      if (!boot.ok) {
+        return { success: false, error: `密钥引导失败（未登记 "${entry.id}"）：${boot.error}` };
+      }
+      entry.keyPath = boot.keyPath;
+    } else if (entry.keyPath) {
+      return { success: false, error: '同时给了 keyPath 和密码——密钥引导只在缺 keyPath 时进行；密码不会被存储（D-T4）' };
+    }
   }
   // 能力集合顺手探测(1.3.7 场景 3):有可用通道的条目(ssh 有 host /
   // docker 有 container / vm 有 address)登记前试推一次「配方绑定域 ∪

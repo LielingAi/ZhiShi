@@ -75,7 +75,13 @@ describe('向导状态机', () => {
     const base = stateAt(2, { source: 'docker-recipe' });
     expect(wizardStepError(base)).toBe('请选择一个配方');
     expect(wizardStepError(stateAt(2, { source: 'discovered' }))).toBe('请勾选一个本机条目');
-    expect(wizardStepError(stateAt(2, { source: 'ssh' }))).toBe('host / 用户 / 密钥路径 必填');
+    // 1.6.5 密钥引导：host/user 必填，keyPath 与 password 至少其一（都空才拦）
+    expect(wizardStepError(stateAt(2, { source: 'ssh' }))).toBe('host / 用户 必填');
+    expect(
+      wizardStepError(
+        stateAt(2, { source: 'ssh', params: { ...initialWizardParams(), sshHost: 'h', sshUser: 'u' } }),
+      ),
+    ).toBe('密钥路径 / 登录密码 至少其一');
     const sshOk = stateAt(2, {
       source: 'ssh',
       params: { ...initialWizardParams(), sshHost: 'h', sshUser: 'u', sshKeyPath: 'k' },
@@ -236,6 +242,55 @@ describe('payload 构造', () => {
     expect(buildWizardPayload(stateAt(4, { source: 'docker-recipe' }))).toBeNull();
     expect(buildWizardPayload(stateAt(4, { source: 'discovered' }))).toBeNull();
     expect(buildWizardPayload(stateAt(4, { source: 'ssh' }))).toBeNull();
+  });
+
+  // ===== 1.6.5 密钥引导：缺 keyPath 时现场给一次密码 =====
+
+  it('1.6.5：host/user/password 无 keyPath → 校验通过，payload 带 password 不带 keyPath', () => {
+    const params = { ...initialWizardParams(), sshHost: 'h', sshUser: 'u', sshPassword: ' pw ' };
+    expect(wizardStepError(stateAt(2, { source: 'ssh', params }))).toBeNull();
+    const p = buildWizardPayload(stateAt(4, { source: 'ssh', params }));
+    expect(p?.type).toBe('ssh-add');
+    if (p?.type === 'ssh-add') {
+      expect(p.input.password).toBe('pw');
+      expect(p.input).not.toHaveProperty('keyPath');
+    }
+  });
+
+  it('1.6.5：keyPath 与 password 同给 → payload 两者都带（矛盾由服务端拦）', () => {
+    const params = {
+      ...initialWizardParams(),
+      sshHost: 'h',
+      sshUser: 'u',
+      sshKeyPath: '~/.ssh/id',
+      sshPassword: 'pw',
+    };
+    expect(wizardStepError(stateAt(2, { source: 'ssh', params }))).toBeNull();
+    const p = buildWizardPayload(stateAt(4, { source: 'ssh', params }));
+    expect(p?.type).toBe('ssh-add');
+    if (p?.type === 'ssh-add') {
+      expect(p.input.keyPath).toBe('~/.ssh/id');
+      expect(p.input.password).toBe('pw');
+    }
+  });
+
+  it('1.6.5：keyPath 与 password 都空 → 校验拦 + payload null', () => {
+    const params = { ...initialWizardParams(), sshHost: 'h', sshUser: 'u' };
+    expect(wizardStepError(stateAt(2, { source: 'ssh', params }))).toBe('密钥路径 / 登录密码 至少其一');
+    expect(buildWizardPayload(stateAt(4, { source: 'ssh', params }))).toBeNull();
+  });
+
+  it('1.6.5：确认页——keyPath 空而 password 非空显示引导说明行（不回显密码本体）', () => {
+    const s = stateAt(3, {
+      source: 'ssh',
+      params: { ...initialWizardParams(), sshHost: 'h', sshUser: 'u', sshPassword: 'pw' },
+    });
+    const map = Object.fromEntries(
+      wizardSummaryRows(s, { recipes: RECIPES, domains: DOMAINS }).map((r) => [r.label, r.value]),
+    );
+    expect(map['凭据']).toBe('密码引导（自动生成密钥，密码不落盘）');
+    expect(map['密钥路径']).toBeUndefined();
+    expect(Object.values(map).some((v) => v.includes('pw'))).toBe(false);
   });
 });
 

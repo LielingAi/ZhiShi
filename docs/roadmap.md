@@ -9,10 +9,10 @@
 
 **缘起（2026-09-06 用户拍板）**：VM/SSH 环境长期凭据只有密钥形态（D-T4 红线：不落盘），adopt 路径已自动生成密钥（用户无感），但**手动登记路径**（`env add` 已有 VM/SSH 靶机）要求用户自己生成密钥、自己把公钥塞进 guest——不懂密钥的用户卡死在这里。方案拍板：**方案一为主线**——登记时现场输一次密码（不落盘），自动生成/复用密钥对 + 经密码通道推公钥进 guest，条目只落 keyPath（「一次密码，永久密钥」，红线不动）；**方案三兜底**——GUI 向导加引导（自动生成密钥默认勾 + 图文指引）。方案二（密码持久化 passwordRef + plink/SSH_ASKPASS 第二凭据主链）不做——工程量与攻击面双涨，无「推不进公钥」的真实场景支撑。
 
-- [ ] **公钥推送共用件**：从 vm-adopt 提取「密码通道推公钥」为独立能力——linux（plink 密码通道写 `~/.ssh/authorized_keys`，复用 buildPlinkArgs + hostkey 钉指纹）；windows vm（复用 M2 vmrun 引导：guest 无 sshd 时经 copyFileToGuest/runProgramInGuest 推 key 到 `administrators_authorized_keys` + 钉 ACL；已有 sshd 则走 ssh 密码通道）。幂等（公钥已在不重复写）
-- [ ] **`env add` 密码引导分支**：`--key-path` 缺省且现场给了密码（CLI 隐藏输入，不落盘）→ 先跑密钥引导（生成/复用 `~/.zhishi/keys/` 密钥对 + 推公钥）→ 再按 keyPath 登记。服务端 `environment/add` 收瞬传 password 字段（不落 config.json，registry FORBIDDEN_SECRET_FIELDS 纪律不破）；失败给可读指引（密码错/通道不通/目标不支持）
-- [ ] **GUI 向导引导**：SSH/VM 接入步骤——keyPath 为空时显示「密码引导」可选区（一次性密码框 + 「自动生成并配置密钥」默认勾）；执行链复用同一端点；失败文案与 CLI 同口径
-- [ ] **回归 + 文档**：user-guide 凭据段更新（「一次密码」路径写清）；全量测试绿 + tsc + eslint + depcruise
+- [~] **公钥推送共用件**：从 vm-adopt 提取「密码通道推公钥」为独立能力——linux（plink 密码通道写 `~/.ssh/authorized_keys`，复用 buildPlinkArgs + hostkey 钉指纹）；windows vm（复用 M2 vmrun 引导：guest 无 sshd 时经 copyFileToGuest/runProgramInGuest 推 key 到 `administrators_authorized_keys` + 钉 ACL；已有 sshd 则走 ssh 密码通道）。幂等（公钥已在不重复写）
+- [~] **`env add` 密码引导分支**：`--key-path` 缺省且现场给了密码（CLI 隐藏输入，不落盘）→ 先跑密钥引导（生成/复用 `~/.zhishi/keys/` 密钥对 + 推公钥）→ 再按 keyPath 登记。服务端 `environment/add` 收瞬传 password 字段（不落 config.json，registry FORBIDDEN_SECRET_FIELDS 纪律不破）；失败给可读指引（密码错/通道不通/目标不支持）
+- [~] **GUI 向导引导**：SSH/VM 接入步骤——keyPath 为空时显示「密码引导」可选区（一次性密码框 + 「自动生成并配置密钥」默认勾）；执行链复用同一端点；失败文案与 CLI 同口径
+- [~] **回归 + 文档**：user-guide 凭据段更新（「一次密码」路径写清）；全量测试绿 + tsc + eslint + depcruise
 
 > 边界（不做）：密码持久化主链（passwordRef + plink/SSH_ASKPASS 全链适配）；ssh-agent 转发语义变更；非 vm/ssh 的 kind（docker 无凭据语义）。
 > 验收：CLI + GUI 双路「零密钥知识」登记一台 linux ssh 靶机与一台 windows VM 全通；密码全程不落盘（config.json/日志/进程残留核查）；既有 keyPath 路径行为不变。
