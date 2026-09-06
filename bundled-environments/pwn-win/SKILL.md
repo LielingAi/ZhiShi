@@ -27,27 +27,31 @@ tools:
 - 不可信样本交互需要 **hypervisor 级隔离**（断网 VM 走 vmrun guest-exec/
   push 通道，无需网卡）
 
-## 前置：模板 Windows VM（当前版本：人备，登记即用）
+## 前置：模板 Windows VM（adopt 一键养成）
 
-配方不带虚拟机本体。模板 = 一台已装 Windows 10/11（或 Server）的 VM：
+配方不带虚拟机本体。模板 = 一台已装 Windows 10/11（或 Server）+ VMware
+Tools 的 VM（Tools 是引导通道的地板），用 adopt 一键养成：
 
-1. 装 VMware Tools（断网通道的载体）；
-2. 启用 OpenSSH Server（`Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0`，
-   起服务 + 防火墙放行 + 设开机自启）——联网工作流的 SSH 通道靠它；
-3. 建 `researcher` 用户（管理员组）并配好 keyPath 公钥——管理员用户的公钥
-   放 `C:\ProgramData\ssh\administrators_authorized_keys`（不是用户目录的
-   .ssh/authorized_keys，且该文件 ACL 只能留 Administrators/SYSTEM）；
-4. 用 `zhishi env add --kind vm --id pwn-win --vm-name <VM名> --vmx <模板.vmx> --os-family windows --address <IP> --user researcher --key-path <私钥>` 登记
-   （或 `zhishi env up pwn-win --vm-base <模板.vmx>`，os_family 由配方声明回写）。
+```
+zhishi env adopt pwn-win --vm "C:\VMs\win10-pwn\win10-pwn.vmx"
+# 提示时输入 guest 管理员密码（现场使用，不落盘；非默认账号用 --user 指定）
+```
 
-> 全自动养成（adopt 的 Windows 路径）随 1.6.4 M2 提供——当前 adopt 仅支持
-> apt 系 Linux guest，Windows VM 按上面四步人备。
+adopt 全自动完成（Windows 路径走 vmrun 客户机通道开路）：启用 OpenSSH
+Server 可选功能 + 起 sshd/防火墙 → 建 `researcher` 用户（管理员组，随机
+本地密码——只公钥登录）→ 公钥落 `administrators_authorized_keys`（ACL
+钉 Administrators/SYSTEM）→ scp + 跑本配方 setup.ps1（choco 工具集 +
+环境配置 + 自检）→ `shutdown /s` → 做 `zhishi-clean` 快照 → 模板落
+config.json。唯一地板：VMware Tools + 一个管理员账号的密码。
+
+> 也可全程人备（装 Tools/OpenSSH/researcher 后 `env add --kind vm
+> --os-family windows ...` 登记）——adopt 只是把这四步自动化。
 
 ## 初始化
 
-登记后对条目跑一次「补齐环境」（GUI ⋯ 菜单）或服务端 environment/setup——
-重放本配方 setup.ps1（choco 装工具集 + 环境配置 + 自检，幂等可重放）。
-要求提升（管理员）会话——补齐链路预检 `net session`，非提升直接拒进场。
+adopt 已在养成时跑过 setup.ps1 并自检（缺工具不做快照）。已有环境也可
+随时「补齐环境」（GUI ⋯ 菜单 / environment/setup）重放——幂等。要求
+提升（管理员）会话——补齐链路预检 `net session`，非提升直接拒进场。
 
 可选的重型组件（VS Build Tools VCTools 工作负载、WinAFL+DynamoRIO、
 x64dbg）默认不装——在 guest 内设 `$env:ZHISHI_PWN_WIN_HEAVY='1'` 后重放

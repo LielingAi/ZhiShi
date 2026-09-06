@@ -1625,12 +1625,14 @@ const group = positional[0];
     }
 // `env adopt` 公钥不通 → 现场隐藏输入 guest 密码，带 password 重试一次
     // （P2 V6：密码不落盘、不进 shell 历史、不进命令行参数）。
+    // 1.6.4 Windows adopt：vmrun 引导通道只认管理员密码——错误带
+    // 「guest 密码」标记，同样现场询问重试。
     if (
       group === 'env' &&
       action === 'adopt' &&
       !result.success &&
       typeof result.error === 'string' &&
-      result.error.includes('公钥登录不通') &&
+      (result.error.includes('公钥登录不通') || result.error.includes('guest 密码')) &&
       process.stdin.isTTY
     ) {
       const password = await promptHiddenInput('公钥登录不通。输入 guest 登录密码（现场使用，不落盘；直接回车放弃）: ');
