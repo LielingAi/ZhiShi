@@ -5,7 +5,7 @@
 
 ---
 
-## 1.6.4 —— Windows VM 漏洞研究环境（进行中）
+## 1.6.4 —— Windows VM 漏洞研究环境（代码完成已发版，待用户实机验收）
 
 **缘起（2026-09-06 用户拍板，三轮讨论收敛）**：目标——Windows 上的漏洞挖掘、验证、复现达到与 Linux 环境同等体验。目标画像锁定：**源码可见 + 闭源、纯用户态、VMware 优先**。现状断点：adopt 硬假定 apt 系（Windows guest 报 UNSUPPORTED_GUEST）；能力探测/`env open`/extract 未消费 osFamily；**传入通道空白**（全仓无 `copyFileToGuest`，PoC/语料传不进 VM）；配方系统只认 bash；无 Windows 配方。方案三层模型：**通道层**（osFamily 全链消费 + 传入通道）→ **养成层**（配方 ps1 化 + Windows adopt）→ **工作流层**（stack-hash/crash-triager/fuzz-runner 的 Windows 对齐——「和 Linux 一样的效果」兑现层）。
 
@@ -15,6 +15,7 @@
 - [~] **M3 工作流层对齐**（代码完成，待用户实机验收）：stack-hash 的 cdb 变体（顶帧指纹）；crash-triager Windows 变体（cdb batch `!analyze -v` + !exploitable 可利用性初判）；fuzz-runner osFamily 分支（源码线 libFuzzer 走已有 bg-exec Windows 分支；闭源线 WinAFL corpus/winafl-cmin/崩溃回收约定，harness 选型+偏移定位为 per-target 人工环节写进 SKILL）；TTD 采集 + PageHeap 开关指引进 SKILL。**验收门**：双端到端 demo——① 源码目标 clang-cl 构建 → fuzz → 崩溃 → triage → 报告；② 闭源目标 WinAFL 样板流程跑通、crash 落盘回收
 
 > 边界（不做）：内核 fuzz（WDK/syzkaller/kAFL 路线，另一个量级工程）；Hyper-V PowerShell Direct / VBox guestcontrol 断网通道（VMware 优先，后续按驱动需求再排）；从 ISO 零建 VM（unattend.xml，模板自动化单列）；GUI 向导 Windows 分支补强（CLI 入口够用，不阻塞主线）。
+> 实际落地（2026-09-06，四个里程碑一次串行交付）：M0 通道层（探测双族协议/push 传入通道/open·extract 消费 osFamily，7135d8c）→ M1 配方 ps1 化 + pwn-win（594d90a）→ M2 Windows adopt（vmrun 引导开路→SSH 公钥接管，3d478d2）→ M3 工作流层（stack-hash.ps1/agent Windows 分支/SKILL 指引，cdee0c3）。本机实机已验：setup.ps1 与引导脚本 PS 5.1 解析、provision 包装链成功/失败两路、stack-hash ASan 通道。新增 34 测试，全量 2492 绿 + tsc + eslint + depcruise 450 模块零违规 + 双构建 + cargo check 绿。**待用户实机验收**（各里程碑验收门：真 Windows VM 走 adopt → up/exec/open/push/extract/探测全通 → 双 fuzz demo）。
 > 已知风险：① VS Build Tools 静默装实机稳定性（多 GB、偶发重试）；② `administrators_authorized_keys` ICACLS 权限位（错一位 sshd 拒 key）；③ WinAFL/DynamoRIO 新 Windows 版本兼容性（退路 Intel PT 模式或 Jackalope/TinyInst，M3 实机定）。
 > 验收：每里程碑实机验收门过；全量测试绿 + tsc + eslint + depcruise 零违规。
 

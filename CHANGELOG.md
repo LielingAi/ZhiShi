@@ -18,6 +18,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.4] - 2026-09-06
+
+> **Windows VM 漏洞研究环境**——Windows 上的漏洞挖掘/验证/复现达到与 Linux 环境同等体验。目标画像：源码可见 + 闭源、纯用户态、VMware 优先。三层落地：通道层（M0）→ 养成层（M1/M2）→ 工作流层（M3）。里程碑代码全部完成；实机验收（真 Windows VM 走 adopt/fuzz demo）待用户实测。
+
+### 新增
+- **能力探测 Windows 协议**（M0）：探测脚本按条目 OS 家族分派——windows 走 cmd 语义（`where` 探测、`&` 连接），输出协议 `OK:/MISS:` 两族不变；`capability-derive` 与 up 探测两个生产调用点接线。修复 Windows 条目探测必全 MISS 的断链
+- **传入通道 `environment/push`**（M0）：宿主文件进环境——联网走 scp 上传、断网 VM 走 vmrun `copyFileToGuest`（PoC/语料传入隔离 VM 的唯一通道，此前全仓空白）；CLI `zhishi env push <id> <宿主路径> <环境内路径>`（guest 密码现场输入重试与 env exec 同纪律）+ GUI `/push` slash 命令
+- **配方 `os_family` + setup.ps1**（M1）：frontmatter 声明 guest 家族（缺省 linux，存量零迁移）；provision 补齐链路 Windows 分支（EncodedCommand 双层 base64 + 落盘带 BOM + `net session` 提升预检）；`env up` 回写 osFamily 回落配方声明
+- **`pwn-win` 配方**（M1）：Windows 用户态漏洞研究 VM——git/python/clang-cl(libFuzzer+ASan)/cdb/procdump/Ghidra 必装，VS Build Tools/WinAFL/x64dbg 走 `ZHISHI_PWN_WIN_HEAVY` 可选段；`C:\zhishi-work` 目录约定 + Defender 排除 + `_NT_SYMBOL_PATH` + WER LocalDumps；`ENVIRONMENT_RECIPES_VERSION`→7
+- **Windows adopt**（M2）：干净 Win VM 一条 `zhishi env adopt pwn-win --vm <vmx>` 养成——vmrun 客户机通道引导开路（OpenSSH Server 可选功能 → researcher 管理员组（SID 定位，本地化免疫）→ 公钥落 `administrators_authorized_keys`（icacls 钉 ACL）），SSH 公钥接管跑 setup.ps1 → 关机 → `zhishi-clean` 快照。此后 `env up` 回滚干净现场，与 Linux 体验同构
+- **工作流层 Windows 对齐**（M3）：`stack-hash.ps1`（cdb 变体，异常码+顶帧地址归一化，ASan 通道与 Linux 同协议——crash-triager 深挖验证门跨平台同语义）；crash-triager/fuzz-runner 加 Windows 分支（cdb 批处理现场、!exploitable 参考、libFuzzer 主线同构、WinAFL 闭源线约定）；pwn-win SKILL 落 TTD/PageHeap 具体指引
+
+### 修复
+- **`env open` docker windows 容器开 cmd.exe**（原硬写 bash 必炸）；extract basename 兼容 Windows 路径（`C:\work\poc.exe` 不再取错名）
+- **provision Windows 退出码语义**：`$LASTEXITCODE` 在脚本抛错时不可靠（null 让 `exit` 变 0，失败装成成功）——改 `$?` 折算；ps1 落盘带 BOM（PS 5.1 无 BOM 按 ANSI 读，中文炸解析）——两处均实机抓出并带守卫测试
+
 ## [1.6.3] - 2026-09-03
 
 > **技术债务清扫（测量驱动，8 项全修）**——新债务六维度测量 + 逐条过堂后立项，旧三笔债（god file/引擎单例/IO 纪律）实测确认已还清。
