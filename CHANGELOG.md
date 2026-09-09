@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.9] - 2026-09-09
+
+> **引擎健壮性**——第三轮轨迹分析（冷读、不谈挖掘）实锤的两个 P0 + 一个纪律缺口全修：9.8h 假死（thinking 烧穿 output 预算）/ exec 通道自堵 76 分钟 / 环境故障升级看心情。
+
+### 修复
+- **turn 空产出检测与自动续跑**：零可见文本 + 零工具调用且非失败非中断的 turn（thinking 烧穿 output 预算的假死形态）→ 自动续跑一轮（合成消息上屏诚实可见），连续上限 2 次，超出明确报错（`stopReason=length` 截断证据进文案）——不再静默假死
+- **exec 远端超时杀**：本地超时此前只杀宿主侧 CLI、远端进程照跑（runaway 进程拖死 Docker API 的实机事故）——posix 走 `timeout -k`（TERM 后补 KILL，124/137 可辨），windows 走 PowerShell 作业强杀（三层 base64 不破引号，退出码落文件透传）
+- **通道自堵检测**：同一环境连续 3 次命令超时 → 判通道堵死，返回升级文案（不加码探测、升级人处理）
+- **环境故障升级纪律进 kernel**：诊断一次、修复一次，连续 3 次不通必须 request_decision 升级——「升不升级看当次生成心情」的行为漂移终结（76min 静默自扛入注释存档）
+
 ## [1.6.8] - 2026-09-09
 
 > **战役原语（discovery campaign）**——「发现式搜索」的任务形态落地。设计稿 v3（`docs/design/discovery-campaign.md`）经三轮评审定稿：战役唯一入口 = 会话任务形态设为「挖掘」（触发权归人，无信号自动触发、无委派升格）。
