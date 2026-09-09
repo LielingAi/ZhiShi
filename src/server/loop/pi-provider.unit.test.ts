@@ -88,12 +88,26 @@ describe('resolveLoopModel（config 自解析）', () => {
     }));
     expect(r).not.toBeNull();
     expect(r!.model.id).toBe('k3');
-    expect(r!.model.api).toBe('anthropic-messages');
-    expect(r!.model.provider).toBe('kimi-coding');
-    expect(r!.model.baseUrl).toBe(KIMI_CODING_BASE_URL);
+    // 1.6.12：k3 系改走 openai-completions（reasoning_content 思考分离——
+    // anthropic 通道 CoT 裸奔进正文的实机回归修复）
+    expect(r!.model.api).toBe('openai-completions');
+    expect(r!.model.baseUrl).toBe(`${KIMI_CODING_BASE_URL}/v1`);
+    expect(r!.model.reasoning).toBe(true);
     expect(r!.getApiKey()).toBe('fake-key');
     // 内置目录条目（不是凭空构造）：k3 的上下文窗口来自 pi 目录
     expect(r!.model.contextWindow).toBeGreaterThan(0);
+  });
+
+  it('1.6.12：非 k3 的 kimi 模型保持 anthropic 通道（kimi-for-coding 不受影响）', () => {
+    const r = resolveLoopModel(config({
+      defaultProviderId: 'moonshot-coding',
+      defaultModelId: 'kimi-for-coding',
+      providerApiKeys: { 'moonshot-coding': 'fake-key' },
+    }));
+    expect(r).not.toBeNull();
+    expect(r!.model.api).toBe('anthropic-messages');
+    expect(r!.model.provider).toBe('kimi-coding');
+    expect(r!.model.baseUrl).toBe(KIMI_CODING_BASE_URL);
   });
 
   it('defaultProviderId 缺省时回落 providerApiKeys 首键', () => {
@@ -171,10 +185,17 @@ describe('buildLoopModel（显式 provider）', () => {
   });
 
   it('kimi 目录未收录的 modelId 克隆目录首条目（保 baseUrl/compat）', () => {
-    const r = buildLoopModel({ modelId: 'k3-future', providerId: 'moonshot-coding', apiKey: 'k' });
-    expect(r.model.id).toBe('k3-future');
+    const r = buildLoopModel({ modelId: 'k9-future', providerId: 'moonshot-coding', apiKey: 'k' });
+    expect(r.model.id).toBe('k9-future');
     expect(r.model.baseUrl).toBe(KIMI_CODING_BASE_URL);
     expect(r.model.provider).toBe('kimi-coding');
+  });
+
+  it('1.6.12：k3 系未收录型号（k3-future）同样路由 openai 通道（家族语义）', () => {
+    const r = buildLoopModel({ modelId: 'k3-future', providerId: 'moonshot-coding', apiKey: 'k' });
+    expect(r.model.id).toBe('k3-future');
+    expect(r.model.api).toBe('openai-completions');
+    expect(r.model.baseUrl).toBe(`${KIMI_CODING_BASE_URL}/v1`);
   });
 
   it('Models 集合含解析出的 provider（streamSimple 的 dispatch 目标）', () => {
