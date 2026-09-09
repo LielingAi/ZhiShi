@@ -83,7 +83,8 @@ import { augmentedProcessEnv, resolveCommand } from './utils/env-utils';
 import { resolve } from 'path';
 import { connect } from 'net';
 import { setAgents } from './agent-session';
-import { getPiAgentState, envSwitchBlocker, getEnvSessionBinding, switchEnvSession, resolveSessionEnv, resolveSessionEnvKey } from './loop/chat-engine';
+import { getPiAgentState, envSwitchBlocker, getEnvSessionBinding, getPiLineMission, setPiLineMission, switchEnvSession, resolveSessionEnv, resolveSessionEnvKey } from './loop/chat-engine';
+import { isMissionKind, MISSION_KINDS } from '../shared/mission';
 import { loadArchive } from './loop/archive';
 import { envKeyForSelection, getEnvSessionLine, loadEnvSessionsMap, removeEnvSessionsForEnvId } from './environment/env-sessions';
 import { resolveLoopModel } from './loop/pi-provider';
@@ -3165,6 +3166,21 @@ export async function handleCampaignResume(payload: { id?: unknown }): Promise<A
   if (!id) return { success: false, error: 'Missing required argument: <id>' };
   const result = await resumeCampaign(id);
   return result.ok ? { success: true, data: { id } } : { success: false, error: result.error };
+}
+/** `session/mission` — 1.6.11 会话线任务形态读/设（首条消息前即可设——
+ *  战役入口语义：派任务前先定形态）。payload 不带 mission 键 → 读当前线；
+ *  带 mission（闭集或 null）→ 设定（引擎线态即时生效 + 已绑定则落盘 +
+ *  变更通知注入 + GUI 广播）。 */
+export function handleSessionMission(payload: { mission?: unknown }): AdminResponse {
+  if (!('mission' in payload)) {
+    return { success: true, data: { mission: getPiLineMission() ?? null } };
+  }
+  const raw = payload.mission;
+  if (raw !== null && (typeof raw !== 'string' || !isMissionKind(raw))) {
+    return { success: false, error: `非法 mission ${JSON.stringify(raw)}（允许：${MISSION_KINDS.join(' / ')}，null = 清除）` };
+  }
+  setPiLineMission(raw === null ? undefined : raw);
+  return { success: true, data: { mission: raw } };
 }
 /** `auto-run/list` — 记录列表（时间倒序；可选 workspace 过滤）。 */
 export async function handleAutoRunList(payload: { workspace?: unknown }): Promise<AdminResponse> {

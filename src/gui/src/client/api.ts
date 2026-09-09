@@ -585,17 +585,28 @@ export function deleteSessionMeta(
   );
 }
 
-/**
- * GET /sessions/:id?limit=1 → 单条会话元（1.6.8 M1：读 mission；limit=1 只为
- * 把消息体压到最小，元字段全量在）。形状归一走 model/history.ts::parseSessionRow。
- */
-export function fetchSessionMeta(
+// ---------------------------------------------------------------------------
+// 1.6.11 任务形态（admin session/mission——线态优先，未绑定会话也可读/设）
+// ---------------------------------------------------------------------------
+
+export interface SessionMissionResult {
+  success: boolean;
+  error?: string;
+  data?: { mission?: string | null; label?: string };
+}
+
+/** POST session/mission {}（不带 mission 键 = 读当前会话线形态）。 */
+export function sessionMissionGet(client: GuiSidecarClient): Promise<SessionMissionResult> {
+  return client.adminPost<SessionMissionResult>('session/mission', {});
+}
+
+/** POST session/mission { mission }（设定；null = 清除回无类型——线态即时
+ *  生效、已绑定则落盘、注入变更通知并广播 chat:mission-changed）。 */
+export function sessionMissionSet(
   client: GuiSidecarClient,
-  id: string,
-): Promise<{ success: boolean; error?: string; session?: unknown }> {
-  return client.getJson<{ success: boolean; error?: string; session?: unknown }>(
-    `/sessions/${encodeURIComponent(id)}?limit=1`,
-  );
+  mission: string | null,
+): Promise<SessionMissionResult> {
+  return client.adminPost<SessionMissionResult>('session/mission', { mission });
 }
 
 /** POST /sessions/switch {sessionId} → 引擎切到该会话（续跑入口）。 */

@@ -463,6 +463,10 @@ class ChatEngine {
   /** 1.1.6 #4 — 引擎当前所在的环境分线键(随 restore/switchEnvSession 更新;
    *  不逐次重读磁盘——select 落盘→切线的窗口内磁盘已超前于引擎)。 */
   private currentEnvKey: string = envKeyForSelection(HOST_SELECTION);
+  /** 1.6.11 — mission 挂会话线（引擎态）：首条消息前就可设（战役入口语义——
+   *  派任务前先定形态）；绑定 meta 后落盘持久化；恢复/切线时从 meta 回填。
+   *  键 = 环境分线键（currentEnvKey 同族）。 */
+  private lineMissions = new Map<string, string>();
 
   // -------------------------------------------------------------------------
   // Engine switch(M4c 硬切:恒 pi;sdk 请求一次性告警回落)
@@ -589,6 +593,11 @@ class ChatEngine {
     if (stored.messages.length === 0) return;
     this.boundSessionMetaId = this.findBoundMetaId(line.loopSessionId);
     this.sessionId = line.loopSessionId;
+    // 1.6.11：恢复回填 mission（meta → 线态；线态已有值不动）。
+    if (this.boundSessionMetaId && !this.lineMissions.has(envKey)) {
+      const m = getSessionMetadata(this.boundSessionMetaId)?.mission;
+      if (isMissionKind(m)) this.lineMissions.set(envKey, m);
+    }
     // B10(1.2.6):启动恢复出绑定后同步配置面会话标识——cron/sessions 路由
     // 经 getSessionId() 读它,不更新则恒为 initializeAgent 的随机 UUID(僵尸值)。
     if (this.boundSessionMetaId) setActiveSessionId(this.boundSessionMetaId);
@@ -606,6 +615,11 @@ class ChatEngine {
       });
       this.boundSessionMetaId = meta.id;
       await updateSessionMetadata(meta.id, { loopSessionId: this.sessionId } as Partial<typeof meta>);
+      // 1.6.11：绑定建立时把线态 mission（首条消息前设的形态）落盘持久化。
+      const lineMission = this.lineMissions.get(this.currentEnvKey);
+      if (lineMission !== undefined) {
+        await updateSessionMetadata(meta.id, { mission: lineMission } as Partial<typeof meta>);
+      }
       // B10(1.2.6):绑定建立即写配置面会话标识(getSessionId 的消费者——cron
       // execute-sync 回报/skip-switch、sessions 路由 in-memory 合并——都读它)。
       setActiveSessionId(meta.id);
@@ -751,7 +765,11 @@ class ChatEngine {
         expertKnowledge,
         // 1.6.8 M1：任务形态（mission）——逐 turn 从绑定 meta 读（改形态即
         // 下轮生效，零状态陈旧面；meta 读取与档案/记忆同阶开销）。
+        // 1.6.11：引擎线态优先（lineMissions——首条消息前就可设，战役入口
+        // 语义；绑定后落 meta 持久化，meta 是恢复/切线的回填源）。
         mission: (() => {
+          const lineMission = this.lineMissions.get(this.currentEnvKey);
+          if (lineMission !== undefined) return isMissionKind(lineMission) ? lineMission : undefined;
           if (!this.boundSessionMetaId) return undefined;
           const m = getSessionMetadata(this.boundSessionMetaId)?.mission;
           return isMissionKind(m) ? m : undefined;
@@ -1794,6 +1812,12 @@ class ChatEngine {
     // 不再回报引擎已离开的僵尸会话。
     setActiveSessionId(this.boundSessionMetaId ?? randomUUID());
     this.currentEnvKey = envKey;
+    // 1.6.11：切线回填 mission——meta 是持久源；线态已有值（用户本会话期设过）
+    // 则线态优先（更新鲜）。
+    if (!this.lineMissions.has(envKey) && this.boundSessionMetaId) {
+      const m = getSessionMetadata(this.boundSessionMetaId)?.mission;
+      if (isMissionKind(m)) this.lineMissions.set(envKey, m);
+    }
     return { ok: true };
   }
 
@@ -1871,6 +1895,8 @@ class ChatEngine {
     this.pendingMissionNotes = []; // 1.6.8 M1：mission 通知同理
     this.emptyTurnStreak = 0; // 1.6.9 #1：空产出计数清场
     this.pendingEmptyContinuation = false;
+    // 1.6.11：reset = 新会话新工作——当前线的 mission 一并清（新工作默认无类型）。
+    this.lineMissions.delete(this.currentEnvKey);
     if (this.boundSessionMetaId) {
       const staleMetaId = this.boundSessionMetaId;
       // 1.6.7 #2：旧线 id 存 archivedLoopSessionId（历史面板只读回看用）——
@@ -1928,9 +1954,17 @@ class ChatEngine {
    * 1.6.8 M1：PATCH mission 的引擎联动——只有活跃绑定线注入（别的会话线
    * 只落盘，切过去时逐 turn 读 meta 自然生效）。busy → steering 队列当轮
    * 生效；idle → 待注入缓冲，下轮起跑进 grounding。
+   * 1.6.11：同步线态（PATCH 与 setLineMission 两条入口同一份事实源）。
    */
   applyMissionChange(sessionMetaId: string, mission: string | undefined): void {
     if (sessionMetaId !== this.boundSessionMetaId) return;
+    if (mission === undefined) this.lineMissions.delete(this.currentEnvKey);
+    else this.lineMissions.set(this.currentEnvKey, mission);
+    this.injectMissionNote(mission);
+  }
+
+  /** mission 变更通知注入（busy → steering 当轮生效；idle → 下轮 grounding）。 */
+  private injectMissionNote(mission: string | undefined): void {
     const label = mission && isMissionKind(mission) ? MISSION_LABELS[mission] : '无类型';
     const note = `[系统] 本会话任务形态已设为「${label}」——后续工作按该形态打法执行（系统提示 <zhishi-mission> 段可见细节）。`;
     if (this.busy) {
@@ -1940,6 +1974,31 @@ class ChatEngine {
     } else {
       this.pendingMissionNotes.push(note);
     }
+  }
+
+  /** 1.6.11：当前线的 mission（session/mission GET 的数据源）。 */
+  getLineMission(): string | undefined {
+    return this.lineMissions.get(this.currentEnvKey);
+  }
+
+  /**
+   * 1.6.11：设定当前线 mission——**首条消息前即可设**（战役入口语义：派任务
+   * 前先定形态；此前 PATCH 要等 meta 绑定，顺序反了）。线态即时生效；已绑定
+   * meta 则落盘持久化；注入变更通知 + 广播 GUI（chat:mission-changed）。
+   */
+  setLineMission(mission: string | undefined): void {
+    if (mission === undefined) this.lineMissions.delete(this.currentEnvKey);
+    else this.lineMissions.set(this.currentEnvKey, mission);
+    if (this.boundSessionMetaId) {
+      void updateSessionMetadata(this.boundSessionMetaId, { mission } as unknown as Partial<SessionMetadata>).catch(
+        (err) => console.warn('[pi-engine] mission 落盘失败:', err),
+      );
+    }
+    this.injectMissionNote(mission);
+    broadcast('chat:mission-changed', {
+      mission: mission ?? null,
+      label: mission && isMissionKind(mission) ? MISSION_LABELS[mission] : '无类型',
+    });
   }
 
   /**
@@ -2064,6 +2123,14 @@ export function noteBgFinishedForTests(tag: string, status: string, exitCode?: n
 /** 1.6.8 M1：PATCH /sessions/:id 改 mission 后的引擎联动（活跃线注入，其余只落盘）。 */
 export function applyPiMissionChange(sessionMetaId: string, mission: string | undefined): void {
   defaultEngine.applyMissionChange(sessionMetaId, mission);
+}
+
+/** 1.6.11：当前线 mission 的读/设（session/mission 端点数据源；首条消息前可设）。 */
+export function getPiLineMission(): string | undefined {
+  return defaultEngine.getLineMission();
+}
+export function setPiLineMission(mission: string | undefined): void {
+  defaultEngine.setLineMission(mission);
 }
 
 export async function sendPiChatMessage(input: PiSendInput): Promise<PiSendResult> {
