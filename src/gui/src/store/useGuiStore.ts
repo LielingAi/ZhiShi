@@ -231,6 +231,7 @@ export type ModalKind =
   | 'env-rebuild'
   | 'env-reset'
   | 'env-rename'
+  | 'env-registering'
   | 'campaign-stop'
   | 'auto-run-start'
   | 'auto-run-stop';
@@ -2193,8 +2194,14 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     if (payload.type === 'register') {
       const key = payload.itemKey;
       const extras = payload.extras;
-      set({ wizard: null, modal: null });
+      // 1.6.14：登记过程可视化——密码引导的密钥配置可能几十秒，toast 会
+      // 自动消失，此前看起来「没反应」（实机反馈）。busy 模态撑到结果出来。
+      set({
+        wizard: null,
+        modal: { kind: 'env-registering' },
+      });
       await get().registerDiscovered(key, extras);
+      if (get().modal?.kind === 'env-registering') set({ modal: null });
       return;
     }
     // ssh-add：environment/add 真实落盘（host/user/keyPath 必填已在状态机校验）。

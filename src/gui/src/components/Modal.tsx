@@ -808,6 +808,27 @@ function PromoteModal(): React.JSX.Element | null {
 
 // ── 1.3.7 补口：环境删除确认（文案/确认强度在 model/env-remove） ────────
 
+/** 1.6.14：登记进行中（busy）模态——密码引导的密钥配置可能几十秒，
+ *  无按钮、结果出来后由 store 关（成功/失败 toast 是既有通道）。 */
+function EnvRegisterModal(): React.JSX.Element | null {
+  const modal = useGuiStore((s) => s.modal);
+  if (modal?.kind !== 'env-registering') return null;
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal">
+        <div className="m-head">
+          <span className="m-title">正在登记环境…</span>
+        </div>
+        <div className="m-body">
+          <div className="m-note">
+            ⏳ 正在登记并配置接入凭据——若走密码引导（自动生成密钥并推公钥进目标），可能需要几十秒，请稍候。
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function EnvRemoveModal(): React.JSX.Element | null {
   const modal = useGuiStore((s) => s.modal);
   const closeModal = useGuiStore((s) => s.closeModal);
@@ -1346,6 +1367,8 @@ export function Modal(): React.JSX.Element | null {
       return <EnvResetModal />;
     case 'env-rename':
       return <EnvRenameModal />;
+    case 'env-registering':
+      return <EnvRegisterModal />;
     case 'campaign-stop':
       return <CampaignStopModal />;
     case 'auto-run-start':
