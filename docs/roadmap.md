@@ -9,8 +9,8 @@
 
 **缘起（2026-09-09 用户拍板立项）**：轨迹裁决——挖掘无效的根因是系统没有「发现式搜索」的任务形态。挖掘不是更长的任务，是**战役**：假设队列 + 搜索基座（fuzz 是之一）+ 信号反馈（覆盖率/崩溃/指纹）+ 分支剪枝 + 墙钟预算（天级非轮次级）+ 事件驱动的 agent 介入（信号驱动非轮次驱动）。零件都在（auto loop/research_archive/env_bg/fuzz-runner），缺编排原语。1.6.7 dogfood 已取证（`docs/design/experiment-fuzz-dogfood.md`）：首需求 = **零崩溃时的破冰回路**（盲跑 121k execs 0 崩溃 vs 引导秒级命中——盲跑是基座，引导回路是产出引擎）。
 
-- [ ] **设计稿**：`docs/design/discovery-campaign.md`——战役状态机（running/plateau/破冰/分拣/收口）+ 信号源注册表（bg 完成回注泛化）+ 墙钟预算与 auto loop 的关系 + 与 crash-triager 深挖的接口 + 反例与砍单
-- [ ] **战役原语实现**：按设计稿（设计稿评审通过前不写实现代码）
+- [x] **设计稿**：`docs/design/discovery-campaign.md`——战役状态机（running/plateau/破冰/分拣/收口）+ 信号源注册表（bg 完成回注泛化）+ 墙钟预算与 auto loop 的关系 + 与 crash-triager 深挖的接口 + 反例与砍单
+- [~] **战役原语实现**：按设计稿（6ee1952——M1 mission 全链 + M2 战役运行时 + /tasks 卡片；验收实验待实机）
 
 > 边界：1.6.7 接线件（R1~R3/R5）是地基已落地；delegate_task 同步 await 与战役的异步介入语义冲突是设计稿要解的核心题；环境聚合（多对多合成）不在此版。
 
