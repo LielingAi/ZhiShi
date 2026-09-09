@@ -41,8 +41,26 @@ describe('parseSessionRow（GET /sessions 行归一）', () => {
     });
   });
 
-  it('缺省字段走默认（title 空 → New Chat，false 不落 pinned/archived）', () => {
-    const row = parseSessionRow({ id: 'm2', title: '' });
+  it('1.6.7 #2：archivedLoopSessionId 透传（/reset 解绑行的只读回看回落）', () => {
+    const row = parseSessionRow({
+      id: 'm9',
+      title: 'x',
+      createdAt: '',
+      lastActiveAt: '',
+      archivedLoopSessionId: 'ls-old',
+    });
+    expect(row?.archivedLoopSessionId).toBe('ls-old');
+    expect(row?.loopSessionId).toBeUndefined();
+    // 两字段并存（reset 后同 meta 又被载回重开新线）：loopSessionId 优先语义在消费侧
+    const both = parseSessionRow({
+      id: 'm10', title: 'x', createdAt: '', lastActiveAt: '',
+      loopSessionId: 'ls-new', archivedLoopSessionId: 'ls-old',
+    });
+    expect(both?.loopSessionId).toBe('ls-new');
+    expect(both?.archivedLoopSessionId).toBe('ls-old');
+  });
+
+  it('缺省字段走默认（title 空 → New Chat，false 不落 pinned/archived）', () => {    const row = parseSessionRow({ id: 'm2', title: '' });
     expect(row).toEqual({
       id: 'm2',
       title: 'New Chat',

@@ -25,6 +25,8 @@ export interface SessionMetaRow {
   lastActiveAt: string;
   /** wire 回看端点要的 loop-sessions id（旧行可能没有）。 */
   loopSessionId?: string;
+  /** 1.6.7 #2：/reset 解绑后保留的旧线 id——只读回看的回落（载回不消费）。 */
+  archivedLoopSessionId?: string;
   lastMessagePreview?: string;
   messageCount: number;
   /** 1.3.3 置顶（排序信号）。 */
@@ -58,6 +60,8 @@ export function parseSessionRow(raw: unknown): SessionMetaRow | null {
   };
   const loopSessionId = strOf(r.loopSessionId);
   if (loopSessionId) row.loopSessionId = loopSessionId;
+  const archivedLoopSessionId = strOf(r.archivedLoopSessionId);
+  if (archivedLoopSessionId) row.archivedLoopSessionId = archivedLoopSessionId;
   const preview = strOf(r.lastMessagePreview);
   if (preview) row.lastMessagePreview = preview;
   if (r.pinned === true) row.pinned = true;

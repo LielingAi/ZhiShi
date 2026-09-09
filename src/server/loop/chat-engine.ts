@@ -434,6 +434,11 @@ class ChatEngine {
   /** W1 steering 队列(design-spec §6.1 纠偏档):busy 时 /chat/send 进这里,
    *  由运行中 loop 的 getSteeringMessages 在 turn 间取走注入,不排队等 turn。 */
   private steering: PiQueueItem[] = [];
+  /** 1.6.7 R2 bg 完成回注缓冲：bg 进程结束（任何时刻）先进这里——turn 起跑
+   *  前排干进 grounding（首跳 LLM 即见）；turn 中途到达的由 getSteeringMessages
+   *  注入。此前完成信号只 broadcast 到 GUI 不进 loop，逼出 agent 的 sleep 轮询
+   *  （轨迹实证：单会话 47 次、约 40% 墙钟纯等）。*/
+  private pendingBgNotes: Array<{ tag: string; status: string; exitCode?: number }> = [];
   /** SessionStore 里绑定的会话元数据 id(其 loopSessionId 字段 === sessionId)。 */
   private boundSessionMetaId: string | null = null;
   /** 1.1.6 #4 — 引擎当前所在的环境分线键(随 restore/switchEnvSession 更新;
@@ -725,6 +730,12 @@ class ChatEngine {
         securityResearchDomain: domain,
         researchArchive,
         expertKnowledge,
+        // 1.6.7 R1：子代理编目（可委派名册进决策视野）——只在锚定环境时注入
+        // （delegate_task 仅锚定后注册）；与 buildTurnStack 的可派发清单同一
+        // 事实源（filterAgentsByDomain + 同一 domain）。
+        subagents: env
+          ? filterAgentsByDomain(loadBundledAgents(), domain).map((a) => ({ name: a.name, description: a.description }))
+          : undefined,
         // 1.2.6 批次 C：pi 无宿主 shell——CLI 附录只保留不依赖 shell 的段
         // （cron + aiCanExit 时的 [CRON_TASK_COMPLETE] 自退标记），task CRUD /
         // memory search / panel 等依赖 zhishi CLI 的段不注入（cliHostShell:false）。
@@ -738,6 +749,26 @@ class ChatEngine {
     }
   }
 
+  /** 1.6.7 R2：bg 完成通知的统一文案（grounding 与 steering 两通道同一句）。 */
+  private static formatBgNote(n: { tag: string; status: string; exitCode?: number }): string {
+    return `[后台进程完成] env_bg 任务 tag=${n.tag} 已结束（status=${n.status}` +
+      `${n.exitCode !== undefined ? `，exitCode=${n.exitCode}` : ''}）——` +
+      '输出用 env_bg 的 log 动作查看；据此决定推进还是继续等待（不要再 sleep 轮询）。';
+  }
+
+  /**
+   * 1.6.7 R2：排干 bg 完成缓冲。grounding 模式返回合成文本块（进 prompt 不进
+   * 气泡）；steering 模式返回逐条文本（调用方负责 wire/replay 纪律）。
+   */
+  private drainBgNotes(mode: 'grounding'): string;
+  private drainBgNotes(mode: 'steering'): string[];
+  private drainBgNotes(mode: 'grounding' | 'steering'): string | string[] {
+    if (this.pendingBgNotes.length === 0) return mode === 'grounding' ? '' : [];
+    const drained = this.pendingBgNotes.splice(0, this.pendingBgNotes.length);
+    const texts = drained.map((n) => ChatEngine.formatBgNote(n));
+    return mode === 'grounding' ? texts.join('\n') : texts;
+  }
+
   /** 启动一个 turn(fire-and-forget);调用前须确认 !busy。
    *  queueId(B5):本条消息的来源队列项 id——记入 wire 用户消息
    *  (queue:* 事件族按它对账)。 */
@@ -745,6 +776,11 @@ class ChatEngine {
     const text = input.text.trim();
     this.busy = true;
     this.currentAbort = new AbortController();
+    // 1.6.7 R2：bg 完成回注——turn 起跑前排干待机期间到达的 bg 完成通知，
+    // 并进 grounding（只进 prompt 不进用户气泡，与 @ 注入同语义）；turn 中途
+    // 到达的由 getSteeringMessages 在下一跳 LLM 调用前注入（见该闭包）。
+    const bgGrounding = this.drainBgNotes('grounding');
+    const effectiveGrounding = [bgGrounding, grounding].filter(Boolean).join('\n\n');
     // B3(1.2.6):turn 起跑即快照 sessionId,runPiTurn 收尾(续存/压缩标记/
     // 标题钩子/缺口埋点)一律用快照,不动态读 this.sessionId。
     // 快照语义:turn 运行中 this.sessionId 的唯一合法变更路径是「先 abort 本
@@ -846,7 +882,25 @@ class ChatEngine {
     // 注入顺序一致(steering 必在本 turn 结束前注入,先于下一 turn 的 prompt),
     // 1:1 保持。
     const getSteeringMessages = async (): Promise<AgentMessage[]> => {
-      if (this.steering.length === 0) return [];
+      // 1.6.7 R2：turn 中途完成的 bg 进程通知随 steering 同点注入（wire/replay
+      // 纪律与纠偏消息同——B6 的 1:1 序数映射不破）。
+      const bgNotes = this.drainBgNotes('steering');
+      for (const note of bgNotes) {
+        const wireMsg: MessageWire = {
+          id: String(this.messageSeq++),
+          role: 'user',
+          content: note,
+          timestamp: new Date().toISOString(),
+        };
+        this.messages.push(wireMsg);
+        broadcast('chat:message-replay', { message: wireMsg });
+      }
+      const bgMessages: AgentMessage[] = bgNotes.map((note) => ({
+        role: 'user',
+        content: note,
+        timestamp: Date.now(),
+      }));
+      if (this.steering.length === 0) return bgMessages;
       const drained = this.steering.splice(0, this.steering.length);
       console.log(`[pi-engine] steering 注入 ${drained.length} 条`);
       for (const item of drained) {
@@ -874,7 +928,7 @@ class ChatEngine {
         // 已离开 steering 队列(注入即消费):清 TUI 队列条目,与 stop/cancel 同事件。
         broadcast('chat:steering-cancelled', { queueId: item.queueId });
       }
-      return drained.map((item) => {
+      return [...bgMessages, ...drained.map((item) => {
         const itemText = item.input.text.trim();
         const base: AgentMessage = {
           role: 'user',
@@ -886,10 +940,10 @@ class ChatEngine {
         return item.input.decision
           ? ({ ...base, decision: item.input.decision } as AgentMessage)
           : base;
-      });
+      })];
     };
 
-    void this.runPiTurn(input, resolution, env, toolNames, assistantMessage, this.currentAbort, grounding, turnSessionId, getSteeringMessages)
+    void this.runPiTurn(input, resolution, env, toolNames, assistantMessage, this.currentAbort, effectiveGrounding, turnSessionId, getSteeringMessages)
       .catch((err) => {
         console.error('[pi-engine] turn 异常:', err);
         broadcast('chat:message-error', err instanceof Error ? err.message : String(err));
@@ -1025,6 +1079,9 @@ class ChatEngine {
                   status: ev.status,
                   ...(ev.exitCode !== undefined ? { exitCode: ev.exitCode } : {}),
                 });
+                // 1.6.7 R2：完成信号回注 loop——进缓冲，由 turn 起跑 grounding /
+                // steering 两个注入点排干（此前只广播 GUI，agent 只能 sleep 轮询）。
+                this.pendingBgNotes.push({ tag: ev.tag, status: ev.status, exitCode: ev.exitCode });
               }
             },
           }
@@ -1738,9 +1795,13 @@ class ChatEngine {
       broadcast('chat:steering-cancelled', { queueId: item.queueId });
     }
     this.steering = [];
+    this.pendingBgNotes = []; // 1.6.7 R2：reset 清场，bg 通知不跨会话残留
     if (this.boundSessionMetaId) {
       const staleMetaId = this.boundSessionMetaId;
-      void updateSessionMetadata(staleMetaId, { loopSessionId: null } as unknown as Partial<SessionMetadata>).catch(
+      // 1.6.7 #2：旧线 id 存 archivedLoopSessionId（历史面板只读回看用）——
+      // loopSessionId 摘 null 的防复活纪律不变（恢复/载回不消费 archived 字段）。
+      const oldLoopId = this.sessionId;
+      void updateSessionMetadata(staleMetaId, { loopSessionId: null, archivedLoopSessionId: oldLoopId } as unknown as Partial<SessionMetadata>).catch(
         (err) => console.warn('[pi-engine] reset 解绑旧 loopSessionId 失败:', err),
       );
     }
@@ -1766,6 +1827,11 @@ class ChatEngine {
     void reapBgOnLifecyclePoint('reset');
     // W1 — reset 后状态回 idle。
     broadcast('chat:status', { sessionState: 'idle' });
+  }
+
+  /** 1.6.7 R2 测试钩子：等价于 env_bg onLifecycle finished 的缓冲写入。 */
+  noteBgFinishedForTests(tag: string, status: string, exitCode?: number): void {
+    this.pendingBgNotes.push({ tag, status, exitCode });
   }
 
   /**
@@ -1880,6 +1946,11 @@ export function getPiStreamingAssistantId(): string | null {
 
 export function getPiSystemInitInfo(): SystemInitInfo | null {
   return defaultEngine.getPiSystemInitInfo();
+}
+
+/** 1.6.7 R2 测试钩子（等价 env_bg 完成事件的缓冲写入）。 */
+export function noteBgFinishedForTests(tag: string, status: string, exitCode?: number): void {
+  defaultEngine.noteBgFinishedForTests(tag, status, exitCode);
 }
 
 export async function sendPiChatMessage(input: PiSendInput): Promise<PiSendResult> {

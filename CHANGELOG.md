@@ -18,6 +18,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.7] - 2026-09-09
+
+> **实机反馈修复 + 挖掘链路接线 + fuzz dogfood 实验**——两轮轨迹分析裁决「挖掘无效」根因（设计缺发现式搜索回路 + 架构三处断线 + 实现最后一公里；agent 能力被轨迹反证），本版做接线与取证；结构件（战役原语）挂 1.6.8 预立项。
+
+### 修复
+- **运行中环境行别名显示**：label 优先级反转（登记别名压住引擎实例名，docker/hyperv/vbox 三驱动同修）；AttachView 终端头显别名
+- **/reset 死行**：reset 解绑的旧会话在历史面板回看 404、载回开空线——旧线 id 存 `archivedLoopSessionId`，只读回看回落（恢复/载回的防复活纪律不变）；user-guide 补全 /reset 破坏性副作用与 `env reset` 撞名区分
+- **fuzz 配方 ASan 开箱即炸**：缺 `libclang-rt-17-dev`（链接炸）与 `llvm-symbolizer`（崩溃帧裸地址、stack-hash 顶帧为空、去重粒度退化）——dogfood 实证修复
+
+### 新增
+- **子代理可发现性**（R1）：系统提示新增 `<zhishi-subagents>` 编目段（按域收窄的名字+用途，与执行栈同一事实源）；delegate_task 描述补场景语义与名册指引——轨迹裁决：名册不可见是 delegate_task 零调用的根因
+- **bg 完成回注 loop**（R2）：bg 进程结束注入会话（grounding + steering 双注入点），消灭 sleep 轮询（轨迹实证：单会话 47 次、约 40% 墙钟纯等构建）
+- **环境 select 探活**（R3）：SSH 通道条目选定前验通，鉴权失败当场拒绝并引导 1.6.5 密码引导修复——坏环境选定 = 整个会话废掉的实机事故不再发生
+- **task_kind 加 `fuzz`**（R5）：挖掘/复现分桶，挖掘有效性从此可统计；research-log 段枚举改常量渲染（顺手修 whitebox 漏列）；intel 未构建文案改人侧指引
+- **fuzz dogfood 实验报告**（`docs/design/experiment-fuzz-dogfood.md`，判定成立）：核心数据点——盲跑 121k execs 零崩溃 vs 引导触发秒级命中，与 1.6.1 对照实验互证「挖掘的第一变量是引导不是算力」；1.6.8 战役原语首需求 = 零崩溃时的破冰回路
+
 ## [1.6.6] - 2026-09-06
 
 > **环境改名（别名）**——环境条目可改名：只动 `name` 显示名，id 身份不变（env-sessions/selection/会话锚零迁移）。

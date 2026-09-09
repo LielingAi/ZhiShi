@@ -20,7 +20,7 @@ function runNode(scriptPath: string, args: string[]) {
 }
 
 /** 在临时目录搭一个最小可运行的 sync-version 现场，返回脚本路径。 */
-function seedSyncVersionFixture(overrides: { cargo?: string; constants?: string } = {}) {
+function seedSyncVersionFixture(overrides: { cargo?: string; constants?: string; readme?: string } = {}) {
   const dir = join(work, `fixture-${Math.random().toString(36).slice(2)}`);
   mkdirSync(join(dir, 'scripts'), { recursive: true });
   mkdirSync(join(dir, 'src-tauri'), { recursive: true });
@@ -36,6 +36,8 @@ function seedSyncVersionFixture(overrides: { cargo?: string; constants?: string 
     join(dir, 'src/shared/constants.ts'),
     overrides.constants ?? "export const GUI_VERSION = '0.0.0';\n",
   );
+  // 1.6.7：README 头部版本行也进同步链（同纪律：失配硬失败）
+  writeFileSync(join(dir, 'README.md'), overrides.readme ?? '# x\n\n**v0.0.0 · 测试门面行。**\n');
   return { script: join(dir, 'scripts/sync-version.js'), dir };
 }
 
@@ -49,13 +51,22 @@ afterEach(() => {
 });
 
 describe('sync-version.js — 正则替换失配校验（A3-7）', () => {
-  it('正常形态：三个目标全部替换为新版本', () => {
+  it('正常形态：四个目标全部替换为新版本', () => {
     const { script, dir } = seedSyncVersionFixture();
     const r = runNode(script, []);
     expect(r.status).toBe(0);
     expect(readFileSync(join(dir, 'src-tauri/Cargo.toml'), 'utf-8')).toContain('version = "9.9.9"');
     expect(readFileSync(join(dir, 'src/shared/constants.ts'), 'utf-8')).toContain("GUI_VERSION = '9.9.9'");
     expect(JSON.parse(readFileSync(join(dir, 'src-tauri/tauri.conf.json'), 'utf-8')).version).toBe('9.9.9');
+    expect(readFileSync(join(dir, 'README.md'), 'utf-8')).toContain('**v9.9.9 ·');
+  });
+
+  it('README 版本行失配 → exit 1 且不写文件（1.6.7）', () => {
+    const { script, dir } = seedSyncVersionFixture({ readme: '# 无版本行的 README\n' });
+    const r = runNode(script, []);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('README.md');
+    expect(readFileSync(join(dir, 'README.md'), 'utf-8')).toBe('# 无版本行的 README\n');
   });
 
   it('Cargo.toml 版本行失配 → exit 1 且不写文件', () => {

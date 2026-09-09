@@ -28,6 +28,10 @@ export interface SessionMetadata {
     /** M4b — pi 引擎会话绑定的 loop-sessions id（~/.zhishi/loop-sessions/<id>.jsonl）。
      *  sidecar 重启后引擎据此续接同一 loop 会话；SDK 会话无此字段。 */
     loopSessionId?: string;
+    /** 1.6.7 #2 — /reset 解绑时保留的旧 loop 线 id。**只读回看专用**（历史
+     *  面板 wire 回看）；恢复/续接/载回一律不消费它（恢复走 loopSessionId
+     *  的防复活纪律不变——reset 后重启绝不复活旧历史）。 */
+    archivedLoopSessionId?: string;
     /** 统一后创建的 session 标记。为 true 时 id 即 SDK session ID */
     unifiedSession?: boolean;
     /** Session statistics */

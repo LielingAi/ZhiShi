@@ -27,11 +27,14 @@ description: 长跑 fuzz 与崩溃收集。当主 agent 需要对目标二进制
 - 收尾时用 CLI 落一条 research_events：
 
 ```bash
-zhishi research log --task-kind binary --outcome <success|fail|stuck> \
+zhishi research log --task-kind fuzz --outcome <success|fail|stuck> \
   [--bug-class <若能初判的主导崩溃类>] \
   --summary "<跑了多久/多少 execs/去重后几类崩溃/卡在哪>" \
   --trajectory-ref <工作区内 fuzz/trajectory.md 的路径>
 ```
+
+（1.6.7 起挖掘类任务落 `task_kind=fuzz`——与 binary 的复现类分桶，挖掘
+有效性才可统计；crash-triager 的研判事件仍落 binary。）
 
 - outcome 语义：`success` = 产出 ≥1 类去重崩溃或按目标跑满约定时长；`fail` = harness/环境构建不起来；`stuck` = 能跑但长期无产出且换过策略仍无效。
 - bug_class 初判不准就**不填**（别硬套），留给 crash-triager。

@@ -164,7 +164,7 @@ export async function spawnSubLoop(options: SpawnSubLoopOptions): Promise<SubLoo
 const delegateTaskParameters = Type.Object({
   task: Type.String({ description: '要派发给子代理的具体任务(自包含,写明要在研究环境里查证/执行什么)' }),
   agent: Type.Optional(Type.String({
-    description: '子代理定义名(engine 装载 bundled-agents/<名> 的提示正文作为子代理人格/方法;缺省 = 通用子代理)',
+    description: '子代理定义名（可用名字与用途见系统提示 <zhishi-subagents> 段；缺省 = 通用子代理）',
   })),
   envId: Type.Optional(Type.String({ description: '目标环境 id;缺省 = 当前绑定环境。必须是父 loop 已绑定的环境。' })),
 });
@@ -227,7 +227,11 @@ export function createDelegateTaskTool(
     description:
       '把一个具体、自包含的子任务派发给子代理在同一研究环境内执行(独立会话),' +
       '子代理可用 env_exec 查证环境事实,完成后把结论摘要返回给你。' +
-      '适合需要多步环境操作的独立子目标;子代理不能再派发子任务。',
+      '适合需要多步环境操作的独立子目标;子代理不能再派发子任务。' +
+      // 1.6.7 R1：场景语义 + 名册指引（轨迹裁决：描述空泛 + 名册不可见 =
+      // 零调用的根因）。长跑 fuzz/批量崩溃分拣这类上下文易爆的子目标必须委派。
+      '可委派的子代理名册（名字+用途）见系统提示 <zhishi-subagents> 段；' +
+      '小时级 fuzz 长跑、批量崩溃分拣、独立假设检验这类子目标应委派而非在主会话手搓。',
     parameters: delegateTaskParameters,
     execute: async (_toolCallId, params, signal): Promise<AgentToolResult<DelegateTaskDetails>> => {
       if (params.envId && params.envId !== options.env.id) {

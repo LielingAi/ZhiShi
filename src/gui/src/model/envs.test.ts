@@ -36,6 +36,18 @@ describe('groupSidebar', () => {
     const groups = groupSidebar([], [{ id: 'c1', name: '容器一', status: 'running', driver: 'docker' }], []);
     expect(groups[0].items[0].label).toBe('容器一');
   });
+
+  it('1.6.7 #1：命中登记条目时别名压住引擎实例名（改名后运行中行显示别名）', () => {
+    const groups = groupSidebar(
+      [{ id: 'dev-box', name: '旧靶机', kind: 'docker' }],
+      [{ id: 'dev-box', name: 'zhishi-env-pwn-1', status: 'running', driver: 'docker' }],
+      [],
+    );
+    expect(groups[0].items[0].label).toBe('旧靶机');
+    // 未命中登记条目 → 保持引擎名兜底
+    const orphan = groupSidebar([], [{ id: 'c9', name: 'raw-name', status: 'running', driver: 'docker' }], []);
+    expect(orphan[0].items[0].label).toBe('raw-name');
+  });
 });
 
 describe('startable（1.3.1 ① 启动按钮）', () => {

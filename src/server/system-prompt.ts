@@ -22,6 +22,7 @@ import {
   buildResearchMemorySection,
   buildSecurityCapabilitiesSection,
   buildSecurityKernelSection,
+  buildSubagentCatalogSection,
   type SecurityCapabilitiesData,
 } from './system-prompt-security';
 import { renderArchiveForInjection, type ArchiveSnapshot } from './loop/archive';
@@ -227,6 +228,13 @@ export interface SystemPromptOptions {
    * 零注入（邻域为空静默）。
    */
   expertKnowledge?: string;
+  /**
+   * 1.6.7 R1 — 可委派子代理编目（名字 + 截断描述），渲染 <zhishi-subagents>
+   * 段。调用方（chat-engine）只在锚定环境时传（delegate_task 仅此时注册），
+   * 清单已按会话域收窄（与执行栈可派发清单同一事实源）；空/undefined =
+   * 零注入。1.6.7 轨迹裁决：名册不进 prompt 是 delegate_task 零调用的根因。
+   */
+  subagents?: { name: string; description: string }[];
 }
 
 export function buildSystemPromptAppend(scenario: InteractionScenario, options?: SystemPromptOptions): string {
@@ -299,6 +307,9 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
     // 1.5.1 专家知识邻域投影（唯一注入路径）——harness 确定性检索注入，
     // 预渲染段非空才追加（零注入语义；透明标注列 #id）。
     if (options?.expertKnowledge) parts.push(options.expertKnowledge);
+    // 1.6.7 R1 子代理编目（可委派名册进决策视野；调用方只在锚定环境时传）
+    const subagentSection = buildSubagentCatalogSection(options?.subagents);
+    if (subagentSection) parts.push(subagentSection);
   }
 
   // L3: Browser storage state save instruction (when Playwright with --caps=storage is active)

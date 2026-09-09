@@ -198,6 +198,7 @@ import {
   injectPiDecision,
   invokePiSession,
   isPiEngine,
+  noteBgFinishedForTests,
   PI_NO_PROVIDER_ERROR,
   resetPiChat,
   resolveLoopEngine,
@@ -1514,5 +1515,45 @@ describe('1.5.4 回归(A1-2 档案锚 / A2-1 校准口径 / A2-2 注入锚)', ()
     expect(r.error).toBeUndefined();
     lastArg = collectExpertInjectionSpy.mock.calls.at(-1)![0] as { lastUserText: string };
     expect(lastArg.lastUserText).toContain('beta-anchor');
+  });
+});
+
+describe('1.6.7 R2：bg 完成回注 loop（消灭 sleep 轮询）', () => {
+  it('待机期间完成 → 下一 turn 的 prompt 带完成通知（grounding 通道，用户文本不丢）', async () => {
+    await sendPiChatMessage({ text: 'one' });
+    await waitTurnSettled();
+    noteBgFinishedForTests('buildd8b', 'exited', 0);
+    await sendPiChatMessage({ text: 'two' });
+    await waitTurnSettled();
+    const opts = runLoopMock.mock.calls[1][0] as { prompt?: string };
+    expect(opts.prompt).toContain('[后台进程完成]');
+    expect(opts.prompt).toContain('buildd8b');
+    expect(opts.prompt).toContain('exitCode=0');
+    expect(opts.prompt).toContain('two');
+  });
+
+  it('turn 中途完成 → getSteeringMessages 注入（含 wire replay 纪律）', async () => {
+    runLoopMock.mockImplementation(async function* (opts: { getSteeringMessages?: () => Promise<AgentMessage[]> }) {
+      // 模拟 turn 运行中 bg 进程结束
+      noteBgFinishedForTests('buildd8h', 'exited', 1);
+      const msgs = (await opts.getSteeringMessages?.()) ?? [];
+      expect(msgs.some((m) => 'content' in m && typeof m.content === 'string' && m.content.includes('buildd8h'))).toBe(true);
+      for (const e of doneEvents('done-text')) yield e;
+    });
+    broadcastMock.mockClear();
+    await sendPiChatMessage({ text: 'go' });
+    await waitTurnSettled();
+    // B6 纪律：注入的通知同步 wire replay（不进 wire 会造成 rewind 序数错位）
+    expect(broadcastMock.mock.calls.some((c) => c[0] === 'chat:message-replay' &&
+      JSON.stringify(c[1]).includes('buildd8h'))).toBe(true);
+  });
+
+  it('reset 清空缓冲（通知不跨会话残留）', async () => {
+    noteBgFinishedForTests('oldbuild', 'exited', 0);
+    resetPiChat();
+    await sendPiChatMessage({ text: 'fresh' });
+    await waitTurnSettled();
+    const opts = runLoopMock.mock.calls[0][0] as { prompt?: string };
+    expect(opts.prompt ?? '').not.toContain('oldbuild');
   });
 });

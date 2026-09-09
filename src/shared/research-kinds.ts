@@ -10,8 +10,10 @@
  * server/memory/store.ts 从本模块导入并 re-export，既有引用路径不变。
  */
 
-/** 七研究域 + ctf 补充域（D30 实战定位：实战为主，CTF 是补充——任何环境按需适配）。 */
-export const RESEARCH_TASK_KINDS = ['binary', 'pentest', 'ai-security', 'redteam', 'malware', 'whitebox', 'intel', 'ctf'] as const;
+/** 七研究域 + fuzz（1.6.7 R5：挖掘任务可观测性——「复现成功 15 次」与
+ *  「挖掘 0 产出」此前同桶 binary，不可区分）+ ctf 补充域（D30 实战定位：
+ *  实战为主，CTF 是补充——任何环境按需适配）。 */
+export const RESEARCH_TASK_KINDS = ['binary', 'pentest', 'ai-security', 'redteam', 'malware', 'whitebox', 'intel', 'fuzz', 'ctf'] as const;
 export type ResearchTaskKind = (typeof RESEARCH_TASK_KINDS)[number];
 
 export const RESEARCH_OUTCOMES = ['success', 'fail', 'stuck'] as const;

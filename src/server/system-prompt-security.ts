@@ -57,6 +57,7 @@ import {
   type ResearchDistilledMemory,
 } from './memory/distill-research';
 import { isResearchTaskKind, keyedDistilledEntryJudgedWrong, type MemoryKind, type ResearchTaskKind } from './memory/store';
+import { RESEARCH_TASK_KINDS } from '../shared/research-kinds';
 import { loadDomainManifests, type DomainManifest } from './domains/manifest';
 import { getZhiShiDataDir } from './utils/app-dirs';
 import { loadConfig } from './utils/admin-config';
@@ -69,6 +70,10 @@ export const NATIVE_CODE_MAX_CHARS = 1000;
 // 1.2.6 抬顶 500→640：500 顶下模板正文(496)超出「硬顶−截断标记」预算，
 // 段落尾部被静默截掉收尾标签——硬顶沦为模板自己的截断器。640 给足余量。
 export const RESEARCH_LOG_MAX_CHARS = 640;
+/** 1.6.7 R1：子代理编目段硬顶（5 个内置代理 × 截断描述 + 头部指引）。 */
+export const SUBAGENT_CATALOG_MAX_CHARS = 1600;
+/** 编目里单个代理描述的截断长度（frontmatter description 的前段已含「何时用」）。 */
+export const SUBAGENT_CATALOG_DESC_MAX_CHARS = 160;
 /**
  * 研究记忆段硬顶 = 蒸馏弧的注入预算（distill-research.ts，单一事实源）。
  * 1.2.4 修预算倒挂：蒸馏三节额度按此预算三等分推导，蒸馏没截断的产物
@@ -431,12 +436,16 @@ ${ls.join('\n')}
 
 // ===== 段 4：<zhishi-research-log>（静态，D1 研究成败信号教学） =====
 
-const TMPL_RESEARCH_LOG = `<zhishi-research-log>
+// 1.6.7 R5：task_kind 清单从常量渲染（此前硬编码漏 whitebox——陈旧；fuzz 入列
+// 后双处同步的坑拔除）。
+function renderResearchLogTemplate(): string {
+  return `<zhishi-research-log>
 研究成败记录（蒸馏原料）：拿到 flag / 确认根因 / fuzz 出独有崩溃 / 研判完成 / 放弃时各落一条。**agent 用 loop 的 research_log 工具落库**——别在环境里跑 zhishi CLI（够不到）。
-task_kind：binary / pentest / ai-security / redteam / malware / intel / ctf；outcome：success / fail / stuck；bug_class（可空）：stack-overflow / heap-overflow / uaf / double-free / oob-read / oob-write / null-deref / int-overflow / format-string / type-confusion / other；summary 一句话。
+task_kind：${RESEARCH_TASK_KINDS.join(' / ')}（fuzz = 挖掘类任务：fuzz 长跑/变体验证，与 binary 的复现类分开统计）；outcome：success / fail / stuck；bug_class（可空）：stack-overflow / heap-overflow / uaf / double-free / oob-read / oob-write / null-deref / int-overflow / format-string / type-confusion / other；summary 一句话。
 引用口径：研究事件编号写作 E#N（如 E#6）——与档案实体（H#/V#/C#/Q#）和其他编号区分，别混用。
 人侧查询/补记：zhishi research list / zhishi research log。
 </zhishi-research-log>`;
+}
 
 // ===== 静态段出口（套硬顶；模板在上限内由单测断言） =====
 
@@ -449,7 +458,37 @@ export function buildNativeCodeSection(): string {
 }
 
 export function buildResearchLogSection(): string {
-  return hardCapLines(TMPL_RESEARCH_LOG, RESEARCH_LOG_MAX_CHARS);
+  return hardCapLines(renderResearchLogTemplate(), RESEARCH_LOG_MAX_CHARS);
+}
+
+// ===== 段 4b：<zhishi-subagents>（动态，1.6.7 R1 子代理可发现性） =====
+
+/**
+ * 组装 `<zhishi-subagents>` 段——可委派子代理编目（delegate_task 的决策
+ * 视野）。1.6.7 轨迹裁决：17 个实机会话 delegate_task 零调用，根因是模型
+ * 在决策时刻看不到名册（工具描述无场景语义、agent 参数不枚举名字）——
+ * 「零委派」是信息缺失下的理性结果，本段把名册+用途+何时委派写进 prompt。
+ *
+ * 零注入：空清单 → ''。每条描述截断（frontmatter description 前段已含
+ * 「何时用」语义）。调用方传按域收窄后的清单（filterAgentsByDomain——与
+ * buildTurnStack 的可派发清单同一事实源，prompt 说一套能做一套）。
+ */
+export function buildSubagentCatalogSection(
+  agents: readonly { name: string; description: string }[] | undefined,
+): string {
+  if (!agents || agents.length === 0) return '';
+  const lines = [
+    '<zhishi-subagents>',
+    '可委派子代理（delegate_task 的 agent 参数点名；子代理在独立会话执行、结论摘要回注——批量/长跑/上下文易爆的子目标该委派，别在主会话手搓）：',
+  ];
+  for (const a of agents) {
+    const desc = a.description.length > SUBAGENT_CATALOG_DESC_MAX_CHARS
+      ? `${a.description.slice(0, SUBAGENT_CATALOG_DESC_MAX_CHARS - 1)}…`
+      : a.description;
+    lines.push(`- ${a.name} — ${desc}`);
+  }
+  lines.push('</zhishi-subagents>');
+  return hardCapLines(lines.join('\n'), SUBAGENT_CATALOG_MAX_CHARS);
 }
 
 // ===== 段 5：<zhishi-research-memory>（动态，D4 研究记忆反喂） =====

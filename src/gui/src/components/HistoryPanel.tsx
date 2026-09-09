@@ -195,7 +195,8 @@ export function HistoryPanel(): React.JSX.Element {
       setViewer({ status: 'error', error: '会话不存在（可能刚被删除）' });
       return;
     }
-    if (!row.loopSessionId) {
+    const wireLoopId = row.loopSessionId ?? row.archivedLoopSessionId;
+    if (!wireLoopId) {
       setViewer({
         status: 'error',
         error: '该会话没有 loop-session 绑定（旧会话 / 从未落盘），无法 wire 回看',
@@ -207,7 +208,7 @@ export function HistoryPanel(): React.JSX.Element {
       setViewer({ status: 'error', error: '未连接 sidecar' });
       return;
     }
-    const loopId = row.loopSessionId; // 闭包内稳定引用（TS 收窄不进闭包）
+    const loopId = wireLoopId; // 闭包内稳定引用（TS 收窄不进闭包）；1.6.7 #2：reset 解绑行回落 archivedLoopSessionId 只读回看
     let cancelled = false;
     setViewer({ status: 'loading' });
     void (async () => {
@@ -437,7 +438,7 @@ function SessionRow(p: SessionRowProps): React.JSX.Element {
     <div
       className={`history-row ${p.selected ? 'sel' : ''}`}
       onClick={p.onSelect}
-      title={`${r.lastMessagePreview ?? ''}${r.loopSessionId ? '' : '\n（无 loop 绑定，不可 wire 回看）'}`}
+      title={`${r.lastMessagePreview ?? ''}${(r.loopSessionId ?? r.archivedLoopSessionId) ? '' : '\n（无 loop 绑定，不可 wire 回看）'}`}
     >
       {r.pinned === true && <span className="hr-pin" title="已置顶">📌</span>}
       <div className="hr-mid">
