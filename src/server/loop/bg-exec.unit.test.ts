@@ -42,6 +42,13 @@ function scriptedExec(results: Array<string | EnvExecProcessResult>): { exec: En
   return { exec, calls };
 }
 
+/** 1.6.9 #2：剥远端超时杀包装（timeout … bash -c "$(echo <b64>|base64 -d)"）
+ *  还原原命令——calls 内容断言一律先剥再断。 */
+function unwrapRemote(cmd: string): string {
+  const m = /\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d\)/.exec(cmd);
+  return m ? Buffer.from(m[1], 'base64').toString('utf8') : cmd;
+}
+
 describe('validateTag', () => {
   it('白名单 [A-Za-z0-9_-]{1,64};注入/路径/空 → 拒绝', () => {
     expect(validateTag('fuzz-1')).toBeUndefined();
@@ -161,8 +168,8 @@ describe('编排(注入 exec,薄包)', () => {
     const r = await envBgStart(DOCKER, 'seq 1 100', 'run1', { exec });
     expect(r).toEqual({ ok: true, tag: 'run1', pid: 1234, logPath: `${BG_DIR}/run1.log` });
     expect(calls).toHaveLength(2); // poll + start
-    expect(calls[0].slice(-1)[0]).toContain('ps -p');
-    expect(calls[1].slice(-1)[0]).toContain('base64');
+    expect(unwrapRemote(calls[0].slice(-1)[0])).toContain('ps -p');
+    expect(unwrapRemote(calls[1].slice(-1)[0])).toContain('base64');
   });
 
   it('start:tag 已被运行中进程占用 → 拒绝', async () => {
@@ -194,7 +201,7 @@ describe('编排(注入 exec,薄包)', () => {
       const r = await envBgPoll(DOCKER, 't', { exec, knownPid: 77 });
       expect(r).toEqual({ ok: true, tag: 't', status: 'running', pid: 77 });
       expect(calls).toHaveLength(1);
-      expect(calls[0].slice(-1)[0]).toContain('kill -0 $p');
+      expect(unwrapRemote(calls[0].slice(-1)[0])).toContain('kill -0 $p');
     });
 
     it('死:kill -0 不通过 + .exit 有码 → exited 带退出码', async () => {
@@ -222,7 +229,7 @@ describe('编排(注入 exec,薄包)', () => {
       const { exec, calls } = scriptedExec(['running:9']);
       const r = await envBgPoll(DOCKER, 't', { exec });
       expect(r).toEqual({ ok: true, tag: 't', status: 'running', pid: 9 });
-      expect(calls[0].slice(-1)[0]).toContain('ps -p');
+      expect(unwrapRemote(calls[0].slice(-1)[0])).toContain('ps -p');
     });
   });
 
@@ -232,7 +239,7 @@ describe('编排(注入 exec,薄包)', () => {
       expect(await envBgReap(DOCKER, 't', 42, { exec })).toEqual({ ok: true, outcome: 'reaped:42' });
       const { exec: exec2, calls } = scriptedExec(['pid-mismatch']);
       expect(await envBgReap(DOCKER, 't', 42, { exec: exec2 })).toEqual({ ok: true, outcome: 'pid-mismatch' });
-      expect(calls[0].slice(-1)[0]).toContain('kill -TERM $p');
+      expect(unwrapRemote(calls[0].slice(-1)[0])).toContain('kill -TERM $p');
     });
 
     it('通道失败 → ok:false(编排层保守保留登记)', async () => {

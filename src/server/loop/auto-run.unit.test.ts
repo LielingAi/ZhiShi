@@ -1220,12 +1220,17 @@ describe('docker checkpoint task.md(1.6.3 #7)', () => {
     ...overrides,
   });
 
-  /** 从注入 exec 收到的 argv 里取 bash -lc 的命令体,解出 base64 载荷。 */
+  /** 从注入 exec 收到的 argv 里取 bash -lc 的命令体,解出 base64 载荷。
+   *  1.6.9 #2：命令体先剥远端超时杀包装（timeout … bash -c "$(echo b64|base64 -d)"）
+   *  再匹配 printf 形态。 */
   const decodeWrittenContent = (argv: string[]): string => {
     const cmdIdx = argv.indexOf('-lc');
     expect(cmdIdx).toBeGreaterThan(-1);
-    const m = /^printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \/workspace\/task\.md$/.exec(argv[cmdIdx + 1]);
-    expect(m, `命令形态不符:${argv[cmdIdx + 1]}`).not.toBeNull();
+    const raw = argv[cmdIdx + 1];
+    const unwrapped = /\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d\)/.exec(raw);
+    const body = unwrapped ? Buffer.from(unwrapped[1], 'base64').toString('utf-8') : raw;
+    const m = /^printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \/workspace\/task\.md$/.exec(body);
+    expect(m, `命令形态不符:${body}`).not.toBeNull();
     return Buffer.from(m![1], 'base64').toString('utf-8');
   };
 

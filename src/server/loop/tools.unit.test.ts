@@ -36,6 +36,12 @@ const VM_ENTRY: EnvironmentEntry = {
   createdAt: '2026-01-01T00:00:00Z',
 };
 
+/** 1.6.9 #2：剥远端超时杀包装还原原命令（calls 内容断言先剥再断）。 */
+function unwrapRemote(cmd: string): string {
+  const m = /\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d\)/.exec(cmd);
+  return m ? Buffer.from(m[1], 'base64').toString('utf8') : cmd;
+}
+
 function okExec(stdout: string, exitCode = 0): { exec: EnvExec; commands: string[] } {
   const commands: string[] = [];
   return {
@@ -59,7 +65,8 @@ describe('createEnvExecTool', () => {
     const { exec, commands } = okExec('7.0.0-28-generic\n');
     const tool = createEnvExecTool(VM_ENTRY, { exec });
     const result = await tool.execute('tc1', { command: 'uname -r' });
-    expect(commands).toEqual(['uname -r']);
+    // 1.6.9 #2：通道收到的是远端超时杀包装——剥壳后断言原命令
+    expect(commands.map(unwrapRemote)).toEqual(['uname -r']);
     expect(result.content[0].type).toBe('text');
     const text = (result.content[0] as { text: string }).text;
     expect(text).toContain('exit=0');
@@ -67,7 +74,7 @@ describe('createEnvExecTool', () => {
     expect(result.details).toEqual({ exitCode: 0, truncated: false });
   });
 
-  it('timeoutMs 参数透传到通道', async () => {
+  it('timeoutMs 参数透传到通道（远端按预算杀 + 本地留 10s 余量，1.6.9 #2）', async () => {
     const timeouts: number[] = [];
     const exec: EnvExec = async (_argv, timeoutMs) => {
       timeouts.push(timeoutMs);
@@ -75,7 +82,7 @@ describe('createEnvExecTool', () => {
     };
     const tool = createEnvExecTool(VM_ENTRY, { exec });
     await tool.execute('tc2', { command: 'id', timeoutMs: 5000 });
-    expect(timeouts).toEqual([5000]);
+    expect(timeouts).toEqual([15_000]);
   });
 
   it('远端非零退出不当错误：exitCode 进 details 与文本', async () => {
@@ -202,7 +209,7 @@ describe('createEnvBgTool', () => {
         const { exec, commands } = scriptedExec(['running:4242']);
         const tool = createEnvBgTool(VM_ENTRY, { exec, registry: h.registry, onLifecycle: h.onLifecycle });
         const r = await tool.execute('p2', { action: 'poll', tag: 'fz' } as never);
-        expect(commands[0]).toContain('kill -0 $p');
+        expect(unwrapRemote(commands[0])).toContain('kill -0 $p');
         expect((r.content[0] as { text: string }).text).toContain('status=running');
         expect(h.registry.get('fz')).toBeDefined();
         expect(h.lifecycle).toEqual([]);

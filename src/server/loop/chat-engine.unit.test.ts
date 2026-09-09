@@ -1592,3 +1592,48 @@ describe('1.6.8 M1：mission（任务形态）', () => {
     expect(opts.prompt ?? '').not.toContain('任务形态');
   });
 });
+
+describe('1.6.9 #1：turn 空产出检测与自动续跑（thinking 烧穿假死的对策）', () => {
+  it('空 turn（零可见文本零工具调用）→ 自动续跑一轮（合成消息可见），续跑出内容即停', async () => {
+    let call = 0;
+    runLoopMock.mockImplementation(async function* () {
+      call += 1;
+      if (call === 1) {
+        // 空产出 turn：无 text-delta、无 tool-call，done 直接收尾
+        yield { type: 'done', messages: [userMsg('q'), assistantMsg('')] } as never;
+      } else {
+        for (const e of doneEvents('继续后的产出')) yield e;
+      }
+    });
+    await sendPiChatMessage({ text: '干活' });
+    await waitTurnSettled();
+    expect(call).toBe(2);
+    const cont = runLoopMock.mock.calls[1][0] as { prompt?: string };
+    expect(cont.prompt).toContain('上一回合没有任何可见产出');
+    // 续跑是合成 user 消息（上屏可见，诚实不伪装）
+    expect(broadcastMock.mock.calls.some((c) => c[0] === 'chat:message-replay' &&
+      JSON.stringify(c[1]).includes('没有任何可见产出'))).toBe(true);
+  });
+
+  it('连续空 turn 达上限（2 次续跑）→ 停止 + 明确报错上屏（不静默假死）', async () => {
+    runLoopMock.mockImplementation(async function* () {
+      yield { type: 'done', messages: [userMsg('q'), assistantMsg('')] } as never;
+    });
+    await sendPiChatMessage({ text: '干活' });
+    await waitTurnSettled();
+    // 原始 1 + 续跑 2 = 3 次；不再继续
+    expect(runLoopMock.mock.calls.length).toBe(3);
+    expect(broadcastMock.mock.calls.some((c) => c[0] === 'chat:message-error' &&
+      String(c[1]).includes('已停止自动续跑'))).toBe(true);
+  });
+
+  it('中断/失败的 turn 不算空产出（不续跑）', async () => {
+    runLoopMock.mockImplementation(async function* () {
+      yield { type: 'error', error: 'LLM call error' } as never;
+      yield { type: 'done', messages: [userMsg('q'), assistantMsg('')] } as never;
+    });
+    await sendPiChatMessage({ text: '干活' });
+    await waitTurnSettled();
+    expect(runLoopMock.mock.calls.length).toBe(1);
+  });
+});

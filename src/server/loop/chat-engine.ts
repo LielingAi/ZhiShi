@@ -311,6 +311,12 @@ const PI_SYSTEM_PROMPT =
  */
 const FORCE_COMPACTION_RATIO = 0.25;
 
+/** 1.6.9 #1：空产出 turn 的自动续跑上限（连续 2 次仍空 → 停止并升级）。 */
+export const EMPTY_TURN_CONTINUE_LIMIT = 2;
+/** 续跑提示文本（合成 user 消息——气泡可见，诚实不伪装）。 */
+export const EMPTY_TURN_CONTINUE_TEXT =
+  '[系统] 上一回合没有任何可见产出（输出可能全耗在思考或被截断）。请继续未完成的工作；若已完成，请明确给出结论总结。';
+
 /** 基座段:静态身份 + 当前锚定环境的明确信息(env id/kind/address)。 */
 function buildBaseSystemPrompt(env: EnvironmentEntry | null): string {
   if (!env) {
@@ -445,6 +451,9 @@ class ChatEngine {
   /** 1.6.8 M1：mission 变更待注入（idle 时改形态，下轮起跑进 grounding；
    *  busy 时走 steering 队列当轮生效——applyMissionChange）。 */
   private pendingMissionNotes: string[] = [];
+  /** 1.6.9 #1：连续空产出 turn 计数（任何有内容的 turn 清零）与续跑标记。 */
+  private emptyTurnStreak = 0;
+  private pendingEmptyContinuation = false;
   /** SessionStore 里绑定的会话元数据 id(其 loopSessionId 字段 === sessionId)。 */
   private boundSessionMetaId: string | null = null;
   /** 1.1.6 #4 — 引擎当前所在的环境分线键(随 restore/switchEnvSession 更新;
@@ -1005,8 +1014,16 @@ class ChatEngine {
         }
         // W1 — turn done(idle):FIFO 有待接项时不发 idle,紧接的 promote
         // 会立刻发 running,避免状态行闪变。
-        if (this.queue.length === 0) this.broadcastChatStatus();
-        this.promotePiQueue();
+        // 1.6.9 #1：空产出 turn 的自动续跑优先于队列推进——它是本 turn 的
+        // 延续（同一逻辑回合），不该排在 FIFO 之后。
+        if (this.queue.length === 0 && !this.pendingEmptyContinuation) this.broadcastChatStatus();
+        if (this.pendingEmptyContinuation) {
+          this.pendingEmptyContinuation = false;
+          console.warn(`[pi-engine] turn 空产出（连续 ${this.emptyTurnStreak} 次）——自动续跑一轮`);
+          this.startResolvedTurn({ text: EMPTY_TURN_CONTINUE_TEXT }, '');
+        } else {
+          this.promotePiQueue();
+        }
       });
   }
 
@@ -1261,6 +1278,10 @@ class ChatEngine {
     let lastUsage: { input: number; output: number; cacheRead: number; cacheWrite: number } | null = null;
     let doneMessages: AgentMessage[] = [];
     let failed: string | null = null;
+    // 1.6.9 #1：turn 空产出检测的计数（thinking 烧穿 output 预算 = 零可见
+    // 文本 + 零工具调用的假死形态，实机事故 mtste950 9.8h）。
+    let toolCallCount = 0;
+    let hitOutputLimit = false;
 
     // 1.2.7(§四) 溢出兜底:pi agentLoop 无内建压缩重试——done 时按
     // isContextOverflow 判定(provider 错误正则/静默溢出/length 截断),命中
@@ -1315,6 +1336,7 @@ class ChatEngine {
         reasoning: resolution.model.reasoning ? 'low' : undefined,
       })) {
         if (event.type === 'text-delta') fullText += event.delta;
+        if (event.type === 'tool-call') toolCallCount += 1;
         if (event.type === 'error') failed = event.error;
         if (event.type === 'done') {
           doneMessages = event.messages;
@@ -1323,6 +1345,8 @@ class ChatEngine {
             const u = lastAssistant.usage;
             lastUsage = { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite };
           }
+          // stopReason=length = output 预算截断（thinking 烧穿的直接证据）
+          if (lastAssistant && (lastAssistant as { stopReason?: string }).stopReason === 'length') hitOutputLimit = true;
           willRetry = !overflowRetried && !!failed && !abort.signal.aborted
             && !!lastAssistant && isContextOverflow(lastAssistant, contextWindow);
         }
@@ -1399,6 +1423,18 @@ class ChatEngine {
 
     if (failed && !abort.signal.aborted) {
       console.error(`[pi-engine] turn 失败: ${failed}`);
+    }
+
+    // 1.6.9 #1：turn 空产出检测与自动续跑——零可见文本 + 零工具调用且非失败
+    // 非中断（thinking 烧穿 output 预算的假死形态：实机事故 9.8h 假死）。
+    // 自动续跑上限 2 连，超出停止并明确报错上屏（不再静默）。
+    const emptyTurn = fullText.trim() === '' && toolCallCount === 0 && !failed && !abort.signal.aborted;
+    this.emptyTurnStreak = emptyTurn ? this.emptyTurnStreak + 1 : 0;
+    this.pendingEmptyContinuation = emptyTurn && this.emptyTurnStreak <= EMPTY_TURN_CONTINUE_LIMIT;
+    if (emptyTurn && !this.pendingEmptyContinuation) {
+      const limitNote = hitOutputLimit ? '（stopReason=length：output 预算截断，thinking 烧穿的直接证据）' : '';
+      broadcast('chat:message-error',
+        `连续 ${this.emptyTurnStreak} 回合无可见产出${limitNote}——已停止自动续跑；请换模型或降 thinking 档后重试`);
     }
   }
 
@@ -1827,6 +1863,8 @@ class ChatEngine {
     this.steering = [];
     this.pendingBgNotes = []; // 1.6.7 R2：reset 清场，bg 通知不跨会话残留
     this.pendingMissionNotes = []; // 1.6.8 M1：mission 通知同理
+    this.emptyTurnStreak = 0; // 1.6.9 #1：空产出计数清场
+    this.pendingEmptyContinuation = false;
     if (this.boundSessionMetaId) {
       const staleMetaId = this.boundSessionMetaId;
       // 1.6.7 #2：旧线 id 存 archivedLoopSessionId（历史面板只读回看用）——
