@@ -146,6 +146,8 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   //  queue:started);发射点全集与注册表的双向对账由
   //  sse-whitelist-crosscheck.unit.test.ts 钉死)
   'chat:session-title-changed': 'critical',
+  // 1.6.11：会话线任务形态变更（GUI 选择器/徽章即时刷新）
+  'chat:mission-changed': 'critical',
 });
 
 function resolvePriority(event: string): SseEventPriority {

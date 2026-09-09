@@ -192,6 +192,7 @@ import {
   envSwitchBlocker,
   getPiAgentState,
   getPiCurrentSessionRef,
+  getPiLineMission,
   getPiMessages,
   getPiQueueStatus,
   getPiSystemInitInfo,
@@ -207,6 +208,7 @@ import {
   rewindPiChat,
   forkPiChat,
   sendPiChatMessage,
+  setPiLineMission,
   stopPiChat,
   switchEnvSession,
   switchPiSession,
@@ -1635,5 +1637,38 @@ describe('1.6.9 #1：turn 空产出检测与自动续跑（thinking 烧穿假死
     await sendPiChatMessage({ text: '干活' });
     await waitTurnSettled();
     expect(runLoopMock.mock.calls.length).toBe(1);
+  });
+});
+
+describe('1.6.11：mission 线态（首条消息前可设——战役入口语义）', () => {
+  it('首条消息前 setLineMission → 首个 turn 的系统提示即带 <zhishi-mission>；绑定后落盘持久化', async () => {
+    broadcastMock.mockClear();
+    setPiLineMission('discover');
+    await sendPiChatMessage({ text: '挖 cJSON' });
+    await waitTurnSettled();
+    const opts = runLoopMock.mock.calls[0][0] as { systemPrompt?: string };
+    expect(opts.systemPrompt).toContain('<zhishi-mission>');
+    expect(opts.systemPrompt).toContain('挖掘');
+    // 绑定建立时落盘（ensureSessionBound → updateSessionMetadata 带 mission）
+    await vi.waitFor(() => {
+      expect(updateSessionMetadataMock.mock.calls.some(
+        (c) => (c[1] as { mission?: string }).mission === 'discover',
+      )).toBe(true);
+    });
+    // GUI 广播
+    expect(broadcastMock.mock.calls.some((c) => c[0] === 'chat:mission-changed' &&
+      JSON.stringify(c[1]).includes('discover'))).toBe(true);
+  });
+
+  it('getLineMission 读回；清除后零注入；reset 清线态', async () => {
+    expect(getPiLineMission()).toBeUndefined();
+    setPiLineMission('reproduce');
+    expect(getPiLineMission()).toBe('reproduce');
+    resetPiChat();
+    expect(getPiLineMission()).toBeUndefined();
+    await sendPiChatMessage({ text: 'x' });
+    await waitTurnSettled();
+    const opts = runLoopMock.mock.calls[0][0] as { systemPrompt?: string };
+    expect(opts.systemPrompt ?? '').not.toContain('<zhishi-mission>');
   });
 });

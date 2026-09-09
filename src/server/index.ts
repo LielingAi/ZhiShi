@@ -294,6 +294,8 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'campaign/list') return api.handleCampaignList(payload as Parameters<typeof api.handleCampaignList>[0]);
   if (route === 'campaign/stop') return await api.handleCampaignStop(payload as Parameters<typeof api.handleCampaignStop>[0]);
   if (route === 'campaign/resume') return await api.handleCampaignResume(payload as Parameters<typeof api.handleCampaignResume>[0]);
+  // 1.6.11 会话线任务形态读/设（首条消息前即可设——战役入口语义）
+  if (route === 'session/mission') return api.handleSessionMission(payload as Parameters<typeof api.handleSessionMission>[0]);
   if (route === 'auto-run/budget') return api.handleAutoRunBudget(payload as Parameters<typeof api.handleAutoRunBudget>[0]);
   if (route === 'auto-run/verdict') return api.handleAutoRunVerdict(payload as Parameters<typeof api.handleAutoRunVerdict>[0]);
   if (route === 'auto-run/list') return await api.handleAutoRunList(payload as Parameters<typeof api.handleAutoRunList>[0]);

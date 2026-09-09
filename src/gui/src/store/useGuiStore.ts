@@ -57,7 +57,7 @@ import {
   type WizardParams,
   type WizardSource,
 } from '../model/env-wizard';
-import { parseSessionRow, parseSessionRows, autoRunRowsOf, mergeAutoRunRows, applySessionTitleChange, type SessionMetaRow } from '../model/history';
+import { parseSessionRows, autoRunRowsOf, mergeAutoRunRows, applySessionTitleChange, type SessionMetaRow } from '../model/history';
 import { missionLabel } from '../model/mission';
 import {
   INPUT_HISTORY_LIMIT,
@@ -381,9 +381,9 @@ export interface GuiState {
   /** 1.3.4：清单拉取失败原因（非 null 时清单展示 error 态而非「暂无会话」）。 */
   historyError: string | null;
 
-  /** 1.6.8 M1：当前会话线的任务形态（sessionId = 绑定的 SessionStore 元 id；
-   *  null = 未连接/未绑定——选择器禁用态）。 */
-  mission: { sessionId: string; kind: string | null } | null;
+  /** 1.6.11：当前会话线的任务形态（session/mission 线态直读，无需会话绑定；
+   *  null = 未连接/未读——选择器禁用态仅看连接）。 */
+  mission: { kind: string | null } | null;
 
   /** 1.3.3 @ 补全：选中后替换输入框尾部 @token 的一次性信号。 */
   mentionApply: { replace: string; nonce: number } | null;
@@ -548,10 +548,10 @@ export interface GuiState {
   toggleSessionArchived(id: string): Promise<void>;
   deleteSessionRow(id: string): Promise<void>;
   resumeSession(id: string): Promise<void>;
-  /** 1.6.8 M1：chat:init 后锚定当前会话线的任务形态（environment/current
-   *  拿绑定 meta id → GET /sessions/:id 读 mission；未绑定 → null）。 */
+  /** 1.6.11：chat:init 后锚定当前会话线的任务形态（admin session/mission
+   *  线态直读——未绑定会话也可读，派任务前先定形态）。 */
   loadMission(): Promise<void>;
-  /** 1.6.8 M1：设定当前会话任务形态（PATCH /sessions/:id {mission}；null = 清除回无类型）。 */
+  /** 1.6.11：设定当前会话任务形态（session/mission {mission}；null = 清除回无类型）。 */
   setMission(kind: string | null): Promise<void>;
   esc(): void;
 }
@@ -805,9 +805,16 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
           // 1.4.4 研究档案：chat:init 重锚当前线的档案（SSE 不重放 archive
           // 事件——断线期间的变更由 archive/list 补回）。
           if (input.event === 'chat:init') void get().loadArchive();
-          // 1.6.8 M1：chat:init 重锚当前线的任务形态（environment/current
-          // 拿绑定 meta id——切换/重连/reset 后选择器与徽章跟着走）。
+          // 1.6.11：chat:init 重锚当前线的任务形态（session/mission 线态
+          // 直读——切换/重连/reset 后选择器与徽章跟着走）。
           if (input.event === 'chat:init') void get().loadMission();
+          // 1.6.11：chat:mission-changed——形态变更广播（setMission 回包之外
+          // 的来源：CLI/其他客户端），本地状态即时跟进，不等重连。
+          if (input.event === 'chat:mission-changed') {
+            const p = input.payload as { mission?: unknown } | null;
+            const m = p && typeof p.mission === 'string' ? p.mission : null;
+            set({ mission: { kind: m } });
+          }
           // 1.4.4 研究档案：archive:changed 整包快照（单槽设计——同一时刻
           // 只有一条活跃线写档案,直接覆盖;高亮指针若被纠正清空则复位）。
           if (input.event === 'archive:changed') {
@@ -2607,29 +2614,21 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     }
   },
 
-  // ── 1.6.8 M1：任务形态（mission）设定面 ─────────────────────────────
+  // ── 1.6.11：任务形态（mission）设定面（session/mission 线态直读/直设） ──
 
   async loadMission() {
     const c = client;
-    const state = get();
-    if (!c || !state.workspace) {
+    if (!c) {
       set({ mission: null });
       return;
     }
     try {
-      // 既有通道：environment/current 的 data.sessionId = 当前分线绑定的
-      // SessionStore 元 id（1.1.6 #4 additive 字段）；未绑定 → 无形态可设。
-      const cur = await api.fetchEnvironmentCurrent(c, state.workspace);
-      const sid = cur.success ? cur.data?.sessionId ?? null : null;
-      if (!sid) {
-        set({ mission: null });
-        return;
-      }
-      const res = await api.fetchSessionMeta(c, sid);
-      const row = res.success ? parseSessionRow(res.session) : null;
-      set({ mission: { sessionId: sid, kind: row?.mission ?? null } });
+      // 线态优先于 meta（服务端恢复/切线时已从 meta 回填）——未绑定会话
+      // 也可读，不再需要 environment/current 的绑定 meta id 绕行。
+      const res = await api.sessionMissionGet(c);
+      if (res.success) set({ mission: { kind: res.data?.mission ?? null } });
     } catch {
-      /* 形态读取失败不阻塞会话——选择器维持原值/禁用态 */
+      /* 形态读取失败不阻塞会话——选择器维持原值 */
     }
   },
 
@@ -2640,30 +2639,15 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       state.showToast('未连接 sidecar');
       return;
     }
-    const cur = state.mission;
-    if (!cur) {
-      state.showToast('任务形态：当前会话尚未绑定（先发一条消息建立会话线）');
-      return;
-    }
     try {
-      const res = await api.patchSessionMeta(c, cur.sessionId, { mission: kind });
+      const res = await api.sessionMissionSet(c, kind);
       if (!res.success) {
         state.showToast(`任务形态设置失败：${res.error ?? '未知错误'}`);
         return;
       }
-      const row = parseSessionRow(res.session);
-      const applied = row?.mission ?? kind;
-      set({ mission: { sessionId: cur.sessionId, kind: applied } });
-      // 历史清单已加载的行就地更新（不重拉，仿 renameSession 路径）。
-      set((s) =>
-        s.historySessions
-          ? {
-              historySessions: s.historySessions.map((r) =>
-                r.id === cur.sessionId ? { ...r, mission: applied ?? undefined } : r,
-              ),
-            }
-          : {},
-      );
+      // 线态即时生效（chat:mission-changed 广播同值到达时幂等覆盖）。
+      const applied = res.data?.mission ?? kind;
+      set({ mission: { kind: applied } });
       state.showToast(applied ? `✓ 任务形态：${missionLabel(applied)}` : '✓ 已清除任务形态');
     } catch (err) {
       state.showToast(`任务形态设置失败：${err instanceof Error ? err.message : String(err)}`);

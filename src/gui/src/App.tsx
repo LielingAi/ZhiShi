@@ -146,7 +146,7 @@ function Toolbar(): React.JSX.Element {
   const archive = useGuiStore((s) => s.archive);
   const setArchiveDrawerOpen = useGuiStore((s) => s.setArchiveDrawerOpen);
   const archiveBadge = archiveBadgeCount(archive);
-  // 1.6.8 M1：任务形态（挂会话线）——选择器设/清，徽章显当前形态（无类型不显）。
+  // 1.6.11：任务形态（挂会话线，线态直读/直设）——选择器设/清，徽章显当前形态（无类型不显）。
   const mission = useGuiStore((s) => s.mission);
   const setMission = useGuiStore((s) => s.setMission);
 
@@ -160,7 +160,8 @@ function Toolbar(): React.JSX.Element {
         <span className="ok">◈</span> {hostAnchorLabel(envKey)} ·{' '}
         {connectionState === 'live' ? '就绪' : '等待 sidecar'}
       </span>
-      {/* 1.6.8 M1：mission 徽章（无类型不显）+ 形态选择器（未绑定会话线时禁用） */}
+      {/* 1.6.11：mission 徽章（无类型不显）+ 形态选择器（连上 sidecar 即可
+          设——派任务前先定形态，不再等会话绑定） */}
       {mission?.kind && (
         <span className="seg mission-badge" title={`任务形态：${missionLabel(mission.kind)}（打法轴，挂会话线）`}>
           ⛳ {missionLabel(mission.kind)}
@@ -170,7 +171,7 @@ function Toolbar(): React.JSX.Element {
         className="btn small mission-select"
         title="任务形态（打法轴，挂会话线不挂环境；挖掘=战役形态入口；改动随系统提示注入后续 turn）"
         value={mission?.kind ?? ''}
-        disabled={!mission}
+        disabled={connectionState !== 'live'}
         onChange={(e) => void setMission(missionPatchValue(e.target.value))}
       >
         {MISSION_OPTIONS.map((o) => (
