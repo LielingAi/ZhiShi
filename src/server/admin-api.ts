@@ -57,6 +57,8 @@ import {
   verdictRequestOfRecord,
   type AutoRunStatus,
 } from './loop/auto-run';
+import { listCampaignRecords } from './loop/campaign';
+import { resumeCampaign, stopCampaign } from './loop/campaign-runtime';
 import { detectOsFamilyFromVmx, osFamilyOf } from './environment/os-family';
 import { bootstrapKeyForTarget, type KeyBootstrapTarget, type KeyBootstrapOutcome, type KeyBootstrapOptions } from './environment/key-bootstrap';
 
@@ -3141,6 +3143,28 @@ export async function handleAutoRunVerdict(payload: { id?: unknown; verdict?: un
     typeof payload.note === 'string' ? payload.note : undefined,
   );
   return result.success ? { success: true, data: result.data } : { success: false, error: result.error };
+}
+/** `campaign/list` — 战役记录列表（1.6.8 M2；时间倒序；可选 workspace 过滤）。 */
+export function handleCampaignList(payload: { workspace?: unknown }): AdminResponse {
+  const workspace = typeof payload.workspace === 'string' && payload.workspace.trim()
+    ? payload.workspace.trim()
+    : undefined;
+  const records = listCampaignRecords().filter((r) => !workspace || r.workspace === workspace);
+  return { success: true, data: { records } };
+}
+/** `campaign/stop` — 人终止战役。 */
+export async function handleCampaignStop(payload: { id?: unknown }): Promise<AdminResponse> {
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!id) return { success: false, error: 'Missing required argument: <id>' };
+  const result = await stopCampaign(id);
+  return result.ok ? { success: true, data: { id } } : { success: false, error: result.error };
+}
+/** `campaign/resume` — 暂停续命（墙钟预算耗尽后的 paused → running）。 */
+export async function handleCampaignResume(payload: { id?: unknown }): Promise<AdminResponse> {
+  const id = typeof payload.id === 'string' && payload.id.trim() ? payload.id.trim() : '';
+  if (!id) return { success: false, error: 'Missing required argument: <id>' };
+  const result = await resumeCampaign(id);
+  return result.ok ? { success: true, data: { id } } : { success: false, error: result.error };
 }
 /** `auto-run/list` — 记录列表（时间倒序；可选 workspace 过滤）。 */
 export async function handleAutoRunList(payload: { workspace?: unknown }): Promise<AdminResponse> {

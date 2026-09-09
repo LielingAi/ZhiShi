@@ -290,6 +290,10 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   // 1.4.1 auto loop agent（design auto-loop-design.md；runner 在 loop/auto-run.ts）
   if (route === 'auto-run/start') return await api.handleAutoRunStart(payload as Record<string, unknown>);
   if (route === 'auto-run/stop') return api.handleAutoRunStop(payload as Parameters<typeof api.handleAutoRunStop>[0]);
+  // 1.6.8 M2 战役端点（list/stop/resume——设计稿 §6 观察面）
+  if (route === 'campaign/list') return api.handleCampaignList(payload as Parameters<typeof api.handleCampaignList>[0]);
+  if (route === 'campaign/stop') return await api.handleCampaignStop(payload as Parameters<typeof api.handleCampaignStop>[0]);
+  if (route === 'campaign/resume') return await api.handleCampaignResume(payload as Parameters<typeof api.handleCampaignResume>[0]);
   if (route === 'auto-run/budget') return api.handleAutoRunBudget(payload as Parameters<typeof api.handleAutoRunBudget>[0]);
   if (route === 'auto-run/verdict') return api.handleAutoRunVerdict(payload as Parameters<typeof api.handleAutoRunVerdict>[0]);
   if (route === 'auto-run/list') return await api.handleAutoRunList(payload as Parameters<typeof api.handleAutoRunList>[0]);

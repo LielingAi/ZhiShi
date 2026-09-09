@@ -13,6 +13,7 @@ import { useGuiStore } from './store/useGuiStore';
 import { hostAnchorLabel } from './model/access-gate';
 import { isAutoRunActive } from './model/auto-run';
 import { archiveBadgeCount } from './model/archive';
+import { missionLabel, missionPatchValue, MISSION_OPTIONS } from './model/mission';
 import { EnvSidebar } from './components/EnvSidebar';
 import { Stream } from './components/Stream';
 import { Drawer } from './components/Drawer';
@@ -145,6 +146,9 @@ function Toolbar(): React.JSX.Element {
   const archive = useGuiStore((s) => s.archive);
   const setArchiveDrawerOpen = useGuiStore((s) => s.setArchiveDrawerOpen);
   const archiveBadge = archiveBadgeCount(archive);
+  // 1.6.8 M1：任务形态（挂会话线）——选择器设/清，徽章显当前形态（无类型不显）。
+  const mission = useGuiStore((s) => s.mission);
+  const setMission = useGuiStore((s) => s.setMission);
 
   // 1.3.2 ①：会话头部 pending 指示（决策模态收起后仍可点开重答）。
   const firstDecision = decisions[0] ?? null;
@@ -156,6 +160,25 @@ function Toolbar(): React.JSX.Element {
         <span className="ok">◈</span> {hostAnchorLabel(envKey)} ·{' '}
         {connectionState === 'live' ? '就绪' : '等待 sidecar'}
       </span>
+      {/* 1.6.8 M1：mission 徽章（无类型不显）+ 形态选择器（未绑定会话线时禁用） */}
+      {mission?.kind && (
+        <span className="seg mission-badge" title={`任务形态：${missionLabel(mission.kind)}（打法轴，挂会话线）`}>
+          ⛳ {missionLabel(mission.kind)}
+        </span>
+      )}
+      <select
+        className="btn small mission-select"
+        title="任务形态（打法轴，挂会话线不挂环境；挖掘=战役形态入口；改动随系统提示注入后续 turn）"
+        value={mission?.kind ?? ''}
+        disabled={!mission}
+        onChange={(e) => void setMission(missionPatchValue(e.target.value))}
+      >
+        {MISSION_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            形态：{o.label}
+          </option>
+        ))}
+      </select>
       <button
         className="btn small"
         title="历史会话（清单 / 只读回看 / 载回续跑）"

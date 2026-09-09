@@ -23,7 +23,8 @@ import { resolveLastRealUserMessagePreview, shrinkSessionMessagesForClient } fro
 
 import { getSessionId } from '../agent-session';
 
-import { forkPiChat, getPiMessages, switchPiSession } from '../loop/chat-engine';
+import { applyPiMissionChange, forkPiChat, getPiMessages, switchPiSession } from '../loop/chat-engine';
+import { isMissionKind, MISSION_KINDS } from '../../shared/mission';
 
 import type { SessionMetadata } from '../types/session';
 
@@ -462,6 +463,9 @@ export async function handlePatchSession(pathname: string, request: Request, jso
 
           providerEnvJson?: string | null;
 
+          /** 1.6.8 M1：任务形态（mission；null = 清除回无类型）。 */
+          mission?: string | null;
+
         }
 
 
@@ -548,6 +552,16 @@ export async function handlePatchSession(pathname: string, request: Request, jso
 
 
 
+        // 1.6.8 M1：mission（任务形态）——null 清除回无类型；值校验闭集。
+        if (payload.mission !== undefined) {
+          if (payload.mission !== null && !isMissionKind(payload.mission)) {
+            return jsonResponse({ success: false, error: `非法 mission "${payload.mission}"（允许：${MISSION_KINDS.join(' / ')}，null = 清除）` }, 400);
+          }
+          updates.mission = payload.mission === null ? undefined : payload.mission;
+        }
+
+
+
         // Snapshot fields: null → clear (undefined in stored JSON); value → set.
 
         // `undefined` in stored metadata is how the resolver recognizes "fall back to agent".
@@ -600,6 +614,12 @@ export async function handlePatchSession(pathname: string, request: Request, jso
 
           return jsonResponse({ success: false, error: 'Session not found.' }, 404);
 
+        }
+
+        // 1.6.8 M1：mission 变更联动引擎（活跃线 steering/下轮注入；其余线
+        // 只落盘，切线时逐 turn 读 meta 生效）。
+        if (payload.mission !== undefined) {
+          applyPiMissionChange(sessionId, payload.mission ?? undefined);
         }
 
 

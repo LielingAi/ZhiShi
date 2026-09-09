@@ -71,6 +71,8 @@ import type { ImagePayload } from '../../shared/types/image';
 import type { SystemInitInfo } from '../../shared/types/system';
 import { broadcast } from '../sse';
 import { envTagForEntry, findEnvironmentEntry, listEnvironments } from '../environment/registry';
+import { execInEnvironment } from './env-exec';
+import { maybeStartCampaign, type CampaignRuntimeDeps } from './campaign-runtime';
 import {
   getWorkspaceSelection,
   getWorkspaceSelectionRecord,
@@ -97,6 +99,7 @@ import {
   updateSessionMetadata,
 } from '../SessionStore';
 import type { SessionMetadata } from '../types/session';
+import { isMissionKind, MISSION_LABELS } from '../../shared/mission';
 import type { ProviderEnv } from '../agent-session';
 import { getInteractionScenario, setActiveSessionId } from '../agent-session';
 
@@ -439,6 +442,9 @@ class ChatEngine {
    *  注入。此前完成信号只 broadcast 到 GUI 不进 loop，逼出 agent 的 sleep 轮询
    *  （轨迹实证：单会话 47 次、约 40% 墙钟纯等）。*/
   private pendingBgNotes: Array<{ tag: string; status: string; exitCode?: number }> = [];
+  /** 1.6.8 M1：mission 变更待注入（idle 时改形态，下轮起跑进 grounding；
+   *  busy 时走 steering 队列当轮生效——applyMissionChange）。 */
+  private pendingMissionNotes: string[] = [];
   /** SessionStore 里绑定的会话元数据 id(其 loopSessionId 字段 === sessionId)。 */
   private boundSessionMetaId: string | null = null;
   /** 1.1.6 #4 — 引擎当前所在的环境分线键(随 restore/switchEnvSession 更新;
@@ -730,6 +736,13 @@ class ChatEngine {
         securityResearchDomain: domain,
         researchArchive,
         expertKnowledge,
+        // 1.6.8 M1：任务形态（mission）——逐 turn 从绑定 meta 读（改形态即
+        // 下轮生效，零状态陈旧面；meta 读取与档案/记忆同阶开销）。
+        mission: (() => {
+          if (!this.boundSessionMetaId) return undefined;
+          const m = getSessionMetadata(this.boundSessionMetaId)?.mission;
+          return isMissionKind(m) ? m : undefined;
+        })(),
         // 1.6.7 R1：子代理编目（可委派名册进决策视野）——只在锚定环境时注入
         // （delegate_task 仅锚定后注册）；与 buildTurnStack 的可派发清单同一
         // 事实源（filterAgentsByDomain + 同一 domain）。
@@ -780,7 +793,8 @@ class ChatEngine {
     // 并进 grounding（只进 prompt 不进用户气泡，与 @ 注入同语义）；turn 中途
     // 到达的由 getSteeringMessages 在下一跳 LLM 调用前注入（见该闭包）。
     const bgGrounding = this.drainBgNotes('grounding');
-    const effectiveGrounding = [bgGrounding, grounding].filter(Boolean).join('\n\n');
+    const missionNotes = this.pendingMissionNotes.splice(0, this.pendingMissionNotes.length).join('\n');
+    const effectiveGrounding = [bgGrounding, missionNotes, grounding].filter(Boolean).join('\n\n');
     // B3(1.2.6):turn 起跑即快照 sessionId,runPiTurn 收尾(续存/压缩标记/
     // 标题钩子/缺口埋点)一律用快照,不动态读 this.sessionId。
     // 快照语义:turn 运行中 this.sessionId 的唯一合法变更路径是「先 abort 本
@@ -828,6 +842,22 @@ class ChatEngine {
 
     // system-init(每会话一次,形状对齐 SDK 的 chat:system-init)。
     const env = resolveSessionEnv(this.agentDir);
+    // 1.6.8 M2：mission=挖掘的会话线起跑战役（唯一入口；注册表单实例闸幂等，
+    // 已有活跃战役则 no-op）。战役本体在 loop/campaign*.ts——引擎只负责触发，
+    // 介入回合走 invokePiSession（本线 headless）。
+    if (env) {
+      const missionNow = (() => {
+        if (!this.boundSessionMetaId) return undefined;
+        const m = getSessionMetadata(this.boundSessionMetaId)?.mission;
+        return isMissionKind(m) ? m : undefined;
+      })();
+      if (missionNow === 'discover') {
+        void maybeStartCampaign(
+          { workspace: this.agentDir, envId: env.id, loopSessionId: turnSessionId, goal: text },
+          this.productionCampaignDeps(),
+        ).catch((err) => console.warn('[pi-engine] 战役起跑失败:', err));
+      }
+    }
     // research_log 是 harness 原生能力(写自己的 research_events 库),与环境
     // 无关,始终注册;env_exec 只在锚定环境后存在(结构性边界);delegate_task
     // (W1)需要环境(子 loop 靠 env_exec 查证),同样只在锚定后注册。
@@ -1796,6 +1826,7 @@ class ChatEngine {
     }
     this.steering = [];
     this.pendingBgNotes = []; // 1.6.7 R2：reset 清场，bg 通知不跨会话残留
+    this.pendingMissionNotes = []; // 1.6.8 M1：mission 通知同理
     if (this.boundSessionMetaId) {
       const staleMetaId = this.boundSessionMetaId;
       // 1.6.7 #2：旧线 id 存 archivedLoopSessionId（历史面板只读回看用）——
@@ -1832,6 +1863,39 @@ class ChatEngine {
   /** 1.6.7 R2 测试钩子：等价于 env_bg onLifecycle finished 的缓冲写入。 */
   noteBgFinishedForTests(tag: string, status: string, exitCode?: number): void {
     this.pendingBgNotes.push({ tag, status, exitCode });
+  }
+
+  /**
+   * 1.6.8 M2：战役生产依赖装配（invokePiSession 在本模块——战役 runtime 不
+   * 反向 import 引擎，防环）。envExec 走 env-exec 统一分派；findEnv 读 config。
+   */
+  private productionCampaignDeps(): CampaignRuntimeDeps {
+    return {
+      findEnv: (envId) => findEnvironmentEntry(listEnvironments(loadConfig()), envId) ?? null,
+      envExec: (entry, command, timeoutMs) => execInEnvironment(entry, command, { timeoutMs }),
+      invokeRound: async ({ text, loopSessionId }) => {
+        const r = await this.invokePiSession({ text }, { loopSessionId });
+        return { error: r.error };
+      },
+    };
+  }
+
+  /**
+   * 1.6.8 M1：PATCH mission 的引擎联动——只有活跃绑定线注入（别的会话线
+   * 只落盘，切过去时逐 turn 读 meta 自然生效）。busy → steering 队列当轮
+   * 生效；idle → 待注入缓冲，下轮起跑进 grounding。
+   */
+  applyMissionChange(sessionMetaId: string, mission: string | undefined): void {
+    if (sessionMetaId !== this.boundSessionMetaId) return;
+    const label = mission && isMissionKind(mission) ? MISSION_LABELS[mission] : '无类型';
+    const note = `[系统] 本会话任务形态已设为「${label}」——后续工作按该形态打法执行（系统提示 <zhishi-mission> 段可见细节）。`;
+    if (this.busy) {
+      const queueId = randomUUID();
+      this.steering.push({ queueId, input: { text: note }, grounding: '' });
+      broadcast('chat:steering-added', { queueId, messageText: note.slice(0, 100) });
+    } else {
+      this.pendingMissionNotes.push(note);
+    }
   }
 
   /**
@@ -1951,6 +2015,11 @@ export function getPiSystemInitInfo(): SystemInitInfo | null {
 /** 1.6.7 R2 测试钩子（等价 env_bg 完成事件的缓冲写入）。 */
 export function noteBgFinishedForTests(tag: string, status: string, exitCode?: number): void {
   defaultEngine.noteBgFinishedForTests(tag, status, exitCode);
+}
+
+/** 1.6.8 M1：PATCH /sessions/:id 改 mission 后的引擎联动（活跃线注入，其余只落盘）。 */
+export function applyPiMissionChange(sessionMetaId: string, mission: string | undefined): void {
+  defaultEngine.applyMissionChange(sessionMetaId, mission);
 }
 
 export async function sendPiChatMessage(input: PiSendInput): Promise<PiSendResult> {

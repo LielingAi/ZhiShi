@@ -19,6 +19,8 @@
  *     文案在 model/env-rebuild）
  *   - env-rename：环境别名改名（1.6.6；environment/rename——只动 name 显示
  *     名，id 身份不变；留空 = 清除别名回显 id）
+ *   - campaign-stop：战役终止确认（1.6.8 M2；/tasks 战役卡片「终止」的
+ *     二次确认，campaign/stop）
  *   - 向导 Step 2/3：配方生命周期差异（1.3.8 ③a，model/env-wizard::
  *     recipeLifecycleNote）+ 打法摘要 workflowSummary 默认折叠（1.3.8 ③b）
  */
@@ -917,6 +919,51 @@ function EnvRenameModal(): React.JSX.Element | null {
   );
 }
 
+// ── 1.6.8 M2：战役终止确认（/tasks 战役卡片「终止」的二次确认） ───────────
+
+function CampaignStopModal(): React.JSX.Element | null {
+  const modal = useGuiStore((s) => s.modal);
+  const closeModal = useGuiStore((s) => s.closeModal);
+  const confirmCampaignStop = useGuiStore((s) => s.confirmCampaignStop);
+  const [busy, setBusy] = useState(false);
+
+  const target = modal?.campaignStop;
+  if (!target) return null;
+
+  return (
+    <div className="modal-backdrop open">
+      <div className="modal">
+        <div className="m-head">
+          <span className="m-title">
+            终止战役 <b className="m-env-name">{target.goal}</b>
+          </span>
+          <span className="m-sub">campaign/stop · {target.id}</span>
+          <button className="m-close" onClick={closeModal}>✕</button>
+        </div>
+        <div className="m-body">
+          <div className="m-danger">
+            终止后战役状态机落 stopped（终态不可续跑）——基座 fuzz 进程会被回收，
+            语料/崩溃现场保留在环境内；重新发起成本低，进行中的介入回合会被丢弃。
+          </div>
+          <div className="m-actions">
+            <button className="btn" onClick={closeModal}>取消（继续跑）</button>
+            <button
+              className="btn danger"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                void confirmCampaignStop().finally(() => setBusy(false));
+              }}
+            >
+              终止战役
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── 1.3.8 多配方：环境详情（只读信息 + 配方绑定管理；绑定=展示/构建来源） ──
 function EnvDetailModal(): React.JSX.Element | null {
   const modal = useGuiStore((s) => s.modal);
@@ -1288,6 +1335,8 @@ export function Modal(): React.JSX.Element | null {
       return <EnvResetModal />;
     case 'env-rename':
       return <EnvRenameModal />;
+    case 'campaign-stop':
+      return <CampaignStopModal />;
     case 'auto-run-start':
     case 'auto-run-stop':
       return <AutoRunModal />;

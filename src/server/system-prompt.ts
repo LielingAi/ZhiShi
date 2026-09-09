@@ -17,6 +17,7 @@ import type { ResearchDistilledMemory } from './memory/distill-research';
 import type { ResearchTaskKind } from './memory/store';
 import { buildCliToolsAppend, buildWidgetSection } from './system-prompt-cli-tools';
 import {
+  buildMissionSection,
   buildNativeCodeSection,
   buildResearchLogSection,
   buildResearchMemorySection,
@@ -235,6 +236,11 @@ export interface SystemPromptOptions {
    * 零注入。1.6.7 轨迹裁决：名册不进 prompt 是 delegate_task 零调用的根因。
    */
   subagents?: { name: string; description: string }[];
+  /**
+   * 1.6.8 M1 — 会话任务形态（shared/mission.ts；挂会话线，人设定）。
+   * 渲染 <zhishi-mission> 教学段；undefined/无类型 = 零注入（现状不变）。
+   */
+  mission?: string;
 }
 
 export function buildSystemPromptAppend(scenario: InteractionScenario, options?: SystemPromptOptions): string {
@@ -297,6 +303,9 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
       { domain: options?.securityResearchDomain },
     );
     if (researchMemorySection) parts.push(researchMemorySection);
+    // 1.6.8 M1：任务形态教学段（mission 挂会话线，人设定；无类型零注入）
+    const missionSection = buildMissionSection(options?.mission);
+    if (missionSection) parts.push(missionSection);
   }
 
   // L3: 研究档案实时状态段（1.4.4，security / auto-run）——模型在显式研究
