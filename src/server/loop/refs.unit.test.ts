@@ -37,12 +37,15 @@ const DOCKER_ENV: EnvironmentEntry = {
   createdAt: '2026-01-01T00:00:00Z',
 };
 
-/** 按命令内容路由的假 env 通道。 */
+/** 按命令内容路由的假 env 通道（1.6.9 #2：先剥远端超时杀包装再匹配）。 */
 function fakeEnvExec(routes: Array<{ match: string; result: EnvExecProcessResult }>) {
   const calls: string[] = [];
   const exec = async (argv: string[]): Promise<EnvExecProcessResult> => {
-    const command = argv[argv.length - 1];
-    calls.push(command);
+    const raw = argv[argv.length - 1];
+    calls.push(raw);
+    // 包装形态：timeout -k 5 Ns bash -c "$(echo <b64> | base64 -d)" → 剥出原命令
+    const m = /\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d\)/.exec(raw);
+    const command = m ? Buffer.from(m[1], 'base64').toString('utf8') : raw;
     for (const route of routes) {
       if (command.includes(route.match)) return route.result;
     }

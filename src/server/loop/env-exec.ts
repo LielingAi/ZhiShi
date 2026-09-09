@@ -27,7 +27,7 @@ import { join } from 'node:path';
 
 import type { EnvironmentEntry } from '../../shared/config-types';
 import { vmGuestExec } from '../environment/vm-guest-exec';
-import { osFamilyOf, psEncode, psShellWrapper } from '../environment/os-family';
+import { osFamilyOf, psEmbedCommand, psEncode, psShellWrapper } from '../environment/os-family';
 import type { VmExec } from '../environment/vm-lifecycle';
 import { loadConfig } from '../utils/admin-config';
 import { augmentedProcessEnv, resolveCommand } from '../utils/env-utils';
@@ -432,6 +432,73 @@ export async function defaultEnvExec(argv: string[], timeoutMs: number): Promise
  * - 远端命令非零退出 → { ok:true, exitCode≠0, stdout, stderr }
  *   （命令语义失败，原样回传，由调用方/模型解读）。
  */
+// ---------------------------------------------------------------------------
+// 1.6.9 #2 — 连续超时自堵检测（模块级计数；成功即清零）
+// ---------------------------------------------------------------------------
+
+/** 连续超时上限——达到即判通道自堵（返回升级文案，不再放行探测）。 */
+export const EXEC_TIMEOUT_STREAK_LIMIT = 3;
+
+const execTimeoutStreaks = new Map<string, number>();
+
+/**
+ * 记一次执行结果。返回 true = 已达自堵阈值（调用方据此升级）。
+ * 超时常态（探测/长命令各自有预算）不计——只计「命令在预算内没跑完」。
+ */
+export function noteExecOutcome(envId: string, timedOut: boolean): boolean {
+  if (!timedOut) {
+    execTimeoutStreaks.delete(envId);
+    return false;
+  }
+  const n = (execTimeoutStreaks.get(envId) ?? 0) + 1;
+  execTimeoutStreaks.set(envId, n);
+  return n >= EXEC_TIMEOUT_STREAK_LIMIT;
+}
+
+/** 测试钩子：清计数。 */
+export function resetExecTimeoutStreaksForTests(): void {
+  execTimeoutStreaks.clear();
+}
+
+/**
+ * 1.6.9 #2：远端超时杀包装——本地超时只杀宿主侧 ssh/docker CLI，远端进程
+ * 继续跑（实机事故：堆喷 d8 在容器里跑飞，docker API 被拖到无响应，通道
+ * 自堵 76 分钟）。在环境内侧包一层：deadline 到了远端进程被强杀，与通道
+ * 死活无关。
+ *
+ * posix：`timeout -k 5 <sec>s bash -c "$(echo <b64>|base64 -d)"`——coreutils
+ * timeout 发 TERM 后 5s 补 KILL（runaway 也能死）；base64 封装保引号安全
+ * （与 provision 同纪律）。超时退出码 124/137——调用方按「命令语义失败」
+ * 原样带回，文案可辨。
+ * windows：powershell 作业 Wait-Job -Timeout + Stop-Job 强杀（cmd /c 无超时
+ * 语义），退出码经 $LASTEXITCODE 透传；超时按 1 标记并打标记行。
+ * guest 通道（vmrun runProgramInGuest 等 Tools 自然终结）不包。
+ */
+export function buildRemoteTimeoutWrapper(command: string, timeoutMs: number, family: 'linux' | 'windows' = 'linux'): string {
+  const secs = Math.max(1, Math.ceil(timeoutMs / 1000));
+  if (family === 'windows') {
+    // 三层 base64（os-family 双封装纪律的延伸）——任何引号层都不破：
+    // ① 用户命令 base64 嵌进作业体；② 作业体整体 base64（$LASTEXITCODE 必须
+    // 到作业内才解析，外层的 PS 字符串插值会提前吃掉它）；③ 引导脚本整体
+    // utf16le-base64 给 -EncodedCommand。作业不传播子进程退出码——退出码由
+    // 作业体落临时文件，外侧读回透传（PS 5.1 无 ??，别走 ChildJobs.ExitCode）。
+    const codeFile = `C:\\Windows\\Temp\\zhishi-exec-${Math.random().toString(36).slice(2, 10)}.code`;
+    const jobBody =
+      `$b='${psEmbedCommand(command)}';` +
+      '$c=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b));' +
+      'cmd /c $c;' +
+      `[IO.File]::WriteAllText('${codeFile}', "$LASTEXITCODE")`;
+    const inner =
+      `$body=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${psEmbedCommand(jobBody)}'));` +
+      '$j=Start-Job -ScriptBlock ([ScriptBlock]::Create($body));' +
+      `if (Wait-Job $j -Timeout ${secs}) { Receive-Job $j; Remove-Job $j -Force; if (Test-Path '${codeFile}') { exit [int](Get-Content '${codeFile}') } else { exit 0 } } ` +
+      `else { Stop-Job $j; Remove-Job $j -Force; Write-Output '[zhishi-timeout] 远端超时被强杀'; exit 1 }`;
+    return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${psEncode(inner)}`;
+  }
+  const b64 = Buffer.from(command, 'utf8').toString('base64');
+  return `timeout -k 5 ${secs}s bash -c "$(echo ${b64} | base64 -d)"`;
+}
+
 export async function execInEnvironment(
   entry: EnvironmentEntry,
   command: string,
@@ -476,11 +543,36 @@ export async function execInEnvironment(
         osFamily: osFamilyOf(entry),
       });
 
+  // 1.6.9 #2：远端超时杀——本地超时只杀宿主 CLI，远端进程照跑（实机事故：
+  // 容器内 runaway 进程拖死 docker API，通道自堵 76 分钟）。远端侧包装让
+  // 进程到点即死；本地超时留 +10s 余量（远端先答，本地兜底）。
+  const family = osFamilyOf(entry);
+  const wrappedCommand = buildRemoteTimeoutWrapper(command, timeoutMs, family);
+  const wrappedArgv = [...argv];
+  wrappedArgv[wrappedArgv.length - 1] = wrappedCommand; // 两 builder 的命令都在末位
+
   let result: EnvExecProcessResult;
   try {
-    result = await exec(argv, timeoutMs);
+    result = await exec(wrappedArgv, timeoutMs + 10_000);
   } catch (err) {
+    noteExecOutcome(entry.id, true);
     return { ok: false, error: `环境执行异常：${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  // 1.6.9 #2：连续超时自堵检测。超时形态：本地 timed out（exitCode<0）/
+  // 远端 124/137（posix timeout 的 TERM/KILL 退出码）/ windows 标记行。
+  const timedOut =
+    (result.exitCode < 0 && /timed out/.test(result.error ?? '')) ||
+    result.exitCode === 124 || result.exitCode === 137 ||
+    /\[zhishi-timeout\]/.test(result.stdout ?? '');
+  if (noteExecOutcome(entry.id, timedOut)) {
+    return {
+      ok: false,
+      error:
+        `环境 "${entry.id}" 连续 ${EXEC_TIMEOUT_STREAK_LIMIT} 次命令超时——通道可能已被残留进程堵死或环境已过载。` +
+        '不要再加码超时探测；请升级人处理（request_decision / 向用户说明环境状态），' +
+        '或在环境内排查残留进程（docker 场景可 env down/up 重启容器）。',
+    };
   }
 
   if (result.error && result.exitCode < 0) {

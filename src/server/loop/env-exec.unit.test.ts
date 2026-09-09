@@ -7,7 +7,7 @@
  * 执行错误面（远端非零 exit 原样回传 / 进程级失败 → ok:false / exec
  * 抛错 → ok:false / timeoutMs 透传）。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
 
 import type { EnvironmentEntry } from '../../shared/config-types';
 import {
@@ -15,17 +15,25 @@ import {
   buildPtyDockerExecArgv,
   buildPtySpawnSpec,
   buildPtySshArgv,
+  buildRemoteTimeoutWrapper,
   buildScpUploadArgv,
   buildSshArgv,
   execInEnvironment,
   interactiveShellScript,
+  noteExecOutcome,
+  resetExecTimeoutStreaksForTests,
   resolveExecTarget,
   resolvePasswordRef,
   resolveSshTarget,
   truncateOutput,
+  EXEC_TIMEOUT_STREAK_LIMIT,
   OUTPUT_LIMIT_BYTES,
   type EnvExec,
 } from './env-exec';
+
+beforeEach(() => {
+  resetExecTimeoutStreaksForTests();
+});
 
 const SSH_ENTRY: EnvironmentEntry = {
   id: 'dev-box',
@@ -256,7 +264,12 @@ describe('execInEnvironment', () => {
       expect(r.truncated).toBe(false);
     }
     expect(calls).toHaveLength(1);
-    expect(calls[0].argv[calls[0].argv.length - 1]).toBe('uname -a');
+    // 1.6.9 #2：末位是远端超时杀包装（timeout + base64 载荷可解码回原命令）
+    const last = calls[0].argv[calls[0].argv.length - 1]!;
+    expect(last.startsWith('timeout -k 5 ')).toBe(true);
+    const b64 = /bash -c "\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d\)"/.exec(last)?.[1];
+    expect(b64).toBeTruthy();
+    expect(Buffer.from(b64!, 'base64').toString('utf8')).toBe('uname -a');
     expect(calls[0].argv.join(' ')).toContain('researcher@192.168.152.129');
   });
 
@@ -291,12 +304,14 @@ describe('execInEnvironment', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('timeoutMs 透传（默认 120s，可覆盖）', async () => {
+  it('timeoutMs 透传（远端按预算杀 + 本地留 10s 余量，1.6.9 #2）', async () => {
     const { exec, calls } = fakeExec({ exitCode: 0 });
     await execInEnvironment(VM_ENTRY, 'id', { exec });
-    expect(calls[0].timeoutMs).toBe(120_000);
+    expect(calls[0].timeoutMs).toBe(130_000);
+    expect(calls[0].argv.at(-1)).toContain('timeout -k 5 120s');
     await execInEnvironment(VM_ENTRY, 'id', { exec, timeoutMs: 5000 });
-    expect(calls[1].timeoutMs).toBe(5000);
+    expect(calls[1].timeoutMs).toBe(15_000);
+    expect(calls[1].argv.at(-1)).toContain('timeout -k 5 5s');
   });
 
   it('超限输出被截断并标记 truncated', async () => {
@@ -383,6 +398,58 @@ describe('交互终端 argv（1.3.3 attach pty）', () => {
     if (r.ok) {
       expect(r.spec.family).toBe('windows');
       expect(r.spec.args[r.spec.args.length - 1]).toBe('cmd.exe');
+    }
+  });
+});
+
+describe('1.6.9 #2：远端超时杀包装 + 自堵检测', () => {
+  it('posix：timeout -k 强杀 + base64 载荷可还原（引号/换行安全）', () => {
+    const cmd = 'echo "你好 $(whoami)"\nls /x';
+    const wrapped = buildRemoteTimeoutWrapper(cmd, 5000);
+    expect(wrapped).toContain('timeout -k 5 5s');
+    const b64 = /echo ([A-Za-z0-9+/=]+) \| base64 -d/.exec(wrapped)?.[1];
+    expect(Buffer.from(b64!, 'base64').toString('utf8')).toBe(cmd);
+    // 1ms 下限 1s
+    expect(buildRemoteTimeoutWrapper('id', 1)).toContain('timeout -k 5 1s');
+  });
+
+  it('windows：powershell 作业包装（双层 base64 可解；Stop-Job 强杀 + 标记行）', () => {
+    const wrapped = buildRemoteTimeoutWrapper('whoami /priv', 8000, 'windows');
+    expect(wrapped.startsWith('powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ')).toBe(true);
+    const inner = Buffer.from(wrapped.split('-EncodedCommand ')[1]!, 'base64').toString('utf16le');
+    expect(inner).toContain('Start-Job');
+    expect(inner).toContain('Wait-Job $j -Timeout 8');
+    expect(inner).toContain('Stop-Job');
+    expect(inner).toContain('[zhishi-timeout]');
+    // 三层结构断言：inner（引导脚本）→ jobBody（base64）→ 用户命令（base64）
+    const bodyB64 = /FromBase64String\('([A-Za-z0-9+/=]+)'\)/.exec(inner)?.[1];
+    const jobBody = Buffer.from(bodyB64!, 'base64').toString('utf8');
+    expect(jobBody).toContain('cmd /c $c');
+    expect(jobBody).toContain('$LASTEXITCODE');
+    const b = /\$b='([A-Za-z0-9+/=]+)'/.exec(jobBody)?.[1];
+    expect(Buffer.from(b!, 'base64').toString('utf8')).toBe('whoami /priv');
+  });
+
+  it('自堵检测：连续 3 次超时 → 升级文案（不再放行探测）；成功清零', async () => {
+    expect(noteExecOutcome('env-a', true)).toBe(false);
+    expect(noteExecOutcome('env-a', true)).toBe(false);
+    expect(noteExecOutcome('env-a', true)).toBe(true); // 达阈
+    expect(noteExecOutcome('env-a', false)).toBe(false); // 成功清零
+    expect(noteExecOutcome('env-a', true)).toBe(false); // 重新计数
+  });
+
+  it('远端 124（posix timeout TERM）判超时；达阈后 execInEnvironment 返回自堵错误', async () => {
+    const timeoutExec: EnvExec = async () => ({ exitCode: 124, stdout: '', stderr: '' });
+    for (let i = 0; i < EXEC_TIMEOUT_STREAK_LIMIT - 1; i++) {
+      const r = await execInEnvironment(VM_ENTRY, 'id', { exec: timeoutExec });
+      expect(r.ok).toBe(true); // 未达阈：按命令语义失败原样回传
+      if (r.ok) expect(r.exitCode).toBe(124);
+    }
+    const r = await execInEnvironment(VM_ENTRY, 'id', { exec: timeoutExec });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain('堵死');
+      expect(r.error).toContain('升级人');
     }
   });
 });
