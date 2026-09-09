@@ -17,6 +17,7 @@ import type { EnvironmentEntry } from './environment/registry';
 import type { ResearchDistilledMemory } from './memory/distill-research';
 
 import { buildSystemPromptAppend } from './system-prompt';
+import { RESEARCH_TASK_KINDS } from '../shared/research-kinds';
 import type { DomainManifest } from './domains/manifest';
 import {
   buildNativeCodeSection,
@@ -24,6 +25,7 @@ import {
   buildResearchMemorySection,
   buildSecurityCapabilitiesSection,
   buildSecurityKernelSection,
+  buildSubagentCatalogSection,
   collectResearchMemory,
   collectSecurityCapabilities,
   resolveSessionDomain,
@@ -33,6 +35,7 @@ import {
   RESEARCH_LOG_MAX_CHARS,
   RESEARCH_MEMORY_MAX_CHARS,
   SECURITY_CAPABILITIES_MAX_CHARS,
+  SUBAGENT_CATALOG_MAX_CHARS,
   SECURITY_KERNEL_MAX_CHARS,
   type SecurityCapabilitiesData,
 } from './system-prompt-security';
@@ -109,8 +112,11 @@ describe('buildSecurityKernelSection / buildNativeCodeSection', () => {
   it('research-log 段（D1）声明三组枚举 + 何时记录 + 命令用法，且在上限内', () => {
     const section = buildResearchLogSection();
     expect(section).toContain('<zhishi-research-log>');
-    // 枚举声明（§4 输出侧本体：system prompt 声明 = CLI 校验的同一组值）
-    expect(section).toContain('binary / pentest / ai-security / redteam / malware / intel / ctf');
+    // 枚举声明（§4 输出侧本体：system prompt 声明 = CLI 校验的同一组值；
+    // 1.6.7 R5 起从 RESEARCH_TASK_KINDS 常量渲染——whitebox/fuzz 不再漏）
+    expect(section).toContain(RESEARCH_TASK_KINDS.join(' / '));
+    expect(section).toContain('fuzz');
+    expect(section).toContain('whitebox');
     expect(section).toContain('success / fail / stuck');
     expect(section).toContain('stack-overflow / heap-overflow / uaf / double-free / oob-read / oob-write / null-deref / int-overflow / format-string / type-confusion / other');
     // 何时记录 + 用法(agent 用 research_log 工具,人侧 CLI 查询/补记)
@@ -1004,5 +1010,38 @@ describe('buildSecurityCapabilitiesSection — 能力集合呈现（1.3.7 场景
     const section = buildSecurityCapabilitiesSection(d, { manifests: CAP_MANIFESTS });
     expect(section).toContain('当前环境能力集合');
     expect(section).toContain('binary · pentest');
+  });
+});
+
+describe('buildSubagentCatalogSection（1.6.7 R1 子代理可发现性）', () => {
+  it('空/缺省 → 零注入', () => {
+    expect(buildSubagentCatalogSection(undefined)).toBe('');
+    expect(buildSubagentCatalogSection([])).toBe('');
+  });
+
+  it('名册渲染：名字 + 截断描述 + 委派指引 + 硬顶', () => {
+    const section = buildSubagentCatalogSection([
+      { name: 'fuzz-runner', description: '长跑 fuzz 与崩溃收集。'.padEnd(300, 'x') },
+      { name: 'crash-triager', description: '崩溃去重与根因初判。' },
+    ]);
+    expect(section).toContain('<zhishi-subagents>');
+    expect(section).toContain('delegate_task');
+    expect(section).toContain('- fuzz-runner — ');
+    expect(section).toContain('- crash-triager — 崩溃去重与根因初判。');
+    // 描述截断带省略号
+    expect(section).toContain('…');
+    expect(section.length).toBeLessThanOrEqual(SUBAGENT_CATALOG_MAX_CHARS);
+  });
+
+  it('经 buildSystemPromptAppend 注入（security 场景，锚定环境时调用方才传）', () => {
+    const append = buildSystemPromptAppend(
+      { type: 'security' },
+      { subagents: [{ name: 'fuzz-runner', description: '长跑 fuzz。' }] },
+    );
+    expect(append).toContain('<zhishi-subagents>');
+    expect(append).toContain('fuzz-runner');
+    // 不传 → 零注入
+    const none = buildSystemPromptAppend({ type: 'security' }, {});
+    expect(none).not.toContain('<zhishi-subagents>');
   });
 });

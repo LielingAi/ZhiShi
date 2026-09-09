@@ -3864,6 +3864,30 @@ export async function handleEnvironmentBuild(payload: {
 // ---------------------------------------------------------------------------
 // 安全研究员版 P1 T4（D17）— environment selection（首屏选定状态）
 // ---------------------------------------------------------------------------
+// 1.6.7 R3 — select 探活（模块级可替换，测试注入假通道）
+// ---------------------------------------------------------------------------
+/**
+ * 探活通道（生产 = env-exec 统一分派）。只探「SSH 通道存在」的条目（ssh kind
+ * / vm 带 address）——断网 VM 的 guest-exec 要密码，docker 停着的容器是合法
+ * 待启状态，都不探。轨迹实证（1.6.7 #4 断点 1）：SSH 鉴权坏掉的环境被选中，
+ * agent 在会话里连撞 exit=255 才发现——选中时刻就该报。
+ */
+type SelectProbeFn = (entry: EnvironmentEntry) => Promise<{ ok: boolean; error?: string }>;
+const defaultSelectProbe: SelectProbeFn = async (entry) => {
+  try {
+    const r = await execInEnvironment(entry, 'echo ok', { timeoutMs: 10_000 });
+    if (r.ok) return { ok: true };
+    return { ok: false, error: (r as { stderr?: string }).stderr ?? '通道失败' };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+};
+let selectProbeImpl: SelectProbeFn = defaultSelectProbe;
+/** 测试注入 select 探活（传 null 复位为生产通道）。 */
+export function __setSelectProbeForTests(fn: SelectProbeFn | null): void {
+  selectProbeImpl = fn ?? defaultSelectProbe;
+}
+
 /**
  * `environment/select` — 持久化某 workspace 的环境选定（首屏选择器 / --env
  * / --new-env 的落点）。存 `~/.zhishi/env-selection.json`，结构是 S1 能力
@@ -3872,6 +3896,8 @@ export async function handleEnvironmentBuild(payload: {
  * 1.1.6 #4 会话按环境分线：落盘后联动引擎切会话线（switchEnvSession）。
  * turn 进行中整体拒绝（rewind/fork 同口径）且先于落盘——选定落了而线
  * 没切，锚定工具（env 通道逐 turn 读选定）会与历史线串扰。
+ * 1.6.7 R3：SSH 通道条目（ssh kind / vm 带 address）落盘前探活一次——
+ * 鉴权/连通失败当场拒绝（不落盘不切线），错误文案引导修复路径。
  */
 export async function handleEnvironmentSelect(payload: {
   workspace?: string;
@@ -3884,6 +3910,26 @@ export async function handleEnvironmentSelect(payload: {
   // 1.1.6 #4：busy 拒绝（仅当目标是本 sidecar 引擎的 workspace；其余 workspace 只落盘）
   const blocker = envSwitchBlocker(workspace);
   if (blocker) return { success: false, error: blocker };
+
+  // R3 探活：选中目标是 SSH 通道条目时先验通（失败不落盘——坏环境选定 =
+  // 整个会话废掉，轨迹实证 mtoeh7nt）。
+  const sel = validated.selection as { kind?: string; id?: string; instanceId?: string };
+  const targetId = sel.kind === 'env' ? sel.id : sel.kind === 'recipe' ? sel.instanceId : undefined;
+  if (targetId) {
+    const entry = findEnvironmentEntry(listEnvironments(loadConfig()), targetId);
+    if (entry && (entry.kind === 'ssh' || (entry.kind === 'vm' && entry.address))) {
+      const probe = await selectProbeImpl(entry);
+      if (!probe.ok) {
+        const authHint = /denied|auth|publickey/i.test(probe.error ?? '')
+          ? '鉴权失败——若是公钥问题，用 1.6.5 密码引导修复：zhishi env add 重登记（缺 --key-path 时现场输一次密码自动配密钥）'
+          : '连通失败——确认目标在线、sshd 在跑、地址/端口正确';
+        return {
+          success: false,
+          error: `环境 "${targetId}" 探活失败，未选定：${probe.error ?? ''}\n${authHint}`,
+        };
+      }
+    }
+  }
   try {
     const selectedAt = new Date().toISOString();
     // 1.1.7 ①：锁内读-改-写（多实例共用数据目录时裸 load+save 有丢更新窗口）

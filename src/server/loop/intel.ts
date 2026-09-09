@@ -134,7 +134,7 @@ export function formatIntelResult(args: {
 }): string {
   const header = args.lastUpdateAt
     ? `情报索引最后更新于 ${args.lastUpdateAt.slice(0, 10)}。`
-    : '情报索引尚未构建（运行 zhishi intel update 初始化）。';
+    : '情报索引尚未构建——请人在宿主运行 zhishi intel update 初始化（本会话通道内 agent 无宿主 shell，跑不了这条命令）。';
   const source = args.onlineUsed ? '（结果来自在线回源，未入库）' : '';
   if (args.hits.length === 0) {
     const degraded = args.indexUnavailable ? '\n（本地索引不可用，且在线回源未命中/失败）' : '';

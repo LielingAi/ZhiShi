@@ -60,9 +60,9 @@ function seedExpertEntry(title: string, db?: ExpertDb): number {
 }
 
 describe('research_events：枚举定义与校验', () => {
-  it('枚举集合与设计一致（七研究域 + ctf 补充 / 三成败 / 漏洞类别）', () => {
+  it('枚举集合与设计一致（七研究域 + fuzz 挖掘类（1.6.7）+ ctf 补充 / 三成败 / 漏洞类别）', () => {
     expect([...RESEARCH_TASK_KINDS]).toEqual([
-      'binary', 'pentest', 'ai-security', 'redteam', 'malware', 'whitebox', 'intel', 'ctf',
+      'binary', 'pentest', 'ai-security', 'redteam', 'malware', 'whitebox', 'intel', 'fuzz', 'ctf',
     ]);
     expect([...RESEARCH_OUTCOMES]).toEqual(['success', 'fail', 'stuck']);
     expect([...RESEARCH_BUG_CLASSES]).toEqual([
