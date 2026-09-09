@@ -292,6 +292,59 @@ describe('payload 构造', () => {
     expect(map['密钥路径']).toBeUndefined();
     expect(Object.values(map).some((v) => v.includes('pw'))).toBe(false);
   });
+
+  // ===== 1.6.12 密钥引导接到 VM 登记（本机已有 discovered 分支） =====
+
+  it('1.6.12：VM 登记 keyPath 空 + password → extras 带 password 不带 keyPath', () => {
+    const params = {
+      ...initialWizardParams(),
+      discoveredKey: 'vmware-/vms/a.vmx',
+      discoveredAddress: '192.168.56.20',
+      discoveredUser: 'root',
+      discoveredPassword: ' pw ',
+    };
+    expect(wizardStepError(stateAt(2, { source: 'discovered', params }), { discoveredIsVm: true })).toBeNull();
+    const p = buildWizardPayload(stateAt(4, { source: 'discovered', params }));
+    expect(p?.type).toBe('register');
+    if (p?.type === 'register') {
+      expect(p.extras).toMatchObject({ address: '192.168.56.20', user: 'root', password: 'pw' });
+      expect(p.extras).not.toHaveProperty('keyPath');
+    }
+  });
+
+  it('1.6.12：keyPath 与 password 双空 → VM 校验拦；docker 条目（不传 isVm）不拦', () => {
+    const params = { ...initialWizardParams(), discoveredKey: 'vmware-/vms/a.vmx' };
+    expect(wizardStepError(stateAt(2, { source: 'discovered', params }), { discoveredIsVm: true })).toBe(
+      '密钥路径 / guest 登录密码 至少其一',
+    );
+    // 缺省 opts（docker 无凭据语义）——保持旧行为不拦
+    expect(wizardStepError(stateAt(2, { source: 'discovered', params }))).toBeNull();
+    // 有 keyPath 无 password → 旧路径照常放行
+    expect(
+      wizardStepError(
+        stateAt(2, { source: 'discovered', params: { ...params, discoveredKeyPath: '~/.ssh/id' } }),
+        { discoveredIsVm: true },
+      ),
+    ).toBeNull();
+  });
+
+  it('1.6.12：确认页——VM 登记 keyPath 空而 password 非空显示引导说明行（不回显密码本体）', () => {
+    const s = stateAt(3, {
+      source: 'discovered',
+      params: {
+        ...initialWizardParams(),
+        discoveredKey: 'vmware-/vms/a.vmx',
+        discoveredAddress: '10.0.0.9',
+        discoveredPassword: 'pw',
+      },
+    });
+    const map = Object.fromEntries(
+      wizardSummaryRows(s, { recipes: RECIPES, domains: DOMAINS }).map((r) => [r.label, r.value]),
+    );
+    expect(map['凭据']).toBe('密码引导（自动生成密钥，密码不落盘）');
+    expect(map['密钥路径']).toBeUndefined();
+    expect(Object.values(map).some((v) => v.includes('pw'))).toBe(false);
+  });
 });
 
 describe('域映射与确认页', () => {

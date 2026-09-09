@@ -346,7 +346,8 @@ function NewEnvModal(): React.JSX.Element | null {
     source === 'discovered' ? wizardDiscoveredItems(discoveredDocker, discoveredVm, envs) : [];
   const selectedDiscovered = discoveredItems.find((it) => it.key === p.discoveredKey);
   const stepErr =
-    wizardStepError(wizard) ??
+    // 1.6.12：VM 凭据校验（keyPath/密码至少其一）在纯函数层——isVm 经 opts 传入。
+    wizardStepError(wizard, { discoveredIsVm: selectedDiscovered?.isVm === true }) ??
     (wizard.step === 2 && selectedDiscovered?.isVm && !p.discoveredAddress.trim()
       ? '请填 VM 的 guest 地址（exec/探测通道前提，缺了探测走不通）'
       : null);
@@ -497,6 +498,16 @@ function NewEnvModal(): React.JSX.Element | null {
                   placeholder="~/.ssh/id_ed25519"
                   value={p.discoveredKeyPath}
                   onChange={(e) => wizardSetParam('discoveredKeyPath', e.target.value)}
+                />
+              </div>
+              <div>
+                <div className="f-label">guest 登录密码（可选——缺密钥时自动配置，现场使用不落盘）</div>
+                <input
+                  className="f-input"
+                  type="password"
+                  placeholder="缺 keyPath 时服务端自动生成密钥并推公钥"
+                  value={p.discoveredPassword}
+                  onChange={(e) => wizardSetParam('discoveredPassword', e.target.value)}
                 />
               </div>
             </>

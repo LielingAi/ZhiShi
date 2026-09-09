@@ -392,6 +392,8 @@ export type RegisterInput =
       address?: string;
       user?: string;
       keyPath?: string;
+      /** 1.6.12：瞬传密码（VM 密钥引导，不落盘；与 keyPath 同给由服务端拦）。 */
+      password?: string;
       recipeIds?: string[];
     };
 
@@ -402,6 +404,8 @@ export interface RegisterExtras {
   address?: string;
   user?: string;
   keyPath?: string;
+  /** 1.6.12：guest 登录密码（瞬传——VM 密钥引导用，不落盘）。 */
+  password?: string;
   recipeIds?: string[];
 }
 
@@ -431,6 +435,7 @@ function vmNameOf(d: DiscoveredLike): string {
  *   vmware/hyperv/vbox → `<vmName>`（净化后） { kind:'vm', vmName, vmx?, osFamily? }
  * 名字缺失 / 驱动未知 / id 净化为空 → null（调用方 toast 提示）。
  * 1.3.7：extras（user/keyPath/recipeIds）可选附加，逐字段空值剔除；
+ * 1.6.12：extras.password 瞬传（VM 密钥引导）。
  * 1.3.7 实机修复 B：extras.address 仅 VM 分支透传（docker 不需要）。
  * 1.5.10：user/keyPath 同样只进 VM 分支——容器走 docker exec 通道，
  * 凭据语义无解（GUI 侧「本机已有」表单对容器也不渲染这两个字段）。
@@ -444,6 +449,8 @@ export function buildRegisterPayload(d: DiscoveredLike, extras?: RegisterExtras)
     ? {
         ...(extras.user ? { user: extras.user } : {}),
         ...(extras.keyPath ? { keyPath: extras.keyPath } : {}),
+        // 1.6.12：瞬传密码随凭据字段进 VM 分支（docker 语义不通，不下发）。
+        ...(extras.password ? { password: extras.password } : {}),
       }
     : {};
   const name = d.name?.trim();

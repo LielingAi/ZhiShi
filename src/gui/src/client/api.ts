@@ -216,6 +216,8 @@ export interface SshAddInput {
   host: string;
   user?: string;
   keyPath?: string;
+  /** 1.6.5 密钥引导：瞬传密码（不落盘；与 keyPath 同给由服务端拦）。 */
+  password?: string;
   /** 1.3.7 向导补齐：非标端口（缺省 22）。 */
   port?: number;
   name?: string;
@@ -240,6 +242,8 @@ export type EnvironmentAddInput =
       address?: string;
       user?: string;
       keyPath?: string;
+      /** 1.6.12：瞬传密码（VM 密钥引导——有 address 走 plink、断网有 vmx 走 vmrun；不落盘）。 */
+      password?: string;
       recipeIds?: string[];
     };
 

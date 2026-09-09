@@ -56,6 +56,10 @@ export interface WizardParams {
   discoveredUser: string;
   /** 本机已有：可选补充的私钥路径（登记 payload 附带）。 */
   discoveredKeyPath: string;
+  /** 1.6.12 密钥引导接到 VM 登记：缺 keyPath 时现场给一次密码（瞬传服务端
+   *  自动生成密钥对并推公钥——有 address 走 plink、断网有 vmx 走 vmrun；
+   *  不落 config.json，条目只落生成的 keyPath）。 */
+  discoveredPassword: string;
   /** 本机已有：可选绑定的配方 id 集合（1.5.10 多选——1.3.8 起环境可承载多配方；决定域归属，登记 payload 附带）。 */
   discoveredRecipeIds: string[];
   sshHost: string;
@@ -87,6 +91,7 @@ export function initialWizardParams(): WizardParams {
     discoveredAddress: '',
     discoveredUser: '',
     discoveredKeyPath: '',
+    discoveredPassword: '',
     discoveredRecipeIds: [],
     sshHost: '',
     sshUser: '',
@@ -144,15 +149,29 @@ export function wizardSelectSource(state: EnvWizardState, source: WizardSource, 
   };
 }
 
-/** 每步前进校验：返回错误文案，null = 可前进。 */
-export function wizardStepError(state: EnvWizardState): string | null {
+/** 每步前进校验：返回错误文案，null = 可前进。
+ *  1.6.12：discovered 分支的 VM 凭据校验需要 isVm 判定（discover 数据源
+ *  在组件层）——调用方经 opts.discoveredIsVm 传入；缺省不拦（docker 无
+ *  凭据语义，保持旧行为）。 */
+export function wizardStepError(
+  state: EnvWizardState,
+  opts?: { discoveredIsVm?: boolean },
+): string | null {
   if (state.step === 1) return state.source ? null : '请选择来源类型';
   if (state.step === 2) {
     const p = state.params;
     if (state.source === 'docker-recipe' || state.source === 'vm-recipe') {
       return p.recipeId ? null : '请选择一个配方';
     }
-    if (state.source === 'discovered') return p.discoveredKey ? null : '请勾选一个本机条目';
+    if (state.source === 'discovered') {
+      if (!p.discoveredKey) return '请勾选一个本机条目';
+      // 1.6.12：VM 登记 keyPath 与 password 至少其一（仿 1.6.5 SSH 放宽——
+      // 缺 keyPath 时服务端用 password 现场密钥引导）。
+      if (opts?.discoveredIsVm && !p.discoveredKeyPath.trim() && !p.discoveredPassword.trim()) {
+        return '密钥路径 / guest 登录密码 至少其一';
+      }
+      return null;
+    }
     if (state.source === 'ssh') {
       // 1.6.5 密钥引导：host/user 必填；keyPath 与 password 至少其一
       // （缺 keyPath 时服务端用 password 现场生成密钥对并推公钥）。
@@ -239,8 +258,9 @@ export type WizardPayload =
       type: 'register';
       itemKey: string;
       /** registerDiscovered 的附加登记字段（address/user/keyPath/recipeIds，全可选）。
-       *  1.5.10：recipeIds 数组（多配方绑定）。 */
-      extras?: { address?: string; user?: string; keyPath?: string; recipeIds?: string[] };
+       *  1.5.10：recipeIds 数组（多配方绑定）。
+       *  1.6.12：password 瞬传（VM 密钥引导，不落盘）。 */
+      extras?: { address?: string; user?: string; keyPath?: string; password?: string; recipeIds?: string[] };
     }
   | {
       type: 'ssh-add';
@@ -294,6 +314,8 @@ export function buildWizardPayload(state: EnvWizardState): WizardPayload | null 
       ...(p.discoveredAddress.trim() ? { address: p.discoveredAddress.trim() } : {}),
       ...(p.discoveredUser.trim() ? { user: p.discoveredUser.trim() } : {}),
       ...(p.discoveredKeyPath.trim() ? { keyPath: p.discoveredKeyPath.trim() } : {}),
+      // 1.6.12：VM 密钥引导瞬传密码（空串不下发）。
+      ...(p.discoveredPassword.trim() ? { password: p.discoveredPassword.trim() } : {}),
       ...(p.discoveredRecipeIds.length > 0 ? { recipeIds: p.discoveredRecipeIds } : {}),
     };
     return {
@@ -426,7 +448,12 @@ export function wizardSummaryRows(
     if (capRow) rows.push(capRow);
     if (state.params.discoveredAddress.trim()) rows.push({ label: 'guest 地址', value: state.params.discoveredAddress.trim() });
     if (state.params.discoveredUser.trim()) rows.push({ label: 'guest 用户', value: state.params.discoveredUser.trim() });
-    if (state.params.discoveredKeyPath.trim()) rows.push({ label: '密钥路径', value: state.params.discoveredKeyPath.trim() });
+    if (state.params.discoveredKeyPath.trim()) {
+      rows.push({ label: '密钥路径', value: state.params.discoveredKeyPath.trim() });
+    } else if (state.params.discoveredPassword.trim()) {
+      // 1.6.12 密钥引导：只显引导说明行，不回显密码本体（同 1.6.5 SSH 确认页）。
+      rows.push({ label: '凭据', value: '密码引导（自动生成密钥，密码不落盘）' });
+    }
     if (state.params.discoveredRecipeIds.length > 0) rows.push({ label: '绑定配方', value: state.params.discoveredRecipeIds.join('、') });
     const domains = domainsForRecipes(state.params.discoveredRecipeIds, ctx.domains);
     rows.push({ label: '域绑定', value: domains.length > 0 ? domains.map((d) => `${d.name}（${d.kind}）`).join('、') : '未绑定' });

@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.13] - 2026-09-09
+
+> **VM 登记不再需要懂密钥**——向导「本机已有」登记 VM 此前强制密钥路径（实机反馈）；1.6.5 的密码引导接到 VM 登记路径。
+
+### 修复
+- **向导 VM 登记加密码框**：guest 登录密码（可选——缺密钥时自动配置，现场使用不落盘）；keyPath 与密码至少其一；确认页显引导说明不回显密码。链路：向导 → environment/add 瞬传 password → 密钥引导（有地址走 plink 推公钥 / 断网走 vmrun）——1.6.5 服务端件零改动复用
+- 顺手补齐 `SshAddInput.password` 类型声明缺口（1.6.5 挂账）
+
 ## [1.6.12] - 2026-09-09
 
 > **K3 思考过程不再裸奔进正文**——K3 官方行为是「思考恒开 + `reasoning_content` 返回」（OpenAI 思考格式），而 kimi 通道此前走 anthropic-messages 协议，思考块分不出来，CoT 全进可见正文（实机：一条消息 3.4 万 token 全是思维链）。
