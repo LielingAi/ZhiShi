@@ -20,8 +20,13 @@ RUN apt-get update -o Acquire::Retries=2 || ( \
       apt-get update \
     )
 
+# 1.6.7 dogfood 实证：afl-clang-fast 在 ubuntu 24.04 挂 llvm-17，
+# -fsanitize=address 链接缺 libclang_rt.asan-*.a 开箱即炸——补运行时包。
+# llvm-17：ASan 符号化器（缺它 ASan 只打裸地址，stack-hash 的顶帧站点为空，
+# 崩溃去重粒度退化——dogfood 实证）。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     afl++ clang llvm build-essential \
+    libclang-rt-17-dev llvm-17 \
     python3 python3-pip \
     gdb git curl ca-certificates \
     file xxd less \
