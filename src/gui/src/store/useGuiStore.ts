@@ -57,7 +57,8 @@ import {
   type WizardParams,
   type WizardSource,
 } from '../model/env-wizard';
-import { parseSessionRows, autoRunRowsOf, mergeAutoRunRows, applySessionTitleChange, type SessionMetaRow } from '../model/history';
+import { parseSessionRow, parseSessionRows, autoRunRowsOf, mergeAutoRunRows, applySessionTitleChange, type SessionMetaRow } from '../model/history';
+import { missionLabel } from '../model/mission';
 import {
   INPUT_HISTORY_LIMIT,
   loadInputHistory,
@@ -123,6 +124,12 @@ import {
   effectiveQuery,
 } from '../model/slash-research';
 import { acceptsInlineArgs, parseSlashInput, slashNameSegment } from '../model/slash-input';
+import {
+  buildCampaignRows,
+  campaignDetailLines,
+  parseCampaignRecords,
+  type CampaignRecordLike,
+} from '../model/campaign';
 import { parseExpertImport } from '../model/expert-import';
 import { pickModelPickerProviders } from '../model/model-picker';
 import { mergeSidebarSnapshot } from '../model/sidebar';
@@ -224,6 +231,7 @@ export type ModalKind =
   | 'env-rebuild'
   | 'env-reset'
   | 'env-rename'
+  | 'campaign-stop'
   | 'auto-run-start'
   | 'auto-run-stop';
 
@@ -263,6 +271,8 @@ export interface ModalState {
   envReset?: EnvResetTarget;
   /** 1.6.6：env-rename 模态的改名目标（name = 当前别名，预填用；空则预填 id）。 */
   envRename?: { id: string; label: string; name?: string };
+  /** 1.6.8 M2：campaign-stop 模态的终止目标（/tasks 战役卡片「终止」二次确认）。 */
+  campaignStop?: { id: string; goal: string };
 }
 
 export interface DrawerState {
@@ -371,6 +381,10 @@ export interface GuiState {
   /** 1.3.4：清单拉取失败原因（非 null 时清单展示 error 态而非「暂无会话」）。 */
   historyError: string | null;
 
+  /** 1.6.8 M1：当前会话线的任务形态（sessionId = 绑定的 SessionStore 元 id；
+   *  null = 未连接/未绑定——选择器禁用态）。 */
+  mission: { sessionId: string; kind: string | null } | null;
+
   /** 1.3.3 @ 补全：选中后替换输入框尾部 @token 的一次性信号。 */
   mentionApply: { replace: string; nonce: number } | null;
 
@@ -379,6 +393,8 @@ export interface GuiState {
   tasksSelected: TasksSelected | null;
   queueOpen: boolean;
   queueServer: QueueStatusItem[];
+  /** 1.6.8 M2：战役观察卡片数据源（campaign/list；/tasks 第四源，开面板刷新）。 */
+  campaigns: CampaignRecordLike[];
 
   // 1.3.1 ⑤：boot 进度
   boot: BootState | null;
@@ -504,6 +520,12 @@ export interface GuiState {
   closeTasksPanel(): void;
   backToList(): void;
   selectTaskRow(key: string): Promise<void>;
+  /** 1.6.8 M2：战役卡片「终止」——开二次确认模态（campaign/stop）。 */
+  requestCampaignStop(target: { id: string; goal: string }): void;
+  /** 1.6.8 M2：确认终止（成功关模态 + 重拉 campaign 行 + toast；失败保留模态）。 */
+  confirmCampaignStop(): Promise<void>;
+  /** 1.6.8 M2：战役卡片「续命」（campaign/resume，仅 paused 态；成功重拉 + toast）。 */
+  resumeCampaign(id: string): Promise<void>;
   openQueuePanel(): Promise<void>;
   closeQueuePanel(): void;
   cancelQueueItem(queueId: string): Promise<void>;
@@ -526,6 +548,11 @@ export interface GuiState {
   toggleSessionArchived(id: string): Promise<void>;
   deleteSessionRow(id: string): Promise<void>;
   resumeSession(id: string): Promise<void>;
+  /** 1.6.8 M1：chat:init 后锚定当前会话线的任务形态（environment/current
+   *  拿绑定 meta id → GET /sessions/:id 读 mission；未绑定 → null）。 */
+  loadMission(): Promise<void>;
+  /** 1.6.8 M1：设定当前会话任务形态（PATCH /sessions/:id {mission}；null = 清除回无类型）。 */
+  setMission(kind: string | null): Promise<void>;
   esc(): void;
 }
 
@@ -614,11 +641,12 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
 
   historySessions: null,
   historyError: null,
+  mission: null,
   mentionApply: null,
 
   tasksOpen: false,
   tasksSelected: null,
-  queueOpen: false,
+  campaigns: [],  queueOpen: false,
   queueServer: [],
 
   boot: null,
@@ -777,6 +805,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
           // 1.4.4 研究档案：chat:init 重锚当前线的档案（SSE 不重放 archive
           // 事件——断线期间的变更由 archive/list 补回）。
           if (input.event === 'chat:init') void get().loadArchive();
+          // 1.6.8 M1：chat:init 重锚当前线的任务形态（environment/current
+          // 拿绑定 meta id——切换/重连/reset 后选择器与徽章跟着走）。
+          if (input.event === 'chat:init') void get().loadMission();
           // 1.4.4 研究档案：archive:changed 整包快照（单槽设计——同一时刻
           // 只有一条活跃线写档案,直接覆盖;高亮指针若被纠正清空则复位）。
           if (input.event === 'archive:changed') {
@@ -1924,6 +1955,14 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     } catch {
       serverTaskCache = [];
     }
+    // 1.6.8 M2：战役观察卡片随面板打开同节奏刷新（复用既有「开面板重拉」，
+    // 不新造定时器；拉取失败保持旧清单不阻塞面板）。
+    try {
+      const res = await api.campaignList(c, get().workspace ?? undefined);
+      if (res.success) set({ campaigns: parseCampaignRecords(res.data?.records) });
+    } catch {
+      /* campaign/list 失败不阻塞任务中心 */
+    }
   },
 
   closeTasksPanel() {
@@ -1940,6 +1979,19 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     if (!c) return;
     const row = selectTaskRows(state).find((r) => r.key === key);
     if (!row) return;
+    // 1.6.8 M2：战役行详情 = 信号史本地装配（campaign/list 已全量下发，
+    // 不走网络；无信号史的行不进详情）。
+    if (row.campaignId) {
+      const rec = state.campaigns.find((r) => r.id === row.campaignId);
+      set({
+        tasksSelected: {
+          title: row.name,
+          detail: row.detail,
+          transcript: rec ? campaignDetailLines(rec) : null,
+        },
+      });
+      return;
+    }
     try {
       if (row.loopSessionId) {
         const transcript = await api.fetchLoopTranscript(c, row.loopSessionId);
@@ -1966,6 +2018,56 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       }
     } catch (err) {
       state.showToast(`取任务详情失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  // ── 1.6.8 M2：战役卡片行内动作（campaign/stop|resume） ────────────────
+
+  requestCampaignStop(target) {
+    set({ modal: { kind: 'campaign-stop', campaignStop: target } });
+  },
+
+  async confirmCampaignStop() {
+    const c = client;
+    const state = get();
+    const target = state.modal?.campaignStop;
+    if (!target) return;
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.campaignStop(c, target.id);
+      if (!res.success) {
+        // 失败保留模态（可重试/取消），toast 服务端错误原文。
+        state.showToast(`终止战役失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set({ modal: null });
+      await refreshCampaigns(get, set);
+      state.showToast(`✓ 战役已终止（${target.id}）`);
+    } catch (err) {
+      state.showToast(`终止战役失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  async resumeCampaign(id) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.campaignResume(c, id);
+      if (!res.success) {
+        state.showToast(`续命失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      await refreshCampaigns(get, set);
+      state.showToast(`✓ 战役已续命（paused → running，预算重置起算）`);
+    } catch (err) {
+      state.showToast(`续命失败：${err instanceof Error ? err.message : String(err)}`);
     }
   },
 
@@ -2505,6 +2607,69 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     }
   },
 
+  // ── 1.6.8 M1：任务形态（mission）设定面 ─────────────────────────────
+
+  async loadMission() {
+    const c = client;
+    const state = get();
+    if (!c || !state.workspace) {
+      set({ mission: null });
+      return;
+    }
+    try {
+      // 既有通道：environment/current 的 data.sessionId = 当前分线绑定的
+      // SessionStore 元 id（1.1.6 #4 additive 字段）；未绑定 → 无形态可设。
+      const cur = await api.fetchEnvironmentCurrent(c, state.workspace);
+      const sid = cur.success ? cur.data?.sessionId ?? null : null;
+      if (!sid) {
+        set({ mission: null });
+        return;
+      }
+      const res = await api.fetchSessionMeta(c, sid);
+      const row = res.success ? parseSessionRow(res.session) : null;
+      set({ mission: { sessionId: sid, kind: row?.mission ?? null } });
+    } catch {
+      /* 形态读取失败不阻塞会话——选择器维持原值/禁用态 */
+    }
+  },
+
+  async setMission(kind) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    const cur = state.mission;
+    if (!cur) {
+      state.showToast('任务形态：当前会话尚未绑定（先发一条消息建立会话线）');
+      return;
+    }
+    try {
+      const res = await api.patchSessionMeta(c, cur.sessionId, { mission: kind });
+      if (!res.success) {
+        state.showToast(`任务形态设置失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      const row = parseSessionRow(res.session);
+      const applied = row?.mission ?? kind;
+      set({ mission: { sessionId: cur.sessionId, kind: applied } });
+      // 历史清单已加载的行就地更新（不重拉，仿 renameSession 路径）。
+      set((s) =>
+        s.historySessions
+          ? {
+              historySessions: s.historySessions.map((r) =>
+                r.id === cur.sessionId ? { ...r, mission: applied ?? undefined } : r,
+              ),
+            }
+          : {},
+      );
+      state.showToast(applied ? `✓ 任务形态：${missionLabel(applied)}` : '✓ 已清除任务形态');
+    } catch (err) {
+      state.showToast(`任务形态设置失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
   // ── Esc 链（单处理器入口） ──────────────────────────────────────────
 
   esc() {
@@ -2695,24 +2860,41 @@ export function selectCurrentSession(s: GuiState): SessionState {
 }
 
 /**
- * /tasks 面板行装配（bg + subagent + 服务端任务中心三源合一）。
+ * /tasks 面板行装配（战役 + bg + subagent + 服务端任务中心四源合一）。
  * 1.3.1 实机修正：必须返回**稳定引用**——React useSyncExternalStore 的
  * getSnapshot 契约要求缓存，每次新数组会触发无限渲染（实机黑屏
  * 「Maximum update depth exceeded」）。按输入引用相等缓存。
  */
-let taskRowsCache: { bg: unknown; sub: unknown; server: unknown; rows: TaskRow[] } | null = null;
+let taskRowsCache: { bg: unknown; sub: unknown; server: unknown; campaigns: unknown; rows: TaskRow[] } | null = null;
 export function selectTaskRows(s: GuiState): TaskRow[] {
   if (
     taskRowsCache &&
     taskRowsCache.bg === s.bgTasks &&
     taskRowsCache.sub === s.subagents &&
-    taskRowsCache.server === serverTaskCache
+    taskRowsCache.server === serverTaskCache &&
+    taskRowsCache.campaigns === s.campaigns
   ) {
     return taskRowsCache.rows;
   }
-  const rows = buildTaskRows(s.bgTasks, s.subagents, serverTaskCache);
-  taskRowsCache = { bg: s.bgTasks, sub: s.subagents, server: serverTaskCache, rows };
+  // 1.6.8 M2：战役行置顶（观察面焦点），其余三源维持 v19 顺序。
+  const rows = [...buildCampaignRows(s.campaigns), ...buildTaskRows(s.bgTasks, s.subagents, serverTaskCache)];
+  taskRowsCache = { bg: s.bgTasks, sub: s.subagents, server: serverTaskCache, campaigns: s.campaigns, rows };
   return rows;
+}
+
+/** 1.6.8 M2：重拉战役清单（stop/resume 后刷新 /tasks 战役行；失败静默保旧）。 */
+async function refreshCampaigns(
+  get: () => GuiState,
+  set: (partial: Partial<GuiState>) => void,
+): Promise<void> {
+  const c = client;
+  if (!c) return;
+  try {
+    const res = await api.campaignList(c, get().workspace ?? undefined);
+    if (res.success) set({ campaigns: parseCampaignRecords(res.data?.records) });
+  } catch {
+    /* 刷新失败保旧清单 */
+  }
 }
 
 /** 稳定的空会话单例：sessions 缺条目时兜底，避免 selector 每次返回新引用。 */

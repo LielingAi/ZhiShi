@@ -20,6 +20,7 @@ import { buildSystemPromptAppend } from './system-prompt';
 import { RESEARCH_TASK_KINDS } from '../shared/research-kinds';
 import type { DomainManifest } from './domains/manifest';
 import {
+  buildMissionSection,
   buildNativeCodeSection,
   buildResearchLogSection,
   buildResearchMemorySection,
@@ -1043,5 +1044,38 @@ describe('buildSubagentCatalogSection（1.6.7 R1 子代理可发现性）', () =
     // 不传 → 零注入
     const none = buildSystemPromptAppend({ type: 'security' }, {});
     expect(none).not.toContain('<zhishi-subagents>');
+  });
+});
+
+describe('buildMissionSection（1.6.8 M1 任务形态教学段）', () => {
+  it('无类型/未知 → 零注入', () => {
+    expect(buildMissionSection(undefined)).toBe('');
+    expect(buildMissionSection('')).toBe('');
+    expect(buildMissionSection('nonsense')).toBe('');
+  });
+
+  it('挖掘形态：战役打法钉死（基座/信号/破冰回路/分拣/fuzz 桶）', () => {
+    const s = buildMissionSection('discover');
+    expect(s).toContain('<zhishi-mission>');
+    expect(s).toContain('战役');
+    expect(s).toContain('env_bg');
+    expect(s).toContain('破冰回路');
+    expect(s).toContain('crash-triager');
+    expect(s).toContain('task_kind=fuzz');
+    expect(s.length).toBeLessThanOrEqual(1200);
+  });
+
+  it('利用/复现/ctf 形态各有教学段（既有有效剧本显式化）', () => {
+    expect(buildMissionSection('exploit')).toContain('武器化');
+    expect(buildMissionSection('exploit')).toContain('request_decision');
+    expect(buildMissionSection('reproduce')).toContain('锚点先行');
+    expect(buildMissionSection('ctf')).toContain('flag');
+  });
+
+  it('经 buildSystemPromptAppend 注入（security 场景）', () => {
+    const append = buildSystemPromptAppend({ type: 'security' }, { mission: 'discover' });
+    expect(append).toContain('<zhishi-mission>');
+    const none = buildSystemPromptAppend({ type: 'security' }, {});
+    expect(none).not.toContain('<zhishi-mission>');
   });
 });

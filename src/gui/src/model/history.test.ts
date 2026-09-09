@@ -41,8 +41,22 @@ describe('parseSessionRow（GET /sessions 行归一）', () => {
     });
   });
 
-  it('1.6.7 #2：archivedLoopSessionId 透传（/reset 解绑行的只读回看回落）', () => {
+  it('1.6.8 M1：mission 透传（缺省/空串不落字段）', () => {
     const row = parseSessionRow({
+      id: 'm8',
+      title: 'x',
+      createdAt: '',
+      lastActiveAt: '',
+      mission: 'discover',
+    });
+    expect(row?.mission).toBe('discover');
+    const none = parseSessionRow({ id: 'm8b', title: 'x', createdAt: '', lastActiveAt: '' });
+    expect(none?.mission).toBeUndefined();
+    const empty = parseSessionRow({ id: 'm8c', title: 'x', createdAt: '', lastActiveAt: '', mission: '' });
+    expect(empty?.mission).toBeUndefined();
+  });
+
+  it('1.6.7 #2：archivedLoopSessionId 透传（/reset 解绑行的只读回看回落）', () => {    const row = parseSessionRow({
       id: 'm9',
       title: 'x',
       createdAt: '',

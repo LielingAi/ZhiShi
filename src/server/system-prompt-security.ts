@@ -461,6 +461,46 @@ export function buildResearchLogSection(): string {
   return hardCapLines(renderResearchLogTemplate(), RESEARCH_LOG_MAX_CHARS);
 }
 
+/** 1.6.8 M1：mission 形态教学段硬顶。 */
+export const MISSION_SECTION_MAX_CHARS = 1200;
+
+/**
+ * 组装 `<zhishi-mission>` 段——会话任务形态（1.6.8，shared/mission.ts；
+ * 挂会话线，人设定）。无类型/未知 → ''（零注入，现状不变）。
+ * 挖掘 = 战役形态（设计稿 discovery-campaign.md）：基座先行、信号驱动、
+ * 破冰回路、分拣委派、fuzz 桶落库。利用/复现/ctf = 既有有效剧本的显式化
+ * （轨迹实证的行为写死成教学，不靠模型现场发挥）。
+ */
+export function buildMissionSection(mission: string | undefined): string {
+  const body = (() => {
+    switch (mission) {
+      case 'discover':
+        return `任务形态：挖掘（战役）。打法钉死：
+- 盲跑基座先行——AFL/libFuzzer 经 env_bg 后台长跑，语料按环境配方约定；起好基座再谈别的。
+- 等信号，别 sleep 轮询——bg 完成/新崩溃/平台期会回注进会话（1.6.7 R2 起），轮询是浪费。
+- 平台期（长期无新路径/零崩溃）→ 破冰回路：读目标源码 → 假设落档案（H#）→ 定向构造输入/变体 → 回灌语料或换 harness，然后继续盲跑。盲跑是基座，引导回路才是产出引擎（dogfood 实证：盲跑 121k execs 零崩溃，引导触发秒级命中）。
+- 新崩溃 → 委派 crash-triager 批处理分拣；深挖（有源码时）走其深挖模式。
+- 产出落 research_log（task_kind=fuzz）——挖掘与复现分桶统计。`;
+      case 'exploit':
+        return `任务形态：利用（武器化）。打法钉死：
+- 先搜公开 PoC/分析再动手（intel_search / expert_search / 在线渠道）——不重复造轮子（轨迹实证：纯自推 4 小时，用户提醒后 5 分钟找到公开分析）。
+- 慢反馈对策：exploit 迭代是慢循环（轨迹实证：95% 墙钟在等工具）——批量变体跑批 + 环境快照保底（工件丢一次等于白跑几十代）。
+- 每个岔路口（原语选不上/不可达判疑）先 request_decision 升级人，终局性判断（「不可达」）必须给人复核机会再落 stuck。`;
+      case 'reproduce':
+        return `任务形态：复现（1day）。打法钉死（13/17 会话实证有效的剧本）：
+- 锚点先行：修复 commit / 补丁 diff / 公开 PoC 描述——21 分钟内钉死锚点，钉不死先换策略。
+- 锚点后受控单变量变体收敛；假设显式落档案（H#）且可被自己证伪（falsify 是成绩不是失败）。
+- 构建期并行读源码；构建等待用 env_bg 不阻塞。`;
+      case 'ctf':
+        return `任务形态：CTF。打法钉死：读题 → 定位考点（checksec/文件类型/协议指纹）→ 最小验证先行——不追求完美武器化，拿到 flag 即收。`;
+      default:
+        return '';
+    }
+  })();
+  if (!body) return '';
+  return hardCapLines(`<zhishi-mission>\n${body}\n</zhishi-mission>`, MISSION_SECTION_MAX_CHARS);
+}
+
 // ===== 段 4b：<zhishi-subagents>（动态，1.6.7 R1 子代理可发现性） =====
 
 /**

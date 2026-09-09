@@ -33,6 +33,7 @@ const chatEngineMocks = vi.hoisted(() => ({
   forkPiChat: vi.fn(),
   getPiMessages: vi.fn((): unknown[] => []),
   switchPiSession: vi.fn(),
+  applyPiMissionChange: vi.fn(),
 }));
 
 vi.mock('../SessionStore', () => storeMocks);
@@ -340,6 +341,31 @@ describe('PATCH /sessions/:id（handlePatchSession）', () => {
     const session = (await bodyOf(res)).session as SessionMetadata;
 
     expect(session.providerEnvJson).toBe('[redacted]');
+  });
+
+  it('1.6.8 M1：mission 合法值落盘 + 联动引擎；null 清除；非法值 400 不落盘', async () => {
+    storeMocks.updateSessionMetadata.mockImplementation(async (_id: string, updates: Record<string, unknown>) =>
+      makeMeta('s1', updates as Partial<SessionMetadata>));
+
+    // 合法值：落盘 + 引擎联动（活跃线注入由引擎侧决定，本层只保证通知）
+    const res = await patch('s1', { mission: 'discover' });
+    expect(res.status).toBe(200);
+    const updates = storeMocks.updateSessionMetadata.mock.calls[0][1] as Record<string, unknown>;
+    expect(updates.mission).toBe('discover');
+    expect(chatEngineMocks.applyPiMissionChange).toHaveBeenCalledWith('s1', 'discover');
+
+    // null 清除：落 undefined + 联动带 undefined
+    chatEngineMocks.applyPiMissionChange.mockClear();
+    await patch('s1', { mission: null });
+    const updates2 = storeMocks.updateSessionMetadata.mock.calls[1][1] as Record<string, unknown>;
+    expect(updates2.mission).toBeUndefined();
+    expect(chatEngineMocks.applyPiMissionChange).toHaveBeenCalledWith('s1', undefined);
+
+    // 非法值：400 + 不落盘 + 不联动
+    chatEngineMocks.applyPiMissionChange.mockClear();
+    const bad = await patch('s1', { mission: 'hack-everything' });
+    expect(bad.status).toBe(400);
+    expect(chatEngineMocks.applyPiMissionChange).not.toHaveBeenCalled();
   });
 });
 

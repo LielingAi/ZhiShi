@@ -35,6 +35,8 @@ export interface SessionMetaRow {
   archived?: boolean;
   /** 1.3.3 服务端补的环境分线键（无映射/宿主线可能缺省）。 */
   envKey?: string;
+  /** 1.6.8 M1：任务形态（discover/exploit/reproduce/ctf；缺省 = 无类型）。 */
+  mission?: string;
 }
 
 function strOf(v: unknown): string | undefined {
@@ -68,6 +70,8 @@ export function parseSessionRow(raw: unknown): SessionMetaRow | null {
   if (r.archived === true) row.archived = true;
   const envKey = strOf(r.envKey);
   if (envKey) row.envKey = envKey;
+  const mission = strOf(r.mission);
+  if (mission) row.mission = mission;
   return row;
 }
 

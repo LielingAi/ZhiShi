@@ -185,6 +185,7 @@ vi.mock('./expert-inject', async (importOriginal) => {
 });
 
 import {
+  applyPiMissionChange,
   cancelPiQueueItem,
   chatSendErrorStatus,
   ensureMetaLoopLine,
@@ -1555,5 +1556,39 @@ describe('1.6.7 R2：bg 完成回注 loop（消灭 sleep 轮询）', () => {
     await waitTurnSettled();
     const opts = runLoopMock.mock.calls[0][0] as { prompt?: string };
     expect(opts.prompt ?? '').not.toContain('oldbuild');
+  });
+});
+
+describe('1.6.8 M1：mission（任务形态）', () => {
+  it('idle 改形态 → 下一 turn prompt 带形态通知；系统提示带 <zhishi-mission> 段', async () => {
+    await sendPiChatMessage({ text: 'one' });
+    await waitTurnSettled();
+    // 活跃线 = meta-new（createSessionMock 固定返回）
+    applyPiMissionChange('meta-new', 'discover');
+    getSessionMetadataMock.mockReturnValue({ id: 'meta-new', mission: 'discover' });
+    await sendPiChatMessage({ text: 'two' });
+    await waitTurnSettled();
+    const opts = runLoopMock.mock.calls[1][0] as { prompt?: string; systemPrompt?: string };
+    expect(opts.prompt).toContain('任务形态已设为「挖掘」');
+    expect(opts.prompt).toContain('two');
+    expect(opts.systemPrompt).toContain('<zhishi-mission>');
+    expect(opts.systemPrompt).toContain('战役');
+  });
+
+  it('无类型 → 系统提示零注入（现状不变）', async () => {
+    await sendPiChatMessage({ text: 'one' });
+    await waitTurnSettled();
+    const opts = runLoopMock.mock.calls[0][0] as { systemPrompt?: string };
+    expect(opts.systemPrompt ?? '').not.toContain('<zhishi-mission>');
+  });
+
+  it('非活跃线改形态 → 不注入（只落盘）', async () => {
+    await sendPiChatMessage({ text: 'one' });
+    await waitTurnSettled();
+    applyPiMissionChange('some-other-meta', 'exploit');
+    await sendPiChatMessage({ text: 'two' });
+    await waitTurnSettled();
+    const opts = runLoopMock.mock.calls[1][0] as { prompt?: string };
+    expect(opts.prompt ?? '').not.toContain('任务形态');
   });
 });

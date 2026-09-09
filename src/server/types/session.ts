@@ -32,6 +32,9 @@ export interface SessionMetadata {
      *  面板 wire 回看）；恢复/续接/载回一律不消费它（恢复走 loopSessionId
      *  的防复活纪律不变——reset 后重启绝不复活旧历史）。 */
     archivedLoopSessionId?: string;
+    /** 1.6.8 — 任务形态（mission，shared/mission.ts）：打法轴（挖掘/利用/
+     *  复现/ctf），挂会话线。缺省无类型 = 现状。挖掘 = 战役形态唯一入口。 */
+    mission?: string;
     /** 统一后创建的 session 标记。为 true 时 id 即 SDK session ID */
     unifiedSession?: boolean;
     /** Session statistics */

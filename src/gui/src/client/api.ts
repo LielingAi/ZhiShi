@@ -556,10 +556,12 @@ export type SessionMetaPatch = {
   title?: string;
   pinned?: boolean;
   archived?: boolean;
+  /** 1.6.8 M1：任务形态（null = 清除回无类型；非法值服务端 400）。 */
+  mission?: string | null;
 };
 
 /**
- * PATCH /sessions/:id（部分更新：title/pinned/archived）。
+ * PATCH /sessions/:id（部分更新：title/pinned/archived/mission）。
  * 服务端布尔字段只持久化 true（false 存 undefined）；返回更新后的 meta。
  */
 export function patchSessionMeta(
@@ -580,6 +582,19 @@ export function deleteSessionMeta(
 ): Promise<{ success: boolean; error?: string }> {
   return client.deleteJson<{ success: boolean; error?: string }>(
     `/sessions/${encodeURIComponent(id)}`,
+  );
+}
+
+/**
+ * GET /sessions/:id?limit=1 → 单条会话元（1.6.8 M1：读 mission；limit=1 只为
+ * 把消息体压到最小，元字段全量在）。形状归一走 model/history.ts::parseSessionRow。
+ */
+export function fetchSessionMeta(
+  client: GuiSidecarClient,
+  id: string,
+): Promise<{ success: boolean; error?: string; session?: unknown }> {
+  return client.getJson<{ success: boolean; error?: string; session?: unknown }>(
+    `/sessions/${encodeURIComponent(id)}?limit=1`,
   );
 }
 
@@ -886,6 +901,38 @@ export function autoRunVerdict(
 /** POST auto-run/list → 原始 JSON（形状归一在 model/auto-run::parseAutoRunList）。 */
 export function autoRunList(client: GuiSidecarClient): Promise<unknown> {
   return client.adminPost<unknown>('auto-run/list', {});
+}
+
+// ---------------------------------------------------------------------------
+// 1.6.8 M2 战役（campaign/list|stop|resume——观察面 = /tasks 战役卡片）
+// ---------------------------------------------------------------------------
+
+/** POST campaign/list（可选 workspace 过滤）→ data.records（形状窄化在
+ *  model/campaign::parseCampaignRecords；时间倒序由服务端保证）。 */
+export function campaignList(
+  client: GuiSidecarClient,
+  workspace?: string,
+): Promise<{ success: boolean; error?: string; data?: { records?: unknown[] } }> {
+  return client.adminPost<{ success: boolean; error?: string; data?: { records?: unknown[] } }>(
+    'campaign/list',
+    workspace ? { workspace } : {},
+  );
+}
+
+/** POST campaign/stop { id }（人终止战役——行内「终止」，二次确认后调）。 */
+export function campaignStop(
+  client: GuiSidecarClient,
+  id: string,
+): Promise<{ success: boolean; error?: string }> {
+  return client.adminPost<{ success: boolean; error?: string }>('campaign/stop', { id });
+}
+
+/** POST campaign/resume { id }（预算耗尽暂停续命——仅 paused 态有效）。 */
+export function campaignResume(
+  client: GuiSidecarClient,
+  id: string,
+): Promise<{ success: boolean; error?: string }> {
+  return client.adminPost<{ success: boolean; error?: string }>('campaign/resume', { id });
 }
 
 // ---------------------------------------------------------------------------

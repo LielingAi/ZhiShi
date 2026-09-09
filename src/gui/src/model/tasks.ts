@@ -149,8 +149,8 @@ export interface ServerTaskLike {
 export interface TaskRow {
   /** 面板内唯一键（含来源前缀，避免三源撞 id）。 */
   key: string;
-  /** 来源：bg 后台进程 / subagent 子代理 / server 任务中心。 */
-  source: 'bg' | 'subagent' | 'server';
+  /** 来源：bg 后台进程 / subagent 子代理 / server 任务中心 / campaign 战役（1.6.8 M2）。 */
+  source: 'bg' | 'subagent' | 'server' | 'campaign';
   /** 展示名（tag / taskId / task name）。 */
   name: string;
   /** 描述（子代理 description / server description）。 */
@@ -163,6 +163,9 @@ export interface TaskRow {
   transcriptable: boolean;
   loopSessionId?: string;
   serverTaskId?: string;
+  /** 1.6.8 M2：战役行的行内动作数据（终止/续命分派见 model/campaign）。 */
+  campaignId?: string;
+  campaignState?: string;
 }
 
 /** 三源行装配：子代理在前、后台进程次之、服务端任务最后（v19 顺序感）。 */
