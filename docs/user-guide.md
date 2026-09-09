@@ -138,12 +138,13 @@ zhishi model set-default deepseek deepseek-v4-pro   # 设置默认模型
 |---|---|
 | `/snapshot [名]` / `/rollback <名>` | 环境快照 / 回滚 |
 | `/extract <环境内路径>` | 回收环境内文件到宿主 |
+| `/push <宿主路径> <环境内路径>` | 传入宿主文件到环境（1.6.4） |
 | `/rewind` | 回退到历史消息（改完重发） |
 | `/fork` | 从某条消息分叉出新线程 |
 | `/queue` | 查看/取消排队消息 |
 | `/tasks` | 查看子任务与后台进程（列表 → 点开看 transcript） |
 | `/export [sanitize]` | 导出研究报告（report.md + evidence/；`sanitize` 出脱敏版，需一次越界批准） |
-| `/reset` | 重置对话（新会话） |
+| `/reset` | 重置对话：清上下文 + 新会话新轨迹文件（下一条消息时落盘，旧轨迹整条封存于 `~/.zhishi/loop-sessions/` 可审计）。破坏性副作用：强停进行中的回合、丢弃排队/纠偏消息、回收后台进程。注意与 CLI `zhishi env reset`（docker 换干净容器）是两件事 |
 | `/help` | 命令帮助 |
 
 研究四命令（1.5.0 触发权归人——查证/拍板/归档由你一键触发，结果通吃当前会话上下文）：

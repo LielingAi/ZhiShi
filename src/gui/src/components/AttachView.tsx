@@ -308,12 +308,17 @@ function ExecPane({ envKey }: { envKey: string | null }): React.JSX.Element {
 export function AttachView(): React.JSX.Element {
   const envKey = useGuiStore((s) => s.currentEnvKey);
   const setPage = useGuiStore((s) => s.setPage);
+  // 1.6.7 #1：头部显示别名（登记条目的 name），无别名回显 id（envKey）。
+  const envLabel = useGuiStore((s) => {
+    if (!s.currentEnvKey) return '';
+    return s.envs.find((e) => e.id === s.currentEnvKey)?.name ?? s.currentEnvKey;
+  });
   const [mode, setMode] = useState<AttachMode>('term');
 
   return (
     <div className="attach-view show">
       <div className="attach-head">
-        <span className="ah-env">◈ {envKey || '未选择环境'}</span>
+        <span className="ah-env">◈ {envLabel || '未选择环境'}</span>
         <span className="mode-toggle">
           <button
             className={`btn small ${mode === 'term' ? 'mode-on' : ''}`}

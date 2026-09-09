@@ -1740,7 +1740,10 @@ class ChatEngine {
     this.steering = [];
     if (this.boundSessionMetaId) {
       const staleMetaId = this.boundSessionMetaId;
-      void updateSessionMetadata(staleMetaId, { loopSessionId: null } as unknown as Partial<SessionMetadata>).catch(
+      // 1.6.7 #2：旧线 id 存 archivedLoopSessionId（历史面板只读回看用）——
+      // loopSessionId 摘 null 的防复活纪律不变（恢复/载回不消费 archived 字段）。
+      const oldLoopId = this.sessionId;
+      void updateSessionMetadata(staleMetaId, { loopSessionId: null, archivedLoopSessionId: oldLoopId } as unknown as Partial<SessionMetadata>).catch(
         (err) => console.warn('[pi-engine] reset 解绑旧 loopSessionId 失败:', err),
       );
     }

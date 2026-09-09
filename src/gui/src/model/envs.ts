@@ -291,7 +291,9 @@ export function groupSidebar(
       // 1.3.8 B1：命中登记条目时 key 归一为条目 id（environment/select
       // 只认登记 id；短 id 行切入会落悬空 selection）。
       key: entry?.id ?? inst.id,
-      label: inst.name ?? entry?.name ?? inst.id,
+      // 1.6.7 #1：别名优先——ps 实例名（容器名/VM 名）只是引擎原始名，改名后
+      // 条目 name 才是用户给的显示名（修复「运行中行不显示别名」）。
+      label: entry?.name ?? inst.name ?? inst.id,
       group: 'run',
       detail: `${inst.driver ?? 'env'} · 运行中`,
       kind: inst.driver ?? entry?.kind ?? 'env',

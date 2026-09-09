@@ -5,7 +5,9 @@
  * 数据源: package.json (单一数据源)
  * 同步目标: src-tauri/tauri.conf.json, src-tauri/Cargo.toml,
  *           src/shared/constants.ts（GUI_VERSION——1.4.8/1.4.9 两次发版漏同步
- *           的教训：GUI 关于页版本号必须进同一同步链）
+ *           的教训：GUI 关于页版本号必须进同一同步链）,
+ *           README.md 头部版本行（1.6.6 发版漏同步的教训：README 是 GitHub
+ *           门面，版本行必须进同一同步链）
  */
 
 import { readFileSync, writeFileSync } from 'fs';
@@ -57,5 +59,17 @@ if (!guiVersionRe.test(constantsContent)) {
 constantsContent = constantsContent.replace(guiVersionRe, `export const GUI_VERSION = '${version}'`);
 writeFileSync(constantsPath, constantsContent, 'utf-8');
 console.log('  ✓ src/shared/constants.ts (GUI_VERSION)');
+
+// 更新 README 头部版本行（**vX.Y.Z · ...**；正则失配硬失败，同上纪律）
+const readmePath = join(rootDir, 'README.md');
+let readmeContent = readFileSync(readmePath, 'utf-8');
+const readmeVersionRe = /\*\*v\d+\.\d+\.\d+ ·/;
+if (!readmeVersionRe.test(readmeContent)) {
+    console.error('错误: README.md 中未匹配到 **vX.Y.Z · 版本行，未做替换');
+    process.exit(1);
+}
+readmeContent = readmeContent.replace(readmeVersionRe, `**v${version} ·`);
+writeFileSync(readmePath, readmeContent, 'utf-8');
+console.log('  ✓ README.md (头部版本行)');
 
 console.log(`\n版本号已同步到 ${version}`);
