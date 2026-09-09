@@ -133,11 +133,43 @@ export function buildLoopModel(opts: BuildLoopModelOptions): LoopModelResolution
 
   if (kimi) {
     const provider = kimiCodingProvider();
-    models.setProvider(provider);
     // 内置目录含 k3 等；配置的 modelId 不在目录时克隆首条目改 id
     // （目录字段——baseUrl/compat/上下文窗口——比凭空构造可靠）。
     const catalog = provider.getModels();
     const found = catalog.find((m) => m.id === opts.modelId);
+
+    // 1.6.12：k3 系改走 openai-completions 通道——K3 官方行为是「思考恒开 +
+    // reasoning_content 返回」（OpenAI 思考格式，见 pi#7199 / K3 API 指南）；
+    // anthropic-messages 通道分不出思考块，CoT 全裸奔进正文（实机：k3 一条
+    // 消息 3.4 万 token 全是思维链）。openai 适配器把 reasoning_content 收进
+    // thinking 信道。/coding/v1/chat/completions 端点实探存在（401 待鉴权）。
+    if (/^k3([-.]|$)/.test(opts.modelId)) {
+      const openaiModels = createModels();
+      const cat = found;
+      const model = {
+        id: opts.modelId,
+        name: cat?.name ?? opts.modelId,
+        api: 'openai-completions',
+        provider: 'kimi-coding-openai',
+        baseUrl: 'https://api.kimi.com/coding/v1',
+        reasoning: true, // k3 恒思考（官方）；reasoning_content 由 openai 适配器分离
+        input: cat?.input ?? ['text'],
+        cost: cat?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: cat?.contextWindow ?? 262_144,
+        maxTokens: cat?.maxTokens ?? 131_072,
+      } as unknown as Model<Api>;
+      const openaiProvider = createProvider({
+        id: 'kimi-coding-openai',
+        baseUrl: 'https://api.kimi.com/coding/v1',
+        auth: { apiKey: staticApiKeyAuth(opts.apiKey ?? '', opts.authType) },
+        models: [model],
+        api: openAICompletionsApi(),
+      });
+      openaiModels.setProvider(openaiProvider);
+      return { models: openaiModels, model, getApiKey: () => opts.apiKey, providerId: opts.providerId ?? 'kimi-coding', modelId: opts.modelId };
+    }
+
+    models.setProvider(provider);
     const model = (found ?? { ...catalog[0], id: opts.modelId, name: opts.modelId }) as Model<Api>;
     return { models, model, getApiKey: () => opts.apiKey, providerId: opts.providerId ?? 'kimi-coding', modelId: opts.modelId };
   }

@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.12] - 2026-09-09
+
+> **K3 思考过程不再裸奔进正文**——K3 官方行为是「思考恒开 + `reasoning_content` 返回」（OpenAI 思考格式），而 kimi 通道此前走 anthropic-messages 协议，思考块分不出来，CoT 全进可见正文（实机：一条消息 3.4 万 token 全是思维链）。
+
+### 修复
+- **k3 系模型改走 openai-completions 通道**（`https://api.kimi.com/coding/v1`，实探存在）：pi 的 openai 适配器把 `reasoning_content` 收进 thinking 信道——思考进折叠块、正文干净；k3 未收录型号（k3-*）同家族路由；非 k3 的 kimi 模型（kimi-for-coding 等）保持 anthropic 通道不变
+- 目录字段（contextWindow 1M / maxTokens 131k / cost）从 pi 内置目录透传，不凭空构造
+
 ## [1.6.11] - 2026-09-09
 
 > **任务形态（mission）可预先设定**——1.6.8 的形态选择器此前要等首条消息绑定会话后才可用，而战役语义恰恰是「派任务前先定形态」，顺序反了（实机反馈「状态没办法修改」）。
