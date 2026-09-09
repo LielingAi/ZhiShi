@@ -311,11 +311,15 @@ const PI_SYSTEM_PROMPT =
  */
 const FORCE_COMPACTION_RATIO = 0.25;
 
-/** 1.6.9 #1：空产出 turn 的自动续跑上限（连续 2 次仍空 → 停止并升级）。 */
-export const EMPTY_TURN_CONTINUE_LIMIT = 2;
-/** 续跑提示文本（合成 user 消息——气泡可见，诚实不伪装）。 */
+/** 1.6.9 #1：空产出 turn 的自动续跑上限（连续 1 次仍空 → 停止并升级；
+ *  1.6.10：2 → 1——reasoning 模型的 thinking-only 回合合法存在，多续一次
+ *  就多一次被点燃长文的机会）。 */
+export const EMPTY_TURN_CONTINUE_LIMIT = 1;
+/** 续跑提示文本（合成 user 消息——气泡可见，诚实不伪装）。
+ *  1.6.10：只喊「继续」——绝不索要总结（1.6.9 的「请明确给出结论总结」
+ *  会把 thinking 型模型点燃成数万 token 的长篇，实机回归）。 */
 export const EMPTY_TURN_CONTINUE_TEXT =
-  '[系统] 上一回合没有任何可见产出（输出可能全耗在思考或被截断）。请继续未完成的工作；若已完成，请明确给出结论总结。';
+  '[系统] 上一回合没有任何可见产出（输出可能全耗在思考或被截断）。请继续未完成的工作——不要写总结，该干什么干什么。';
 
 /** 基座段:静态身份 + 当前锚定环境的明确信息(env id/kind/address)。 */
 function buildBaseSystemPrompt(env: EnvironmentEntry | null): string {
@@ -774,8 +778,10 @@ class ChatEngine {
   /** 1.6.7 R2：bg 完成通知的统一文案（grounding 与 steering 两通道同一句）。 */
   private static formatBgNote(n: { tag: string; status: string; exitCode?: number }): string {
     return `[后台进程完成] env_bg 任务 tag=${n.tag} 已结束（status=${n.status}` +
-      `${n.exitCode !== undefined ? `，exitCode=${n.exitCode}` : ''}）——` +
-      '输出用 env_bg 的 log 动作查看；据此决定推进还是继续等待（不要再 sleep 轮询）。';
+      `${n.exitCode !== undefined ? `，exitCode=${n.exitCode}` : ''}）。` +
+      // 1.6.10：标注「系统通知，无需回复」——否则模型逐条展开回应，构建密集
+      // 会话话密（实机回归教训）；等它的工作才接。
+      '（系统通知，无需回复——除非你正在等这个结果；查看输出用 env_bg 的 log 动作。）';
   }
 
   /**

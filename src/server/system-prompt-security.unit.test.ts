@@ -1054,19 +1054,18 @@ describe('buildMissionSection（1.6.8 M1 任务形态教学段）', () => {
     expect(buildMissionSection('nonsense')).toBe('');
   });
 
-  it('挖掘形态：战役打法钉死（基座/信号/破冰回路/分拣/fuzz 桶）', () => {
+  it('挖掘形态：战役纪律（破冰回路/分拣委派/fuzz 桶；1.6.10 起短句）', () => {
     const s = buildMissionSection('discover');
     expect(s).toContain('<zhishi-mission>');
-    expect(s).toContain('战役');
-    expect(s).toContain('env_bg');
+    expect(s).toContain('挖掘');
     expect(s).toContain('破冰回路');
     expect(s).toContain('crash-triager');
     expect(s).toContain('task_kind=fuzz');
     expect(s.length).toBeLessThanOrEqual(1200);
   });
 
-  it('利用/复现/ctf 形态各有教学段（既有有效剧本显式化）', () => {
-    expect(buildMissionSection('exploit')).toContain('武器化');
+  it('利用/复现/ctf 形态各有纪律段', () => {
+    expect(buildMissionSection('exploit')).toContain('利用');
     expect(buildMissionSection('exploit')).toContain('request_decision');
     expect(buildMissionSection('reproduce')).toContain('锚点先行');
     expect(buildMissionSection('ctf')).toContain('flag');
