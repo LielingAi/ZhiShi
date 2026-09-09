@@ -258,6 +258,8 @@ export interface ModalState {
   prefill?: PromotePrefill;
   /** 1.3.7 向导 → boot：VM 配方的可选 guest 凭据（environment/up 透传）。 */
   bootOpts?: { user?: string; keyPath?: string };
+  /** 1.6.14：登记失败的定格错误（env-registering 模态的错误态）。 */
+  registerError?: string;
   /** 1.3.7 补口：env-remove 模态的删除目标（文案/确认强度见 model/env-remove）。 */
   envRemove?: EnvRemoveTarget;
   /** 1.3.8 ①：env-down 模态的停止目标（文案见 model/env-down）。 */
@@ -426,8 +428,9 @@ export interface GuiState {
   refreshEnvCapability(envId: string): Promise<void>;
   requestEnvProvision(target: { id: string; label: string; missing: string[] }): void;
   confirmEnvProvision(): Promise<void>;
-  /** 1.3.5 ④：本机发现条目「选中即注册」（environment/add → 入侧栏 → 运行中则切入）。 */
-  registerDiscovered(itemKey: string, extras?: RegisterExtras): Promise<void>;
+  /** 1.3.5 ④：本机发现条目「选中即注册」（environment/add → 入侧栏 → 运行中则切入）。
+   *  1.6.14：返回结果（失败带错误文案）——向导 busy 模态据此定格错误。 */
+  registerDiscovered(itemKey: string, extras?: RegisterExtras): Promise<{ ok: boolean; error?: string }>;
   /** 1.3.7 补口：侧栏「删除」入口——运行中拦截 toast，否则开确认模态。 */
   requestEnvRemove(target: EnvRemoveTarget): void;
   /** 1.3.7 补口：确认删除（environment/rm → 成功 refreshSidebar + toast；失败 toast 服务端错误原文）。 */
@@ -1076,24 +1079,25 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     const state = get();
     if (!c) {
       state.showToast('未连接 sidecar');
-      return;
+      return { ok: false, error: '未连接 sidecar' };
     }
     const item = findDiscoveredItem(state, itemKey);
     if (!item) {
       state.showToast('未找到该本机条目');
-      return;
+      return { ok: false, error: '未找到该本机条目' };
     }
     const payload = buildRegisterPayload(item, extras);
     if (!payload) {
       state.showToast('该条目缺少登记所需信息（名字/驱动）');
-      return;
+      return { ok: false, error: '该条目缺少登记所需信息（名字/驱动）' };
     }
     state.showToast(`⏳ 登记 ${payload.id}…`);
     try {
       const res = await api.environmentAdd(c, payload);
       if (!res.success) {
-        state.showToast(`登记失败：${res.error ?? '未知错误'}`);
-        return;
+        const errText = `登记失败：${res.error ?? '未知错误'}`;
+        state.showToast(errText);
+        return { ok: false, error: errText };
       }
       void state.refreshSidebar();
       state.showToast(`✓ 已登记 ${payload.id}`);
@@ -1102,8 +1106,11 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       if (isDiscoveredRunning(item)) {
         await state.switchEnv(payload.id);
       }
+      return { ok: true };
     } catch (err) {
-      state.showToast(`登记失败：${err instanceof Error ? err.message : String(err)}`);
+      const errText = `登记失败：${err instanceof Error ? err.message : String(err)}`;
+      state.showToast(errText);
+      return { ok: false, error: errText };
     }
   },
 
@@ -2195,13 +2202,17 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       const key = payload.itemKey;
       const extras = payload.extras;
       // 1.6.14：登记过程可视化——密码引导的密钥配置可能几十秒，toast 会
-      // 自动消失，此前看起来「没反应」（实机反馈）。busy 模态撑到结果出来。
+      // 自动消失，此前看起来「没反应」（实机反馈）。busy 模态撑到结果出来；
+      // 失败时错误定格在模态里（不再一闪而过）。
       set({
         wizard: null,
         modal: { kind: 'env-registering' },
       });
-      await get().registerDiscovered(key, extras);
-      if (get().modal?.kind === 'env-registering') set({ modal: null });
+      const r = await get().registerDiscovered(key, extras);
+      if (get().modal?.kind === 'env-registering') {
+        if (r.ok) set({ modal: null });
+        else set({ modal: { kind: 'env-registering', registerError: r.error ?? '登记失败' } });
+      }
       return;
     }
     // ssh-add：environment/add 真实落盘（host/user/keyPath 必填已在状态机校验）。

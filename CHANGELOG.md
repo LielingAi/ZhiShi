@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.15] - 2026-09-10
+
+> **断网 Linux VM 也能密码引导 + 登记失败不再静默**——实机反馈「登记了环境里没有」：断网 Linux VM 的密码推送通道在 1.6.5 被误砍（「无通用通道」报错），登记失败只有一闪而过的 toast。
+
+### 修复
+- **断网 Linux VM 的 vmrun 密钥推送通道**（纠正 1.6.5 误判）：runProgramInGuest 以登录用户身份执行，写自己的 `~/.ssh/authorized_keys` 无需提权——bash 捕获包装 + code/out 文件核对（与 windows 同纪律）
+- **登记失败定格**：向导登记的 busy 模态在失败时定格错误文案（不再一闪而过），成功才自动关
+
 ## [1.6.14] - 2026-09-09
 
 > **登记过程有反馈了**——向导登记 VM 此前瞬间关模态只剩会消失的 toast，密码引导的密钥配置要几十秒，看起来「没反应」（实机反馈）。

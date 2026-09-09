@@ -45,6 +45,7 @@ import {
 import {
   buildCopyFromGuestArgs,
   buildDeleteGuestFileArgs,
+  buildGuestCaptureScript,
   buildGuestExecArgs,
   classifyGuestExecFailure,
   parseGuestExitCode,
@@ -117,6 +118,21 @@ export function buildLinuxKeyPushCommand(pubkey: string): string {
     `chmod 600 ~/.ssh/authorized_keys && echo KEY_BOOTSTRAP_OK`
   );
 }
+
+/**
+ * linux 断网 VM 的 vmrun 推送脚本（1.6.13 修正——1.6.5 误砍：runProgramInGuest
+ * 以登录用户身份执行，写自己的 ~/.ssh/authorized_keys 无需提权，通道完全
+ * 可行）。bash 语义 + 自写 code 文件（与 windows 同纪律；runProgramInGuest
+ * 不回传 stdout/退出码）。
+ */
+export function buildLinuxKeyPushGuestScript(pubkey: string, codeFile: string): string {
+  return `(${buildLinuxKeyPushCommand(pubkey)}); echo -n $? > ${codeFile}`;
+}
+
+/** linux 断网 VM 的 code 文件落点。 */
+export const LINUX_KEYPUSH_CODE = '/tmp/zhishi-keypush.code';
+/** linux 断网 VM 的输出文件落点（核对尾部排障用）。 */
+export const LINUX_KEYPUSH_OUT = '/tmp/zhishi-keypush.out';
 
 /**
  * windows 推送脚本（powershell；plink 远端经 -EncodedCommand / vmrun 同用）。
@@ -222,15 +238,10 @@ export async function bootstrapKeyForTarget(
     return { ok: true, keyPath: keyMaterial.keyPath, via: 'plink' };
   }
 
-  // 断网 VM → vmrun 客户机通道（仅 windows；linux 断网无通用密码通道）
+  // 断网 VM → vmrun 客户机通道（windows + linux 双族——1.6.13 修正：linux
+  // 断网曾被误砍，runProgramInGuest 以登录用户身份执行，写自己的
+  // ~/.ssh/authorized_keys 无需提权，通道完全可行）
   if (target.kind === 'vm') {
-    if (family !== 'windows') {
-      return {
-        ok: false,
-        error: '断网 Linux VM 没有通用密码推送通道（guest 内写 authorized_keys 需要已登录的 shell）——' +
-          '用 zhishi env adopt 养成（密码通道是 plink，要求 guest 有 sshd），或手动配好公钥后用 --key-path 登记',
-      };
-    }
     const vmError = await ensureVmwareAvailable(exec);
     if (vmError) return { ok: false, error: vmError };
     const resolved = resolveVmxForEntry(
@@ -245,9 +256,14 @@ export async function bootstrapKeyForTarget(
       return { ok: false, error: `VM 未在运行（${vmx} 不在 vmrun list 里）——先启动 VM（或 zhishi env up）再引导` };
     }
 
-    const script = buildWindowsKeyPushScript(pubkey, { codeFile: WIN_KEYPUSH_CODE, logFile: WIN_KEYPUSH_LOG });
+    const isWin = family === 'windows';
+    const script = isWin
+      ? buildWindowsKeyPushScript(pubkey, { codeFile: WIN_KEYPUSH_CODE, logFile: WIN_KEYPUSH_LOG })
+      // linux：bash 捕获包装（输出落 .out、退出码落 .code——runProgramInGuest
+      // 不回传 stdout/退出码，同 windows 的核对纪律）。
+      : buildGuestCaptureScript(buildLinuxKeyPushCommand(pubkey), LINUX_KEYPUSH_OUT, LINUX_KEYPUSH_CODE);
     const run = await exec(
-      ['vmrun', ...buildGuestExecArgs(vmx, target.user, password, script, 'windows')],
+      ['vmrun', ...buildGuestExecArgs(vmx, target.user, password, script, family)],
       KEY_BOOTSTRAP_VMRUN_TIMEOUT_MS,
     );
     if (run.exitCode !== 0 || run.error) {
@@ -262,12 +278,14 @@ export async function bootstrapKeyForTarget(
       }
     }
 
-    // 取回 code 核对（脚本自写；log 顺带做排障尾部）
+    // 取回 code 核对（脚本自写；log/out 顺带做排障尾部）
+    const guestCode = isWin ? WIN_KEYPUSH_CODE : LINUX_KEYPUSH_CODE;
+    const guestLog = isWin ? WIN_KEYPUSH_LOG : LINUX_KEYPUSH_OUT;
     const hostCode = join(tmpdir(), `zhishi-keypush-${randomBytes(4).toString('hex')}.code`);
     const hostLog = `${hostCode}.log`;
     try {
       const copyCode = await exec(
-        ['vmrun', ...buildCopyFromGuestArgs(vmx, target.user, password, WIN_KEYPUSH_CODE, hostCode)],
+        ['vmrun', ...buildCopyFromGuestArgs(vmx, target.user, password, guestCode, hostCode)],
         KEY_BOOTSTRAP_VMRUN_TIMEOUT_MS,
       );
       if (copyCode.exitCode !== 0 || copyCode.error || !existsSync(hostCode)) {
@@ -276,7 +294,7 @@ export async function bootstrapKeyForTarget(
       const code = parseGuestExitCode(readFileSync(hostCode, 'utf-8'));
       let logTail = '';
       const copyLog = await exec(
-        ['vmrun', ...buildCopyFromGuestArgs(vmx, target.user, password, WIN_KEYPUSH_LOG, hostLog)],
+        ['vmrun', ...buildCopyFromGuestArgs(vmx, target.user, password, guestLog, hostLog)],
         KEY_BOOTSTRAP_VMRUN_TIMEOUT_MS,
       );
       if (copyLog.exitCode === 0 && !copyLog.error && existsSync(hostLog)) {
@@ -286,7 +304,7 @@ export async function bootstrapKeyForTarget(
         return { ok: false, error: `公钥推送在 guest 内失败（code=${code ?? '?'}）：\n${logTail || '（无日志）'}` };
       }
     } finally {
-      for (const guestPath of [WIN_KEYPUSH_CODE, WIN_KEYPUSH_LOG]) {
+      for (const guestPath of [guestCode, guestLog]) {
         try {
           await exec(['vmrun', ...buildDeleteGuestFileArgs(vmx, target.user, password, guestPath)], KEY_BOOTSTRAP_VMRUN_TIMEOUT_MS);
         } catch { /* best effort */ }

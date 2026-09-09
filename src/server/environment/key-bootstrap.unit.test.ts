@@ -229,15 +229,36 @@ describe('bootstrapKeyForTarget — vmrun 通道（断网 Windows VM）', () => 
 });
 
 describe('bootstrapKeyForTarget — 守卫与边界', () => {
-  it('断网 Linux VM → 指向 adopt 的明确错误（无通用密码通道）', async () => {
+  it('断网 Linux VM 走 vmrun 通道（1.6.13 修正误砍——runProgramInGuest 以登录用户身份执行，写自己 ~/.ssh 无需提权）', async () => {
     const { keysDir, keyPath } = makeKeys();
+    const LINUX_VMX = '/vms/u.vmx';
+    const copySideEffect = (content: string) => (argv: string[]) => {
+      writeFileSync(argv[argv.length - 1]!, content);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+    const { exec, calls } = scriptedExec([
+      { exitCode: 0, stdout: 'Total running VMs: 0\n', stderr: '' },   // ensureVmwareAvailable probe
+      { exitCode: 0, stdout: `Total running VMs: 1\n${LINUX_VMX}\n`, stderr: '' }, // 运行中确认
+      { exitCode: 0, stdout: '', stderr: '' },                          // runProgramInGuest（bash 推送）
+      copySideEffect('0'),                                               // copyFileFromGuest code
+      copySideEffect('KEY_BOOTSTRAP_OK\n'),                              // out
+      { exitCode: 0, stdout: '', stderr: '' },                           // deleteFileInGuest ×2
+      { exitCode: 0, stdout: '', stderr: '' },
+    ]);
     const r = await bootstrapKeyForTarget(
-      { kind: 'vm', vmx: '/vms/u.vmx', vmName: 'u', user: 'researcher', osFamily: 'linux' },
+      { kind: 'vm', vmx: LINUX_VMX, vmName: 'u', user: 'researcher', osFamily: 'linux' },
       'pw',
-      { exec: scriptedExec([]).exec, keysDir, keyPath },
+      { exec, keysDir, keyPath },
     );
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toContain('env adopt');
+    expect(r).toEqual({ ok: true, keyPath, via: 'vmrun' });
+    const run = calls.find((c) => c.includes('runProgramInGuest'));
+    expect(run).toBeDefined();
+    // linux 包装：/bin/bash -c + 捕获脚本（写自己 home 的 authorized_keys）
+    expect(run).toContain('/bin/bash');
+    const script = run![run!.length - 1]!;
+    expect(script).toContain('~/.ssh/authorized_keys');
+    expect(script).toContain('KEY_BOOTSTRAP_OK');
+    expect(script).toContain('/tmp/zhishi-keypush.code');
   });
 
   it('缺密码 / 缺用户 → 参数错误（零 exec 调用）', async () => {

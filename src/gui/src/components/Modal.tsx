@@ -809,20 +809,29 @@ function PromoteModal(): React.JSX.Element | null {
 // ── 1.3.7 补口：环境删除确认（文案/确认强度在 model/env-remove） ────────
 
 /** 1.6.14：登记进行中（busy）模态——密码引导的密钥配置可能几十秒，
- *  无按钮、结果出来后由 store 关（成功/失败 toast 是既有通道）。 */
+ *  无按钮、结果出来后由 store 关（成功/失败 toast 是既有通道）；
+ *  失败时错误定格（registerError），不再一闪而过。 */
 function EnvRegisterModal(): React.JSX.Element | null {
   const modal = useGuiStore((s) => s.modal);
+  const closeModal = useGuiStore((s) => s.closeModal);
   if (modal?.kind !== 'env-registering') return null;
+  const err = modal.registerError;
   return (
     <div className="modal-backdrop open">
       <div className="modal">
         <div className="m-head">
-          <span className="m-title">正在登记环境…</span>
+          <span className="m-title">{err ? '登记失败' : '正在登记环境…'}</span>
+          {err && <button className="m-close" onClick={closeModal}>✕</button>}
         </div>
         <div className="m-body">
-          <div className="m-note">
-            ⏳ 正在登记并配置接入凭据——若走密码引导（自动生成密钥并推公钥进目标），可能需要几十秒，请稍候。
-          </div>
+          {err
+            ? <div className="m-danger">{err}</div>
+            : <div className="m-note">⏳ 正在登记并配置接入凭据——若走密码引导（自动生成密钥并推公钥进目标），可能需要几十秒，请稍候。</div>}
+          {err && (
+            <div className="m-actions">
+              <button className="btn" onClick={closeModal}>知道了</button>
+            </div>
+          )}
         </div>
       </div>
     </div>
