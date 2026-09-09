@@ -1572,7 +1572,7 @@ describe('1.6.8 M1：mission（任务形态）', () => {
     expect(opts.prompt).toContain('任务形态已设为「挖掘」');
     expect(opts.prompt).toContain('two');
     expect(opts.systemPrompt).toContain('<zhishi-mission>');
-    expect(opts.systemPrompt).toContain('战役');
+    expect(opts.systemPrompt).toContain('挖掘');
   });
 
   it('无类型 → 系统提示零注入（现状不变）', async () => {
@@ -1615,14 +1615,14 @@ describe('1.6.9 #1：turn 空产出检测与自动续跑（thinking 烧穿假死
       JSON.stringify(c[1]).includes('没有任何可见产出'))).toBe(true);
   });
 
-  it('连续空 turn 达上限（2 次续跑）→ 停止 + 明确报错上屏（不静默假死）', async () => {
+  it('连续空 turn 达上限（1 次续跑，1.6.10 收紧）→ 停止 + 明确报错上屏（不静默假死）', async () => {
     runLoopMock.mockImplementation(async function* () {
       yield { type: 'done', messages: [userMsg('q'), assistantMsg('')] } as never;
     });
     await sendPiChatMessage({ text: '干活' });
     await waitTurnSettled();
-    // 原始 1 + 续跑 2 = 3 次；不再继续
-    expect(runLoopMock.mock.calls.length).toBe(3);
+    // 原始 1 + 续跑 1 = 2 次；不再继续
+    expect(runLoopMock.mock.calls.length).toBe(2);
     expect(broadcastMock.mock.calls.some((c) => c[0] === 'chat:message-error' &&
       String(c[1]).includes('已停止自动续跑'))).toBe(true);
   });
