@@ -106,7 +106,11 @@ describe('bootstrapKeyForTarget — plink 通道（有网络目标）', () => {
   it('happy path：keyscan 钉指纹 → plink 推送 → 返回 keyPath', async () => {
     const { keysDir, keyPath } = makeKeys();
     const { exec, calls } = scriptedExec([
-      ok('10.10.0.5 ssh-ed25519 AAAAhostkey\n'),              // ssh-keyscan
+      (argv) => { // 1.6.16：host key 探针（ssh accept-new）写 known_hosts
+        const kh = argv.find((a) => a.startsWith('UserKnownHostsFile='));
+        writeFileSync(kh!.split('=')[1]!, '10.10.0.5 ssh-ed25519 AAAAhostkey\n');
+        return fail('Permission denied'); // 认证失败是预期
+      },
       ok('KEY_BOOTSTRAP_OK /root/.ssh/authorized_keys\n'),     // plink 推送
     ]);
     const r = await bootstrapKeyForTarget(sshTarget, 'pw', { exec, keysDir, keyPath, plinkPath: 'plink' });
@@ -123,7 +127,11 @@ describe('bootstrapKeyForTarget — plink 通道（有网络目标）', () => {
   it('windows 目标（osFamily=windows）→ EncodedCommand 包装，管理员落点在脚本里', async () => {
     const { keysDir, keyPath } = makeKeys();
     const { exec, calls } = scriptedExec([
-      ok('10.10.0.9 ssh-ed25519 AAAAhostkey\n'),
+      (argv) => {
+        const kh = argv.find((a) => a.startsWith('UserKnownHostsFile='));
+        writeFileSync(kh!.split('=')[1]!, '10.10.0.9 ssh-ed25519 AAAAhostkey\n');
+        return fail('Permission denied');
+      },
       ok('KEY_BOOTSTRAP_OK C:\\ProgramData\\ssh\\administrators_authorized_keys\n'),
     ]);
     const r = await bootstrapKeyForTarget(
@@ -144,7 +152,11 @@ describe('bootstrapKeyForTarget — plink 通道（有网络目标）', () => {
   it('plink 推送认证失败 → 可读错误带「密码不对」提示', async () => {
     const { keysDir, keyPath } = makeKeys();
     const { exec } = scriptedExec([
-      ok('10.10.0.5 ssh-ed25519 AAAAhostkey\n'),
+      (argv) => {
+        const kh = argv.find((a) => a.startsWith('UserKnownHostsFile='));
+        writeFileSync(kh!.split('=')[1]!, '10.10.0.5 ssh-ed25519 AAAAhostkey\n');
+        return fail('Permission denied');
+      },
       fail('FATAL ERROR: Permission denied (password)'),
     ]);
     const r = await bootstrapKeyForTarget(sshTarget, 'wrong', { exec, keysDir, keyPath, plinkPath: 'plink' });
@@ -152,7 +164,7 @@ describe('bootstrapKeyForTarget — plink 通道（有网络目标）', () => {
     if (!r.ok) expect(r.error).toContain('公钥推送失败');
   });
 
-  it('keyscan 取不到指纹（sshd 没跑）→ 指向 adopt 的指引', async () => {
+  it('host key 探针取不到指纹（known_hosts 没写出来 = 连接层没通）→ 指向 sshd/网络的指引', async () => {
     const { keysDir, keyPath } = makeKeys();
     const { exec } = scriptedExec([fail('')]);
     const r = await bootstrapKeyForTarget(sshTarget, 'pw', { exec, keysDir, keyPath, plinkPath: 'plink' });

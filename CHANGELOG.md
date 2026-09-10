@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.17] - 2026-09-10
+
+> **host key 指纹通道换 ssh accept-new 探针**——实机回归：Windows System32 自带的老 OpenSSH `ssh-keyscan` 不支持 sntrup761 后量子 KEX（新 Ubuntu sshd 默认优先），握手即弃、指纹全空，密钥引导报「取不到指纹」（误导成 sshd/网络问题）。换与全产品一致的 ssh 客户端做 accept-new 探针（认证失败无所谓，host key 落临时 known_hosts 再算指纹）。
+
+### 修复
+- **host key 指纹改 ssh accept-new 探针**（弃用 ssh-keyscan）：老 Windows OpenSSH 的 KEX 不兼容不再误伤；known_hosts 临时文件用完即删
+- 报错文案区分真实原因（连接层没通 vs 认证）
+
 ## [1.6.16] - 2026-09-10
 
 > **K3 openai 通道 400 热修**——1.6.12 换通道后 kimi 端点报 `role 'developer' is not allowed`：pi 对不认识的服务商自动检测 compat，`api.kimi.com` 不在其 moonshot 判定里 → developer 角色误判开启。钉死 compat（developer 角色关 / `max_tokens` 字段 / reasoning_effort 支持）。

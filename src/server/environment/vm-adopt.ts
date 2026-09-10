@@ -246,15 +246,36 @@ export function hostKeyFingerprintFromKeyscan(line: string): string | undefined 
 }
 
 /** 取 guest 全部 host key 指纹，keyscan 失败/无 key 返回 undefined。
- *  1.6.5 导出：key-bootstrap 的 plink 推送复用同一钉指纹纪律。 */
+ *  1.6.5 导出：key-bootstrap 的 plink 推送复用同一钉指纹纪律。
+ *  1.6.16：ssh-keyscan 弃用改 ssh accept-new 探针——实机回归：Windows
+ *  System32 自带的老 OpenSSH keyscan 不支持 sntrup761 后量子 KEX（新
+ *  Ubuntu sshd 默认优先），握手即弃、指纹全空，报成「取不到指纹」误伤
+ *  （宿主机 Git 自带的 keyscan 正常，sidecar PATH 解析到 System32 的）。
+ *  ssh 探针用与全产品一致的客户端；认证失败无所谓——accept-new 已把 host
+ *  key 落 known_hosts，读回来算指纹（与 keyscan 行同格式）。 */
 export async function resolveHostKeyFingerprints(exec: VmExec, address: string): Promise<string[] | undefined> {
-  const scan = await exec(['ssh-keyscan', '-T', '10', '-t', 'ed25519,ecdsa,rsa', address], SSH_PROBE_TIMEOUT_MS);
-  if (scan.exitCode !== 0 || scan.error) return undefined;
-  const fps = scan.stdout
-    .split('\n')
-    .map(hostKeyFingerprintFromKeyscan)
-    .filter((fp): fp is string => Boolean(fp));
-  return fps.length > 0 ? fps : undefined;
+  const kh = join(tmpdir(), `zhishi-kh-${randomBytes(4).toString('hex')}`);
+  try {
+    // BatchMode 不交互；认证失败（Permission denied）是预期——host key 已写。
+    await exec([
+      'ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new',
+      '-o', 'ConnectTimeout=10', '-o', `UserKnownHostsFile=${kh}`,
+      `zhishi-probe@${address}`, 'true',
+    ], SSH_PROBE_TIMEOUT_MS);
+    let content: string;
+    try {
+      content = readFileSync(kh, 'utf-8');
+    } catch {
+      return undefined; // known_hosts 没写出来 = 连接层就没通
+    }
+    const fps = content
+      .split('\n')
+      .map(hostKeyFingerprintFromKeyscan)
+      .filter((fp): fp is string => Boolean(fp));
+    return fps.length > 0 ? fps : undefined;
+  } finally {
+    try { rmSync(kh, { force: true }); } catch { /* best effort */ }
+  }
 }
 
 /**

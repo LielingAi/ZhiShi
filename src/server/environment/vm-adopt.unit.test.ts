@@ -252,7 +252,15 @@ describe('vmTemplateAdopt orchestration', () => {
       ok(`Total running VMs: 1\n${vmx}\n`),            // running check → already running, skip start
       ok('192.168.126.130\n'),                          // getGuestIPAddress
       fail('Permission denied (publickey)'),            // ssh key probe as researcher fails
-      ok('10.0.0.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHFqDc+BfdpW53W8tieAWOqQ+vZtwCDVSzb+4cMfQ1bx\n'), // ssh-keyscan（-hostkey 钉指纹）
+      // 1.6.16：host key 探针（ssh accept-new）——副作用是把指纹行写进
+      // UserKnownHostsFile 指定的临时文件（keyscan 已弃用：老 Windows OpenSSH
+      // 的 keyscan 不支持 sntrup761 后量子 KEX，握手即弃）。
+      (argv) => {
+        // 探针 argv 里 UserKnownHostsFile 是 '-o' 的独立值元素
+        const kh = argv.find((a) => a.startsWith('UserKnownHostsFile='));
+        writeFileSync(kh!.split('=')[1]!, '10.0.0.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHFqDc+BfdpW53W8tieAWOqQ+vZtwCDVSzb+4cMfQ1bx\n');
+        return fail('Permission denied (publickey)'); // 认证失败是预期——host key 已写
+      },
       ok(),                                             // plink true (password works)
       ok('PROVISION_OK\n'),                             // provision via plink
       ok(),                                             // ssh probe researcher with key
