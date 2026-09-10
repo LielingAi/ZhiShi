@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.16] - 2026-09-10
+
+> **K3 openai 通道 400 热修**——1.6.12 换通道后 kimi 端点报 `role 'developer' is not allowed`：pi 对不认识的服务商自动检测 compat，`api.kimi.com` 不在其 moonshot 判定里 → developer 角色误判开启。钉死 compat（developer 角色关 / `max_tokens` 字段 / reasoning_effort 支持）。
+
+### 修复
+- **k3 系 openai 通道 compat 钉死**：`supportsDeveloperRole: false`（system 消息不再以 developer 角色发送）+ `maxTokensField: 'max_tokens'` + `supportsReasoningEffort: true`（K3 官方支持）+ `thinkingFormat: 'openai'`
+
 ## [1.6.15] - 2026-09-10
 
 > **断网 Linux VM 也能密码引导 + 登记失败不再静默**——实机反馈「登记了环境里没有」：断网 Linux VM 的密码推送通道在 1.6.5 被误砍（「无通用通道」报错），登记失败只有一闪而过的 toast。

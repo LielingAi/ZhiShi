@@ -93,6 +93,9 @@ describe('resolveLoopModel（config 自解析）', () => {
     expect(r!.model.api).toBe('openai-completions');
     expect(r!.model.baseUrl).toBe(`${KIMI_CODING_BASE_URL}/v1`);
     expect(r!.model.reasoning).toBe(true);
+    // compat 钉死（pi 自动检测不认识 kimi-coding → developer 角色误判 400 的
+    // 1.6.12 实机回归）：developer 角色关 + max_tokens 字段名
+    expect((r!.model as { compat?: { supportsDeveloperRole?: boolean } }).compat?.supportsDeveloperRole).toBe(false);
     expect(r!.getApiKey()).toBe('fake-key');
     // 内置目录条目（不是凭空构造）：k3 的上下文窗口来自 pi 目录
     expect(r!.model.contextWindow).toBeGreaterThan(0);

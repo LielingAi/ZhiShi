@@ -157,6 +157,20 @@ export function buildLoopModel(opts: BuildLoopModelOptions): LoopModelResolution
         cost: cat?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: cat?.contextWindow ?? 262_144,
         maxTokens: cat?.maxTokens ?? 131_072,
+        // 1.6.12 实机回归修正：compat 缺省时 pi 自动检测不认识 kimi-coding
+        // （isMoonshot 只认 api.moonshot.*）→ supportsDeveloperRole 误判 true →
+        // system 消息以 'developer' 角色发送，kimi 端点 400「role 'developer'
+        // is not allowed」。钉死 compat：developer 角色关、max_tokens 字段名、
+        // reasoning_effort 支持（K3 官方支持）。
+        compat: {
+          supportsStore: false,
+          supportsDeveloperRole: false,
+          supportsReasoningEffort: true,
+          supportsUsageInStreaming: true,
+          maxTokensField: 'max_tokens',
+          supportsLongCacheRetention: false,
+          thinkingFormat: 'openai',
+        },
       } as unknown as Model<Api>;
       const openaiProvider = createProvider({
         id: 'kimi-coding-openai',
