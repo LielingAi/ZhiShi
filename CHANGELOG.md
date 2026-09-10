@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.18] - 2026-09-10
+
+> **zhipu 预置目录补 GLM-5.3 系**——实机反馈：切换报「供应商 zhipu 无模型: glm-5.3-flash」，模型真实存在（官方文档：1M 上下文 / 128K 输出 / 原生多模态 / 思考恒开）。预置目录静态滞后的代价；实时目录走 modelListUrl 刷新（该通道不变）。
+
+### 修复
+- **zhipu 预置收录 glm-5.3 / glm-5.3-flash**（1M 窗口；5.3-flash 128K 输出 + text/image 模态）；预设 models 上限断言 4→6（别让上限卡死合理增量）
+
 ## [1.6.17] - 2026-09-10
 
 > **host key 指纹通道换 ssh accept-new 探针**——实机回归：Windows System32 自带的老 OpenSSH `ssh-keyscan` 不支持 sntrup761 后量子 KEX（新 Ubuntu sshd 默认优先），握手即弃、指纹全空，密钥引导报「取不到指纹」（误导成 sshd/网络问题）。换与全产品一致的 ssh 客户端做 accept-new 探针（认证失败无所谓，host key 落临时 known_hosts 再算指纹）。

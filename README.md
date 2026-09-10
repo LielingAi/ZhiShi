@@ -7,7 +7,7 @@
   </picture>
 </p>
 
-**v1.6.17 · 安全研究领域的 agent harness：环境融合、原生工具、原生代码、研究档案。**
+**v1.6.18 · 安全研究领域的 agent harness：环境融合、原生工具、原生代码、研究档案。**
 
 [![Version](https://img.shields.io/github/v/tag/LielingAi/ZhiShi)](https://github.com/LielingAi/ZhiShi/tags)
 [![License](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](LICENSE)

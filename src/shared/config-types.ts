@@ -1373,6 +1373,14 @@ export const PRESET_PROVIDERS: Provider[] = [
 
       { model: 'glm-5-flash', modelName: 'GLM-5 Flash', modelSeries: 'glm', contextLength: 1_000_000, maxOutputTokens: 96_000, inputModalities: ['text', 'image'] },
 
+      // 1.6.18：GLM-5.3 系（2026-09 官方文档：1M 上下文；5.3-flash 原生多模态
+      // 128K 输出、思考恒开 thinking.type=enabled）——实机反馈：切换报
+      //「供应商 zhipu 无模型: glm-5.3-flash」（预置目录静态滞后的代价）。
+
+      { model: 'glm-5.3', modelName: 'GLM-5.3', modelSeries: 'glm', contextLength: 1_000_000, maxOutputTokens: 96_000, inputModalities: ['text', 'image'] },
+
+      { model: 'glm-5.3-flash', modelName: 'GLM-5.3 Flash', modelSeries: 'glm', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
+
     ],
 
   },

@@ -75,10 +75,13 @@ describe('PRESET_PROVIDERS（OpenAI 格式内置供应商）', () => {
     }
   });
 
-  it('每个 OpenAI 预设：models 2-4 条且字段合法', () => {
+  it('每个 OpenAI 预设：models 2-6 条且字段合法', () => {
+    // 上限 4→6（1.6.18）：预置目录是静态快照，GLM-5.3 系这类新型号会增量
+    // 收录（实机反馈「无模型」误拦真实存在的模型）；实时目录靠 modelListUrl
+    // 刷新，预置只保常用面，但别让上限把合理增量卡死。
     for (const p of PRESET_PROVIDERS.filter(p => OPENAI_PRESET_IDS.includes(p.id))) {
       expect(p.models.length).toBeGreaterThanOrEqual(2);
-      expect(p.models.length).toBeLessThanOrEqual(4);
+      expect(p.models.length).toBeLessThanOrEqual(6);
       for (const m of p.models) {
         expect(m.model).toBeTruthy();
         expect(m.modelName).toBeTruthy();
