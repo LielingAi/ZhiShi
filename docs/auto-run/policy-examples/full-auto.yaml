@@ -1,0 +1,29 @@
+# zhishi auto-run 策略示例：全托管档
+# 用法: zhishi auto-run start ... --policy-file docs/auto-run/policy-examples/full-auto.yaml
+#
+# 语义：一切按策略自主推进——方向分歧按原则自决、空转/连败宽限、预算自动
+#       续命 3 次、达成出报告。只有预算序列耗尽或 Esc 才会停。
+# 适合：目标明确、验收条件写得严谨、且你信任「档案 + 报告」事后审的探索型研究。
+# 注意：系统只产出证据与报告，不判 pass/fail——本档不会替你下「通过」结论。
+
+on_decision:
+  action: continue
+  principles: |
+    - 同一思路连续两轮无进展就换思路，不恋战
+    - 关键取舍以研究档案里最新证据为准，不从历史脑补
+    - 复现优先于新颖：先把已验证路径走通再开新线
+
+on_stall:
+  tolerance: 6
+  action: continue             # 空转宽限（继续 6 轮再评估）
+
+on_failure:
+  streak: 5                    # 连败阈值放宽到 5
+  action: continue             # 连败也继续——探索期工具失败率高
+
+on_budget:
+  action: renew
+  renew_limits: [100, 50, 20]  # 三次自动续命：100 → 50 → 20，之后停
+
+on_declare:
+  report: true                 # 达成 → 自动出报告（证据链在报告里，人读报告终判）

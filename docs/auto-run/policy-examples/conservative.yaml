@@ -1,0 +1,23 @@
+# zhishi auto-run 策略示例：保守档（= CLI 缺省档）
+# 用法: zhishi auto-run start ... --policy-file docs/auto-run/policy-examples/conservative.yaml
+#
+# 语义：全暂停点保守停止，达成声明自动出报告 → completed。
+# 适合：不熟悉策略系统时的第一跑；或「宁可止损不可冒进」的目标。
+
+on_decision:                  # 方向分歧：停（无人应答不瞎猜）
+  action: stop
+
+on_stall:                     # 空转：连续 3 轮无有效记录且阶段未推进 → 停
+  tolerance: 3
+  action: stop
+
+on_failure:                   # 连败：同类工具连续 3 次 isError → 停
+  streak: 3
+  action: stop
+
+on_budget:                    # 预算耗尽：停（不自动续命）
+  action: stop
+  renew_limits: []
+
+on_declare:                   # 达成：自动出报告 → completed（报告路径在 auto-run list）
+  report: true

@@ -1,0 +1,27 @@
+# zhishi auto-run 策略示例：平衡档
+# 用法: zhishi auto-run start ... --policy-file docs/auto-run/policy-examples/balanced.yaml
+#
+# 语义：方向分歧按预置原则自行决策；空转/连败给宽限；预算自动续命 2 次；
+#       达成自动出报告。适合：无人值守跑一整夜的中长研究。
+
+on_decision:
+  action: continue             # 模型提请方向分歧 → 注入下面的原则，自行决策继续
+  principles: |
+    - 优先推进已证伪链上最近的假设，不开新方向
+    - 权衡取舍偏向可复现优于新颖
+    - 遇到边界拦截不绕，记录后换思路
+
+on_stall:
+  tolerance: 6                 # 放宽到 6 轮（默认 3）：某些研究阶段天然慢热
+  action: continue             # 空转先给宽限而不是直接停
+
+on_failure:
+  streak: 3
+  action: stop                 # 工具连败 3 次通常是真的卡住了，停
+
+on_budget:
+  action: renew                # 预算耗尽自动续命
+  renew_limits: [50, 20]       # 第一次续到 50、第二次续到 20，之后耗尽即停
+
+on_declare:
+  report: true                 # 达成 → 自动出报告 → completed

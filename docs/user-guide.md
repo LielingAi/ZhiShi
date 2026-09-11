@@ -244,12 +244,21 @@ GUI 里 `/export` 把当前工作区的研究记录组装成报告目录（`outp
 
 ### auto loop（1.4.1）
 
-目标式研究循环：研究员给目标，agent 自主跑完整研究周期，人在暂停点介入。
+目标式研究循环：研究员给目标，agent 自主跑完整研究周期。**两种模式**：
+
+**GUI 交互模式**（1.4.1 原形态，人在暂停点介入）：
 
 - 启动：工具栏「⚡ auto loop」表单——任务名 / 环境（锁定当前环境）/ 目标 / 预算三选一（轮次 / token / 时间）/ **验收条件**（自由文本多条，必填 ≥1，启动即锁定不可改）
 - 运行期：不可输入、不可切环境，只能观察（会话流 + 观察卡 + 研究档案）；Esc 二次确认终止
 - 暂停点：模型主动提请（越界/方向分歧）+ harness 被动检测（连续 6 轮空转、同类工具连续 3 次失败、预算耗尽）——都走决策面板
 - 收尾：全部验收条件达成且有证据时模型 `declare_completion` → 验收包（条件 × 证据）你终审（通过 / 不通过 / 继续跑）→ 通过自动出报告
+
+**CLI 策略模式**（1.7.0，无人值守）：
+
+- 一条命令拉起，全程自主、无弹窗无交互；人与 run 的接口只有两处——**开局写策略、结束读报告**
+- 策略文件（YAML）控制所有暂停点的处置：方向分歧按预置原则自决 / 空转连败阈值与宽限 / 预算自动续命 / 达成自动出报告
+- 策略文档：`docs/auto-run-policy.md`；CLI 用法：`docs/auto-run-cli.md`；示例：`docs/auto-run/policy-examples/`（保守 / 平衡 / 全托管三档）
+- 同 envKey 互斥闸：同一研究环境同时只允许一个活跃 run（并行请用多实例/克隆分支）
 
 ### 研究档案（1.4.4）
 
@@ -331,6 +340,9 @@ MCP 工具在会话里以 `mcp__<server>__<tool>` 命名，与内置工具同受
 
 ## 附：文档索引
 
+- auto loop 策略（YAML schema / 校验 / 语义）：`docs/auto-run-policy.md`
+- auto loop 命令行用法：`docs/auto-run-cli.md`
+- auto loop 策略示例：`docs/auto-run/policy-examples/`（conservative / balanced / full-auto）
 - 产品定位与决策历史：`docs/spec/security_researcher_agent_design.md`、`docs/spec/security_researcher_product_plan.md`
 - 技术方案：`docs/spec/security_researcher_agent_tech_plan.md`
 - TUI 技术规范（已退役归档）：`docs/spec/tui_tech_spec.md`
