@@ -1560,6 +1560,13 @@ class ChatEngine {
       scenario?: InteractionScenario;
       /** 调用方等待上限;到期返回 error 但 loop 继续在后台跑完。 */
       timeoutMs?: number;
+      /**
+       * 1.7.1:显式环境锚(auto-run 传 record.envKey)——headless 线不依赖
+       * 工作区交互选择(CLI 启动的 run 从不写选择存储,缺这个 env_exec/
+       * env_bg 工具不会注册,模型「无 env_exec 工具」实机实证)。缺省 =
+       * 现状(工作区选择存储)。
+       */
+      envKey?: string;
     } = {},
   ): Promise<{ text: string; error?: string; loopSessionId: string }> {
     const loopSessionId = options.loopSessionId ?? newLoopSessionId();
@@ -1569,7 +1576,9 @@ class ChatEngine {
     if (!resolution) {
       return { text: '', error: PI_NO_PROVIDER_ERROR, loopSessionId };
     }
-    const env = resolveSessionEnv(this.agentDir);
+    const env = options.envKey
+      ? findEnvironmentEntry(listEnvironments(loadConfig()), options.envKey) ?? null
+      : resolveSessionEnv(this.agentDir);
     const toolNames = [
       ...(env ? [ENV_EXEC_TOOL_NAME, ENV_BG_TOOL_NAME, DELEGATE_TASK_TOOL_NAME] : []),
       RESEARCH_LOG_TOOL_NAME,
@@ -2140,7 +2149,7 @@ export async function sendPiChatMessage(input: PiSendInput): Promise<PiSendResul
 /** B2(1.2.6)— cron 独立 invoke 通道(不碰单例会话/steering/队列)。 */
 export async function invokePiSession(
   input: PiSendInput,
-  options: { loopSessionId?: string; scenario?: InteractionScenario; timeoutMs?: number } = {},
+  options: { loopSessionId?: string; scenario?: InteractionScenario; timeoutMs?: number; envKey?: string } = {},
 ): Promise<{ text: string; error?: string; loopSessionId: string }> {
   return defaultEngine.invokePiSession(input, options);
 }

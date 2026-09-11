@@ -1380,6 +1380,32 @@ describe('docker checkpoint task.md(1.6.3 #7)', () => {
   });
 });
 
+// ===== 1.7.1 envKey 显式锚定（CLI auto-run 链路洞实机实证） =====
+
+describe('runAutoRunLoop(1.7.1:invoke 带 envKey 显式环境锚)', () => {
+  it('runner 每轮 invoke 传 record.envKey——headless 线不依赖工作区交互选择', async () => {
+    const record = makeRecord({ policy: policyOf('on_declare:\n  report: false') });
+    const seenEnvKeys: Array<string | undefined> = [];
+    const fake = makeFakeDeps({
+      invoke: async (_input, options) => {
+        fake.invokeCount += 1;
+        seenEnvKeys.push(options.envKey);
+        if (fake.invokeCount === 1) {
+          declareCompletion(record.loopSessionId, '达成', []);
+        }
+        return { text: 'x', loopSessionId: record.loopSessionId };
+      },
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    await ctl.waitUntilDone();
+    await loop;
+    expect(seenEnvKeys.length).toBeGreaterThan(0);
+    expect(seenEnvKeys.every((k) => k === 'pwn-vm')).toBe(true);
+    expect(record.status).toBe('completed');
+  });
+});
+
 // ===== 1.7.0 策略（design: 1.7.0-policy-design.md） =====
 
 function policyOf(yaml: string): AutoRunPolicy {

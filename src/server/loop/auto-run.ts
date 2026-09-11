@@ -707,6 +707,8 @@ export interface AutoRunDeps {
     loopSessionId: string;
     scenario: InteractionScenario;
     timeoutMs?: number;
+    /** 1.7.1:显式环境锚(record.envKey)——headless 线不依赖工作区交互选择。 */
+    envKey?: string;
   }) => Promise<{ text: string; error?: string; loopSessionId: string }>;
   /** loop 线全量消息(loadLoopSession(...).messages)。 */
   loadMessages: (loopSessionId: string) => AgentMessage[];
@@ -1000,7 +1002,7 @@ export async function runAutoRunLoop(
     try {
       result = await deps.invoke(
         { text },
-        { loopSessionId, scenario: autoRunScenario(record.id), timeoutMs: deps.turnTimeoutMs },
+        { loopSessionId, scenario: autoRunScenario(record.id), timeoutMs: deps.turnTimeoutMs, envKey: record.envKey },
       );
     } catch (err) {
       result = { text: '', error: err instanceof Error ? err.message : String(err) };
@@ -1694,13 +1696,22 @@ async function exportRunReport(
       loadTranscript: (loopSessionId) => buildLoopTranscript(loopSessionId),
       // 1.4.4 研究档案交付投影：auto-run 线同样从档案派生成果章节。
       loadArchive: (loopSessionId) => loadArchive(loopSessionId),
-      requestApproval: (objects) => requestBoundaryAsk({
-        kind: 'host-write',
-        objects,
-        toolName: 'auto-run/verdict',
-        toolDescription: '终审通过后自动出报告(把证据与报告落回宿主)',
-        options: ['批准写入', '拒绝'],
-      }),
+      requestApproval: record.policy
+        // 1.7.1:策略声明即预授权——on_declare.report:true 同时是「报告落盘宿主
+        // 的预声明同意」(仅限本 run 报告产物,落点=workspace/output/reports;
+        // 其余越界写仍走边界拦截)。无人值守下 boundary-ask 无人应答 = 报告
+        // 永远出不来(实机实证),策略模式的核心交付「结束读报告」被卡死。
+        ? async () => {
+            console.log(`[auto-run] ${record.id} 策略预授权报告落盘(仅报告产物;落点=workspace/output/reports)`);
+            return true;
+          }
+        : (objects) => requestBoundaryAsk({
+            kind: 'host-write',
+            objects,
+            toolName: 'auto-run/verdict',
+            toolDescription: '终审通过后自动出报告(把证据与报告落回宿主)',
+            options: ['批准写入', '拒绝'],
+          }),
       narrate: async (prompt, systemPrompt) => {
         if (!resolution) return { error: '模型不可用(无 provider/key)' };
         const controller = new AbortController();
