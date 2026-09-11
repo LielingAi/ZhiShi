@@ -17,7 +17,7 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
   // MCP 删除退役（全仓零消费方）；env 移出（term open --env 重复传曾静默
   // 拼成 'a,b' 非法 envTag，审计 A3-6）——--env 现在是普通 key-value 旗标，
   // 重复传时后者覆盖前者。
-  const repeatable = new Set(['models', 'model-names']);
+  const repeatable = new Set(['models', 'model-names', 'criteria']);
 let i = 0;
   while (i < args.length) {
     const arg = args[i];

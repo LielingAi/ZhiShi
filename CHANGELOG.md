@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-11
+
+> **auto loop 策略治理 + CLI 补口 + 同环境互斥闸**——auto loop 从「全人肉闸」升级为「策略文件治理」：策略（YAML）是 run 的唯一治理来源，run 全程自主、无弹窗无交互，人与 run 的接口只有两处——开局写策略、结束读报告。CLI 一条命令拉起无人值守研究循环；同一研究环境（envKey）双开被闸拒绝。设计稿：docs/design/1.7.0-policy-design.md。
+
+### 新增
+- **策略系统**（schema 无 ask）：`on_decision(stop|continue+principles)` / `on_stall(tolerance+stop|continue)` / `on_failure(streak+stop|continue)` / `on_budget(stop|renew+renew_limits)` / `on_declare(report)`；启动即校验、非法拒绝；record.policy 落盘
+- **策略路径六暂停点全自主**：provider-error/decision/stall/failure/budget 按策略处置（无策略 run 走 GUI 原生交互路径，一行未改）；`declare → 自动出报告 → completed + reportDir`（不建 verdictPackage，防幽灵终审）
+- **CLI auto-run 命令组**：`start`（`--policy-file` 或缺省保守档 / `--criteria` 可重复 / `--budget-kind/limit`）、`list`（人类可读含待审声明+预检）、`stop`、`budget`、`verdict`、`clear`；help 文案同步
+- **同 envKey 互斥闸**：单实例闸扩展为 workspace 或 envKey 命中即拒（错误文案分叉）——同一研究环境双开互相污染（快照/文件/状态踩踏）从此被拒
+
+### 修复
+- **CLI `readTextFileFlag` 的 `require('fs')` 在 ESM 下 ReferenceError**（顶层导入；`term write --data-file` 同享此 bug）
+
 ## [1.6.18] - 2026-09-10
 
 > **zhipu 预置目录补 GLM-5.3 系**——实机反馈：切换报「供应商 zhipu 无模型: glm-5.3-flash」，模型真实存在（官方文档：1M 上下文 / 128K 输出 / 原生多模态 / 思考恒开）。预置目录静态滞后的代价；实时目录走 modelListUrl 刷新（该通道不变）。

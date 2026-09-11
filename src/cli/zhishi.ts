@@ -15,7 +15,7 @@
  * is then read as JS and rejected as a syntax error. Same outcome under node.
  */
 import { homedir } from 'os';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { Agent, fetch as undiciFetch } from 'undici';
@@ -34,6 +34,7 @@ import { isSidecarPortOverride, parseArgs } from './cli-args';
 import { buildExpertDoc, expertEditRoundTrip, parseExpertDoc } from './expert-edit';
 import { importExpertEntries, parseExpertImport } from './expert-import';
 import { EXPERT_ENTRY_KINDS, EXPERT_PROVENANCES, validateEntry, type ValidateResult } from '../shared/expert-validate';
+import { DEFAULT_AUTO_RUN_POLICY_YAML } from '../shared/auto-run-policy';
 // ---------------------------------------------------------------------------
 // Port discovery
 // ---------------------------------------------------------------------------
@@ -207,6 +208,18 @@ zhishi term open --cwd /path/to/proj --rows 40 --cols 120 [--cmd "<命令>"] [--
   zhishi term write <terminalId> 'ls -la'   # 批量/换行输入用 --data-file <path>
   zhishi term read <terminalId> [--cursor N]
   zhishi term close <terminalId>
+zhishi auto-run start --name <任务名> --goal "目标" --env-key <已登记环境> \
+      --criteria "验收条件1" --criteria "验收条件2" \
+      --budget-kind turns --budget-limit 30 [--policy-file auto-run.policy.yaml] [--workspace <路径>]
+    # 1.7.0 策略治理：一条命令拉起无人值守研究循环，全程自主，终态出报告。
+    # --policy-file 缺省 = 内置保守档（全暂停点保守停止、达成自动出报告）。
+    # 策略 schema 见 docs/design/1.7.0-policy-design.md；无 ask——不交互。
+  zhishi auto-run list [--workspace <路径>]     # run 记录（含待审声明/报告路径）
+  zhishi auto-run stop <id>                    # Esc 语义终止
+  zhishi auto-run budget <id> --limit N        # 预算续命（GUI 交互 run 用）
+  zhishi auto-run verdict <id> --verdict pass|fail|continue [--note "…"]
+    # 验收终审（GUI 交互 run 的补审；策略 run 无终审——读报告即可）
+  zhishi auto-run clear [--id <id>] [--workspace <路径>]   # 清终态记录（活跃拒绝）
 zhishi version
   zhishi reload
 Run 'zhishi <command> --help' for details on a specific command.`;
@@ -600,6 +613,41 @@ if (!result.success) {
       if (data.closed) console.error('[term] terminal already closed — 该终端已退出，请勿再 write');
       return;
     }
+  }
+  // auto-run（1.7.0）：AI 与人是双读者——start 显眼打印 id + loopSessionId；
+  // list 一行一 run，awaiting-verdict 附声明与验收条件预检（CLI 补审入口）。
+  if (group === 'auto-run') {
+    const data = (result.data as Record<string, unknown>) ?? {};
+    if (action === 'start') {
+      console.log(`run: ${String(data.id ?? '')}`);
+      console.log(`loopSessionId: ${String(data.loopSessionId ?? '')}`);
+      return;
+    }
+    if (action === 'list') {
+      const records = Array.isArray(data.records) ? (data.records as Array<Record<string, unknown>>) : [];
+      if (records.length === 0) {
+        console.log('（无 auto run 记录）');
+        return;
+      }
+      for (const r of records) {
+        const verdict = r.verdict as { statement?: string; criteria?: Array<{ text: string; hasEvidence: boolean }> } | undefined;
+        const report = typeof r.reportDir === 'string' && r.reportDir ? `  报告: ${r.reportDir}` : '';
+        console.log(`- ${String(r.status)}  ${String(r.id)}  「${String(r.name)}」  env=${String(r.envKey)}  turns=${String(r.turns ?? 0)}${report}`);
+        if (r.status === 'awaiting-verdict' && verdict) {
+          console.log(`    声明: ${String(verdict.statement ?? '').slice(0, 240)}`);
+          for (const c of verdict.criteria ?? []) {
+            console.log(`    ${c.hasEvidence ? '✓' : '✗'} ${c.text}`);
+          }
+        }
+      }
+      return;
+    }
+    if (action === 'clear') {
+      const removed = Array.isArray(data.removed) ? data.removed : [];
+      console.log(`removed: ${removed.length > 0 ? removed.join(', ') : '（无终态记录）'}`);
+      return;
+    }
+    // stop/budget/verdict → 落到下方通用 ✓ 确认。
   }
   // Generic success output
   const symbol = '\u2713'; // ✓
@@ -1768,15 +1816,15 @@ function promptHiddenInput(question: string): Promise<string> {
 // ——AI 把负载写盘后传路径，而不是可能被改写/丢弃的内联参数。
 function readTextFileFlag(flagName: string, filePath: string): string {
   try {
-    // Lazy-require keeps cold path short for non-term commands.
-    const fs = require('fs') as typeof import('fs');
+    // 顶层导入（1.7.0 修复：原 lazy `require('fs')` 在 ESM 下 ReferenceError——
+    // term write --data-file 同享此 bug）。
     const MAX_BYTES = 1024 * 1024; // 1 MB — pathological for a terminal/script payload
-    const stat = fs.statSync(filePath);
+    const stat = statSync(filePath);
     if (stat.size > MAX_BYTES) {
       console.error(`Error: --${flagName} "${filePath}" is ${stat.size} bytes, exceeds ${MAX_BYTES} (1 MB) limit`);
       process.exit(1);
     }
-    const raw = fs.readFileSync(filePath, 'utf-8');
+    const raw = readFileSync(filePath, 'utf-8');
     if (raw.includes('\0')) {
       console.error(`Error: --${flagName} "${filePath}" contains NUL bytes (is this a binary file?)`);
       process.exit(1);
@@ -2285,6 +2333,44 @@ function buildRequestBody(
     }
     if (action === 'run' || action === 'rerun') {
       return { id: rest[0] || flags.id };
+    }
+    return {};
+  }
+  // Auto loop（1.7.0 策略治理 + CLI 补口，design: 1.7.0-policy-design.md）。
+  // start 必带策略：--policy-file 原文直传；缺省 = 内置保守档 YAML——两条路
+  // 在服务端走同一条校验链。criteria 是可重复旗标（cli-args），数组直传。
+  if (group === 'auto-run') {
+    if (action === 'start') {
+      const policy = flags.policyFile !== undefined
+        ? readTextFileFlag('policy-file', String(flags.policyFile))
+        : DEFAULT_AUTO_RUN_POLICY_YAML;
+      return {
+        name: rest[0] ?? flags.name,
+        goal: flags.goal,
+        envKey: flags.envKey,
+        criteria: flags.criteria,
+        budget: {
+          kind: flags.budgetKind,
+          limit: flags.budgetLimit !== undefined ? Number(flags.budgetLimit) : undefined,
+        },
+        policy,
+        workspace: flags.workspace,
+      };
+    }
+    if (action === 'stop') return { id: rest[0] ?? flags.id };
+    if (action === 'budget') {
+      return { id: rest[0] ?? flags.id, limit: flags.limit !== undefined ? Number(flags.limit) : undefined };
+    }
+    if (action === 'verdict') {
+      const verdict = flags.verdict ?? rest[1];
+      if (verdict !== 'pass' && verdict !== 'fail' && verdict !== 'continue') {
+        console.error(`Error: verdict 非法 "${String(verdict ?? '')}"（允许：pass / fail / continue）`);
+        process.exit(1);
+      }
+      return { id: rest[0] ?? flags.id, verdict, note: flags.note };
+    }
+    if (action === 'list' || action === 'clear') {
+      return { workspace: flags.workspace, id: flags.id };
     }
     return {};
   }

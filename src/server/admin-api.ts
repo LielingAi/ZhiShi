@@ -773,6 +773,32 @@ Options for 'log':
 Options for 'list':
   --task-kind / --outcome   Filter (same enums as log)
   --limit                   Max rows (default 50)`,
+'auto-run': `zhishi auto-run — Auto loop agent (无人值守研究循环，1.7.0 策略治理)
+Commands:
+  start      Launch a run (policy-driven, fully autonomous)
+  list       List run records (time desc; optional --workspace filter)
+  stop <id>  Esc 语义终止
+  budget <id> --limit N      预算续命（GUI 交互 run）
+  verdict <id> --verdict pass|fail|continue [--note "..."]  验收终审（GUI 交互 run 补审）
+  clear [--id <id>] [--workspace <路径>]  清终态记录（活跃拒绝）
+Options for 'start':
+  --name <任务名>          (required)
+  --goal <目标>            (required)
+  --env-key <环境id>       (required; zhishi env list 查看已登记)
+  --criteria <条件>        (repeatable, at least one; 启动即锁定)
+  --budget-kind turns|tokens|time   (required)
+  --budget-limit N         (required)
+  --policy-file <path>     YAML 策略文件;缺省 = 内置保守档
+                           (schema: docs/design/1.7.0-policy-design.md)
+  --workspace <路径>       (default: 服务端工作区)
+策略语义（无 ask——CLI 不做交互）:
+  on_decision  stop|continue(注入 principles)   方向分歧
+  on_stall     tolerance N + stop|continue      空转
+  on_failure   streak N + stop|continue         连败
+  on_budget    stop|renew(renew_limits 序列)    预算耗尽
+  on_declare   report:true|false                达成 → 自动出报告 → completed
+  run 全程自主;人只读终态报告(list 的 reportDir)。`,
+
   expert: `zhishi expert — 专家知识库（1.2.1 骨架期：专家审定，决策级依据）
 Commands:
   list [--domain X] [--kind Y] [--provenance Z]   条目摘要列表（id/kind/domain/reviewer/标题/摘要）

@@ -21,6 +21,11 @@ describe('parseArgs（CLI 边界解析）', () => {
     expect(r.flags.models).toEqual(['a', '--weird', 'c']);
   });
 
+  it('1.7.0：--criteria 可重复累积数组（auto-run start 验收条件）', () => {
+    const r = parseArgs(['auto-run', 'start', '--criteria', '输出 flag', '--criteria', 'PoC 稳定复现', '--criteria=第三条']);
+    expect(r.flags.criteria).toEqual(['输出 flag', 'PoC 稳定复现', '第三条']);
+  });
+
   it('审计 A3-6 回归：--env 非 repeatable，重复传后者覆盖前者（不再拼成数组）', () => {
     const r = parseArgs(['term', 'open', '--env', 'host', '--env', 'docker:c1']);
     expect(r.flags.env).toBe('docker:c1');
