@@ -53,6 +53,7 @@ import {
   type AutoRunRecord,
 } from './auto-run';
 import type { EnvironmentEntry } from '../../shared/config-types';
+import { parseAutoRunPolicy, type AutoRunPolicy } from '../../shared/auto-run-policy';
 import type { EnvExec, EnvExecProcessResult } from './env-exec';
 import { clearCompletionDeclarations, declareCompletion, takeCompletionDeclaration } from './declare-completion';
 import { clearDecisions, pendingDecisions, requestDecision, respondDecision } from './decision';
@@ -1092,6 +1093,26 @@ describe('1.6.0 修复⑥⑩:startAutoRun 注册表(终态摘除 + 单实例闸�
       return !r.success && r.error.includes('不存在');
     });
   });
+
+  it('1.7.0 envKey 互斥闸:异 workspace 同 envKey → 拒绝(占用文案);异 envKey → 放行', async () => {
+    const fake = makeFakeDeps();
+    const first = await startAutoRun(startInput, '/ws-a', fake.deps);
+    expect(first.success).toBe(true);
+    if (!first.success) return;
+    // 同 envKey、异 workspace:旧闸(仅 workspace)会放行,新闸必须拒绝。
+    const second = await startAutoRun(startInput, '/ws-b', makeFakeDeps().deps);
+    expect(second.success).toBe(false);
+    if (!second.success) {
+      expect(second.error).toContain('已被运行中的 auto run');
+      expect(second.error).toContain('pwn-vm');
+    }
+    // 收尾。
+    stopAutoRun(first.data.id);
+    await waitFor(() => {
+      const r = stopAutoRun(first.data.id);
+      return !r.success && r.error.includes('不存在');
+    });
+  });
 });
 
 describe('1.6.0 修复⑦:run 终态清理本线 pending 决策与声明', () => {
@@ -1358,3 +1379,229 @@ describe('docker checkpoint task.md(1.6.3 #7)', () => {
     expect(hostWrites).toEqual([join('/host/ws', 'task.md')]);
   });
 });
+
+// ===== 1.7.0 策略（design: 1.7.0-policy-design.md） =====
+
+function policyOf(yaml: string): AutoRunPolicy {
+  const r = parseAutoRunPolicy(yaml);
+  if (!r.ok) throw new Error(r.error);
+  return r.policy;
+}
+
+describe('validateAutoRunStart(1.7.0 策略)', () => {
+  const findEnv = (envKey: string) => (envKey === 'pwn-vm' ? { id: 'pwn-vm' } : undefined);
+  const base = { name: 'demo', envKey: 'pwn-vm', goal: 'g', criteria: ['a'], budget: { kind: 'turns', limit: 1 } };
+
+  it('合法 YAML → record.policy;非法 → 拒绝启动;缺省 = 无策略(交互模式)', () => {
+    const okR = validateAutoRunStart({ ...base, policy: 'on_stall:\n  tolerance: 2' }, { findEnv });
+    expect(okR.ok).toBe(true);
+    if (okR.ok) {
+      expect(okR.record.policy?.onStall.tolerance).toBe(2);
+      expect(okR.record.policy?.onDecision.action).toBe('stop'); // 缺节走缺省
+    }
+    const badR = validateAutoRunStart({ ...base, policy: 'on_stall:\n  action: ask' }, { findEnv });
+    expect(badR.ok).toBe(false);
+    if (!badR.ok) expect(badR.error).toMatch(/策略非法/);
+    const absent = validateAutoRunStart(base, { findEnv });
+    expect(absent.ok).toBe(true);
+    if (absent.ok) expect(absent.record.policy).toBeUndefined();
+  });
+});
+
+describe('runAutoRunLoop(1.7.0 策略:declare → 自动出报告 → completed)', () => {
+  it('policy on_declare.report=true:无 verdict-requested、无等待,completed + reportDir', async () => {
+    const record = makeRecord({ policy: policyOf('on_declare:\n  report: true') });
+    const fake = makeFakeDeps({
+      invoke: async () => {
+        declareCompletion(record.loopSessionId, '全部达成', [1]);
+        return { text: 'done', loopSessionId: record.loopSessionId };
+      },
+      exportReport: async () => ({ ok: true, reportDir: '/out/reports/auto-1' }),
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    await ctl.waitUntilDone();
+    await loop;
+    expect(record.status).toBe('completed');
+    expect(record.reportDir).toBe('/out/reports/auto-1');
+    expect(record.declaration?.statement).toBe('全部达成');
+    expect(record.verdictPackage).toBeUndefined(); // 无审可答,不建验收包
+    expect(dataOf(fake.sent, 'auto-run:verdict-requested')).toBeUndefined();
+    expect(dataOf(fake.sent, 'auto-run:completed')).toMatchObject({ id: 'run-1', outcome: 'passed' });
+  });
+
+  it('policy on_declare.report=false:不出报告,completed 无 reportDir', async () => {
+    const record = makeRecord({ policy: policyOf('on_declare:\n  report: false') });
+    let exported = 0;
+    const fake = makeFakeDeps({
+      invoke: async () => {
+        declareCompletion(record.loopSessionId, '达成', []);
+        return { text: 'done', loopSessionId: record.loopSessionId };
+      },
+      exportReport: async () => { exported += 1; return { ok: true, reportDir: '/x' }; },
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    await ctl.waitUntilDone();
+    await loop;
+    expect(record.status).toBe('completed');
+    expect(record.reportDir).toBeUndefined();
+    expect(exported).toBe(0);
+  });
+});
+
+describe('runAutoRunLoop(1.7.0 策略:decision 分支)', () => {
+  it('action=continue:原则注入 loop 线,无暂停继续推进', async () => {
+    const record = makeRecord({
+      policy: policyOf('on_decision:\n  action: continue\n  principles: "优先可复现"'),
+    });
+    const fake = makeFakeDeps({
+      invoke: async () => {
+        fake.invokeCount += 1;
+        if (fake.invokeCount === 1) {
+          requestDecision({ sessionId: record.loopSessionId, question: '走 A 还是 B?', options: ['A', 'B'], context: '分歧' });
+        }
+        await new Promise((r) => setTimeout(r, 1)); // 让轮次让出事件循环,waitFor 轮询可交错
+        return { text: `输出 ${fake.invokeCount}`, loopSessionId: record.loopSessionId };
+      },
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone(); // 先注册:waitUntilDone 只在 __finish 排空一次
+    await waitFor(() => fake.appended.some((t) => t.includes('策略预置原则')));
+    expect(dataOf(fake.sent, 'auto-run:paused')).toBeUndefined();
+    await waitFor(() => fake.invokeCount >= 3);
+    // 一次性处置:提请只答一次,后续轮不再重复注入原则。
+    expect(fake.appended.filter((t) => t.includes('策略预置原则'))).toHaveLength(1);
+    ctl.requestStop();
+    await done;
+    await loop;
+    expect(record.status).toBe('stopped'); // Esc 收尾,非策略停止
+  });
+
+  it('action=stop:方向分歧即停', async () => {
+    const record = makeRecord({ policy: policyOf('on_decision:\n  action: stop') });
+    const fake = makeFakeDeps({
+      invoke: async () => {
+        fake.invokeCount += 1;
+        requestDecision({ sessionId: record.loopSessionId, question: 'q?', options: ['A', 'B'], context: 'c' });
+        return { text: 'x', loopSessionId: record.loopSessionId };
+      },
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    await ctl.waitUntilDone();
+    await loop;
+    expect(record.status).toBe('stopped');
+    expect(record.pauseReason).toBe('decision');
+    expect(fake.invokeCount).toBe(1);
+  });
+});
+
+describe('runAutoRunLoop(1.7.0 策略:stall / failure 分支)', () => {
+  it('stall tolerance 生效且 action=stop:空转即停,无 paused 事件', async () => {
+    const record = makeRecord({ policy: policyOf('on_stall:\n  tolerance: 2\n  action: stop') });
+    const fake = makeFakeDeps();
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    await ctl.waitUntilDone();
+    await loop;
+    expect(record.status).toBe('stopped');
+    expect(record.pauseReason).toBe('stall');
+    expect(dataOf(fake.sent, 'auto-run:paused')).toBeUndefined();
+    expect(fake.invokeCount).toBe(3); // 首轮无基线不判,第 2、3 轮连空转 → 停
+  });
+
+  it('stall action=continue:宽限继续(清 streak),Esc 收尾', async () => {
+    const record = makeRecord({
+      budget: { kind: 'turns', limit: 100_000, spent: 0 }, // 预算永不耗尽,唯一出路是 Esc
+      policy: policyOf('on_stall:\n  tolerance: 2\n  action: continue'),
+    });
+    const fake = makeFakeDeps({
+      invoke: async () => {
+        fake.invokeCount += 1;
+        await new Promise((r) => setTimeout(r, 1)); // 轮次让出事件循环,保证 waitFor/requestStop 可交错
+        return { text: 'x', loopSessionId: record.loopSessionId };
+      },
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone(); // 先注册(waitUntilDone 只在 __finish 排空一次)
+    await waitFor(() => fake.invokeCount >= 5);
+    expect(record.status).toBe('running');
+    expect(dataOf(fake.sent, 'auto-run:paused')).toBeUndefined();
+    ctl.requestStop();
+    await done;
+    await loop;
+    expect(record.status).toBe('stopped');
+  });
+
+  it('failure streak 生效且 action=stop:连败即停', async () => {
+    const record = makeRecord({
+      policy: policyOf('on_failure:\n  streak: 3\n  action: stop'),
+    });
+    const fake = makeFakeDeps();
+    fake.messages.push(msgToolResult({ toolName: 'env_exec', isError: true }));
+    fake.messages.push(msgToolResult({ toolName: 'env_exec', isError: true }));
+    fake.messages.push(msgToolResult({ toolName: 'env_exec', isError: true }));
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    await ctl.waitUntilDone();
+    await loop;
+    expect(record.status).toBe('stopped');
+    expect(record.pauseReason).toBe('repeated-failures');
+    expect(fake.invokeCount).toBe(1);
+  });
+});
+
+describe('runAutoRunLoop(1.7.0 策略:budget 分支)', () => {
+  it('action=renew:按序列自动续命,序列耗尽即停', async () => {
+    const record = makeRecord({
+      budget: { kind: 'turns', limit: 1, spent: 0 },
+      policy: policyOf('on_budget:\n  action: renew\n  renew_limits: [3]'),
+    });
+    const fake = makeFakeDeps();
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    await ctl.waitUntilDone();
+    await loop;
+    expect(record.budget.limit).toBe(3); // 续到 3,耗尽序列后停
+    expect(record.status).toBe('stopped');
+    expect(record.pauseReason).toBe('budget');
+    expect(fake.invokeCount).toBe(3); // 轮 1 耗尽→续 3;轮 2、3 跑;轮 3 耗尽序列 → 停
+    expect(dataOf(fake.sent, 'auto-run:paused')).toBeUndefined();
+  });
+
+  it('action=stop:耗尽即停', async () => {
+    const record = makeRecord({
+      budget: { kind: 'turns', limit: 1, spent: 0 },
+      policy: policyOf('on_budget:\n  action: stop'),
+    });
+    const fake = makeFakeDeps();
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    await ctl.waitUntilDone();
+    await loop;
+    expect(record.status).toBe('stopped');
+    expect(record.pauseReason).toBe('budget');
+    expect(fake.invokeCount).toBe(1);
+  });
+});
+
+describe('runAutoRunLoop(1.7.0 策略:provider-error 保守停止)', () => {
+  it('invoke 报错:不提请,直接 stopped', async () => {
+    const record = makeRecord({ policy: policyOf('on_declare:\n  report: true') });
+    const fake = makeFakeDeps({
+      invoke: async () => { fake.invokeCount += 1; return { error: '503', text: '', loopSessionId: record.loopSessionId }; },
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    await ctl.waitUntilDone();
+    await loop;
+    expect(record.status).toBe('stopped');
+    expect(record.pauseReason).toBe('provider-error');
+    expect(dataOf(fake.sent, 'auto-run:paused')).toBeUndefined();
+    expect(fake.invokeCount).toBe(1);
+  });
+});
+

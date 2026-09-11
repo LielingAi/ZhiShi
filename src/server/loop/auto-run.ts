@@ -61,7 +61,7 @@ import {
   toolCallNamesOf,
   type ResearchPhase,
 } from './context-manager';
-import { pendingDecisions, requestDecision, getDecision, clearDecisions } from './decision';
+import { pendingDecisions, requestDecision, getDecision, clearDecisions, respondDecision } from './decision';
 import { takeCompletionDeclaration, clearCompletionDeclarations } from './declare-completion';
 import type { PiSendInput } from './chat-engine';
 import type { InteractionScenario } from '../system-prompt';
@@ -84,6 +84,7 @@ import { resolveLoopModel } from './pi-provider';
 import { runLoopText } from './loop';
 import { getEntryById, hasExpertDb, openExpertStore } from '../expert/store';
 import { workspacePathsEqual } from '../../shared/workspacePath';
+import { parseAutoRunPolicy, type AutoRunPolicy } from '../../shared/auto-run-policy';
 import type { EnvironmentEntry } from '../../shared/config-types';
 import { execInEnvironment, type EnvExec } from './env-exec';
 
@@ -184,6 +185,8 @@ export interface AutoRunRecord {
   declaration?: AutoRunDeclaration;
   verdictPackage?: VerdictPackage;
   reportDir?: string;
+  /** 1.7.0 策略（解析后对象；缺省 = 交互模式，GUI 路径）。 */
+  policy?: AutoRunPolicy;
   /** 1.6.0 修复⑧:暂停等待(终审/决策/预算续命)墙钟累计 ms——time 预算口径
    *  = elapsed - pausedMsTotal;序列化兼容缺省(旧记录无此字段按 0)。 */
   pausedMsTotal?: number;
@@ -211,6 +214,8 @@ export interface AutoRunStartInput {
   goal?: unknown;
   budget?: unknown;
   criteria?: unknown;
+  /** 1.7.0 策略（YAML 原文；缺省 = 无策略 = 交互模式，GUI 路径）。 */
+  policy?: unknown;
 }
 
 export interface ValidateStartOptions {
@@ -261,6 +266,14 @@ export function validateAutoRunStart(
     return { ok: false, error: '预算 limit 必须是 > 0 的数值' };
   }
 
+  // 1.7.0 策略：present 即解析校验（失败拒绝启动）；缺省 = 交互模式（GUI 路径）。
+  let policy: AutoRunPolicy | undefined;
+  if (input.policy !== undefined && input.policy !== null && input.policy !== '') {
+    const parsed = parseAutoRunPolicy(input.policy);
+    if (!parsed.ok) return { ok: false, error: `策略非法:${parsed.error}` };
+    policy = parsed.policy;
+  }
+
   const now = (options.now ?? Date.now)();
   const record: AutoRunRecord = {
     id: options.newId ? options.newId() : `run-${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`,
@@ -273,6 +286,7 @@ export function validateAutoRunStart(
     loopSessionId: options.loopSessionId ?? newLoopSessionId(),
     createdAt: new Date(now).toISOString(),
     updatedAt: new Date(now).toISOString(),
+    ...(policy ? { policy } : {}),
   };
   return { ok: true, record };
 }
@@ -597,6 +611,10 @@ export function parseAutoRunRecord(content: string): AutoRunRecord | null {
     ...(o.verdictPackage && typeof o.verdictPackage === 'object'
       ? { verdictPackage: o.verdictPackage as VerdictPackage }
       : {}),
+    // 1.7.0 策略：盘上宽进（对象即透传，严格校验只在启动时）——僵尸结算/列表不炸旧记录。
+    ...(o.policy && typeof o.policy === 'object'
+      ? { policy: o.policy as AutoRunPolicy }
+      : {}),
   };
 }
 
@@ -912,6 +930,21 @@ export async function runAutoRunLoop(
   let budgetWarned = false;
   let verdictNote: string | undefined;
 
+  // 1.7.0 策略模式（design: 1.7.0-policy-design.md）：policy 在场即全程自主
+  // （无弹窗/无等待）；缺省 = 交互模式（GUI 原生路径，一行不改）。
+  const policy = record.policy;
+  const budgetRenewQueue = policy ? [...policy.onBudget.renewLimits] : [];
+
+  /** 策略停止收尾（统一终态：persist + 广播 + 注回交互线）。 */
+  const finishStoppedByPolicy = (reason: string): void => {
+    record.status = 'stopped';
+    record.pauseReason = reason;
+    record.updatedAt = new Date(deps.now()).toISOString();
+    persist();
+    deps.broadcast('auto-run:completed', { id: record.id, outcome: 'stopped' });
+    injectInteractiveWrapUp(record, lastText, `已按策略停止（${reason}）`);
+  };
+
   const persist = (): void => deps.save(record);
   // wait 只在暂停点(终审/预算续命)使用——1.6.0 修复⑧:进出差额累加进
   // record.pausedMsTotal,time 预算口径 = elapsed - pausedMsTotal。
@@ -982,6 +1015,11 @@ export async function runAutoRunLoop(
     // 注意：超时失败的 invoke 其后台 turn 可能仍在跑（detach 语义）——人工
     // 作答的耗时通常已覆盖其残余生命；appendLoopMessages 有文件锁兜底。
     if (result.error) {
+      if (policy) {
+        // 策略模式：供应商过载/中断不提请（无人应答=白等）——保守停止。
+        finishStoppedByPolicy('provider-error');
+        break;
+      }
       record.status = 'paused';
       record.pauseReason = 'provider-error';
       record.updatedAt = new Date(deps.now()).toISOString();
@@ -1045,6 +1083,31 @@ export async function runAutoRunLoop(
     const declaration = takeCompletionDeclaration(loopSessionId);
     if (declaration) {
       record.declaration = { statement: declaration.statement, evidenceRefs: declaration.evidenceRefs };
+      if (policy) {
+        // 1.7.0 策略路径：无终审——达成即 completed；report:true 自动出报告
+        // （reportDir 进记录）。declaration 留史；verdictPackage 不建（无审
+        // 可答，防 list 归一化出幽灵 verdict）。
+        record.status = 'completed';
+        record.pauseReason = undefined;
+        record.updatedAt = new Date(deps.now()).toISOString();
+        persist();
+        if (policy.onDeclare.report) {
+          try {
+            const rep = await deps.exportReport(record);
+            if (rep.ok && rep.reportDir) {
+              record.reportDir = rep.reportDir;
+              persist();
+            } else {
+              deps.log(`[auto-run] 策略自动出报告失败(completed 不受影响):${rep.error ?? 'unknown'}`);
+            }
+          } catch (err) {
+            deps.log(`[auto-run] 策略自动出报告异常(completed 不受影响):${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+        injectInteractiveWrapUp(record, lastText, `已达成（策略自动收报，共 ${turn} 轮）`);
+        deps.broadcast('auto-run:completed', { id: record.id, outcome: 'passed' });
+        break;
+      }
       record.verdictPackage = buildVerdictPackage({
         id: record.id,
         criteria: record.criteria,
@@ -1123,6 +1186,23 @@ export async function runAutoRunLoop(
       .filter((d) => d.sessionId === loopSessionId)
       .map((d) => d.decisionId);
     if (pendingIds.length > 0) {
+      if (policy) {
+        // 1.7.0 策略路径：continue = 注入预置原则后自行决策；stop = 保守停止。
+        if (policy.onDecision.action === 'continue') {
+          const principles = (policy.onDecision.principles ?? '').trim();
+          if (principles) {
+            await deps.appendUserMessage(loopSessionId, `【策略预置原则】模型提请的方向分歧按以下原则自行决策:\n${principles}`).catch((err) => {
+              deps.log(`[auto-run] 策略原则注回落盘失败(继续运行):${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
+          // 本条提请按策略一次性处置(标记 resolved)——不清会每轮重注入。
+          for (const id of pendingIds) respondDecision(id, 'continue', '按策略预置原则继续(自动处置)');
+          deps.log(`[auto-run] ${record.id} 方向分歧按策略继续${principles ? '(已注入原则)' : '(无原则)'}`);
+          continue;
+        }
+        finishStoppedByPolicy('decision');
+        break;
+      }
       record.status = 'paused';
       record.pauseReason = 'decision';
       record.updatedAt = new Date(deps.now()).toISOString();
@@ -1154,11 +1234,20 @@ export async function runAutoRunLoop(
       previousPhase: phaseBefore,
       phase,
       stallStreak,
-    }, deps.stallTurns);
+    }, policy ? policy.onStall.tolerance : deps.stallTurns);
     stallStreak = stallEval.stallStreak;
     prevPhase = phase;
     prevValidCount = validCount;
     if (stallEval.stalled) {
+      if (policy) {
+        if (policy.onStall.action === 'continue') {
+          deps.log(`[auto-run] ${record.id} 空转按策略宽限继续(连续 ${stallStreak} 轮)`);
+          stallStreak = 0;
+          continue;
+        }
+        finishStoppedByPolicy('stall');
+        break;
+      }
       record.status = 'paused';
       record.pauseReason = 'stall';
       record.updatedAt = new Date(deps.now()).toISOString();
@@ -1195,9 +1284,17 @@ export async function runAutoRunLoop(
       continue;
     }
 
-    // ---- 5. 反复失败(同类工具 isError 连击 ≥3) ----
-    const failure = detectRepeatedFailures(messages, deps.repeatedFailureStreak);
+    // ---- 5. 反复失败(同类工具 isError 连击 ≥N) ----
+    const failure = detectRepeatedFailures(messages, policy ? policy.onFailure.streak : deps.repeatedFailureStreak);
     if (failure) {
+      if (policy) {
+        if (policy.onFailure.action === 'continue') {
+          deps.log(`[auto-run] ${record.id} 连败按策略宽限继续(${failure.toolName} ×${failure.streak})`);
+          continue;
+        }
+        finishStoppedByPolicy('repeated-failures');
+        break;
+      }
       record.status = 'paused';
       record.pauseReason = 'repeated-failures';
       record.updatedAt = new Date(deps.now()).toISOString();
@@ -1250,6 +1347,22 @@ export async function runAutoRunLoop(
         deps.log(`[auto-run] checkpoint 快照异常:${err instanceof Error ? err.message : String(err)}`);
       }
       if (ctl.isStopped()) break;
+      if (policy) {
+        // 1.7.0 策略路径：renew = 按 renew_limits 序列自动续命（耗尽序列即停）；
+        // stop = 保守停止。
+        if (policy.onBudget.action === 'renew' && budgetRenewQueue.length > 0) {
+          const next = budgetRenewQueue.shift() as number;
+          record.budget.limit = next;
+          record.budget.spent = spent;
+          record.updatedAt = new Date(deps.now()).toISOString();
+          persist();
+          deps.log(`[auto-run] ${record.id} 预算按策略自动续命到 ${next}(${record.budget.kind};剩余 ${budgetRenewQueue.length} 次)`);
+          budgetWarned = false;
+          continue;
+        }
+        finishStoppedByPolicy('budget');
+        break;
+      }
       record.status = 'paused';
       record.pauseReason = 'budget';
       record.updatedAt = new Date(deps.now()).toISOString();
@@ -1728,14 +1841,24 @@ export async function startAutoRun(
   if (!validated.ok) return { success: false, error: validated.error };
   const record: AutoRunRecord = { ...validated.record, workspace };
 
-  // 单实例闸:同 workspace 已有非终态 run → 拒绝(先 Esc 再启动新 run)。
+  // 单实例闸:同 workspace **或**同 envKey 已有非终态 run → 拒绝(先 Esc 再启动新 run)。
   // 1.6.0 修复⑩:workspace 比较走 workspacePathsEqual(与同文件 listAutoRuns
   // 口径一致)——原始 === 会把尾斜杠/分隔符差异当不同工作区,闸被绕过。
-  const conflict = [...activeRuns.values()].find((a) =>
-    a.record.workspace !== undefined && workspacePathsEqual(a.record.workspace, workspace) &&
-    (a.record.status === 'running' || a.record.status === 'paused' || a.record.status === 'awaiting-verdict'));
+  // 1.7.0:envKey 并集——同一研究环境双开会互相污染(快照/文件/进程状态踩踏)。
+  const conflict = [...activeRuns.values()].find((a) => {
+    if (a.record.status !== 'running' && a.record.status !== 'paused' && a.record.status !== 'awaiting-verdict') {
+      return false;
+    }
+    if (a.record.workspace !== undefined && workspacePathsEqual(a.record.workspace, workspace)) return true;
+    return a.record.envKey === validated.record.envKey;
+  });
   if (conflict) {
-    return { success: false, error: `已有运行中的 auto run "${conflict.record.name}"(id=${conflict.record.id}),先 Esc 终止再启动新 run` };
+    const sameWorkspace = conflict.record.workspace !== undefined
+      && workspacePathsEqual(conflict.record.workspace, workspace);
+    const error = sameWorkspace
+      ? `已有运行中的 auto run "${conflict.record.name}"(id=${conflict.record.id}),先 Esc 终止再启动新 run`
+      : `环境 "${validated.record.envKey}" 已被运行中的 auto run "${conflict.record.name}"(id=${conflict.record.id}) 占用,先 Esc 终止再启动`;
+    return { success: false, error };
   }
 
   const deps = buildProductionAutoRunDeps(workspace, depsOverride);
