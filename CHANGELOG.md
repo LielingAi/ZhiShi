@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-09-11
+
+> **CLI auto-run 链路两洞热修（实机实测）**——CLI 实测第一跑即暴露：模型首轮提请「本会话无 env_exec 工具」被保守档停掉；修完再跑，报告又卡在边界问询无人应答。两条都是 CLI 无人值守路径的必经链路。
+
+### 修复
+- **headless 线环境锚解耦**：`invokePiSession` 环境解析不再依赖工作区交互选择存储（CLI 启动从不写它）——runner 每轮 invoke 传 `record.envKey` 显式锚定；此前 CLI 启动的 run 无 env_exec/env_bg 工具
+- **策略模式报告落盘预授权**：`on_declare.report: true` 同时是「报告产物落盘宿主的预声明同意」（仅限本 run 报告，落点 workspace/output/reports；其余越界写仍全量边界拦截）——无人值守下 boundary-ask 无人应答 = 报告永远出不来
+- 政策文档（`docs/auto-run-policy.md`）补预授权语义；runner 单测补 envKey 透传断言
+
 ## [1.7.0] - 2026-09-11
 
 > **auto loop 策略治理 + CLI 补口 + 同环境互斥闸**——auto loop 从「全人肉闸」升级为「策略文件治理」：策略（YAML）是 run 的唯一治理来源，run 全程自主、无弹窗无交互，人与 run 的接口只有两处——开局写策略、结束读报告。CLI 一条命令拉起无人值守研究循环；同一研究环境（envKey）双开被闸拒绝。设计稿：docs/design/1.7.0-policy-design.md。

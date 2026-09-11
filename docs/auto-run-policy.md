@@ -67,6 +67,7 @@ on_declare:                   # declare_completion 达成声明
 - **provider-error**（供应商过载/中断/超时）：策略模式下直接保守停止，不提请——无人应答的白等无意义；
 - **铁律**：系统只产出**证据与报告**，不判 pass/fail——结论永远在人读报告时形成，不存在「自动通过」；
 - 出报告失败（report/export 报错）→ 不阻断 `completed`，日志告警，记录可查；
+- **报告落盘 = 策略预授权**（1.7.1）：`report: true` 同时是「报告产物落盘宿主的预声明同意」——无人值守下边界问询无人应答，报告永远出不来；预授权**仅限本 run 报告产物**（落点 = workspace/output/reports），其余越界写仍走边界拦截；
 - 策略 run 的终态只有 `running / completed / stopped`——无 paused、无 awaiting-verdict、无僵尸等待。
 
 ## 缺省档（CLI 不传 `--policy-file` 时）
