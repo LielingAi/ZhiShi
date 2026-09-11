@@ -15,7 +15,7 @@ zhishi auto-run start --name "hacknote 复现" \
   --budget-kind turns --budget-limit 30
 
 # 用自定义策略
-zhishi auto-run start --name "hacknote 复现" ... --policy-file docs/auto-run/policy-examples/balanced.yaml
+zhishi auto-run start --name "hacknote 复现" ... --policy-file examples/auto-run/balanced.yaml
 ```
 
 跑完看结果：
@@ -71,7 +71,7 @@ on_declare:                   # declare_completion 达成声明
 
 ## 缺省档（CLI 不传 `--policy-file` 时）
 
-与示例 `docs/auto-run/policy-examples/conservative.yaml` 等价：`decision:stop`、`stall:{3,stop}`、`failure:{3,stop}`、`budget:stop`、`declare:{report:true}`。
+与示例 `examples/auto-run/conservative.yaml` 等价：`decision:stop`、`stall:{3,stop}`、`failure:{3,stop}`、`budget:stop`、`declare:{report:true}`。
 
 ## 校验规则（启动即校验，非法拒绝启动）
 

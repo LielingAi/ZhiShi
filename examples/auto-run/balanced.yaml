@@ -1,5 +1,5 @@
 # zhishi auto-run 策略示例：平衡档
-# 用法: zhishi auto-run start ... --policy-file docs/auto-run/policy-examples/balanced.yaml
+# 用法: zhishi auto-run start ... --policy-file examples/auto-run/balanced.yaml
 #
 # 语义：方向分歧按预置原则自行决策；空转/连败给宽限；预算自动续命 2 次；
 #       达成自动出报告。适合：无人值守跑一整夜的中长研究。

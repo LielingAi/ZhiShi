@@ -1,7 +1,7 @@
 # auto-run 命令行使用文档（1.7.0）
 
 > `zhishi auto-run` —— 无人值守研究循环的 CLI 入口。策略文档见
-> `docs/auto-run-policy.md`；示例策略见 `docs/auto-run/policy-examples/`。
+> `docs/auto-run-policy.md`；示例策略见 `examples/auto-run/`。
 
 ## 前置条件
 
@@ -40,9 +40,9 @@ zhishi auto-run start [<任务名>] \
 
 ```bash
 # 保守（缺省等价） / 平衡（原则自决+续命2次） / 全托管（宽限+续命3次）
---policy-file docs/auto-run/policy-examples/conservative.yaml
---policy-file docs/auto-run/policy-examples/balanced.yaml
---policy-file docs/auto-run/policy-examples/full-auto.yaml
+--policy-file examples/auto-run/conservative.yaml
+--policy-file examples/auto-run/balanced.yaml
+--policy-file examples/auto-run/full-auto.yaml
 ```
 
 成功输出：
@@ -86,7 +86,7 @@ zhishi auto-run start --name "novo fuzz" \
   --goal "fuzz novo 目标找崩溃" --env-key fuzz-vm \
   --criteria "至少 1 个可复现崩溃" --criteria "崩溃 PoC 落盘" \
   --budget-kind time --budget-limit 120 \
-  --policy-file docs/auto-run/policy-examples/balanced.yaml --json
+  --policy-file examples/auto-run/balanced.yaml --json
 
 # 轮询终态（脚本里按状态判断）
 zhishi auto-run list --json | jq '.data.records[] | select(.status=="completed") | .reportDir'

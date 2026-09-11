@@ -257,7 +257,7 @@ GUI 里 `/export` 把当前工作区的研究记录组装成报告目录（`outp
 
 - 一条命令拉起，全程自主、无弹窗无交互；人与 run 的接口只有两处——**开局写策略、结束读报告**
 - 策略文件（YAML）控制所有暂停点的处置：方向分歧按预置原则自决 / 空转连败阈值与宽限 / 预算自动续命 / 达成自动出报告
-- 策略文档：`docs/auto-run-policy.md`；CLI 用法：`docs/auto-run-cli.md`；示例：`docs/auto-run/policy-examples/`（保守 / 平衡 / 全托管三档）
+- 策略文档：`docs/auto-run-policy.md`；CLI 用法：`docs/auto-run-cli.md`；示例：`examples/auto-run/`（保守 / 平衡 / 全托管三档）
 - 同 envKey 互斥闸：同一研究环境同时只允许一个活跃 run（并行请用多实例/克隆分支）
 
 ### 研究档案（1.4.4）
@@ -342,7 +342,7 @@ MCP 工具在会话里以 `mcp__<server>__<tool>` 命名，与内置工具同受
 
 - auto loop 策略（YAML schema / 校验 / 语义）：`docs/auto-run-policy.md`
 - auto loop 命令行用法：`docs/auto-run-cli.md`
-- auto loop 策略示例：`docs/auto-run/policy-examples/`（conservative / balanced / full-auto）
+- auto loop 策略示例：`examples/auto-run/`（conservative / balanced / full-auto）
 - 产品定位与决策历史：`docs/spec/security_researcher_agent_design.md`、`docs/spec/security_researcher_product_plan.md`
 - 技术方案：`docs/spec/security_researcher_agent_tech_plan.md`
 - TUI 技术规范（已退役归档）：`docs/spec/tui_tech_spec.md`
