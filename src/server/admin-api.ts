@@ -59,6 +59,7 @@ import {
 } from './loop/auto-run';
 import { listCampaignRecords } from './loop/campaign';
 import { resumeCampaign, stopCampaign } from './loop/campaign-runtime';
+import { forgetClaim, loadSessionClaims } from './loop/session-claims';
 import { detectOsFamilyFromVmx, osFamilyOf } from './environment/os-family';
 import { bootstrapKeyForTarget, type KeyBootstrapTarget, type KeyBootstrapOutcome, type KeyBootstrapOptions } from './environment/key-bootstrap';
 
@@ -3192,6 +3193,21 @@ export async function handleCampaignResume(payload: { id?: unknown }): Promise<A
   if (!id) return { success: false, error: 'Missing required argument: <id>' };
   const result = await resumeCampaign(id);
   return result.ok ? { success: true, data: { id } } : { success: false, error: result.error };
+}
+/** `claim/list` — 1.7.2 M5:会话级 Claim 快照列表（治理提取的事实/决策/死路/待办）。 */
+export function handleClaimList(payload: { sessionId?: unknown }): AdminResponse {
+  const sessionId = typeof payload.sessionId === 'string' && payload.sessionId.trim() ? payload.sessionId.trim() : '';
+  if (!sessionId) return { success: false, error: 'Missing required argument: <sessionId>' };
+  const file = loadSessionClaims(sessionId);
+  return { success: true, data: { claims: file.claims, audits: file.audits } };
+}
+/** `claim/forget` — 1.7.2 M5:人遗忘单条 Claim（置 archived,审计保留）。 */
+export async function handleClaimForget(payload: { sessionId?: unknown; id?: unknown }): Promise<AdminResponse> {
+  const sessionId = typeof payload.sessionId === 'string' && payload.sessionId.trim() ? payload.sessionId.trim() : '';
+  const id = typeof payload.id === 'string' && payload.id.trim() ? payload.id.trim() : '';
+  if (!sessionId || !id) return { success: false, error: 'Missing required argument: <sessionId> <id>' };
+  const r = await forgetClaim(sessionId, id);
+  return r.ok ? { success: true, data: { id } } : { success: false, error: r.error };
 }
 /** `session/mission` — 1.6.11 会话线任务形态读/设（首条消息前即可设——
  *  战役入口语义：派任务前先定形态）。payload 不带 mission 键 → 读当前线；

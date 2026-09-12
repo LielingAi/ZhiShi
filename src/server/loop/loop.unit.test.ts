@@ -200,6 +200,41 @@ describe('runLoop', () => {
     expect(events.map((e) => e.type)).toEqual(['tool-call', 'tool-result', 'done']);
     expect(events.some((e) => e.type === 'error')).toBe(false);
   });
+
+  // ── 1.7.2 看门狗分层（首事件 prefill 预算 / 流间静默） ──────────────────
+
+  it('首 token 前按 firstEvent 预算计时：prefill 超时 → error 带「无首 token」文案', async () => {
+    agentLoopMock.mockReset();
+    agentLoopMock.mockReturnValue((async function* () {
+      await new Promise((r) => setTimeout(r, 200)); // 首事件前挂 200ms（超 50ms firstEvent 预算）
+      yield { type: 'agent_end', messages: [assistantMessage('late')] } as unknown as AgentEvent;
+    })());
+    const events = [];
+    for await (const e of runLoop({
+      prompt: 'x', model: fakeModel, models: fakeModels, modelSilenceTimeoutMs: 50, modelFirstEventTimeoutMs: 50,
+    })) events.push(e);
+    const last = events[events.length - 1];
+    expect(last.type).toBe('error');
+    expect((last as { error: string }).error).toContain('无首 token');
+  });
+
+  it('首事件预算内到达（prefill 不误杀）→ 之后按流间看门狗计时', async () => {
+    agentLoopMock.mockReset();
+    agentLoopMock.mockReturnValue((async function* () {
+      await new Promise((r) => setTimeout(r, 30)); // prefill 30ms < firstEvent 120ms
+      yield { type: 'message_update', message: assistantMessage(''), assistantMessageEvent: { type: 'thinking_start', contentIndex: 0, partial: assistantMessage('') } } as unknown as AgentEvent;
+      await new Promise((r) => setTimeout(r, 200)); // 流间静默 200ms > silence 50ms
+      yield { type: 'agent_end', messages: [assistantMessage('late')] } as unknown as AgentEvent;
+    })());
+    const events = [];
+    for await (const e of runLoop({
+      prompt: 'x', model: fakeModel, models: fakeModels, modelSilenceTimeoutMs: 50, modelFirstEventTimeoutMs: 120,
+    })) events.push(e);
+    expect(events[0].type).toBe('thinking-start'); // 首事件未被 prefill 看门狗误杀
+    const last = events[events.length - 1];
+    expect(last.type).toBe('error');
+    expect((last as { error: string }).error).toContain('无任何数据流回');
+  });
 });
 
 // ---- one-shot ----

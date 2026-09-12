@@ -7,7 +7,7 @@
   </picture>
 </p>
 
-**v1.7.1 · 安全研究领域的 agent harness：环境融合、原生工具、原生代码、研究档案。**
+**v1.7.2 · 安全研究领域的 agent harness：环境融合、原生工具、原生代码、研究档案。**
 
 [![Version](https://img.shields.io/github/v/tag/LielingAi/ZhiShi)](https://github.com/LielingAi/ZhiShi/tags)
 [![License](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](LICENSE)
@@ -114,7 +114,7 @@ ZhiShi 是给安全研究员的工作台：二进制利用、渗透测试、白�
 |---|---|
 | 工具 | `env_exec`（一次性）· `env_bg`（后台长驻：start/poll/log/kill/list）· `delegate_task`（子任务，按名派发专用 agent）· `research_log`（研究留痕）· `research_archive`（研究档案：假设/证据/结论/未决问题 + 证伪/纠正）· `request_decision`（方向分歧提请人拍板）· `declare_completion`（auto loop 达成声明） |
 | 边界 | 规则硬闸（工具白名单 / 环境就绪 / 凭据不泄进环境）+ 输出净化 + 越界问人通道 |
-| 上下文 | 安全定制压缩：死路（非零 exit）与突破口（flag/CVE）永不裁 |
+| 上下文 | 工作记忆窗口置换（1.7.2：预算 0.25×窗口、指针块 + recall 取回——1.18M 上下文稳态与看门狗误杀实机根治）+ Claim 治理（Event→Claim 提取/去重/冲突收敛/双时间/遗忘）+ 自动检索注入；旧段级压缩已退役 |
 | 记忆闭环 | research_events → 按研究域蒸馏（经验不跨域，置信度 0.xx 分级）→ 逐 turn 反喂系统提示 |
 | 研究档案 | 研究 = 过程 + 成果：实体三要素（来源锚 + 状态 + 链接）全程举证、可推论/反推论/可纠正；每轮注回模型上下文；报告从同一档案派生（成果章节带证据锚、证伪与纠正独立成节） |
 | auto loop | 目标式研究循环：**策略治理（1.7.0）**——策略 YAML 唯一治理源、全自主无人值守（方向分歧按预置原则自决 / 空转连败阈值可配 / 预算自动续命序列 / 达成自动出报告），同 envKey 互斥闸；GUI 交互模式保留（预算三选一、暂停点两层、验收包人终审） |

@@ -220,6 +220,8 @@ zhishi auto-run start --name <任务名> --goal "目标" --env-key <已登记环
   zhishi auto-run verdict <id> --verdict pass|fail|continue [--note "…"]
     # 验收终审（GUI 交互 run 的补审；策略 run 无终审——读报告即可）
   zhishi auto-run clear [--id <id>] [--workspace <路径>]   # 清终态记录（活跃拒绝）
+zhishi claim list <sessionId>       # 会话记忆快照（治理提取的 fact/decision/dead-end/todo）
+  zhishi claim forget <sessionId> <claimId>   # 遗忘单条 Claim（置 archived,审计保留）
 zhishi version
   zhishi reload
 Run 'zhishi <command> --help' for details on a specific command.`;
@@ -648,6 +650,27 @@ if (!result.success) {
       return;
     }
     // stop/budget/verdict → 落到下方通用 ✓ 确认。
+  }
+  // claim（1.7.2 M5：会话记忆快照的人侧入口）
+  if (group === 'claim') {
+    const data = (result.data as Record<string, unknown>) ?? {};
+    if (action === 'list') {
+      const claims = Array.isArray(data.claims) ? (data.claims as Array<Record<string, unknown>>) : [];
+      if (claims.length === 0) {
+        console.log('（无 Claim——治理任务尚未覆盖本会话,或会话 id 不活跃）');
+        return;
+      }
+      for (const c of claims) {
+        const range = typeof c.lineStart === 'number' ? `  行 ${c.lineStart}-${c.lineEnd}` : '';
+        const expired = typeof c.validTo === 'string' && Date.parse(c.validTo) < Date.now() ? ' [已过期]' : '';
+        console.log(`- ${String(c.status)}  ${String(c.id)}  [${String(c.kind)}] ${String(c.text).slice(0, 120)}${expired}${range}`);
+      }
+      return;
+    }
+    if (action === 'forget') {
+      console.log(`forgotten: ${String(data.id ?? '')}`);
+      return;
+    }
   }
   // Generic success output
   const symbol = '\u2713'; // ✓
@@ -2372,6 +2395,12 @@ function buildRequestBody(
     if (action === 'list' || action === 'clear') {
       return { workspace: flags.workspace, id: flags.id };
     }
+    return {};
+  }
+  // Claim（1.7.2 M5：会话级记忆快照的人侧入口——列表/遗忘）
+  if (group === 'claim') {
+    if (action === 'list') return { sessionId: rest[0] ?? flags.sessionId };
+    if (action === 'forget') return { sessionId: rest[0], id: rest[1] ?? flags.id };
     return {};
   }
 return flags;

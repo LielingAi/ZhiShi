@@ -321,14 +321,12 @@ export interface NextTurnTextOptions {
 
 /** 1.5.0 确定性档案检查点间隔（每 N 轮一插——「第 N 轮该做」，不是
  *  「你想起来就做」。触发权归人的配套：auto loop 无人触发，由 harness
- *  按轮次确定性驱动）。 */
+ *  按轮次确定性驱动）。auto-run 专属节奏（4 轮）;交互线节奏见
+ *  archive-discipline.ts（INTERACTIVE_ARCHIVE_CHECKPOINT_INTERVAL）。 */
 export const ARCHIVE_CHECKPOINT_INTERVAL = 4;
 
-/** 档案检查点文本（确定轮到时的本轮任务追加）。 */
-export const ARCHIVE_CHECKPOINT_TEXT =
-  '【档案检查点】本轮结束前用 research_archive 整理研究状态：在验假设继续推进实验；'
-  + '已证实/推翻/不追的假设给终态(resolve/falsify/abandon)；新实验结果记 evidence(挂假设引用)；'
-  + '确认的结论 op=finding(refs 挂 V# 证据引用,有反证挂 against)；缺什么立 question。';
+import { ARCHIVE_CHECKPOINT_TEXT } from './archive-discipline';
+export { ARCHIVE_CHECKPOINT_TEXT };
 
 /** 后续轮驱动文本:「继续推进目标,上一轮结果:<截断>」(可选附人终审反馈)。
  *  1.5.0：带 turn 时每 ARCHIVE_CHECKPOINT_INTERVAL 轮追加档案检查点

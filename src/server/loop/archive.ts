@@ -76,6 +76,10 @@ export interface ArchiveEntity {
   against?: string[];
   /** 结论类型（仅 finding）。 */
   findingType?: FindingType;
+  /** 1.7.2 M4 双时间:事实有效时间窗（ISO;可空 = 未知/无限）——
+   *  createdAt/updatedAt 即记录时间,二者合为 bitemporal。 */
+  validFrom?: string;
+  validTo?: string;
   /** 级联标记：依赖的实体被纠正 → 待复核（不连坐，见文件头）。 */
   needsReview?: boolean;
   reviewReason?: string;
@@ -334,6 +338,9 @@ export interface AddEntityInput {
   anchorMessageId?: string;
   anchorLabel?: string;
   findingType?: FindingType;
+  /** 1.7.2 M4 双时间:事实有效时间窗（ISO;可空 = 未知/无限）。 */
+  validFrom?: string;
+  validTo?: string;
 }
 
 function buildEntity(
@@ -356,6 +363,8 @@ function buildEntity(
   if (input.anchorMessageId) entity.anchorMessageId = input.anchorMessageId;
   if (input.anchorLabel) entity.anchorLabel = input.anchorLabel.trim();
   if (kind === 'finding' && input.findingType) entity.findingType = input.findingType;
+  if (input.validFrom) entity.validFrom = input.validFrom;
+  if (input.validTo) entity.validTo = input.validTo;
   if (kind === 'finding') {
     const against = parseEntityRefs(input.againstRefs).filter((r) => r.startsWith('V#'));
     if (against.length > 0) entity.against = against;
@@ -583,7 +592,7 @@ function oneLineText(t: string, max: number): string {
  * 每分组限量 + 整段硬顶；空档案 → ''（零注入语义）。模型基于它继续，
  * 不从历史脑补状态。
  */
-export function renderArchiveForInjection(snapshot: ArchiveSnapshot | undefined, maxChars = ARCHIVE_INJECT_MAX_CHARS): string {
+export function renderArchiveForInjection(snapshot: ArchiveSnapshot | undefined, maxChars = ARCHIVE_INJECT_MAX_CHARS, now = Date.now()): string {
   if (!snapshot || snapshot.entities.length === 0) return '';
   const byKind = <T extends ArchiveEntity>(kind: ArchiveEntityKind): T[] =>
     snapshot.entities.filter((e) => e.kind === kind) as T[];
@@ -593,6 +602,13 @@ export function renderArchiveForInjection(snapshot: ArchiveSnapshot | undefined,
   const findings = byKind<ArchiveEntity>('finding').filter((e) => e.status !== 'corrected').slice(-3).reverse();
   const needsReview = snapshot.entities.filter((e) => e.needsReview).slice(0, 4);
 
+  // 1.7.2 M4:validTo < now → 事实已失效(过期标注,不删除——归档是审计资产)。
+  const expiredIds = new Set(
+    snapshot.entities
+      .filter((e) => e.validTo && Date.parse(e.validTo) < now)
+      .map((e) => e.id),
+  );
+
   const lines: string[] = [];
   const group = (title: string, items: ArchiveEntity[]): void => {
     if (items.length === 0) return;
@@ -600,7 +616,11 @@ export function renderArchiveForInjection(snapshot: ArchiveSnapshot | undefined,
     for (const e of items) {
       const refs = e.links.filter((l) => /^[HVCQ]#\d+$/.test(l));
       const against = (e.against ?? []).filter((l) => /^V#\d+$/.test(l));
-      lines.push(`  ${e.id} ${oneLineText(e.text, 90)}${refs.length > 0 ? `（${refs.join(' ')}）` : ''}${against.length > 0 ? `（反证 ${against.join(' ')}）` : ''}`);
+      // 结论引用已过期证据 → 提示（引用失效不连坐,标注即可）。
+      const staleRefs = refs.filter((r) => expiredIds.has(r));
+      const expiredTag = expiredIds.has(e.id) ? ' [已过期]' : '';
+      const staleTag = staleRefs.length > 0 ? `（过期引用 ${staleRefs.join(' ')}）` : '';
+      lines.push(`  ${e.id} ${oneLineText(e.text, 90)}${expiredTag}${refs.length > 0 ? `（${refs.join(' ')}）` : ''}${against.length > 0 ? `（反证 ${against.join(' ')}）` : ''}${staleTag}`);
     }
   };
   group('待答问题', open);

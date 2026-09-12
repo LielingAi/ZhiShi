@@ -95,7 +95,7 @@ vi.mock('../SessionStore', () => ({
 
 vi.mock('./boundary', () => ({ makeBoundaryHook: () => async () => undefined }));
 vi.mock('./output-guard', () => ({ makeOutputGuardHook: () => async () => undefined }));
-vi.mock('./compaction', () => ({ makeCompactionTransform: () => async (m: unknown) => m }));
+vi.mock('./window-transform', () => ({ makeWindowTransform: () => async (m: unknown) => m, WINDOW_OVERFLOW_RETRY_RATIO: 0.15, WORKING_MEMORY_TARGET_RATIO: 0.25 }));
 
 // A1(1.3.10):invoke 零广播回归——bg 回收走可注入 mock(bg-exec 的
 // envBgReap + bg-registry 的内存登记表),不碰真盘/真 SSH;默认空登记表,
