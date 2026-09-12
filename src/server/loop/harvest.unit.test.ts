@@ -92,22 +92,24 @@ describe('buildPointerCard(指针卡)', () => {
 });
 
 describe('侧车 IO(临时目录)', () => {
-  it('追加编号递增 + 读回 + 按 id 取单条', async () => {
+  it('追加编号唯一 + 读回 + 按 id 取单条（1.7.2 K#ulid 编号）', async () => {
     const sid = 'harvest-io-1';
     const first = await appendHarvestEntries(sid, [
       { segmentIndex: 1, phase: 'recon', lineStart: 3, lineEnd: 5, userTexts: [], keyFacts: ['exit=0'], summaries: [], tools: [] },
       { segmentIndex: 2, phase: 'analysis', lineStart: 6, lineEnd: 9, userTexts: ['指令'], keyFacts: [], summaries: ['摘要'], tools: ['env_exec'] },
     ], { dir: DIR });
-    expect(first.map((e) => e.id)).toEqual(['K#1', 'K#2']);
+    expect(first).toHaveLength(2);
+    expect(first[0].id.startsWith('K#')).toBe(true);
+    expect(first[0].id).not.toBe(first[1].id);
     const second = await appendHarvestEntries(sid, [
       { segmentIndex: 4, phase: 'execution', lineStart: 10, lineEnd: 12, userTexts: [], keyFacts: [], summaries: [], tools: [] },
     ], { dir: DIR });
-    expect(second[0].id).toBe('K#3');
+    expect(second[0].id.startsWith('K#')).toBe(true);
 
     const all = loadHarvest(sid, { dir: DIR });
     expect(all).toHaveLength(3);
-    expect(readHarvestEntry(sid, 'K#2', { dir: DIR })?.userTexts).toEqual(['指令']);
-    expect(readHarvestEntry(sid, 'K#99', { dir: DIR })).toBeNull();
+    expect(readHarvestEntry(sid, first[1].id, { dir: DIR })?.userTexts).toEqual(['指令']);
+    expect(readHarvestEntry(sid, 'K#nonexistent', { dir: DIR })).toBeNull();
   });
 
   it('缺失/坏行容错:读侧返回空数组或跳过坏行', async () => {

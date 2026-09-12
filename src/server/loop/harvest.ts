@@ -21,7 +21,7 @@
  * 是仅有的 IO。
  */
 
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { getZhiShiDataDir } from '../utils/app-dirs';
@@ -152,9 +152,12 @@ function harvestDir(options?: HarvestStoreOptions): string {
   return options?.dir ?? join(getZhiShiDataDir(), 'loop-sessions');
 }
 
-/** 读收割侧车（缺失/损坏 → 空数组——读侧容错，压缩不因收割故障阻塞）。 */
+/** 读收割侧车（缺失/损坏 → 空数组——读侧容错，压缩不因收割故障阻塞）。
+ *  1.7.2 M7:进程内缓存(append 后失效)——247MB 文件不再每 recall 全量读。 */
 export function loadHarvest(sessionId: string, options?: HarvestStoreOptions): HarvestEntry[] {
   const file = harvestFile(sessionId, harvestDir(options));
+  const cached = harvestCache.get(file);
+  if (cached) return cached;
   if (!existsSync(file)) return [];
   let raw: string;
   try {
@@ -172,10 +175,39 @@ export function loadHarvest(sessionId: string, options?: HarvestStoreOptions): H
       /* 坏行跳过，不炸整文件 */
     }
   }
+  harvestCache.set(file, out);
   return out;
 }
 
-/** 追加收割条目（锁内读-改-写；分配 K#N 编号；返回带 id 的条目）。 */
+/**
+ * 1.7.2 M7 收割侧车 GC：治理游标已覆盖（lineEnd ≤ cursor）的条目原文
+ * 已被 Claim 层承载——从侧车移除（recall({lines}) 仍可从 jsonl 取回原文）。
+ * 治理后调用,低频全量重写可接受。返回移除条数。
+ */
+export async function gcHarvestEntries(
+  sessionId: string,
+  cursor: number,
+  options?: HarvestStoreOptions,
+): Promise<number> {
+  const dir = harvestDir(options);
+  const file = harvestFile(sessionId, dir);
+  if (!existsSync(file)) return 0;
+  let removed = 0;
+  await withFileLock({ lockPath: `${file}.lock` }, async () => {
+    harvestCache.delete(file);
+    const all = loadHarvest(sessionId, options);
+    const kept = all.filter((e) => !(typeof e.lineEnd === 'number' && e.lineEnd <= cursor));
+    removed = all.length - kept.length;
+    if (removed > 0) {
+      writeFileAtomic(file, kept.map((e) => JSON.stringify(e)).join('\n') + '\n');
+      harvestCache.set(file, kept);
+    }
+  });
+  return removed;
+}
+
+/** 追加收割条目（1.7.2 M7:锁内**纯追加**——K#ulid 编号不再读全量求
+ *  maxSeq,247MB 全量重写 O(n²) 收口;旧 K#n 编号文件继续可读）。 */
 export async function appendHarvestEntries(
   sessionId: string,
   entries: Array<Omit<HarvestEntry, 'id' | 'createdAt'>>,
@@ -185,20 +217,25 @@ export async function appendHarvestEntries(
   mkdirSync(dir, { recursive: true });
   const file = harvestFile(sessionId, dir);
   const now = new Date().toISOString();
-  let assigned: HarvestEntry[] = [];
+  const assigned: HarvestEntry[] = entries.map((e, i) => ({
+    ...e,
+    // 时间戳 + 随机后缀:单调且无需读全量求 maxSeq(进程内同批 i 保证唯一)。
+    id: `K#${now.replace(/\D/g, '').slice(0, 14)}-${Math.random().toString(36).slice(2, 8)}-${i}`,
+    createdAt: now,
+  }));
   await withFileLock({ lockPath: `${file}.lock` }, async () => {
-    const existing = loadHarvest(sessionId, options);
-    let maxSeq = 0;
-    for (const e of existing) {
-      const hit = /^K#(\d+)$/.exec(e.id);
-      if (hit) maxSeq = Math.max(maxSeq, Number(hit[1]));
-    }
-    assigned = entries.map((e) => ({ ...e, id: `K#${++maxSeq}`, createdAt: now }));
-    const body = existing.concat(assigned).map((e) => JSON.stringify(e)).join('\n') + '\n';
-    writeFileAtomic(file, body);
+    const body = assigned.map((e) => JSON.stringify(e)).join('\n') + '\n';
+    appendFileSync(file, body, 'utf-8');
+    harvestCache.delete(file);
   });
   return assigned;
 }
+
+// ---------------------------------------------------------------------------
+// 读侧进程内缓存（M7:append 后失效;loadHarvest 仍是权威读路径）
+// ---------------------------------------------------------------------------
+
+const harvestCache = new Map<string, HarvestEntry[]>();
 
 /** 按 id 读单条收割物（recall({ref:"K#n"}) 的执行面）。 */
 export function readHarvestEntry(

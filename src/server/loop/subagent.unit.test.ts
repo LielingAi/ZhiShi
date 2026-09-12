@@ -43,7 +43,7 @@ const RESOLUTION = {
   modelId: 'k3',
 } as unknown as LoopModelResolution;
 
-const PARENT_TOOLS = ['env_exec', 'delegate_task'];
+const PARENT_TOOLS = ['env_exec', 'delegate_task', 'recall'];
 
 function fakeSpawn(result: Partial<SubLoopResult> = {}) {
   const calls: { prompt: string; allowedTools?: string[]; tools?: { name: string }[]; systemPrompt?: string }[] = [];
@@ -260,7 +260,7 @@ describe('B8(1.2.6):子 loop 接 abort + 压缩', () => {
     };
     // abort 透传:pi 层收到同一个 signal
     expect(opts.signal).toBe(ac.signal);
-    // 压缩挂载点存在(主 loop 同款 makeCompactionTransform);未超阈值原样透传
+    // 窗口置换挂载点存在(1.7.2 makeWindowTransform);未超阈值原样透传
     expect(typeof opts.transformContext).toBe('function');
     const msgs = [{ role: 'user', content: '短', timestamp: 1 } as AgentMessage];
     expect(await opts.transformContext!(msgs)).toEqual(msgs);

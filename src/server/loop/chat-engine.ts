@@ -104,7 +104,8 @@ import type { ProviderEnv } from '../agent-session';
 import { getInteractionScenario, setActiveSessionId } from '../agent-session';
 
 import { makeBoundaryHook } from './boundary';
-import { makeCompactionTransform } from './compaction';
+import { makeWindowTransform, WINDOW_OVERFLOW_RETRY_RATIO, WORKING_MEMORY_TARGET_RATIO } from './window-transform';
+import { buildArchiveCheckpointLine } from './archive-discipline';
 import { estimateMessagesTokens } from './context-manager';
 import { runLoop } from './loop';
 import { makeOutputGuardHook } from './output-guard';
@@ -309,7 +310,8 @@ const PI_SYSTEM_PROMPT =
  * 可读,回答质量劣化;0.25 既保证重试视图远小于窗口(装得下),又保留
  * 足够的当前阶段/key 段原文。
  */
-const FORCE_COMPACTION_RATIO = 0.25;
+// 1.7.2：FORCE_COMPACTION_RATIO 已随段级压缩退役删除——溢出兜底重试
+// 改走窗口置换的收紧预算（window-transform.ts WINDOW_OVERFLOW_RETRY_RATIO）。
 
 /** 1.6.9 #1：空产出 turn 的自动续跑上限（连续 1 次仍空 → 停止并升级；
  *  1.6.10：2 → 1——reasoning 模型的 thinking-only 回合合法存在，多续一次
@@ -1260,7 +1262,7 @@ class ChatEngine {
     // 1.2.6（C-11）：压缩阈值估算纳入系统提示——提示先于 transform 组装,
     // 系统提示按 chars/2 折算进阈值（estimateMessagesTokens 口径,中英混合
     // 保守折算;与消息体的 chars/4 启发式不同）。
-    const systemPrompt = await this.assemblePiSystemPrompt(
+    let systemPrompt = await this.assemblePiSystemPrompt(
       env,
       scenario,
       // A2-2(1.5.4):注入锚点补当前轮用户消息——history 是当轮 prompt 之前
@@ -1270,6 +1272,15 @@ class ChatEngine {
       turnSessionId,
     );
     const contextWindow = resolution.model.contextWindow || 200_000;
+    // 1.7.2 M2a:交互档案检查点——轮数确定性注入 + 工作记忆即将置换时强制
+    // 一轮（程序决定时机,模型执行整理;实机:交互线无检查点 archive 欠维护）。
+    {
+      const userCount = history.filter((m) => m.role === 'user').length;
+      const nearEvict = estimateMessagesTokens(history, systemPrompt.length)
+        > Math.floor(contextWindow * WORKING_MEMORY_TARGET_RATIO);
+      const checkpoint = buildArchiveCheckpointLine(userCount, nearEvict);
+      if (checkpoint) systemPrompt += `\n\n${checkpoint}`;
+    }
     // 1.5.3:校准系数从会话 meta 读（真实 API ÷ 启发式,上轮学习落盘）;
     // 本轮是否触发过压缩由 onCompact 闭包打标——压缩过的轮次不学习
     // (锚被污染:压缩轮 usage 是裁后体量,学进去系数会塌)。
@@ -1278,11 +1289,9 @@ class ChatEngine {
       compactedThisTurn = true;
       void markLoopSessionCompacted(turnSessionId).catch(() => {});
     };
-    const transformOptions = { sessionId: turnSessionId };
-    const transformContext = makeCompactionTransform(
-      { contextWindow, systemPromptChars: systemPrompt.length, calibration: stored.meta?.tokenCalibration },
+    const transformContext = makeWindowTransform(
+      { contextWindow, systemPromptChars: systemPrompt.length, sessionId: turnSessionId },
       onCompactMark,
-      transformOptions,
     );
 
     // 图片输入:pi user 消息的 image 块(与文本同一条消息)。
@@ -1327,14 +1336,10 @@ class ChatEngine {
       // 前补播,保序。
       let deferredError: SseOut[] | null = null;
       const attemptTransform = overflowRetried
-        ? makeCompactionTransform(
-            // 强制压缩重试:ratio 0.25(活体实测修正——0 会把上下文压到
-            // 几千 tok 的残渣,模型只剩 stub 可读;0.25 是「激进取舍但
-            // 留出真实工作上下文」的预算)。1.5.3:溢出档与阈值档同一收割
-            // 流程(同 options),裁掉的内容一样进侧车。
-            { contextWindow, systemPromptChars: systemPrompt.length, thresholdRatio: FORCE_COMPACTION_RATIO },
+        ? makeWindowTransform(
+            // 溢出兜底重试：窗口预算再收紧（1.2.7 FORCE 口径改走窗口置换）。
+            { contextWindow, systemPromptChars: systemPrompt.length, targetRatio: WINDOW_OVERFLOW_RETRY_RATIO },
             onCompactMark,
-            transformOptions,
           )
         : transformContext;
       for await (const event of runLoop({
@@ -1618,11 +1623,9 @@ class ChatEngine {
       compactedThisTurn = true;
       void markLoopSessionCompacted(loopSessionId).catch(() => {});
     };
-    const transformOptions = { sessionId: loopSessionId };
-    const transformContext = makeCompactionTransform(
-      { contextWindow, systemPromptChars: systemPrompt.length, calibration: storedInvoke.meta?.tokenCalibration },
+    const transformContext = makeWindowTransform(
+      { contextWindow, systemPromptChars: systemPrompt.length, sessionId: loopSessionId },
       onCompactMark,
-      transformOptions,
     );
 
     const run = async (): Promise<{ text: string; error?: string }> => {
@@ -1637,10 +1640,9 @@ class ChatEngine {
         doneMessages = [];
         failed = null;
         const attemptTransform = overflowRetried
-          ? makeCompactionTransform(
-              { contextWindow, systemPromptChars: systemPrompt.length, thresholdRatio: FORCE_COMPACTION_RATIO },
+          ? makeWindowTransform(
+              { contextWindow, systemPromptChars: systemPrompt.length, targetRatio: WINDOW_OVERFLOW_RETRY_RATIO },
               onCompactMark,
-              transformOptions,
             )
           : transformContext;
         for await (const event of runLoop({

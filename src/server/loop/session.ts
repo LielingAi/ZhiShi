@@ -23,7 +23,13 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
 import { getZhiShiDataDir } from '../utils/app-dirs';
 import { withFileLock, writeFileAtomic } from '../utils/file-lock';
-import { TRUNCATION_MARKER_CURRENT, TRUNCATION_MARKER_LEGACY } from './compaction';
+
+// 1.7.2：截断标记自 compaction.ts 迁入（旧段级压缩已退役删除,持久化剥离
+// 仍需要认旧形态——1.5.3 及更早的 jsonl 里可能存在两类标记）。
+/** 新形态（持久化剥离时两类都认）。 */
+export const TRUNCATION_MARKER_CURRENT = '\n⟦系统注记：以下内容已省略，勿复现⟧';
+/** 旧形态（1.5.3 之前）。 */
+export const TRUNCATION_MARKER_LEGACY = '…[已截断]';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,6 +46,9 @@ export interface LoopSessionMeta {
    *  学习并持久化——压缩过的轮次不学习（锚被污染）;evaluateCompaction
    *  判定值 = 全量启发式 × 本系数）。 */
   tokenCalibration?: number;
+  /** 1.7.2:Claim 治理游标——已治理的消息下标（缺省 0 = 尚未治理；
+   *  消息 i ↔ jsonl 行 i+2,与 recall 行区间同口径）。 */
+  claimsCursor?: number;
 }
 
 export interface LoopSession {
@@ -139,6 +148,7 @@ export function parseLoopSessionLine(line: string): { kind: 'meta'; meta: LoopSe
         updatedAt: typeof rec.updatedAt === 'string' ? rec.updatedAt : '',
         compactedAt: typeof rec.compactedAt === 'string' ? rec.compactedAt : undefined,
         tokenCalibration: typeof rec.tokenCalibration === 'number' ? rec.tokenCalibration : undefined,
+        claimsCursor: typeof rec.claimsCursor === 'number' ? rec.claimsCursor : undefined,
       },
     };
   }
@@ -314,6 +324,36 @@ export async function markLoopSessionCompacted(
       updatedAt: existing.meta?.updatedAt || now,
       compactedAt: now,
       tokenCalibration: existing.meta?.tokenCalibration,
+      claimsCursor: existing.meta?.claimsCursor,
+    };
+    writeFileAtomic(file, serializeLoopSession(nextMeta, existing.messages));
+  });
+}
+
+/**
+ * 1.7.2:推进 Claim 治理游标(claimsCursor = 已治理消息下标)。锁内读-改-写,
+ * 只改 meta 不碰消息;与 markLoopSessionCompacted 同纪律。
+ */
+export async function markLoopSessionClaimsCursor(
+  id: string,
+  cursor: number,
+  options?: LoopSessionStoreOptions,
+): Promise<void> {
+  const dir = storeDir(options);
+  const file = loopSessionFile(id, dir);
+  if (!existsSync(file)) return;
+
+  await withFileLock({ lockPath: `${file}.lock` }, async () => {
+    const existing = loadLoopSession(id, options);
+    const now = new Date().toISOString();
+    const nextMeta: LoopSessionMeta = {
+      model: existing.meta?.model,
+      providerId: existing.meta?.providerId,
+      createdAt: existing.meta?.createdAt || now,
+      updatedAt: existing.meta?.updatedAt || now,
+      compactedAt: existing.meta?.compactedAt,
+      tokenCalibration: existing.meta?.tokenCalibration,
+      claimsCursor: Math.max(existing.meta?.claimsCursor ?? 0, cursor),
     };
     writeFileAtomic(file, serializeLoopSession(nextMeta, existing.messages));
   });

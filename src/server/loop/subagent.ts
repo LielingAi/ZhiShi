@@ -26,11 +26,12 @@ import { randomUUID } from 'node:crypto';
 
 import type { EnvironmentEntry } from '../../shared/config-types';
 import { buildDefaultBoundaryRules, makeBoundaryHook, type BoundaryRule } from './boundary';
-import { makeCompactionTransform } from './compaction';
+import { makeWindowTransform } from './window-transform';
 import { runLoop, type LoopEvent } from './loop';
 import type { LoopModelResolution } from './pi-provider';
 import { appendLoopMessages, markLoopSessionCompacted, newLoopSessionId } from './session';
 import { createEnvExecTool, ENV_EXEC_TOOL_NAME } from './tools';
+import { createRecallTool, RECALL_TOOL_NAME } from './recall';
 
 export const DELEGATE_TASK_TOOL_NAME = 'delegate_task';
 
@@ -88,10 +89,15 @@ export function assertNarrowedWhitelist(parentAllowedTools: string[], childAllow
 
 export async function spawnSubLoop(options: SpawnSubLoopOptions): Promise<SubLoopResult> {
   const sessionId = options.sessionId ?? newLoopSessionId();
-  const allowedTools = options.allowedTools ?? [ENV_EXEC_TOOL_NAME];
+  // 1.7.2:默认工具集 = env_exec + recall（窗口指针块的取回面——子 loop 与主
+  // loop 同目录持久化,取回可寻址;recall 只读,不扩大环境越界面）。
+  const allowedTools = options.allowedTools ?? [ENV_EXEC_TOOL_NAME, RECALL_TOOL_NAME];
   assertNarrowedWhitelist(options.parentAllowedTools, allowedTools);
 
-  const tools = options.tools ?? [createEnvExecTool(options.env)];
+  const tools = options.tools ?? [
+    createEnvExecTool(options.env),
+    createRecallTool({ getSessionId: () => sessionId }),
+  ];
   if (tools.some((t) => t.name === DELEGATE_TASK_TOOL_NAME)) {
     throw new Error(`子 loop 工具集不得含 ${DELEGATE_TASK_TOOL_NAME}(深度限 1)`);
   }
@@ -117,19 +123,18 @@ export async function spawnSubLoop(options: SpawnSubLoopOptions): Promise<SubLoo
     beforeToolCall,
     // B8(1.2.6):子 loop 接父 loop abort(signal 透传)。
     signal: options.signal,
-    // B8(1.2.6):子 loop 挂主 loop 同款压缩策略(compaction.ts,保守裁剪);
-    // 压缩只影响当次 LLM 上下文,持久化全量不动,触发时在子线 meta 打
+    // B8(1.2.6):子 loop 挂主 loop 同款窗口置换(1.7.2 window-transform);
+    // 置换只影响当次 LLM 上下文,持久化全量不动,触发时在子线 meta 打
     // compactedAt 标记(仅持久化开启时——无 storeDir 没有 meta 可标)。
-    // A2-3(1.5.4):子 loop 工具集无 recall——兜底 stub 文案不印取回指引
-    // (hasRecall:false),防模型照 stub 指引幻觉调用 recall 被 boundary 拦。
-    transformContext: makeCompactionTransform(
+    // 1.7.2:子 loop 注册 recall(行区间取回面)——窗口指针块的取回指引在
+    // 所有线成立;子 loop 会话与主会话同目录持久化(storeDir),取回可寻址。
+    transformContext: makeWindowTransform(
       { contextWindow: options.resolution.model.contextWindow || 200_000 },
       () => {
         if (options.storeDir) {
           void markLoopSessionCompacted(sessionId, { dir: options.storeDir }).catch(() => {});
         }
       },
-      { hasRecall: false },
     ),
     maxTokens: options.maxTokens,
   })) {

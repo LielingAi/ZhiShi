@@ -18,6 +18,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-09-12
+
+> **记忆层重构：工作记忆窗口置换 + Claim 治理**（design: `docs/design/1.7.2-compaction.md`）——实机实证的根因修复：1.18M 上下文稳态 + 90s 看门狗 4 连误杀。旧段级压缩（stub/truncate）退役，改为「Event/Claim 双通道 + 程序化置换 + 程序化治理」（HL-Mem / 2025 综述 Dynamics 框架）。实机 dogfood：1.33M → 240k 窗口、长 turn 零误杀、研究状态跨窗口完整存活。
+
+### 新增
+- **工作记忆窗口置换**（M1）：上下文预算 0.25×窗口、段原子移出、anchor 恒留、user ≤20、目录指针块（行区间 + recall 取回）——全局接线（交互 / invoke / 子 loop）；旧压缩路径退役删除
+- **会话 Claim 治理**（M2）：`claimsCursor` 幂等游标 → LLM 提取（archive 实体 / research_log 补录 / session-claims）→ 准入校验 → 去重 → conflict 收敛 → 落库 → 审计；sidecar 受护定时器每 30 分钟扫活跃会话；交互档案检查点（6 轮节奏 + 置换前强制）
+- **看门狗分层**（M3）：首事件前 300s（prefill 预算）/ 事件后 90s（流间挂起），文案区分
+- **时间解释**（M4）：archive 实体双时间（validFrom/validTo）+ 注入投影过期标注 + 过期引用提示
+- **遗忘与生命周期**（M5）：salience 半衰期衰减（触点只由检索注入刷新）→ 归档；`zhishi claim list/forget`
+- **自动检索注入**（M6）：searchTerms 检索打分，工作记忆注入「会话记忆索引」（≤8 条带来源标注）
+- **收割侧车收口**（M7）：锁内纯追加（K#ulid）+ 读侧缓存 + 治理游标驱动 GC
+
+### 修复
+- 治理扫描刷新触点导致衰减冻结（半衰期永不生效）
+- 提取 findingType 运行时枚举无兜底（非法值剥离）
+
 ## [1.7.1] - 2026-09-11
 
 > **CLI auto-run 链路两洞热修（实机实测）**——CLI 实测第一跑即暴露：模型首轮提请「本会话无 env_exec 工具」被保守档停掉；修完再跑，报告又卡在边界问询无人应答。两条都是 CLI 无人值守路径的必经链路。

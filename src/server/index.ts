@@ -294,6 +294,9 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'campaign/list') return api.handleCampaignList(payload as Parameters<typeof api.handleCampaignList>[0]);
   if (route === 'campaign/stop') return await api.handleCampaignStop(payload as Parameters<typeof api.handleCampaignStop>[0]);
   if (route === 'campaign/resume') return await api.handleCampaignResume(payload as Parameters<typeof api.handleCampaignResume>[0]);
+  // 1.7.2 M5：会话 Claim 人侧入口（列表 / 遗忘）
+  if (route === 'claim/list') return api.handleClaimList(payload as Parameters<typeof api.handleClaimList>[0]);
+  if (route === 'claim/forget') return await api.handleClaimForget(payload as Parameters<typeof api.handleClaimForget>[0]);
   // 1.6.11 会话线任务形态读/设（首条消息前即可设——战役入口语义）
   if (route === 'session/mission') return api.handleSessionMission(payload as Parameters<typeof api.handleSessionMission>[0]);
   if (route === 'auto-run/budget') return api.handleAutoRunBudget(payload as Parameters<typeof api.handleAutoRunBudget>[0]);
@@ -1357,6 +1360,16 @@ currentInitPhase = 'skill-seed';
           await m.seedResearchDistillArcTask(currentAgentDir);
         })
         .catch((err) => console.warn('[distill] seed failed (non-fatal):', err instanceof Error ? err.message : err));
+// 1.7.2 会话 Claim 治理（设计 §7.2 调度）— 引擎内务受护定时器:
+      // 周期性扫描活跃会话线,Event→Claim 增量提取/去重/冲突收敛/生命周期。
+      // 幂等游标 + 文件锁,失败静默下轮重试;不阻塞启动。
+      try {
+        const { startGovernanceTimer } = await import('./loop/claim-governance-arc');
+        startGovernanceTimer();
+        console.log('[startup] claim governance timer started');
+      } catch (err) {
+        console.warn('[governance] timer start failed (non-fatal):', err instanceof Error ? err.message : String(err));
+      }
 // #296 — install the backend auto-title trigger into the turn-hooks slot
       // BEFORE any turn can complete (initializeAgent / pre-warm run below).
       installAutoTitleHook();

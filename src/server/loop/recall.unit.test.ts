@@ -41,16 +41,17 @@ describe('recall 工具', () => {
 
   it('ref 取回收割物:命中渲染摘要/关键行/行区间;未命中给说明', async () => {
     const sid = 'recall-ref';
-    await appendHarvestEntries(sid, [
+    const assigned = await appendHarvestEntries(sid, [
       { segmentIndex: 2, phase: 'recon', lineStart: 10, lineEnd: 20, userTexts: ['做枚举'], keyFacts: ['exit=0'], summaries: ['攻击面已枚举'], tools: ['env_exec'] },
     ], { dir: DIR });
+    const refId = assigned[0].id; // 1.7.2 M7:K#ulid 编号——用返回 id,不假设 K#1
     const tool = createRecallTool({ getSessionId: () => sid, dir: DIR });
-    const hit = await call(tool, { ref: 'K#1' });
-    expect(hit).toContain('K#1');
+    const hit = await call(tool, { ref: refId });
+    expect(hit).toContain(refId);
     expect(hit).toContain('攻击面已枚举');
     expect(hit).toContain('做枚举');
     expect(hit).toContain('lines:"10-20"');
-    const miss = await call(tool, { ref: 'K#42' });
+    const miss = await call(tool, { ref: 'K#nonexistent' });
     expect(miss).toContain('不存在');
   });
 

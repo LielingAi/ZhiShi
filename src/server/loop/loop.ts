@@ -142,6 +142,12 @@ export interface RunLoopOptions {
   /** 1.5.13：模型静默看门狗阈值（模型流式阶段无事件的最大容忍；工具执行
    *  阶段不计时）。缺省 MODEL_SILENCE_TIMEOUT_MS；测试注入小值。 */
   modelSilenceTimeoutMs?: number;
+  /**
+   * 1.7.2：首事件看门狗阈值（收到**任意**模型事件之前的 prefill 容忍——
+   * 大上下文 prefill 90-130s 属正常,90s 静默看门狗会误杀,实机 4 连超时
+   * 实证)。缺省 MODEL_FIRST_EVENT_TIMEOUT_MS；测试注入小值。
+   */
+  modelFirstEventTimeoutMs?: number;
   maxTokens?: number;
 }
 
@@ -153,6 +159,10 @@ export function streamFnFromModels(models: Models): StreamFn {
 /** 1.5.13：模型流式静默看门狗缺省阈值（90s——实机形态：供应商挂起零 token
  *  99s 无事件；正常流式 chunk 间隔远低于此）。 */
 export const MODEL_SILENCE_TIMEOUT_MS = 90_000;
+
+/** 1.7.2：首事件看门狗缺省阈值（300s——1M 上下文 prefill 实测 60-130s；
+ *  90s 静默看门狗不分 prefill 与流间,在首 chunk 到达前误杀）。 */
+export const MODEL_FIRST_EVENT_TIMEOUT_MS = 300_000;
 
 /**
  * 跑一轮 agent loop（可能含多 turn：工具调用 → 结果回注 → 再调模型），
@@ -196,18 +206,24 @@ export async function* runLoop(options: RunLoopOptions): AsyncIterable<LoopEvent
   );
 
   // 1.5.13 模型静默看门狗（实机：deepseek API 挂起 99s 零 token——GUI 永远
-  // 「思考中」）：模型流式阶段连续 modelSilenceTimeoutMs 无任何事件 → 判挂起，
-  // 中断并报明确错误。工具执行阶段不计时（tool_execution_start→end 之间——
-  // 长 env_exec/下载合法地分钟级无事件）。
+  // 「思考中」）：模型流式阶段连续无事件 → 判挂起，中断并报明确错误。
+  // 工具执行阶段不计时（tool_execution_start→end 之间——长 env_exec/下载
+  // 合法地分钟级无事件）。
+  // 1.7.2 分层：收到任意事件前按首事件预算计时（prefill 期——大上下文
+  // 首 token 90-130s 属正常,90s 流间看门狗误杀实机实证）；收到后恢复
+  // 流间静默阈值。
   const silenceMs = options.modelSilenceTimeoutMs ?? MODEL_SILENCE_TIMEOUT_MS;
+  const firstEventMs = options.modelFirstEventTimeoutMs ?? MODEL_FIRST_EVENT_TIMEOUT_MS;
   const iter = stream[Symbol.asyncIterator]();
   let inToolExecution = false;
+  let receivedAny = false;
   for (;;) {
     let result: IteratorResult<AgentEvent>;
     if (inToolExecution) {
       // 工具执行期：纯等，不看门狗
       result = await iter.next();
     } else {
+      const activeMs = receivedAny ? silenceMs : firstEventMs;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const raced = await Promise.race([
         iter.next().then((r): { kind: 'event'; result: IteratorResult<AgentEvent> } => {
@@ -215,7 +231,7 @@ export async function* runLoop(options: RunLoopOptions): AsyncIterable<LoopEvent
           return { kind: 'event', result: r };
         }),
         new Promise<{ kind: 'timeout' }>((resolve) => {
-          timer = setTimeout(() => resolve({ kind: 'timeout' }), silenceMs);
+          timer = setTimeout(() => resolve({ kind: 'timeout' }), activeMs);
         }),
       ]);
       if (raced.kind === 'timeout') {
@@ -223,13 +239,16 @@ export async function* runLoop(options: RunLoopOptions): AsyncIterable<LoopEvent
         await iter.return?.(undefined).catch(() => {});
         yield {
           type: 'error',
-          error: `模型响应超时（${Math.round(silenceMs / 1000)}s 无任何数据流回）——供应商或网络挂起，已中断。请重试或换模型。`,
+          error: receivedAny
+            ? `模型响应超时（${Math.round(activeMs / 1000)}s 无任何数据流回）——供应商或网络挂起，已中断。请重试或换模型。`
+            : `模型响应超时（${Math.round(activeMs / 1000)}s 无首 token——上下文较大 prefill 慢或供应商挂起，已中断。可 /reset 开新会话或稍后重试。`,
         };
         return;
       }
       result = raced.result;
     }
     if (result.done) break;
+    receivedAny = true; // 任意事件到达即切换回流间看门狗
     const event = result.value;
     // 工具执行边界（映射前的 pi 事件名）：进入后停表，出来后恢复。
     if (event.type === 'tool_execution_start') inToolExecution = true;
