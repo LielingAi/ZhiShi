@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.5] - 2026-09-13
+
+> **auto-run 预算记账修复（续 1.7.4）**——Esc 人工终止路径补齐 `budget.spent` 同步。
+
+### 修复
+- **auto-run Esc 终止 `budget.spent` 漏记**：stop 请求落在 invoke 期间时，循环在轮次记账前经 `isStopped` break 退出，Esc 统一收尾 persist 终态但不同步 `budget.spent`——人工停止的 run `turns≥1` 但 `spent=0`，GUI 卡片与 CLI list 显示「预算 0 / N 轮」（1.7.4 只覆盖了 provider-error 分支）。修复后 Esc 收尾 persist 前统一重算（幂等），一处覆盖全部 stop 出口（`src/server/loop/auto-run.ts` Esc 终态收尾）。
+
 ## [1.7.4] - 2026-09-13
 
 > **auto-run 预算记账修复**——策略路径 provider-error（模型调用失败/中断）分支补齐 `budget.spent` 同步。

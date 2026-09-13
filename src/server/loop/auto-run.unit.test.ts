@@ -746,6 +746,24 @@ describe('runAutoRunLoop(Esc 终止)', () => {
     expect(record.status).toBe('stopped');
     expect(dataOf(fake.sent, 'auto-run:completed')).toMatchObject({ id: 'run-1', outcome: 'stopped' });
   });
+
+  it('1.7.5:Esc 中停止也计入 budget.spent(spent==turns,盘上快照同值)', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps();
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.invokeCount >= 1);
+    ctl.requestStop();
+    await done;
+    await loop;
+    expect(record.status).toBe('stopped');
+    // 修复前:stop 落在 invoke 期间时循环在轮次记账前退出,turns≥1 但 spent=0。
+    expect(record.turns).toBeGreaterThanOrEqual(1);
+    expect(record.budget.spent).toBe(record.turns);
+    const last = fake.saved[fake.saved.length - 1];
+    expect(last?.budget.spent).toBe(record.turns);
+  });
 });
 
 describe('verdictRequestOfRecord（1.4.6 dogfood 实证：list 归一化）', () => {
