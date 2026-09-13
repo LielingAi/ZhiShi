@@ -12,13 +12,16 @@
  * （与主会话区互斥：page === 'settings' 时主区不渲染）。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 
 import { GUI_VERSION } from '../../../shared/constants';
 import { getSettingsClient, useGuiStore } from '../store/useGuiStore';
 import * as api from '../client/api';
 import type { ExpertDraft, ExpertSummary, ModelProvider, ResearchEventRow } from '../client/api';
+import { filterExpertEntries, paginate, type ExpertEntryLike } from '../model/expert-filter';
+import { filterResearchEvents, type ResearchEventLike } from '../model/research-filter';
+import { RESEARCH_TASK_KINDS } from '../../../shared/research-kinds';
 import { buildCustomProviderPayload } from '../model/custom-provider';
 import {
   buildIntelConfigPatch,
@@ -576,7 +579,22 @@ function ExpertTab(): React.JSX.Element {
   // 删除二次确认目标（expert/rm 有损操作——确认模态后再真删）。
   const [rmTarget, setRmTarget] = useState<ExpertSummary | null>(null);
   const [rmBusy, setRmBusy] = useState(false);
+  // 1.7.3：筛选 + 翻页（组件本地状态,不动服务端搜索语义）。
+  const [domainFilter, setDomainFilter] = useState('');
+  const [kindFilter, setKindFilter] = useState('');
+  const [page, setPage] = useState(1);
   const showToast = useGuiStore((s) => s.showToast);
+
+  // 1.7.3：筛选组合（domain × kind × query 作用于当前结果集）+ 翻页。
+  const filtered = useMemo(
+    () => filterExpertEntries(entries as ExpertEntryLike[], { domain: domainFilter || undefined, kind: kindFilter || undefined, query: '' }),
+    [entries, domainFilter, kindFilter],
+  );
+  const paged = useMemo(() => paginate(filtered, page), [filtered, page]);
+  // 筛选/搜索变化时回到第 1 页。
+  useEffect(() => {
+    setPage(1);
+  }, [domainFilter, kindFilter, entries]);
 
   const reloadList = useCallback(async () => {
     const c = getSettingsClient();
@@ -654,8 +672,34 @@ function ExpertTab(): React.JSX.Element {
           <button className="btn" onClick={() => void search()}>搜索</button>
           <button className="btn" onClick={() => setImportOpen(true)}>导入 JSON/YAML</button>
         </div>
-        {entries.length === 0 && <StateHint kind="empty" text="无匹配条目" hint="可导入或等 agent 起草" />}
-        {entries.map((e) => (
+        {/* 1.7.3：域/kind 组合筛选（作用于当前结果集；服务端搜索语义不变） */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+          <select
+            className="btn small"
+            value={domainFilter}
+            onChange={(e) => setDomainFilter(e.target.value)}
+            title="按研究域筛选"
+          >
+            <option value="">全部域</option>
+            {RESEARCH_TASK_KINDS.map((d) => (
+              <option key={d} value={d}>{d}</option>
+            ))}
+          </select>
+          <select
+            className="btn small"
+            value={kindFilter}
+            onChange={(e) => setKindFilter(e.target.value)}
+            title="按知识类型筛选"
+          >
+            <option value="">全部类型</option>
+            <option value="idea">idea</option>
+            <option value="technique">technique</option>
+            <option value="sop">sop</option>
+          </select>
+          <span className="m-sub">{filtered.length} 条</span>
+        </div>
+        {filtered.length === 0 && <StateHint kind="empty" text="无匹配条目" hint="可导入或等 agent 起草" />}
+        {paged.items.map((e) => (
           <div className="set-row" key={e.id}>
             <div>
               <div className="sr-label">{e.title}</div>
@@ -689,6 +733,27 @@ function ExpertTab(): React.JSX.Element {
             </div>
           </div>
         ))}
+        {paged.total > 0 && (
+          <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+            <button
+              className="btn small"
+              disabled={paged.page <= 1}
+              onClick={() => setPage((p) => p - 1)}
+              title="上一页"
+            >
+              ← 上一页
+            </button>
+            <span className="m-sub">第 {paged.page} / {paged.totalPages} 页 · 共 {paged.total} 条</span>
+            <button
+              className="btn small"
+              disabled={paged.page >= paged.totalPages}
+              onClick={() => setPage((p) => p + 1)}
+              title="下一页"
+            >
+              下一页 →
+            </button>
+          </div>
+        )}
         {detail && (
           <div className="ex-detail">
             <div className="ex-head">
@@ -918,6 +983,11 @@ function ExpertImportModal({
 
 function ResearchTab(): React.JSX.Element {
   const [rows, setRows] = useState<ResearchEventRow[]>([]);
+  // 1.7.3：筛选 + 翻页（组件本地状态）。
+  const [kindFilter, setKindFilter] = useState('');
+  const [outcomeFilter, setOutcomeFilter] = useState('');
+  const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     const c = getSettingsClient();
@@ -925,11 +995,58 @@ function ResearchTab(): React.JSX.Element {
     void api.researchList(c).then(setRows).catch(() => {});
   }, []);
 
+  const filtered = useMemo(
+    () => filterResearchEvents(rows as ResearchEventLike[], {
+      taskKind: kindFilter || undefined,
+      outcome: outcomeFilter || undefined,
+      query,
+    }),
+    [rows, kindFilter, outcomeFilter, query],
+  );
+  const paged = useMemo(() => paginate(filtered, page), [filtered, page]);
+  useEffect(() => {
+    setPage(1);
+  }, [kindFilter, outcomeFilter, query]);
+
+  const outcomes = useMemo(() => [...new Set(rows.map((r) => r.outcome).filter(Boolean))] as string[], [rows]);
+
   return (
     <div className="set-group">
       <div className="sg-title">研究留痕 · research_events</div>
-      {rows.length === 0 && <StateHint kind="empty" text="暂无研究事件" />}
-      {rows.map((r) => (
+      {/* 1.7.3：taskKind × outcome × 关键词 组合筛选 */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+        <select
+          className="btn small"
+          value={kindFilter}
+          onChange={(e) => setKindFilter(e.target.value)}
+          title="按研究域筛选"
+        >
+          <option value="">全部域</option>
+          {RESEARCH_TASK_KINDS.map((d) => (
+            <option key={d} value={d}>{d}</option>
+          ))}
+        </select>
+        <select
+          className="btn small"
+          value={outcomeFilter}
+          onChange={(e) => setOutcomeFilter(e.target.value)}
+          title="按结果筛选"
+        >
+          <option value="">全部结果</option>
+          {outcomes.map((o) => (
+            <option key={o} value={o}>{o}</option>
+          ))}
+        </select>
+        <input
+          className="d-search"
+          placeholder="关键词…（命中 summary / bugClass）"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <span className="m-sub">{filtered.length} 条</span>
+      </div>
+      {filtered.length === 0 && <StateHint kind="empty" text="暂无研究事件" />}
+      {paged.items.map((r) => (
         <div className="set-row" key={r.id ?? r.createdAt}>
           <div>
             <div className="sr-label">
@@ -942,6 +1059,27 @@ function ResearchTab(): React.JSX.Element {
           </div>
         </div>
       ))}
+      {paged.total > 0 && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+          <button
+            className="btn small"
+            disabled={paged.page <= 1}
+            onClick={() => setPage((p) => p - 1)}
+            title="上一页"
+          >
+            ← 上一页
+          </button>
+          <span className="m-sub">第 {paged.page} / {paged.totalPages} 页 · 共 {paged.total} 条</span>
+          <button
+            className="btn small"
+            disabled={paged.page >= paged.totalPages}
+            onClick={() => setPage((p) => p + 1)}
+            title="下一页"
+          >
+            下一页 →
+          </button>
+        </div>
+      )}
     </div>
   );
 }

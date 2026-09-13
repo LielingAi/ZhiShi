@@ -104,6 +104,16 @@ export interface SidebarGroup {
   items: SidebarEnvItem[];
 }
 
+/** 1.7.3：长名中间省略（>max 时保留首尾,中间 '…'——尾部识别比首部更重要
+ *  的容器/镜像名场景）。纯函数,可单测。 */
+export function middleEllipsis(text: string, max = 28): string {
+  if (text.length <= max) return text;
+  if (max < 5) return text.slice(0, max);
+  const head = Math.ceil((max - 1) / 2);
+  const tail = max - 1 - head;
+  return `${text.slice(0, head)}…${text.slice(text.length - tail)}`;
+}
+
 /** 条目 → 能力集合（1.3.7 场景 3：无字段 = 未推导过，不是空集合）。
  *  1.5.7：capabilityPending（待装清单）透传为 capability.toolsPending；
  *  计数口径以清单长度为准（与 capabilityTools.toolsPending 同源，清单优先）。 */
