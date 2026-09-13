@@ -1418,6 +1418,17 @@ export async function runAutoRunLoop(
 
   // Esc/异常路径的统一收尾(status 未定终态才写 stopped)。
   if (ctl.isStopped() && record.status !== 'stopped' && record.status !== 'completed') {
+    // 1.7.5:Esc 中停止也同步 budget.spent——stop 落在 invoke 期间时,循环在
+    // 轮次记账(上方 isStopped break)前退出,此前 turns=1 但 spent=0
+    // (GUI/CLI 显示「预算 0 / N 轮」)。重算幂等:已在轮边界同步过的路径数值不变。
+    const escCalibration = deps.loadTokenCalibration?.(loopSessionId);
+    record.budget.spent = computeBudgetSpent(record.budget, {
+      turns: turn,
+      tokens: estimateLoopTokens(deps.loadMessages(loopSessionId)),
+      elapsedMs: deps.now() - startedAtMs,
+      pausedMs: record.pausedMsTotal ?? 0,
+      ...(escCalibration !== undefined ? { calibration: escCalibration } : {}),
+    });
     record.status = 'stopped';
     record.pauseReason = undefined;
     record.updatedAt = new Date(deps.now()).toISOString();
