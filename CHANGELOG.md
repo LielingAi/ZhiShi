@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.4] - 2026-09-13
+
+> **auto-run 预算记账修复**——策略路径 provider-error（模型调用失败/中断）分支补齐 `budget.spent` 同步。
+
+### 修复
+- **auto-run 策略路径 `budget.spent` 漏记**：策略模式下 invoke 失败/中断走 `finishStoppedByPolicy('provider-error')` 直接停止，未像非策略路径（1.6.0 修复⑨）先同步 `budget.spent`——记录 `turns=1` 但 `spent=0`，GUI 卡片与 CLI list 显示「预算 0 / N 轮」。修复后中断轮同样计入 spent，与非策略路径同口径（`src/server/loop/auto-run.ts` provider-error 策略分支）。
+
 ## [1.7.3] - 2026-09-13
 
 > **GUI 界面优化**（design: `docs/design/1.7.3-gui.md`）——纯呈现层优化：环境侧栏可读性、专家知识页与研究记录页的筛选+翻页。业务逻辑/准入闸/API 零改动，model/ 纯函数 + 组件本地状态。
