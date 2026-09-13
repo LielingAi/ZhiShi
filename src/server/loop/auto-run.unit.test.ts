@@ -1629,5 +1629,22 @@ describe('runAutoRunLoop(1.7.0 策略:provider-error 保守停止)', () => {
     expect(dataOf(fake.sent, 'auto-run:paused')).toBeUndefined();
     expect(fake.invokeCount).toBe(1);
   });
+
+  it('1.7.4:失败中断轮也计入 budget.spent(策略/交互同口径,盘上快照不留旧值)', async () => {
+    const record = makeRecord({ policy: policyOf('on_declare:\n  report: true') });
+    const fake = makeFakeDeps({
+      invoke: async () => { fake.invokeCount += 1; return { error: '503', text: '', loopSessionId: record.loopSessionId }; },
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    await ctl.waitUntilDone();
+    await loop;
+    expect(record.status).toBe('stopped');
+    // 修复前:策略分支直接 finishStoppedByPolicy,spent 恒 0(turns=1 但显示「预算 0 / N 轮」)。
+    expect(record.turns).toBe(1);
+    expect(record.budget.spent).toBe(1);
+    const last = fake.saved[fake.saved.length - 1];
+    expect(last?.budget.spent).toBe(1);
+  });
 });
 
