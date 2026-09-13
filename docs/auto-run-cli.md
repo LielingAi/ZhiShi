@@ -55,6 +55,54 @@ loopSessionId: ls-xxxxxxxx
 
 **单实例闸**：同 workspace 或同 envKey 已有活跃 run → 拒绝启动（先 `stop` 再起）。
 
+## 模型选择
+
+CLI `auto-run start` **没有模型参数，也不计划加**——run 的模型由启动它的 sidecar 按以下顺序继承：
+
+```
+run 每轮 invoke → invokePiSession → 无 providerEnv 分支 → resolveLoopModel()
+  → 工作区 agent 配置（resolveWorkspaceConfig(agent)，按 --workspace/agentDir 匹配）
+  → 全局默认（defaultProviderId → defaultModelId / provider.primaryModel）
+```
+
+### 配置步骤（完整流程）
+
+**第一步：给供应商配 API key**
+
+```bash
+zhishi model list                      # 看内置供应商（kimi/deepseek/openai/moonshot/通义/智谱/硅基流动…）
+zhishi model set-key <providerId> <apiKey>
+zhishi model verify <providerId>       # 发一条测试消息验证 key；成功即自动发现该供应商的模型列表
+```
+
+内置供应商的 primary model 自动可用；自定义供应商用 `zhishi model add`（`--base-url` 指向
+OpenAI/Anthropic 兼容端点）。
+
+**第二步：选默认（全局，影响所有会话含 auto-run）**
+
+```bash
+zhishi model set-default <providerId>   # 该 provider 的 primary model 成为全局默认
+zhishi status                           # 确认「Default provider」已切换
+```
+
+**第三步（可选）：工作区级覆盖（只影响该工作区的 auto-run）**
+
+```bash
+zhishi agent list                       # 看工作区 agent 配置（agentId 与 workspacePath 对应关系）
+zhishi agent set <agentId> model '"<模型id>"'
+    # value 是 JSON 字符串；模型 id 从 zhishi model list 的输出里取（如 "deepseek-v4-pro"）
+zhishi auto-run start ... --workspace <该工作区>
+```
+
+**生效验证**：启动 run 后模型落 session meta，`zhishi auto-run list --json` 不显示模型，
+直接看记录文件 `<数据目录>/auto-runs/<id>.json` 无 model 字段（模型属 sidecar 配置不属
+run 记录）；判断实际用的是哪个模型 = 看 sidecar 启动日志的
+`resolveWorkspaceConfig (agent): provider=… model=…` 行，或 run 的 loop 线 meta
+（`<loop-sessions>/<loopSessionId>.jsonl` 首行的 model 字段）。
+
+GUI 的「选好模型再开始」本质是配置层前置（状态栏切模型写入工作区配置），auto-run 启动时
+继承同一配置——CLI 用上面三步达到同等效果。
+
 ## list —— 观察面
 
 ```bash
