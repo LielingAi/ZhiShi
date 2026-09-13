@@ -1015,16 +1015,10 @@ export async function runAutoRunLoop(
     // 注意：超时失败的 invoke 其后台 turn 可能仍在跑（detach 语义）——人工
     // 作答的耗时通常已覆盖其残余生命；appendLoopMessages 有文件锁兜底。
     if (result.error) {
-      if (policy) {
-        // 策略模式：供应商过载/中断不提请（无人应答=白等）——保守停止。
-        finishStoppedByPolicy('provider-error');
-        break;
-      }
-      record.status = 'paused';
-      record.pauseReason = 'provider-error';
-      record.updatedAt = new Date(deps.now()).toISOString();
-      // 1.6.0 修复⑨:失败本轮 turn 已 +1,persist 前先同步 budget.spent——
-      // 盘上暂停快照不留「少一轮」的旧值(恢复/续命判断以盘上 spent 为准)。
+      // 1.6.0 修复⑨ / 1.7.4:失败本轮 turn 已 +1,persist 前先同步 budget.spent——
+      // 盘上快照不留「少一轮」的旧值(恢复/续命判断以盘上 spent 为准)。
+      // 1.7.4:同步上提到分支前——策略路径(直接 finishStoppedByPolicy)此前漏记,
+      // 中断轮 turns=1 但 spent=0(GUI/CLI 显示「预算 0 / N 轮」);两路径同口径。
       const errCalibration = deps.loadTokenCalibration?.(loopSessionId);
       record.budget.spent = computeBudgetSpent(record.budget, {
         turns: turn,
@@ -1033,6 +1027,14 @@ export async function runAutoRunLoop(
         pausedMs: record.pausedMsTotal ?? 0,
         ...(errCalibration !== undefined ? { calibration: errCalibration } : {}),
       });
+      if (policy) {
+        // 策略模式：供应商过载/中断不提请（无人应答=白等）——保守停止。
+        finishStoppedByPolicy('provider-error');
+        break;
+      }
+      record.status = 'paused';
+      record.pauseReason = 'provider-error';
+      record.updatedAt = new Date(deps.now()).toISOString();
       persist();
       deps.broadcast('auto-run:paused', {
         id: record.id,
