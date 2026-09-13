@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildRegisterPayload, capabilityBadgeText, capabilityTooltip, groupSidebar, imageStartRecipe, isDiscoveredRunning, matchRegisteredEnv, psRowMatchesEntry, resolveEnvState, startRecipeFor } from './envs';
+import { buildRegisterPayload, capabilityBadgeText, capabilityTooltip, groupSidebar, imageStartRecipe, isDiscoveredRunning, matchRegisteredEnv, middleEllipsis, psRowMatchesEntry, resolveEnvState, startRecipeFor } from './envs';
 
 const envs = [
   { id: 'pwn@docker', kind: 'docker', name: 'pwn@docker' },
@@ -565,5 +565,25 @@ describe('groupSidebar — B1 docker 双身份收敛', () => {
       [entry],
     );
     expect(st.state).toBe('running');
+  });
+});
+
+describe('middleEllipsis（1.7.3 长名中间省略）', () => {
+  it('短名原样', () => {
+    expect(middleEllipsis('pwn-vm')).toBe('pwn-vm');
+    expect(middleEllipsis('12345678', 8)).toBe('12345678');
+  });
+
+  it('长名首尾保留、中间 …', () => {
+    const s = 'zhishi-env-fuzz-a1b2c3d4';
+    const r = middleEllipsis(s, 20);
+    expect(r.length).toBe(20);
+    expect(r.startsWith('zhishi-env')).toBe(true);
+    expect(r.endsWith('b2c3d4')).toBe(true);
+    expect(r).toContain('…');
+  });
+
+  it('max < 5 时直接截头（退化为前缀截断）', () => {
+    expect(middleEllipsis('abcdefghij', 4)).toBe('abcd');
   });
 });

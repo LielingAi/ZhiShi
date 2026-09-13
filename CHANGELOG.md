@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.3] - 2026-09-13
+
+> **GUI 界面优化**（design: `docs/design/1.7.3-gui.md`）——纯呈现层优化：环境侧栏可读性、专家知识页与研究记录页的筛选+翻页。业务逻辑/准入闸/API 零改动，model/ 纯函数 + 组件本地状态。
+
+### 新增
+- **环境侧栏可读性**：长名中间省略（`middleEllipsis`，尾部可辨识）；镜像行 `recipeId` 徽标（截断的 `zhishi-env-*` 长名靠配方区分）；组计数（`运行中 2 · 已停止 4 · 本机已有 N`）；「已登记为 xxx」→「已登记」紧凑徽章（悬停看全名）；行悬停 title 带全名
+- **专家知识页筛选 + 翻页**：domain × kind 组合筛选（作用于当前结果集，服务端搜索语义不变）；20 条/页页码条（边界页禁用、筛选后回第 1 页）
+- **研究记录页筛选 + 翻页**：taskKind × outcome × 关键词组合筛选；同款页码条
+
 ## [1.7.2] - 2026-09-12
 
 > **记忆层重构：工作记忆窗口置换 + Claim 治理**（design: `docs/design/1.7.2-compaction.md`）——实机实证的根因修复：1.18M 上下文稳态 + 90s 看门狗 4 连误杀。旧段级压缩（stub/truncate）退役，改为「Event/Claim 双通道 + 程序化置换 + 程序化治理」（HL-Mem / 2025 综述 Dynamics 框架）。实机 dogfood：1.33M → 240k 窗口、长 turn 零误杀、研究状态跨窗口完整存活。

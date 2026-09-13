@@ -25,7 +25,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 
 import { useGuiStore } from '../store/useGuiStore';
-import { capabilityBadgeText, capabilityTooltip, groupSidebar } from '../model/envs';
+import { capabilityBadgeText, capabilityTooltip, groupSidebar, middleEllipsis } from '../model/envs';
 import { accessGate, gateToast } from '../model/access-gate';
 import { canStopEnv } from '../model/env-down';
 import { canRebuildEnv, canResetEnv } from '../model/env-rebuild';
@@ -166,14 +166,14 @@ export function EnvSidebar(): React.JSX.Element {
       <div className="eb-scroll">
         {groups.map((g) => (
         <div className="eb-group" key={g.label}>
-          <div className="ebg-label">{g.label}</div>
+          <div className="ebg-label">{g.label} {g.items.length}</div>
           {g.items.map((it) => {
             const gate = accessGate(it);
             return (
               <div
                 className={`eb-item ${it.key === currentEnvKey ? 'cur' : ''} ${gate.allow || it.registeredAs ? '' : 'gated'}`}
                 key={it.key}
-                title={it.kind === 'docker-image' ? `${it.detail}——点击启动为环境（派生新容器）` : it.detail}
+                title={it.kind === 'docker-image' ? `${it.label} — ${it.detail}（点击启动为环境）` : `${it.label} — ${it.detail}`}
                 onClick={() => {
                   // 1.5.13：镜像行点行即启动为环境（不再要行内按钮）。
                   if (it.kind === 'docker-image') {
@@ -221,7 +221,7 @@ export function EnvSidebar(): React.JSX.Element {
                 }}
               >
                 <span className={`st ${it.group}`} />
-                <span className="nm">{it.label}</span>
+                <span className="nm">{middleEllipsis(it.label, 32)}</span>
                 {it.capability && (
                   <span className="cap" title={capabilityTooltip(it.capability)}>
                     {capabilityBadgeText(it.capability)}
@@ -229,13 +229,17 @@ export function EnvSidebar(): React.JSX.Element {
                 )}
                 {it.registeredAs && (
                   <span className="cap reg" title={`该本机条目已登记为 ${it.registeredAs.label}（点击切入）`}>
-                    已登记为 {it.registeredAs.label}
+                    已登记
                   </span>
                 )}
                 {/* 1.5.10：镜像行徽章——与容器/VM 行区分（无登记语义，
-                    1.5.13 起无按钮，点行即启动为环境）。 */}
+                    1.5.13 起无按钮，点行即启动为环境）。
+                    1.7.3：镜像行附带 recipeId 徽标——截断的长名靠配方区分。 */}
                 {it.kind === 'docker-image' && (
                   <span className="cap" title={it.detail}>镜像</span>
+                )}
+                {it.kind === 'docker-image' && it.recipeId && (
+                  <span className="cap" title={`配方 ${it.recipeId}`}>{it.recipeId}</span>
                 )}
                 {it.group === 'run' && <span className="snap">◆</span>}
                 {it.warn && <span className="warn">⚠</span>}
