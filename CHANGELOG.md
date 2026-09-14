@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.6] - 2026-09-15
+
+> **auto-run 研究批跑修复**——CVE 批跑实机驱动：单轮 turn 超时开放配置（研究型长回合被 600s 缺省掐死）+ 研究事件归属到 loop 线（报告导出/空转检测按线过滤，同工作区多 run 不再互染）。
+
+### 新增
+- **`config.json::autoRun.turnTimeoutMs`**：单轮 invoke 等待上限可配（缺省 600000 不变，`resolveAutoRunConfig` 容错合并）。一轮 = 模型连续工作的整个回合（含全部工具调用），漏洞复现类研究常态几十分钟——缺省 10 分钟会把健康长回合掐成「turns=1 即 provider-error 停止」（超时只断等待，后台 turn 继续跑）。CLI/GUI 共用的 auto-run/start 入口均生效；cron 的 invoke 通道不受影响（`src/shared/config-types.ts`、`src/server/admin-api.ts`）
+
+### 修复
+- **研究事件归属错乱（headless auto-run 线）**：`research_log` 的工作区戳取自引擎单例 `agentDir`——全局 sidecar 下是 `Temp\zhishi-global-<pid>` 临时目录，按 run 工作区过滤的报告导出恒为 0 条（「没有可导出的研究记录」）、空转检测「新增有效记录」信号全瞎、蒸馏弧分域归属错误。修复：`invokePiSession` 新增显式工作区锚（auto-run 传 `record.workspace`；缺省回落 agentDir，交互线零变化）；`research_events` 加 `loop_session_id` 列（幂等 ALTER 迁移，存量事件为 NULL），报告导出与空转检测改为**按线过滤**——同工作区串行批跑 N 条 run 时报告内容与 stall 判定不再互相污染（`src/server/loop/chat-engine.ts`、`src/server/loop/tools.ts`、`src/server/loop/auto-run.ts`、`src/server/memory/store.ts`）
+
 ## [1.7.5] - 2026-09-13
 
 > **auto-run 预算记账修复（续 1.7.4）**——Esc 人工终止路径补齐 `budget.spent` 同步。
