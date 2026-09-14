@@ -301,7 +301,8 @@ function openDb(baseDir: string): SqliteDatabase {
       summary TEXT NOT NULL,
       trajectory_ref TEXT,
       distilled_at INTEGER,
-      expert_refs TEXT
+      expert_refs TEXT,
+      loop_session_id TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_research_events_query ON research_events(task_kind, outcome, ts);
     INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', '1');
@@ -324,6 +325,17 @@ function openDb(baseDir: string): SqliteDatabase {
     }
   } catch (err) {
     console.warn('[memory/store] research_events.expert_refs migration failed (non-fatal):', err);
+  }
+  // 1.7.5：research_events 加 loop_session_id 列——研究事件归属到线（run 报告/
+  // 空转检测按线过滤的前提；同 workspace 多 run 时工作区过滤必然互相污染）。
+  // 同一幂等 ALTER 先例；存量事件该列为 NULL（只读消费方按 undefined 处理）。
+  try {
+    const cols = db.prepare('PRAGMA table_info(research_events)').all() as Array<{ name: string }>;
+    if (cols.length > 0 && !cols.some((c) => c.name === 'loop_session_id')) {
+      db.exec('ALTER TABLE research_events ADD COLUMN loop_session_id TEXT');
+    }
+  } catch (err) {
+    console.warn('[memory/store] research_events.loop_session_id migration failed (non-fatal):', err);
   }
   migrateLegacy(baseDir, db);
   dbCache.set(baseDir, db);
@@ -1035,6 +1047,8 @@ export interface ResearchEvent {
   trajectoryRef?: string;
   /** 依据的专家条目 id 列表（1.2.2 引用追踪；expert.db 条目 id，落库时已查证存在）。 */
   expertRefs?: number[];
+  /** 产生该事件的 loop 线 id（1.7.5 起填；run 报告/空转检测按线过滤用。存量事件无）。 */
+  loopSessionId?: string;
 }
 
 export interface RecordResearchEventInput {
@@ -1045,6 +1059,7 @@ export interface RecordResearchEventInput {
   summary: string;
   trajectoryRef?: string;
   expertRefs?: number[];
+  loopSessionId?: string;
 }
 
 interface ResearchEventRow {
@@ -1057,6 +1072,7 @@ interface ResearchEventRow {
   summary: string;
   trajectory_ref: string | null;
   expert_refs: string | null;
+  loop_session_id: string | null;
 }
 
 /** expert_refs 列（逗号分隔 id 串）→ id 数组；空/NULL → undefined。 */
@@ -1078,6 +1094,7 @@ function toResearchEvent(r: ResearchEventRow): ResearchEvent {
     summary: r.summary,
     ...(r.trajectory_ref != null ? { trajectoryRef: r.trajectory_ref } : {}),
     ...(expertRefs ? { expertRefs } : {}),
+    ...(r.loop_session_id != null ? { loopSessionId: r.loop_session_id } : {}),
   };
 }
 
@@ -1111,17 +1128,19 @@ export function recordResearchEvent(
   }
   const database = db(baseDir);
   database.prepare(
-    'INSERT INTO research_events (ts, workspace, task_kind, outcome, bug_class, summary, trajectory_ref, expert_refs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO research_events (ts, workspace, task_kind, outcome, bug_class, summary, trajectory_ref, expert_refs, loop_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(
     now, input.workspace, input.taskKind, input.outcome, input.bugClass ?? null,
     input.summary, input.trajectoryRef ?? null,
     input.expertRefs && input.expertRefs.length > 0 ? input.expertRefs.join(',') : null,
+    input.loopSessionId ?? null,
   );
   const id = (database.prepare('SELECT last_insert_rowid() AS id').get() as { id: number }).id;
   return toResearchEvent({
     id, ts: now, workspace: input.workspace, task_kind: input.taskKind, outcome: input.outcome,
     bug_class: input.bugClass ?? null, summary: input.summary, trajectory_ref: input.trajectoryRef ?? null,
     expert_refs: input.expertRefs && input.expertRefs.length > 0 ? input.expertRefs.join(',') : null,
+    loop_session_id: input.loopSessionId ?? null,
   });
 }
 
@@ -1136,7 +1155,7 @@ export function getResearchEventById(
   return row ? toResearchEvent(row) : null;
 }
 
-/** 查询研究事件：taskKind/outcome/workspace 过滤，按时间倒序，limit 截断（默认 50）。 */
+/** 查询研究事件：taskKind/outcome/workspace/loopSessionId 过滤，按时间倒序，limit 截断（默认 50）。 */
 export function listResearchEvents(opts?: {
   taskKind?: ResearchTaskKind;
   outcome?: ResearchOutcome;
@@ -1148,6 +1167,10 @@ export function listResearchEvents(opts?: {
    * SQL 表达不了该归一化，故在 JS 侧过滤、limit 在过滤后生效。
    */
   workspace?: string;
+  /** 1.7.5：按 loop 线精确过滤（SQL 侧，严格相等——id 无归一化问题）。
+   *  run 报告/空转检测的正确口径：同 workspace 多 run 时工作区过滤必然
+   *  互相污染（批跑 300 条共享一个工作区是常态）。 */
+  loopSessionId?: string;
   limit?: number;
   baseDir?: string;
 }): ResearchEvent[] {
@@ -1156,6 +1179,7 @@ export function listResearchEvents(opts?: {
   const params: unknown[] = [];
   if (opts?.taskKind) { clauses.push('task_kind = ?'); params.push(opts.taskKind); }
   if (opts?.outcome) { clauses.push('outcome = ?'); params.push(opts.outcome); }
+  if (opts?.loopSessionId) { clauses.push('loop_session_id = ?'); params.push(opts.loopSessionId); }
   const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
   // workspace 过滤在 JS 侧（见上），SQL 不下 LIMIT——否则又是「先截断后过滤」。
   const sql = opts?.workspace !== undefined

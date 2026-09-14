@@ -539,8 +539,36 @@ describe('runAutoRunLoop(模型调用失败 → 人工接管，1.5.13 用户拍�
   });
 });
 
-describe('runAutoRunLoop(预算耗尽 → 续命恢复)', () => {
-  it('turns 预算耗尽 → paused(budget)+checkpoint;auto-run/budget 续命 → 恢复推进', async () => {
+describe('runAutoRunLoop(1.7.5 显式锚传递)', () => {
+  it('invoke 收到环境锚(envKey)+工作区锚(workspaceAnchor)+线 id——headless 归属链', async () => {
+    const record = makeRecord({ budget: { kind: 'turns', limit: 1, spent: 0 } });
+    type InvokeOptions = Parameters<AutoRunDeps['invoke']>[1];
+    const seen: InvokeOptions[] = [];
+    const fake = makeFakeDeps({
+      invoke: async (_input, options) => {
+        seen.push(options);
+        return { text: 'x', loopSessionId: record.loopSessionId };
+      },
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+
+    await waitFor(() => seen.length > 0);
+    // 缺工作区锚 → research_log 事件戳进全局引擎临时目录（实机事故：报告导出
+    // 按 workspace 过滤永远 0 条）;锚必须逐轮携带。
+    expect(seen[0]).toMatchObject({
+      loopSessionId: 'ls-1',
+      envKey: 'pwn-vm',
+      workspaceAnchor: '/ws',
+    });
+    ctl.requestStop();
+    await done;
+    await loop;
+  });
+});
+
+describe('runAutoRunLoop(预算耗尽 → 续命恢复)', () => {  it('turns 预算耗尽 → paused(budget)+checkpoint;auto-run/budget 续命 → 恢复推进', async () => {
     const record = makeRecord({ budget: { kind: 'turns', limit: 1, spent: 0 } });
     const fake = makeFakeDeps();
     const ctl = createAutoRunController(record);

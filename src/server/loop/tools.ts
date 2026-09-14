@@ -332,10 +332,12 @@ function parseExpertRefsParam(raw: string): number[] {
   return ids;
 }
 
-/** 构造 research_log 工具;workspace 落库用(默认当前工作区路径)。 */
+/** 构造 research_log 工具;workspace 落库用(默认当前工作区路径)。
+ *  1.7.5：options.loopSessionId 随事件落库——研究事件归属到线（headless
+ *  auto-run 线的 run 报告/空转检测按线过滤的归属键；缺省 = 交互线不写）。 */
 export function createResearchLogTool(
   workspace: string,
-  options: { baseDir?: string } = {},
+  options: { baseDir?: string; loopSessionId?: string } = {},
 ): AgentTool<typeof researchLogParameters, ResearchLogToolDetails> {
   return {
     name: RESEARCH_LOG_TOOL_NAME,
@@ -356,6 +358,7 @@ export function createResearchLogTool(
         summary: params.summary,
         ...(params.trajectory_ref ? { trajectoryRef: params.trajectory_ref } : {}),
         ...(expertRefs && expertRefs.length > 0 ? { expertRefs } : {}),
+        ...(options.loopSessionId ? { loopSessionId: options.loopSessionId } : {}),
       }, options.baseDir);
       // 1.2.2 promote 常态化:结案(success/stuck)留痕成功后在返回文本里带晋升
       // 提示——harness 原生、零时序猜测;fail 不带(失败教训走蒸馏弧,不是专家知识)。

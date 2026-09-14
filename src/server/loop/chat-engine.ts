@@ -1101,6 +1101,11 @@ class ChatEngine {
     // 1.4.4 档案来源锚取值闭包:交互 turn 读引擎字段(起跑时已写入);
     // headless invoke 线传恒 undefined——全程不碰引擎单例状态(A1-2)。
     getAnchorMessageId: () => string | undefined = () => this.currentTurnUserMessageId,
+    // 1.7.5:headless 线的工作区显式锚（auto-run 传 record.workspace）——
+    // research_log 的事件归属。缺省回落 this.agentDir（交互线语义不变）；
+    // 引擎是全局单例，agentDir 对 headless 线是 Temp\zhishi-global-<pid>，
+    // 直接拿去盖章会让 run 报告/空转检测按工作区过滤时永远 0 条（实机实证）。
+    workspaceAnchor?: string,
   ): {
     tools: AgentTool[];
     beforeToolCall: ReturnType<typeof makeBoundaryHook>;
@@ -1109,7 +1114,7 @@ class ChatEngine {
   } {
     const tools: AgentTool[] = [
       ...(env ? [createEnvExecTool(env)] : []),
-      createResearchLogTool(this.agentDir),
+      createResearchLogTool(workspaceAnchor ?? this.agentDir, { loopSessionId: sessionId }),
       // 1.4.4 研究档案：显式研究状态的写通道（宿主原生，无条件注册——
       // 档案归属本 turn 快照线；来源锚按 turn 上下文取值：交互 turn 取当前轮
       // user 消息 id，headless invoke 线恒 undefined）。广播恒开：auto-run
@@ -1572,6 +1577,12 @@ class ChatEngine {
        * 现状(工作区选择存储)。
        */
       envKey?: string;
+      /**
+       * 1.7.5:显式工作区锚(auto-run 传 record.workspace)——research_log
+       * 事件归属。缺省回落引擎 agentDir（交互线正确；headless 全局引擎的
+       * agentDir 是临时目录，不锚 = 事件戳错地方,报告导出/空转检测全瞎）。
+       */
+      workspaceAnchor?: string;
     } = {},
   ): Promise<{ text: string; error?: string; loopSessionId: string }> {
     const loopSessionId = options.loopSessionId ?? newLoopSessionId();
@@ -1606,7 +1617,7 @@ class ChatEngine {
     const { tools, beforeToolCall, afterToolCall, blockedToolNames } =
       // 1.4.4 档案来源锚:headless 线无 wire user 消息,锚恒 undefined——
       // 经参数下传,不碰引擎单例字段(A1-2)。
-      this.buildTurnStack(env, resolution, toolNames, false, loopSessionId, domain, () => undefined);
+      this.buildTurnStack(env, resolution, toolNames, false, loopSessionId, domain, () => undefined, options.workspaceAnchor);
     const systemPrompt = await this.assemblePiSystemPrompt(
       env,
       scenario,
@@ -2151,7 +2162,7 @@ export async function sendPiChatMessage(input: PiSendInput): Promise<PiSendResul
 /** B2(1.2.6)— cron 独立 invoke 通道(不碰单例会话/steering/队列)。 */
 export async function invokePiSession(
   input: PiSendInput,
-  options: { loopSessionId?: string; scenario?: InteractionScenario; timeoutMs?: number; envKey?: string } = {},
+  options: { loopSessionId?: string; scenario?: InteractionScenario; timeoutMs?: number; envKey?: string; workspaceAnchor?: string } = {},
 ): Promise<{ text: string; error?: string; loopSessionId: string }> {
   return defaultEngine.invokePiSession(input, options);
 }

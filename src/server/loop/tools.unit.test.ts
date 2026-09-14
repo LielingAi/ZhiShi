@@ -274,8 +274,30 @@ describe('createEnvBgTool', () => {
 });
 
 describe('createResearchLogTool', () => {
-  it('合法参数直接落库( harness 原生,不经 shell)', async () => {
+  it('options.loopSessionId 随事件落库（1.7.5 线归属键）', async () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'zhishi-research-log-tool-'));
+    try {
+      const tool = createResearchLogTool('E:/work', { baseDir, loopSessionId: 'ls-anchor-1' });
+      await tool.execute('tc-anchor', {
+        task_kind: 'pentest',
+        outcome: 'success',
+        summary: 'GitLab 路径穿越任意文件读取复现',
+      });
+      const events = listResearchEvents({ limit: 10, baseDir });
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ workspace: 'E:/work', loopSessionId: 'ls-anchor-1' });
+      // 缺省不传 → 不写线 id（交互线语义不变）
+      const plain = createResearchLogTool('E:/work', { baseDir });
+      await plain.execute('tc-anchor-2', { task_kind: 'pentest', outcome: 'stuck', summary: '卡住了' });
+      const after = listResearchEvents({ limit: 10, baseDir });
+      expect(after.find((e) => e.summary === '卡住了')?.loopSessionId).toBeUndefined();
+    } finally {
+      resetMemoryStoreForTest();
+      rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it('合法参数直接落库( harness 原生,不经 shell)', async () => {    const baseDir = mkdtempSync(join(tmpdir(), 'zhishi-research-log-tool-'));
     try {
       const tool = createResearchLogTool('E:/work', { baseDir });
       const result = await tool.execute('tc1', {
