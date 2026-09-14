@@ -170,6 +170,24 @@ describe('research_events：recordResearchEvent / listResearchEvents', () => {
     expect(listResearchEvents({ baseDir: dir, workspace: '/ws/absent' })).toHaveLength(0);
   });
 
+  it('loopSessionId 落库并按线过滤（1.7.5：同工作区多 run 批跑不互染）', () => {
+    recordResearchEvent({ workspace: '/ws/batch', taskKind: 'pentest', outcome: 'success', summary: 'run1-e1', loopSessionId: 'ls-run1' }, dir, NOW - 2000);
+    recordResearchEvent({ workspace: '/ws/batch', taskKind: 'pentest', outcome: 'success', summary: 'run2-e1', loopSessionId: 'ls-run2' }, dir, NOW - 1000);
+    recordResearchEvent({ workspace: '/ws/batch', taskKind: 'pentest', outcome: 'fail', summary: 'no-line' }, dir, NOW);
+
+    // 按线过滤：严格相等、SQL 侧生效（与 workspace 的 JS 归一化过滤不同路）
+    const run1 = listResearchEvents({ baseDir: dir, loopSessionId: 'ls-run1' });
+    expect(run1.map((r) => r.summary)).toEqual(['run1-e1']);
+    expect(run1[0].loopSessionId).toBe('ls-run1');
+    // 未填线的事件不被线过滤误收；读出时 loopSessionId 为 undefined
+    const all = listResearchEvents({ baseDir: dir });
+    expect(all.find((r) => r.summary === 'no-line')?.loopSessionId).toBeUndefined();
+    expect(listResearchEvents({ baseDir: dir, loopSessionId: 'ls-absent' })).toHaveLength(0);
+    // 线过滤与 workspace 过滤可叠加（SQL 侧 + JS 侧组合）
+    expect(listResearchEvents({ baseDir: dir, workspace: '/ws/batch', loopSessionId: 'ls-run2' }).map((r) => r.summary))
+      .toEqual(['run2-e1']);
+  });
+
   it('老库无损：既有 memory.db 无 research_events 表，openDb 迁移建表后可正常读写', () => {
     // 手工造一个只有老表的 memory.db（模拟 D1 之前的数据库）。
     resetMemoryStoreForTest();

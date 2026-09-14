@@ -707,6 +707,8 @@ export interface AutoRunDeps {
     timeoutMs?: number;
     /** 1.7.1:显式环境锚(record.envKey)——headless 线不依赖工作区交互选择。 */
     envKey?: string;
+    /** 1.7.5:显式工作区锚(record.workspace)——research_log 事件归属。 */
+    workspaceAnchor?: string;
   }) => Promise<{ text: string; error?: string; loopSessionId: string }>;
   /** loop 线全量消息(loadLoopSession(...).messages)。 */
   loadMessages: (loopSessionId: string) => AgentMessage[];
@@ -1000,7 +1002,7 @@ export async function runAutoRunLoop(
     try {
       result = await deps.invoke(
         { text },
-        { loopSessionId, scenario: autoRunScenario(record.id), timeoutMs: deps.turnTimeoutMs, envKey: record.envKey },
+        { loopSessionId, scenario: autoRunScenario(record.id), timeoutMs: deps.turnTimeoutMs, envKey: record.envKey, workspaceAnchor: record.workspace },
       );
     } catch (err) {
       result = { text: '', error: err instanceof Error ? err.message : String(err) };
@@ -1640,7 +1642,7 @@ export async function writeDockerTaskMdCheckpoint(
 // ---------------------------------------------------------------------------
 
 /** 生产依赖组装(workspace = 引擎锚定工作区;测试注入 Partial 覆盖)。 */
-export function buildProductionAutoRunDeps(workspace: string, overrides: Partial<AutoRunDeps> = {}): AutoRunDeps {
+export function buildProductionAutoRunDeps(workspace: string, overrides: Partial<AutoRunDeps> = {}, loopSessionId?: string): AutoRunDeps {
   const now = () => Date.now();
   const deps: AutoRunDeps = {
     workspace,
@@ -1648,10 +1650,14 @@ export function buildProductionAutoRunDeps(workspace: string, overrides: Partial
     loadMessages: (id) => loadLoopSession(id).messages,
     // 1.6.0:tokens 预算校准系数 = loop session meta 的 tokenCalibration。
     loadTokenCalibration: (id) => loadLoopSession(id).meta?.tokenCalibration,
-    // 1.6.3 修复(#6):workspace 过滤前置进 store(limit 在过滤后生效)——
-    // 全局事件超 limit 后 stall 判定不再基于截断错样本。
+    // 1.7.5:事件按【线】过滤（loopSessionId），不按 workspace——同一工作区
+    // 串行跑 N 条 run（CVE 批跑常态）时，工作区过滤会把别条 run 的事件喂进
+    // 本 run 的空转判定（「新增有效记录」被隔壁喂饱，stall 信号失真）。
+    // 无 loopSessionId（测试/兜底）回落旧的工作区过滤。
     listEvents: () =>
-      listResearchEvents({ limit: 1000, workspace }),
+      loopSessionId
+        ? listResearchEvents({ limit: 1000, loopSessionId })
+        : listResearchEvents({ limit: 1000, workspace }),
     resolveEvent: (id) => getResearchEventById(id),
     appendUserMessage: async (id, text) => {
       await appendLoopMessages(id, [
@@ -1701,8 +1707,10 @@ async function exportRunReport(
   const result = await exportReport(
     { workspace, sanitize: false, env: { envId, entry } },
     {
-      listWorkspaceEvents: (ws) =>
-        listResearchEvents({ limit: 1000, workspace: ws }),
+      // 1.7.5:run 报告只装本线事件（loopSessionId 过滤）——工作区过滤会把
+      // 同工作区别条 run 的事件混进本 run 报告（批跑共享 workspace 必然污染）。
+      listWorkspaceEvents: () =>
+        listResearchEvents({ limit: 1000, loopSessionId: record.loopSessionId }),
       findLoopSessionId: () => record.loopSessionId,
       loadTranscript: (loopSessionId) => buildLoopTranscript(loopSessionId),
       // 1.4.4 研究档案交付投影：auto-run 线同样从档案派生成果章节。
@@ -1883,7 +1891,7 @@ export async function startAutoRun(
     return { success: false, error };
   }
 
-  const deps = buildProductionAutoRunDeps(workspace, depsOverride);
+  const deps = buildProductionAutoRunDeps(workspace, depsOverride, record.loopSessionId);
   const ctl = createAutoRunController(record);
   activeRuns.set(record.id, { ctl, record });
   deps.save(record);
