@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  AUTORUN_DEFAULTS,
   INTEL_DEFAULTS,
   PRESET_PROVIDERS,
   normalizeProviderOrder,
+  resolveAutoRunConfig,
   resolveIntelConfig,
 } from './config-types';
 
@@ -49,6 +51,23 @@ describe('resolveIntelConfig', () => {
     expect(resolveIntelConfig({ windowYears: Number.NaN })).toEqual(INTEL_DEFAULTS);
     expect(resolveIntelConfig({ maxSizeMb: -1 })).toEqual(INTEL_DEFAULTS);
     expect(resolveIntelConfig({ onlineFallback: 'yes' as never })).toEqual(INTEL_DEFAULTS);
+  });
+});
+
+describe('resolveAutoRunConfig', () => {
+  it('缺省合并 AUTORUN_DEFAULTS（turnTimeoutMs 600s，与 runner 缺省同值）', () => {
+    expect(resolveAutoRunConfig(undefined)).toEqual(AUTORUN_DEFAULTS);
+    expect(resolveAutoRunConfig({})).toEqual(AUTORUN_DEFAULTS);
+    expect(AUTORUN_DEFAULTS).toEqual({ turnTimeoutMs: 600_000 });
+  });
+
+  it('合法值透传（取整），非法值回落缺省（config.json 用户可编辑，容错优先）', () => {
+    expect(resolveAutoRunConfig({ turnTimeoutMs: 3_600_000 })).toEqual({ turnTimeoutMs: 3_600_000 });
+    expect(resolveAutoRunConfig({ turnTimeoutMs: 90_000.7 })).toEqual({ turnTimeoutMs: 90_000 });
+    expect(resolveAutoRunConfig({ turnTimeoutMs: 0 })).toEqual(AUTORUN_DEFAULTS);
+    expect(resolveAutoRunConfig({ turnTimeoutMs: -1 })).toEqual(AUTORUN_DEFAULTS);
+    expect(resolveAutoRunConfig({ turnTimeoutMs: Number.NaN })).toEqual(AUTORUN_DEFAULTS);
+    expect(resolveAutoRunConfig({ turnTimeoutMs: '60000' as never })).toEqual(AUTORUN_DEFAULTS);
   });
 });
 

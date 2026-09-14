@@ -9,6 +9,19 @@
 2. **环境已登记**：`--env-key` 必须是 `zhishi env list` 里已有的环境 id（docker / VM / ssh）；
 3. 可选：`--json` 全局旗标（机器可读输出，脚本用）。
 
+## 运行参数（config.json::autoRun）
+
+```json
+{ "autoRun": { "turnTimeoutMs": 3600000 } }
+```
+
+- `turnTimeoutMs`：单轮 invoke 的等待上限（毫秒，缺省 600000 = 10 分钟，容错合并
+  见 `resolveAutoRunConfig`）。**一轮 = 模型连续工作的整个回合（含全部工具调用）**——
+  漏洞复现类研究一回合几十分钟是常态，缺省值会把它掐成「turns=1、stopped、
+  pauseReason=provider-error」。超时只断等待（后台 turn 继续跑完，detach 语义），
+  所以日志里会看到 run 已停、loop 线却还在写。研究型负载建议 ≥ 3600000（1h）。
+- 改动对**之后启动**的 run 生效（start 时读盘），进行中的 run 不受影响。
+
 ## 命令总览
 
 ```bash
@@ -151,6 +164,7 @@ zhishi auto-run list --json | jq '.data.records[] | select(.status=="completed")
 | `策略非法: on_stall.action 非法 "ask"` | schema 无 ask——人要在场用 GUI |
 | `验收条件 criteria 必填` | `--criteria` 至少一条（可重复） |
 | `预算 kind 必须是 turns/tokens/time` | `--budget-kind` 拼错或漏传 |
+| 整批 run 都 `turns=1` 即 stopped（记录 `pauseReason=provider-error`） | 单轮超过 turn 超时（缺省 10 分钟）被掐——研究型回合常态超时，调大 `config.json::autoRun.turnTimeoutMs`（见「运行参数」）；少数情况才是真·模型调用失败（查统一日志错误原文） |
 | `已有运行中的 auto run … 占用` | 同 workspace/envKey 已有活跃 run，先 stop |
 
 ## 与 GUI 的关系

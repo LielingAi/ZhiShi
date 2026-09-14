@@ -10,7 +10,7 @@
  *   6. Return result
  */
 import type { EnvironmentEntry, IntelConfig, ModelEntity } from '../shared/config-types';
-import { resolveIntelConfig } from '../shared/config-types';
+import { resolveAutoRunConfig, resolveIntelConfig } from '../shared/config-types';
 import {
   loadConfig,
   atomicModifyConfig,
@@ -3140,7 +3140,11 @@ export async function handleAutoRunStart(payload: Record<string, unknown>): Prom
   const workspace = typeof payload.workspace === 'string' && payload.workspace.trim()
     ? payload.workspace.trim()
     : (getPiAgentState().agentDir || process.cwd());
-  const result = await startAutoRun(payload, workspace);
+  // turnTimeoutMs 走 config.json::autoRun（resolveAutoRunConfig 容错合并）——
+  // 研究型回合（几十次工具调用）远超缺省 600s，实机曾整批复现 run 被掐成
+  // 「turns=1 即 provider-error 停止」。
+  const { turnTimeoutMs } = resolveAutoRunConfig(loadConfig().autoRun);
+  const result = await startAutoRun(payload, workspace, { turnTimeoutMs });
   if (!result.success) return { success: false, error: result.error };
   // 1.5.13：loopSessionId 随回包下发——GUI 观察流（AutoRunStream 轮询 run 的
   // loop 线）需要它；乐观条目在 SSE started 到达前就能带线。

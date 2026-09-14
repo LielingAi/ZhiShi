@@ -600,6 +600,11 @@ export interface AppConfig {
 
   intel?: IntelConfig;
 
+  /** auto-run 无人值守循环（1.7.0）的运行参数。存储 config.json::autoRun，
+   *  全部字段可缺省——resolveAutoRunConfig 合并 AUTORUN_DEFAULTS。 */
+
+  autoRun?: AutoRunConfig;
+
   // General settings
 
   autoStart: boolean; // 开机启动
@@ -841,6 +846,45 @@ export function resolveIntelConfig(cfg?: IntelConfig): Required<IntelConfig> {
   const onlineFallback = typeof cfg?.onlineFallback === 'boolean' ? cfg.onlineFallback : INTEL_DEFAULTS.onlineFallback;
 
   return { mode, windowYears, maxSizeMb, onlineFallback };
+
+}
+
+
+/** config.json::autoRun（1.7.5 实机驱动）：auto-run 无人值守循环的运行参数。
+ *  全部字段可缺省——resolveAutoRunConfig 合并 AUTORUN_DEFAULTS。 */
+
+export interface AutoRunConfig {
+
+  /** 单轮 invoke 的等待上限（毫秒）。一轮 = 模型连续工作的整个回合（含全部
+   *  工具调用），漏洞复现类研究一回合跑几十分钟是常态，缺省 600s 会把它
+   *  掐成「turns=1 即 provider-error 停止」（超时只断等待，后台 turn 继续
+   *  跑——detach 语义）。研究型负载建议 3600000（1h）起步。 */
+
+  turnTimeoutMs?: number;
+
+}
+
+
+/** autoRun 配置缺省值（与 auto-run.ts::DEFAULT_TURN_TIMEOUT_MS 同值——
+ *  两处任一调整必须同步评估另一方）。 */
+
+export const AUTORUN_DEFAULTS: Required<AutoRunConfig> = {
+
+  turnTimeoutMs: 600_000,
+
+};
+
+
+/** 合并缺省值；非法值回落缺省（配置来自用户可编辑的 config.json，容错优先）。 */
+
+export function resolveAutoRunConfig(cfg?: AutoRunConfig): Required<AutoRunConfig> {
+
+  const turnTimeoutMs = typeof cfg?.turnTimeoutMs === 'number'
+    && Number.isFinite(cfg.turnTimeoutMs) && cfg.turnTimeoutMs > 0
+    ? Math.floor(cfg.turnTimeoutMs)
+    : AUTORUN_DEFAULTS.turnTimeoutMs;
+
+  return { turnTimeoutMs };
 
 }
 

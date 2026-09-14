@@ -42,7 +42,7 @@ import { getZhiShiDataDir } from './app-dirs';
 
 import { stripBom } from '../../shared/utils';
 
-import type { EnvironmentEntry, VmTemplateEntry } from '../../shared/config-types';
+import type { AutoRunConfig, EnvironmentEntry, VmTemplateEntry } from '../../shared/config-types';
 
 import { applyProviderEnablementAndOrder, isProviderEnabled, PRESET_PROVIDERS } from '../../shared/config-types';
 
@@ -154,6 +154,10 @@ export interface AdminAppConfig {
   // VM 模板（P2 V6 — `zhishi env adopt` 产出；env up 的 vmBase 回落源）
 
   vmTemplates?: Record<string, VmTemplateEntry>;
+
+  // auto-run 无人值守循环运行参数（1.7.5 — resolveAutoRunConfig 容错合并）
+
+  autoRun?: AutoRunConfig;
 
   // Allow passthrough of all other fields
 
