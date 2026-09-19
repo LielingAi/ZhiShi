@@ -880,9 +880,8 @@ mark.h-search { background: rgba(232,163,61,.3); color: var(--text); border-radi
 .ar-name { font-weight: 600; color: var(--text); max-width: 46vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ar-status { font-family: var(--mono); font-size: 10.5px; border-radius: 3px; padding: 0 5px; border: 1px solid var(--border); color: var(--muted); }
 .ar-status.s-running, .ar-status.s-starting { color: var(--cyan); border-color: var(--cyan-dim); }
-.ar-status.s-paused, .ar-status.s-awaiting-verdict { color: var(--amber); border-color: rgba(232,163,61,.5); }
 .ar-status.s-completed { color: var(--green); border-color: rgba(63,185,138,.4); }
-.ar-status.s-stopped { color: var(--red); border-color: rgba(229,83,75,.5); }
+.ar-status.s-stopped, .ar-status.s-exited { color: var(--red); border-color: rgba(229,83,75,.5); }
 .ar-phase { color: var(--muted); font-size: 11.5px; }
 .ar-meta { display: flex; align-items: center; gap: 10px; }
 .ar-budget { color: var(--muted); white-space: nowrap; }
@@ -890,16 +889,7 @@ mark.h-search { background: rgba(232,163,61,.3); color: var(--text); border-radi
 .ar-bar { flex: 1; max-width: 260px; height: 5px; border-radius: 3px; background: var(--panel-3); overflow: hidden; }
 .ar-bar-fill { height: 100%; background: var(--cyan); transition: width .3s; }
 .ar-bar-fill.warn { background: var(--amber); }
-.ar-verdict-tag { color: var(--amber); font-size: 11.5px; }
 .ar-conclusion { color: var(--text-dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ar-pause {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  border: 1px solid rgba(232,163,61,.4); background: rgba(232,163,61,.07);
-  border-radius: 6px; padding: 6px 10px;
-}
-.ar-pause-title { color: var(--amber); font-size: 12px; }
-.ar-pause-summary { flex-basis: 100%; color: var(--text-dim); font-size: 11.5px; }
-.ar-pause-actions { display: flex; gap: 8px; margin-left: auto; }
 .ar-foot { display: flex; align-items: center; gap: 10px; }
 .ar-esc-hint { color: var(--faint); font-size: 11px; flex: 1; }
 .ar-foot .btn { margin-left: auto; }

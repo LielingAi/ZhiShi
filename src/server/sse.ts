@@ -122,17 +122,15 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   // env_bg 生命周期(P2 Phase 2)— 长驻进程在状态行的存在感 + 退出插行。
   'chat:bg-started': 'critical',
   'chat:bg-finished': 'critical',
-  // 1.4.1 auto loop agent(design auto-loop-design.md §7)— 运行卡/暂停点/
-  // 验收包的结构级事件,绝不丢。payload 见 loop/auto-run.ts 的 broadcast。
+  // 1.4.1 / 1.7.7 auto loop agent(design auto-redesign.md §4b)— 运行卡/
+  // 阶段推进/轮次收尾/终态的结构级事件,绝不丢。payload 见 loop/auto-run.ts
+  // 的 broadcast。1.7.7 事件族收缩:paused / verdict-requested / budget-warning
+  // / resumed 随暂停点/终审/续命机制整体删除;终态统一走 auto-run:completed
+  // (outcome=passed|stopped|exited)。
   'auto-run:started': 'critical',
   'auto-run:phase-changed': 'critical',
   'auto-run:turn-completed': 'critical',
-  'auto-run:paused': 'critical',
-  'auto-run:budget-warning': 'critical',
   'auto-run:completed': 'critical',
-  // 1.6.0：暂停点恢复广播（paused→running）
-  'auto-run:resumed': 'critical',
-  'auto-run:verdict-requested': 'critical',
   'queue:added': 'critical',
   'queue:cancelled': 'critical',
   // ('cron:task-exit-requested' removed — emitter retired with exit_cron_task in v0.2.11)

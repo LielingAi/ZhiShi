@@ -856,9 +856,10 @@ export function resolveIntelConfig(cfg?: IntelConfig): Required<IntelConfig> {
 export interface AutoRunConfig {
 
   /** 单轮 invoke 的等待上限（毫秒）。一轮 = 模型连续工作的整个回合（含全部
-   *  工具调用），漏洞复现类研究一回合跑几十分钟是常态，缺省 600s 会把它
-   *  掐成「turns=1 即 provider-error 停止」（超时只断等待，后台 turn 继续
-   *  跑——detach 语义）。研究型负载建议 3600000（1h）起步。 */
+   *  工具调用），漏洞复现类研究一回合跑几十分钟是常态。1.7.7 起缺省拉大到
+   *  24h（docs/design/auto-redesign.md §3.3）：纯 liveness 守卫、只防真挂死，
+   *  不是停 run 的条件——旧缺省 600s 会把正常回合掐成「turns=1 即
+   *  provider-error 停止」（超时只断等待，后台 turn 继续跑——detach 语义）。 */
 
   turnTimeoutMs?: number;
 
@@ -870,7 +871,7 @@ export interface AutoRunConfig {
 
 export const AUTORUN_DEFAULTS: Required<AutoRunConfig> = {
 
-  turnTimeoutMs: 600_000,
+  turnTimeoutMs: 24 * 60 * 60_000,
 
 };
 

@@ -1,7 +1,7 @@
 /**
  * Esc 链优先级单测（1.3.1 ②③④ + 1.3.2 ① + 1.4.1 扩展）：一次弹一层，顺序
- * overlay > tasks > queue > boundary > decision > verdict > modal > drawer >
- * page > autoRun 终止确认 > busy 中断 > none。
+ * overlay > tasks > queue > boundary > decision > modal > drawer > page >
+ * autoRun 终止确认 > busy 中断 > none。1.7.7：verdict 层随终审机制删除。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -92,18 +92,6 @@ describe('escAction', () => {
 
   // ── 1.4.1：auto loop 层 ────────────────────────────────────────────
 
-  it('verdict 模态进链：decision 之后、modal 之前（收起不作答）', () => {
-    expect(escAction({ ...base, decisionOpen: true, verdictOpen: true })).toEqual({
-      type: 'close-decision',
-    });
-    expect(escAction({ ...base, verdictOpen: true, modalOpen: true })).toEqual({
-      type: 'dismiss-verdict',
-    });
-    expect(escAction({ ...base, verdictOpen: true, busy: true })).toEqual({
-      type: 'dismiss-verdict',
-    });
-  });
-
   it('auto loop 活跃：无更高层时弹终止确认（busy 不抢层）', () => {
     expect(escAction({ ...base, autoRunActive: true, busy: true })).toEqual({
       type: 'confirm-stop-auto-run',
@@ -114,8 +102,8 @@ describe('escAction', () => {
   });
 
   it('auto loop 活跃但更高层开着：一层一层弹，不直达终止确认', () => {
-    expect(escAction({ ...base, autoRunActive: true, verdictOpen: true })).toEqual({
-      type: 'dismiss-verdict',
+    expect(escAction({ ...base, autoRunActive: true, decisionOpen: true })).toEqual({
+      type: 'close-decision',
     });
     expect(escAction({ ...base, autoRunActive: true, modalOpen: true })).toEqual({
       type: 'close-modal',

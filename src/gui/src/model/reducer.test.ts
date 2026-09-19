@@ -309,11 +309,11 @@ describe('auto-run:turn-completed — server 真实形状（1.4.6 走查实证�
     expect(res.autoRun).toMatchObject({ kind: 'turn', id: 'run-1', turnCount: 1, used: 1 });
   });
 
-  it('auto-run:budget-warning 同口径（budget.spent/limit 映射）', () => {
+  it('auto-run:budget-warning 已随 1.7.7 删除——不再产出增量（防御残影）', () => {
     const res = reduceSseEvent(emptySession(), {
       event: 'auto-run:budget-warning',
       payload: { id: 'run-1', budget: { kind: 'turns', limit: 40, spent: 34 } },
     });
-    expect(res.autoRun).toMatchObject({ kind: 'budget', id: 'run-1', used: 34, limit: 40 });
+    expect(res.autoRun).toBeUndefined();
   });
 });

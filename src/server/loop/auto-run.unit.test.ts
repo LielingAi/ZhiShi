@@ -1,11 +1,12 @@
 /**
- * loop/auto-run.ts 单测(1.4.1)— 纯函数(校验/驱动文本/预算/暂停点证据判定/
- * 验收包/记录编解码)+ runner 集成(全假依赖,不真连环境/不真落真库)。
+ * loop/auto-run.ts 单测(1.7.7 auto-redesign)——纯函数(启动校验/驱动文本/
+ * 预算/空转检测 K=3/记录编解码)+ runner 集成(全假依赖,不真连环境/
+ * 不真落真库)。
  *
- * runner 集成覆盖三条主路径:达成→终审 pass 出报告、空转→harness 提请
- * (1.3.2 requestDecision)→继续跑、预算耗尽→续命→恢复;Esc 终止收尾。
- * 计时全部短轮询(pollMs=10),decision/declaration 用真实内存注册表(纯内存,
- * 不触网),记录落盘用临时目录。
+ * runner 集成覆盖四停点:declare 证据预检通过 → completed、预检不过 → 回注
+ * 继续、provider 连击 N=5 → exited、预算耗尽 → stopped、Esc → stopped;
+ * 工具级 isError 不计数;空转话术注入(K=3,重复注入,自定义/内置/关闭);
+ * 互斥闸与僵尸愈合。declaration 用真实内存注册表(纯内存,不触网)。
  */
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -17,59 +18,47 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { ResearchEvent } from '../memory/store';
 import {
   autoRunFilePath,
-  buildDockerTaskMd,
-  buildDockerTaskMdWriteCommand,
   buildFirstTurnText,
   buildNextTurnText,
-  buildVerdictPackage,
   computeBudgetSpent,
   countValidEventsSince,
   createAutoRunController,
   currentResearchPhase,
-  detectRepeatedFailures,
+  DEFAULT_STALL_PROMPT,
   estimateLoopTokens,
   evaluateStall,
-  findDecisionMarker,
   injectInteractiveWrapUp,
   isBudgetExhausted,
-  isBudgetWarning,
   listAutoRunRecordFiles,
   loadAutoRunRecord,
   parseAutoRunRecord,
+  PROVIDER_STREAK_EXIT_DEFAULT,
   recoverOrphanedAutoRuns,
   resetAutoRunRegistryForTest,
-  resolveAutoRunVerdict,
   runAutoRunLoop,
   saveAutoRunRecord,
   serializeAutoRunRecord,
+  STALL_PROMPT_OFF,
+  STALL_TURNS_DEFAULT,
   startAutoRun,
   stopAutoRun,
-  summarizeRecentToolCalls,
   validateAutoRunStart,
-  verdictRequestOfRecord,
   withAutoRunDepDefaults,
-  writeDockerTaskMdCheckpoint,
   type AutoRunDeps,
   type AutoRunRecord,
 } from './auto-run';
-import type { EnvironmentEntry } from '../../shared/config-types';
-import { parseAutoRunPolicy, type AutoRunPolicy } from '../../shared/auto-run-policy';
-import type { EnvExec, EnvExecProcessResult } from './env-exec';
 import { clearCompletionDeclarations, declareCompletion, takeCompletionDeclaration } from './declare-completion';
-import { clearDecisions, pendingDecisions, requestDecision, respondDecision } from './decision';
 
 let dir: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'zhishi-auto-run-'));
   clearCompletionDeclarations();
-  clearDecisions();
   resetAutoRunRegistryForTest();
 });
 
 afterEach(() => {
   clearCompletionDeclarations();
-  clearDecisions();
   resetAutoRunRegistryForTest();
   rmSync(dir, { recursive: true, force: true });
 });
@@ -128,10 +117,11 @@ async function waitFor(pred: () => boolean, timeoutMs = 5000): Promise<void> {
 interface FakeDeps {
   deps: AutoRunDeps;
   invokeCount: number;
+  invokeTexts: string[];
+  invokeOptions: Array<Parameters<AutoRunDeps['invoke']>[1]>;
   messages: AgentMessage[];
   saved: AutoRunRecord[];
   sent: Array<{ event: string; data: unknown }>;
-  appended: string[];
   events: ResearchEvent[];
 }
 
@@ -139,29 +129,33 @@ function makeFakeDeps(overrides: Partial<AutoRunDeps> = {}): FakeDeps {
   const fake: FakeDeps = {
     deps: null as unknown as AutoRunDeps,
     invokeCount: 0,
+    invokeTexts: [],
+    invokeOptions: [],
     messages: [],
     saved: [],
     sent: [],
-    appended: [],
     events: [],
   };
   fake.deps = withAutoRunDepDefaults({
     workspace: '/ws',
-    invoke: async () => {
+    invoke: async (input, options) => {
       fake.invokeCount += 1;
+      fake.invokeTexts.push(input.text);
+      fake.invokeOptions.push(options);
+      // 每轮让出事件循环:fake invoke 是纯微任务,不让出的话 runner 会以微任务
+      // 循环饿死 macrotask(waitFor 的 setTimeout 轮询/requestStop 永不触发)。
+      await new Promise((r) => setTimeout(r, 0));
       return { text: `输出 ${fake.invokeCount}`, loopSessionId: 'ls-1' };
     },
     loadMessages: () => fake.messages,
     listEvents: () => fake.events,
     resolveEvent: () => null,
-    appendUserMessage: async (_id, text) => { fake.appended.push(text); },
-    snapshot: async () => ({ ok: true }),
-    exportReport: async () => ({ ok: false, error: 'no-op' }),
-    broadcast: (event, data) => { fake.sent.push({ event, data }); },
+    // 快照式广播(对齐生产 formatSse 即时序列化):payload 里有活引用
+    // (record.budget)时,断言读到的仍是发射时刻的值,不受后续轮次改写影响。
+    broadcast: (event, data) => { fake.sent.push({ event, data: JSON.parse(JSON.stringify(data)) }); },
     save: (record) => { fake.saved.push(JSON.parse(JSON.stringify(record)) as AutoRunRecord); },
     now: () => Date.now(),
     log: () => {},
-    pollMs: 10,
     ...overrides,
   });
   return fake;
@@ -175,7 +169,7 @@ const dataOf = (sent: Array<{ event: string; data: unknown }>, event: string): u
 describe('validateAutoRunStart', () => {
   const findEnv = (envKey: string) => (envKey === 'pwn-vm' ? { id: 'pwn-vm' } : undefined);
 
-  it('合法输入 → 完整记录(预算 spent 归零)', () => {
+  it('合法输入 → 完整记录(预算 spent 归零;无 stallPrompt 不写字段)', () => {
     const r = validateAutoRunStart(
       { name: '  demo ', envKey: 'pwn-vm', goal: '拿到 flag', criteria: ['a', ' b '], budget: { kind: 'tokens', limit: 1000 } },
       { findEnv, now: () => 0, newId: () => 'run-x', loopSessionId: 'ls-x' },
@@ -188,6 +182,17 @@ describe('validateAutoRunStart', () => {
     expect(r.record.budget).toEqual({ kind: 'tokens', limit: 1000, spent: 0 });
     expect(r.record.loopSessionId).toBe('ls-x');
     expect(r.record.status).toBe('running');
+    expect(r.record.stallPrompt).toBeUndefined();
+  });
+
+  it('stallPrompt:空白 → 缺省(不写);原文保留;off → 关闭常量', () => {
+    const base = { name: 'n', envKey: 'pwn-vm', goal: 'g', criteria: ['a'], budget: { kind: 'turns', limit: 1 } };
+    const a = validateAutoRunStart({ ...base, stallPrompt: '   ' }, { findEnv });
+    expect(a.ok && a.record.stallPrompt).toBeUndefined();
+    const b = validateAutoRunStart({ ...base, stallPrompt: ' 换个思路 ' }, { findEnv });
+    expect(b.ok && b.record.stallPrompt).toBe('换个思路');
+    const c = validateAutoRunStart({ ...base, stallPrompt: STALL_PROMPT_OFF }, { findEnv });
+    expect(c.ok && c.record.stallPrompt).toBe(STALL_PROMPT_OFF);
   });
 
   it('环境未登记 → 可读错误', () => {
@@ -218,72 +223,63 @@ describe('validateAutoRunStart', () => {
 // ===== 驱动文本 =====
 
 describe('buildFirstTurnText / buildNextTurnText', () => {
-  it('首轮含目标/验收条件/研究纪律(留痕+declare_completion+request_decision)', () => {
+  it('首轮含目标/验收条件/研究纪律;1.7.7 无 request_decision、无档案检查点', () => {
     const text = buildFirstTurnText('拿到 flag', ['输出 flag{…}']);
     expect(text).toContain('拿到 flag');
     expect(text).toContain('输出 flag{…}');
     expect(text).toContain('research_log');
     expect(text).toContain('declare_completion');
-    expect(text).toContain('request_decision');
-    // 1.4.6 走查实证：档案纪律教学须进 auto-run 驱动文本(security kernel
-    // 不注入 auto-run 场景,驱动文本是唯一的纪律通道——缺它档案采用率随采样漂移)。
     expect(text).toContain('research_archive');
     expect(text).toContain('V# 证据引用');
     expect(text).toContain('falsify/correct');
+    // OR 语义与「没有自我退出权」入文案。
+    expect(text).toContain('任一条件');
+    expect(text).toContain('自我退出权');
+    // 删除清单:decision 提请与档案检查点不再出现。
+    expect(text).not.toContain('request_decision');
+    expect(text).not.toContain('档案检查点');
   });
 
-  it('后续轮含上一轮结果截断;verdictNote 前置', () => {
+  it('后续轮含上一轮结果截断;注回块前置(达成预检/空转话术,标注系统注入)', () => {
     const prev = 'x'.repeat(3000);
-    const text = buildNextTurnText('目标', prev, { verdictNote: '终审不通过', maxChars: 100 });
+    const text = buildNextTurnText('目标', prev, {
+      precheckNote: '上轮达成宣称未通过证据预检:宣称未对应任何验收条件。继续推进。',
+      stallNote: '换个思路',
+      maxChars: 100,
+    });
     expect(text).toContain('继续推进目标');
-    expect(text).toContain('终审不通过');
+    expect(text).toContain('【系统注回·达成预检】');
+    expect(text).toContain('【系统注入·空转推进话术】');
     expect(text).toContain('…(截断)');
     expect(text).toContain('research_archive');
-    expect(text.length).toBeLessThan(400);
-  });
-
-  it('1.5.0 确定性档案检查点：每 4 轮一插，非检查点轮不插', () => {
-    // turn 从 0 起：(turn+1) % 4 === 0 → 第 4/8/12… 轮插检查点。
-    expect(buildNextTurnText('目标', '上轮', { turn: 3 })).toContain('【档案检查点】');
-    expect(buildNextTurnText('目标', '上轮', { turn: 7 })).toContain('【档案检查点】');
-    expect(buildNextTurnText('目标', '上轮', { turn: 0 })).not.toContain('【档案检查点】');
-    expect(buildNextTurnText('目标', '上轮', { turn: 1 })).not.toContain('【档案检查点】');
-    expect(buildNextTurnText('目标', '上轮', { turn: 4 })).not.toContain('【档案检查点】');
-    // 不传 turn → 不插（兼容旧调用）。
-    expect(buildNextTurnText('目标', '上轮')).not.toContain('【档案检查点】');
-    // 检查点与 verdictNote 兼容共存。
-    expect(buildNextTurnText('目标', '上轮', { turn: 3, verdictNote: '继续跑' })).toContain('终审反馈');
-    expect(buildNextTurnText('目标', '上轮', { turn: 3, verdictNote: '继续跑' })).toContain('【档案检查点】');
+    expect(text.length).toBeLessThan(600);
+    // 无注回块 → 无标注。
+    const plain = buildNextTurnText('目标', '上轮');
+    expect(plain).not.toContain('系统注回');
+    expect(plain).not.toContain('系统注入');
   });
 });
 
 // ===== 预算 =====
 
-describe('computeBudgetSpent / isBudgetExhausted / isBudgetWarning / estimateLoopTokens', () => {
+describe('computeBudgetSpent / isBudgetExhausted / estimateLoopTokens', () => {
   it('三档口径:turns 计轮/tokens 计估算/time 计分钟', () => {
     expect(computeBudgetSpent({ kind: 'turns', limit: 9 }, { turns: 3, tokens: 0, elapsedMs: 0 })).toBe(3);
     expect(computeBudgetSpent({ kind: 'tokens', limit: 9 }, { turns: 3, tokens: 400, elapsedMs: 0 })).toBe(400);
     expect(computeBudgetSpent({ kind: 'time', limit: 9 }, { turns: 3, tokens: 0, elapsedMs: 120_000 })).toBe(2);
   });
 
-  it('1.6.0:tokens 档 spent = 原始估算 × 校准系数(缺省 1,钳 [0.8, 6])', () => {
+  it('tokens 档 spent = 原始估算 × 校准系数(缺省 1,钳 [0.8, 6])', () => {
     expect(computeBudgetSpent({ kind: 'tokens', limit: 9 }, { turns: 0, tokens: 400, elapsedMs: 0, calibration: 2 })).toBe(800);
-    // 缺省/非法 → 系数 1(原口径)。
     expect(computeBudgetSpent({ kind: 'tokens', limit: 9 }, { turns: 0, tokens: 400, elapsedMs: 0 })).toBe(400);
     expect(computeBudgetSpent({ kind: 'tokens', limit: 9 }, { turns: 0, tokens: 400, elapsedMs: 0, calibration: Number.NaN })).toBe(400);
-    // 钳界照 compaction 学习侧 [0.8, 6]。
     expect(computeBudgetSpent({ kind: 'tokens', limit: 9 }, { turns: 0, tokens: 400, elapsedMs: 0, calibration: 100 })).toBe(2400);
     expect(computeBudgetSpent({ kind: 'tokens', limit: 9 }, { turns: 0, tokens: 400, elapsedMs: 0, calibration: 0.01 })).toBe(320);
-    // 校准只作用 tokens 档,turns/time 不受影响。
-    expect(computeBudgetSpent({ kind: 'turns', limit: 9 }, { turns: 3, tokens: 0, elapsedMs: 0, calibration: 2 })).toBe(3);
   });
 
-  it('耗尽 = spent ≥ limit;警告 = 未耗尽且 ≥ 80%', () => {
+  it('耗尽 = spent ≥ limit', () => {
     expect(isBudgetExhausted({ kind: 'turns', limit: 10 }, 10)).toBe(true);
     expect(isBudgetExhausted({ kind: 'turns', limit: 10 }, 9.9)).toBe(false);
-    expect(isBudgetWarning({ kind: 'turns', limit: 100 }, 80)).toBe(true);
-    expect(isBudgetWarning({ kind: 'turns', limit: 100 }, 100)).toBe(false);
-    expect(isBudgetWarning({ kind: 'turns', limit: 100 }, 10)).toBe(false);
   });
 
   it('token 估算 = estimateMessageTokens 求和口径', () => {
@@ -293,14 +289,14 @@ describe('computeBudgetSpent / isBudgetExhausted / isBudgetWarning / estimateLoo
   });
 });
 
-// ===== 暂停点证据判定 =====
+// ===== 空转证据判定 =====
 
 describe('countValidEventsSince(有效研究记录增量)', () => {
   it('按 sinceTs 过滤 + outcome 闭集(脏行不算)', () => {
     const events = [
       makeEvent(1, { ts: 100, outcome: 'success' }),
       makeEvent(2, { ts: 200, outcome: 'fail' }),
-      makeEvent(3, { ts: 300, outcome: 'wrong' as never }), // 非法 outcome 不算
+      makeEvent(3, { ts: 300, outcome: 'wrong' as never }),
     ];
     expect(countValidEventsSince(events, 150)).toBe(1);
     expect(countValidEventsSince(events, 0)).toBe(2);
@@ -308,81 +304,32 @@ describe('countValidEventsSince(有效研究记录增量)', () => {
   });
 });
 
-describe('evaluateStall(空转判定)', () => {
-  it('无新增且阶段未推进 → streak 累加;达到阈值即 stalled', () => {
+describe('evaluateStall(空转判定,K=3)', () => {
+  it('无新增且阶段未推进 → streak 累加;缺省阈值 K=3 达到即 stalled', () => {
+    expect(evaluateStall({ newValidEvents: 0, previousPhase: 'recon', phase: 'recon', stallStreak: 2 }))
+      .toEqual({ stallStreak: 3, stalled: true });
+    expect(evaluateStall({ newValidEvents: 0, previousPhase: 'recon', phase: 'recon', stallStreak: 1 }))
+      .toEqual({ stallStreak: 2, stalled: false });
+    expect(STALL_TURNS_DEFAULT).toBe(3);
+  });
+
+  it('显式阈值覆盖缺省', () => {
     expect(evaluateStall({ newValidEvents: 0, previousPhase: 'recon', phase: 'recon', stallStreak: 1 }, 2))
       .toEqual({ stallStreak: 2, stalled: true });
-    expect(evaluateStall({ newValidEvents: 0, previousPhase: 'recon', phase: 'recon', stallStreak: 0 }, 6))
-      .toEqual({ stallStreak: 1, stalled: false });
   });
 
   it('有新增/阶段推进/无基线(首轮)→ streak 清零', () => {
-    expect(evaluateStall({ newValidEvents: 1, previousPhase: 'recon', phase: 'recon', stallStreak: 4 }, 6).stallStreak).toBe(0);
-    expect(evaluateStall({ newValidEvents: 0, previousPhase: 'recon', phase: 'analysis', stallStreak: 4 }, 6).stallStreak).toBe(0);
-    expect(evaluateStall({ newValidEvents: 0, previousPhase: undefined, phase: 'anchor', stallStreak: 4 }, 6).stallStreak).toBe(0);
+    expect(evaluateStall({ newValidEvents: 1, previousPhase: 'recon', phase: 'recon', stallStreak: 4 }).stallStreak).toBe(0);
+    expect(evaluateStall({ newValidEvents: 0, previousPhase: 'recon', phase: 'analysis', stallStreak: 4 }).stallStreak).toBe(0);
+    expect(evaluateStall({ newValidEvents: 0, previousPhase: undefined, phase: 'anchor', stallStreak: 4 }).stallStreak).toBe(0);
   });
 });
 
-describe('detectRepeatedFailures(同类工具 isError 连击)', () => {
-  it('尾部同类错误 ≥3 → 命中;非错误打断;换工具名重起组', () => {
-    const three = [msgToolResult({ isError: true }), msgToolResult({ isError: true }), msgToolResult({ isError: true })];
-    expect(detectRepeatedFailures(three, 3)).toEqual({ toolName: 'env_exec', streak: 3 });
-    expect(detectRepeatedFailures(three.slice(0, 2), 3)).toBeNull();
-    const interrupted = [msgToolResult({ isError: true }), msgToolResult(), msgToolResult({ isError: true }), msgToolResult({ isError: true })];
-    expect(detectRepeatedFailures(interrupted, 2)).toEqual({ toolName: 'env_exec', streak: 2 });
-    expect(detectRepeatedFailures([msgToolResult({ isError: true }), msgToolResult(), msgToolResult({ isError: true })], 2)).toBeNull();
-    const mixed = [
-      msgToolResult({ toolName: 'a', isError: true }),
-      msgToolResult({ toolName: 'a', isError: true }),
-      msgToolResult({ toolName: 'b', isError: true }),
-      msgToolResult({ toolName: 'b', isError: true }),
-      msgToolResult({ toolName: 'b', isError: true }),
-    ];
-    expect(detectRepeatedFailures(mixed, 3)).toEqual({ toolName: 'b', streak: 3 });
-  });
-});
-
-describe('currentResearchPhase / summarizeRecentToolCalls(1.2.7 分类器复用)', () => {
+describe('currentResearchPhase(1.2.7 分类器复用)', () => {
   it('空历史 → anchor;段相位按 1.2.7 推断(末段胜出)', () => {
     expect(currentResearchPhase([])).toBe('anchor');
     const messages = [msgUser('开始'), msgUser('用 nmap 扫描子域名 枚举服务')];
     expect(currentResearchPhase(messages)).toBe('recon');
-  });
-
-  it('最近动作摘要 = 尾部消息 toolCall 名去重保序', () => {
-    const assistant = {
-      role: 'assistant',
-      content: [{ type: 'toolCall', id: '1', name: 'env_exec', arguments: {} }, { type: 'toolCall', id: '2', name: 'research_log', arguments: {} }],
-      timestamp: Date.now(),
-    } as unknown as AgentMessage;
-    expect(summarizeRecentToolCalls([assistant, assistant])).toEqual(['env_exec', 'research_log']);
-  });
-});
-
-// ===== 验收包 =====
-
-describe('buildVerdictPackage(证据预检)', () => {
-  const resolveEvent = (id: number): ResearchEvent | null => (id === 1 ? makeEvent(1) : null);
-
-  it('引用命中/未命中 → hit/miss 计数与 criteria 聚合状态', () => {
-    const pkg = buildVerdictPackage({
-      id: 'run-1',
-      criteria: ['c1', 'c2'],
-      declaration: { statement: '达成', evidenceRefs: [1, 9] },
-      resolveEvent,
-    });
-    expect(pkg.hitCount).toBe(1);
-    expect(pkg.missCount).toBe(1);
-    expect(pkg.evidenceRefs[0]).toMatchObject({ id: 1, hit: true, outcome: 'success' });
-    expect(pkg.evidenceRefs[1]).toEqual({ id: 9, hit: false });
-    expect(pkg.criteriaPrecheck.map((c) => c.status)).toEqual(['partial', 'partial']);
-  });
-
-  it('全命中 → evidence;无引用 → none', () => {
-    const all = buildVerdictPackage({ id: 'r', criteria: ['c'], declaration: { statement: 's', evidenceRefs: [1] }, resolveEvent });
-    expect(all.criteriaPrecheck[0].status).toBe('evidence');
-    const none = buildVerdictPackage({ id: 'r', criteria: ['c'], declaration: { statement: 's', evidenceRefs: [] }, resolveEvent });
-    expect(none.criteriaPrecheck[0].status).toBe('none');
   });
 });
 
@@ -390,253 +337,183 @@ describe('buildVerdictPackage(证据预检)', () => {
 
 describe('serialize/parse/save/load/list/recover(存储纪律)', () => {
   it('编解码往返;坏 JSON/坏形状 → null', () => {
-    const rec = makeRecord({ declaration: { statement: 's', evidenceRefs: [1] } });
+    const rec = makeRecord({ declaration: { statement: 's', criteria: ['输出 flag{…}'], evidenceRefs: [1, 'H#1'] } });
     const parsed = parseAutoRunRecord(serializeAutoRunRecord(rec));
     expect(parsed).not.toBeNull();
     expect(parsed?.id).toBe('run-1');
     expect(parsed?.budget).toEqual({ kind: 'turns', limit: 50, spent: 0 });
-    expect(parsed?.declaration?.evidenceRefs).toEqual([1]);
+    expect(parsed?.declaration?.evidenceRefs).toEqual([1, 'H#1']);
     expect(parseAutoRunRecord('{bad json')).toBeNull();
     expect(parseAutoRunRecord(JSON.stringify({ id: 'x', loopSessionId: 'y', status: 'weird', budget: { kind: 'turns', limit: 1 } }))).toBeNull();
   });
 
-  it('save → load → list;recover 把非终态标 stopped、终态不动', async () => {
+  it('旧字段容错:旧暂停态归一化 running;policy/verdictPackage 不透传', () => {
+    const legacy = {
+      ...makeRecord(),
+      status: 'awaiting-verdict',
+      policy: { onStall: { tolerance: 2, action: 'stop' } },
+      verdictPackage: { statement: 's', criteriaPrecheck: [] },
+      reportDir: '/out/r',
+      pausedMsTotal: 123,
+    };
+    const parsed = parseAutoRunRecord(JSON.stringify(legacy));
+    expect(parsed?.status).toBe('running');
+    expect('policy' in (parsed ?? {})).toBe(false);
+    expect('verdictPackage' in (parsed ?? {})).toBe(false);
+    expect('reportDir' in (parsed ?? {})).toBe(false);
+  });
+
+  it('save → load → list;recover 把 running 标 stopped(sidecar-restart)、终态不动', async () => {
     const running = makeRecord({ id: 'run-a' });
     const completed = makeRecord({ id: 'run-b', status: 'completed' });
+    const exited = makeRecord({ id: 'run-c', status: 'exited', pauseReason: 'provider-error' });
     await saveAutoRunRecord(running, { dir });
     await saveAutoRunRecord(completed, { dir });
+    await saveAutoRunRecord(exited, { dir });
     expect(loadAutoRunRecord('run-a', { dir })?.status).toBe('running');
-    expect(listAutoRunRecordFiles({ dir })).toHaveLength(2);
+    expect(listAutoRunRecordFiles({ dir })).toHaveLength(3);
     const healed = await recoverOrphanedAutoRuns({ dir });
     expect(healed).toBe(1);
     expect(loadAutoRunRecord('run-a', { dir })?.status).toBe('stopped');
     expect(loadAutoRunRecord('run-a', { dir })?.pauseReason).toBe('sidecar-restart');
     expect(loadAutoRunRecord('run-b', { dir })?.status).toBe('completed');
+    expect(loadAutoRunRecord('run-c', { dir })?.status).toBe('exited');
     expect(autoRunFilePath('run/a', dir)).toBe(join(dir, 'runa.json'));
-  });
-});
-
-// ===== 决策 marker =====
-
-describe('findDecisionMarker(注入完成信号)', () => {
-  it('命中末条决策块(取 choice);无 → null', () => {
-    const messages = [
-      msgUser('x'),
-      { role: 'user', content: '决定', timestamp: 0, decision: { decisionId: 'dec-1', choice: '继续跑' } } as unknown as AgentMessage,
-    ];
-    expect(findDecisionMarker(messages, 'dec-1')).toEqual({ choice: '继续跑' });
-    expect(findDecisionMarker(messages, 'dec-9')).toBeNull();
   });
 });
 
 // ===== runner 集成(全假依赖) =====
 
-describe('runAutoRunLoop(达成→终审 pass 出报告)', () => {
-  it('declare_completion → awaiting-verdict → verdict-requested → pass → completed + reportDir', async () => {
+describe('runAutoRunLoop(达成预检通过 → completed)', () => {
+  it('declare 附条件与证据 → 预检过 → completed + 广播 outcome=passed;无 verdict/paused 事件', async () => {
     const record = makeRecord();
     const fake = makeFakeDeps({
       resolveEvent: (id) => (id === 1 ? makeEvent(1) : null),
       invoke: async () => {
-        declareCompletion(record.loopSessionId, '全部达成,证据 #1', [1]);
+        declareCompletion(record.loopSessionId, '条件一达成,证据 #1', ['输出 flag{…}'], [1]);
         return { text: 'done', loopSessionId: record.loopSessionId };
       },
-      exportReport: async () => ({ ok: true, reportDir: '/out/reports/2026' }),
     });
     const ctl = createAutoRunController(record);
     const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone();
-    await waitFor(() => fake.sent.some((s) => s.event === 'auto-run:verdict-requested'));
-    const vr = dataOf(fake.sent, 'auto-run:verdict-requested') as { criteria: string[]; evidence: { hitCount: number; missCount: number } };
-    expect(vr.criteria).toEqual(record.criteria);
-    expect(vr.evidence.hitCount).toBe(1);
-    expect(record.status).toBe('awaiting-verdict');
-
-    const r = ctl.resolveVerdict('pass');
-    expect(r.ok).toBe(true);
-    await done;
+    await ctl.waitUntilDone();
     await loop;
     expect(record.status).toBe('completed');
-    expect(record.reportDir).toBe('/out/reports/2026');
+    expect(record.pauseReason).toBeUndefined();
+    expect(record.declaration?.statement).toBe('条件一达成,证据 #1');
     expect(dataOf(fake.sent, 'auto-run:completed')).toMatchObject({ id: 'run-1', outcome: 'passed' });
+    expect(dataOf(fake.sent, 'auto-run:verdict-requested')).toBeUndefined();
+    expect(dataOf(fake.sent, 'auto-run:paused')).toBeUndefined();
+    // 声明轮也计入预算 spent(不再漏算)。
+    expect(record.budget.spent).toBe(1);
   });
 });
 
-describe('runAutoRunLoop(空转 → harness 提请 → 继续跑)', () => {
-  it('连续 stallTurns 轮无新增且阶段不推进 → paused(stall)+requestDecision;继续跑恢复', async () => {
-    const record = makeRecord();
-    const fake = makeFakeDeps({ stallTurns: 2 });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone();
-
-    await waitFor(() => fake.sent.some((s) => s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'stall'));
-    expect(record.status).toBe('paused');
-    expect(record.pauseReason).toBe('stall');
-    const paused = dataOf(fake.sent, 'auto-run:paused') as { recentTools: string[]; summary: string };
-    expect(paused.recentTools).toEqual([]);
-    // 1.6.0:paused 带 summary(stall = 最近动作摘要;无工具调用给占位)。
-    expect(paused.summary).toBe('(无工具调用)');
-
-    const pending = pendingDecisions().filter((d) => d.sessionId === record.loopSessionId);
-    expect(pending).toHaveLength(1);
-    respondDecision(pending[0].decisionId, '继续跑');
-    fake.messages.push({
-      role: 'user',
-      content: '【人的决定】选择: 继续跑',
-      timestamp: Date.now(),
-      decision: { decisionId: pending[0].decisionId, choice: '继续跑' },
-    } as unknown as AgentMessage);
-
-    // 恢复推进:第 4 轮 turn-completed 的 payload.status 已回 running(事件序
-    // 确定性断言,不读竞态中的 record)。stallTurns=2 时第 5 轮会再次提请,
-    // 随后 requestStop 终止即可。
-    await waitFor(() => fake.sent.some((s) =>
-      s.event === 'auto-run:turn-completed' && (s.data as { turn: number }).turn >= 4));
-    const resumed = dataOf(fake.sent, 'auto-run:turn-completed') as { status: string };
-    expect(resumed.status).toBe('running');
-
-    ctl.requestStop();
-    await done;
-    await loop;
-    expect(record.status).toBe('stopped');
-  });
-});
-
-describe('runAutoRunLoop(模型调用失败 → 人工接管，1.5.13 用户拍板)', () => {
-  it('invoke 报错 → paused(provider-error)+决策提请；不静默续跑', async () => {
+describe('runAutoRunLoop(达成预检不过 → 回注继续)', () => {
+  it('宣称未对应任何验收条件 → 下一轮驱动文本前置回注,循环继续', async () => {
     const record = makeRecord();
     const fake = makeFakeDeps({
-      invoke: async () => { fake.invokeCount += 1; return { error: '503 Server Overloaded', text: '', loopSessionId: 'ls-1' }; },
-    });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone();
-
-    await waitFor(() => fake.sent.some((s) =>
-      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'provider-error'));
-    expect(record.status).toBe('paused');
-    expect(record.pauseReason).toBe('provider-error');
-    // 1.6.0:paused 带 summary(provider-error = error 原文)。
-    const paused = dataOf(fake.sent, 'auto-run:paused') as { summary: string };
-    expect(paused.summary).toBe('503 Server Overloaded');
-    // 只 invoke 了一次——没有静默续跑（旧形态会 sleep 后立刻第二轮）
-    expect(fake.invokeCount).toBe(1);
-
-    // 人工接管：决策面板作答「终止运行」→ stopped
-    const pending = pendingDecisions().filter((d) => d.sessionId === record.loopSessionId);
-    expect(pending).toHaveLength(1);
-    respondDecision(pending[0].decisionId, '终止运行');
-    fake.messages.push({
-      role: 'user',
-      content: '【人的决定】选择: 终止运行',
-      timestamp: Date.now(),
-      decision: { decisionId: pending[0].decisionId, choice: '终止运行' },
-    } as unknown as AgentMessage);
-
-    await done;
-    await loop;
-    expect(record.status).toBe('stopped');
-  });
-});
-
-describe('runAutoRunLoop(1.7.5 显式锚传递)', () => {
-  it('invoke 收到环境锚(envKey)+工作区锚(workspaceAnchor)+线 id——headless 归属链', async () => {
-    const record = makeRecord({ budget: { kind: 'turns', limit: 1, spent: 0 } });
-    type InvokeOptions = Parameters<AutoRunDeps['invoke']>[1];
-    const seen: InvokeOptions[] = [];
-    const fake = makeFakeDeps({
-      invoke: async (_input, options) => {
-        seen.push(options);
+      invoke: async (input) => {
+        fake.invokeCount += 1;
+        fake.invokeTexts.push(input.text);
+        if (fake.invokeCount === 1) {
+          declareCompletion(record.loopSessionId, '随便达成', ['不存在的条件'], []);
+        }
+        await new Promise((r) => setTimeout(r, 0)); // 让出事件循环(waitFor 轮询可交错)
         return { text: 'x', loopSessionId: record.loopSessionId };
       },
     });
     const ctl = createAutoRunController(record);
     const loop = runAutoRunLoop(record, ctl, fake.deps);
     const done = ctl.waitUntilDone();
-
-    await waitFor(() => seen.length > 0);
-    // 缺工作区锚 → research_log 事件戳进全局引擎临时目录（实机事故：报告导出
-    // 按 workspace 过滤永远 0 条）;锚必须逐轮携带。
-    expect(seen[0]).toMatchObject({
-      loopSessionId: 'ls-1',
-      envKey: 'pwn-vm',
-      workspaceAnchor: '/ws',
-    });
-    ctl.requestStop();
-    await done;
-    await loop;
-  });
-});
-
-describe('runAutoRunLoop(预算耗尽 → 续命恢复)', () => {  it('turns 预算耗尽 → paused(budget)+checkpoint;auto-run/budget 续命 → 恢复推进', async () => {
-    const record = makeRecord({ budget: { kind: 'turns', limit: 1, spent: 0 } });
-    const fake = makeFakeDeps();
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone();
-
-    await waitFor(() => fake.sent.some((s) => s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'budget'));
-    expect(record.status).toBe('paused');
-    expect(record.pauseReason).toBe('budget');
-    expect(record.budget.spent).toBe(1);
-
-    // 非法续命:必须 > 已耗。
-    expect(ctl.renewBudget(1).ok).toBe(false);
-    const r = ctl.renewBudget(5);
-    expect(r.ok).toBe(true);
-
-    // 恢复推进:第 2 轮 turn-completed 的 payload 显示 running + 新上限(事件序
-    // 确定性断言,不读竞态中的 record)。
-    await waitFor(() => fake.sent.some((s) =>
-      s.event === 'auto-run:turn-completed' && (s.data as { turn: number }).turn >= 2));
-    const resumed = dataOf(fake.sent, 'auto-run:turn-completed') as { status: string; budget: { limit: number } };
-    expect(resumed.status).toBe('running');
-    expect(resumed.budget.limit).toBe(5);
-
+    await waitFor(() => fake.invokeTexts.length >= 2);
+    expect(fake.invokeTexts[1]).toContain('【系统注回·达成预检】');
+    expect(fake.invokeTexts[1]).toContain('上轮达成宣称未通过证据预检');
+    expect(fake.invokeTexts[1]).toContain('宣称未对应任何验收条件');
+    expect(record.status).toBe('running');
     ctl.requestStop();
     await done;
     await loop;
     expect(record.status).toBe('stopped');
   });
 
-  it('A3-1 回归:续命恢复 running 立即 persist(下一轮 invoke 还在跑,盘上已是 running)', async () => {
-    const record = makeRecord({ budget: { kind: 'turns', limit: 1, spent: 0 } });
-    let gate: (() => void) | undefined;
-    let blocked = false;
+  it('证据引用全部不存在 → 回注具体失败原因,继续推进', async () => {
+    const record = makeRecord();
     const fake = makeFakeDeps({
-      invoke: async () => {
+      resolveEvent: () => null,
+      invoke: async (input) => {
         fake.invokeCount += 1;
-        // 第 2 轮起挂住 invoke——制造「续命后、下一轮完成前」的观察窗口。
-        if (fake.invokeCount >= 2 && !blocked) {
-          blocked = true;
-          await new Promise<void>((r) => { gate = r; });
+        fake.invokeTexts.push(input.text);
+        if (fake.invokeCount === 1) {
+          declareCompletion(record.loopSessionId, '达成', ['输出 flag{…}'], [99]);
         }
-        return { text: 'x', loopSessionId: 'ls-1' };
+        await new Promise((r) => setTimeout(r, 0)); // 让出事件循环(waitFor 轮询可交错)
+        return { text: 'x', loopSessionId: record.loopSessionId };
       },
     });
     const ctl = createAutoRunController(record);
     const loop = runAutoRunLoop(record, ctl, fake.deps);
     const done = ctl.waitUntilDone();
-
-    await waitFor(() => fake.sent.some((s) => s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'budget'));
-    expect(ctl.renewBudget(5).ok).toBe(true);
-    // 续命分支的 persist 先于下一轮 invoke——invokeCount>=2 时盘上必已有 running 快照。
-    await waitFor(() => fake.invokeCount >= 2);
-    expect(fake.saved.some((r) => r.status === 'running' && r.budget.limit === 5)).toBe(true);
-
+    await waitFor(() => fake.invokeTexts.length >= 2);
+    expect(fake.invokeTexts[1]).toContain('证据引用全部不存在');
     ctl.requestStop();
-    gate?.();
     await done;
     await loop;
     expect(record.status).toBe('stopped');
   });
 });
 
-describe('runAutoRunLoop(反复失败 → paused summary,1.6.0)', () => {
-  it('同类工具 isError 连击 → paused(repeated-failures),summary = 工具名+连击数', async () => {
+describe('runAutoRunLoop(provider 连击 N=5 → exited)', () => {
+  it('invoke 连续 5 次返回 provider 类错误 → exited(reason=provider-error),如实广播', async () => {
     const record = makeRecord();
-    const fake = makeFakeDeps({ repeatedFailureStreak: 3 });
-    // invoke 返回后 loadMessages 读到尾部 3 连 isError(同工具)。
+    const fake = makeFakeDeps({
+      invoke: async () => { fake.invokeCount += 1; return { error: '503 Server Overloaded', text: '', loopSessionId: 'ls-1' }; },
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    await ctl.waitUntilDone();
+    await loop;
+    expect(fake.invokeCount).toBe(PROVIDER_STREAK_EXIT_DEFAULT);
+    expect(record.status).toBe('exited');
+    expect(record.pauseReason).toBe('provider-error');
+    expect(dataOf(fake.sent, 'auto-run:completed')).toMatchObject({
+      id: 'run-1',
+      outcome: 'exited',
+      reason: 'provider-error',
+    });
+    expect(dataOf(fake.sent, 'auto-run:paused')).toBeUndefined();
+    // 失败中断轮也计入 budget.spent(盘上快照同口径)。
+    expect(record.turns).toBe(5);
+    expect(record.budget.spent).toBe(5);
+    expect(fake.saved.at(-1)?.budget.spent).toBe(5);
+  });
+
+  it('任何成功 invoke 清连击计数(未满 N 次失败后恢复继续跑)', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps({
+      invoke: async () => {
+        fake.invokeCount += 1;
+        await new Promise((r) => setTimeout(r, 0)); // 让出事件循环(waitFor 轮询可交错)
+        if (fake.invokeCount <= 4) return { error: 'timeout', text: '', loopSessionId: 'ls-1' };
+        return { text: '恢复', loopSessionId: 'ls-1' };
+      },
+    });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.invokeCount >= 6);
+    expect(record.status).toBe('running');
+    ctl.requestStop();
+    await done;
+    await loop;
+    expect(record.status).toBe('stopped');
+  });
+});
+
+describe('runAutoRunLoop(工具级 isError 是研究信号,不计数不退出)', () => {
+  it('尾部 3 连工具错误 + invoke 成功 → 继续推进,无 exited', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps();
     fake.messages.push(
       msgToolResult({ isError: true }),
       msgToolResult({ isError: true }),
@@ -645,50 +522,107 @@ describe('runAutoRunLoop(反复失败 → paused summary,1.6.0)', () => {
     const ctl = createAutoRunController(record);
     const loop = runAutoRunLoop(record, ctl, fake.deps);
     const done = ctl.waitUntilDone();
-
-    await waitFor(() => fake.sent.some((s) =>
-      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'repeated-failures'));
-    const paused = dataOf(fake.sent, 'auto-run:paused') as { toolName: string; streak: number; summary: string };
-    expect(paused.toolName).toBe('env_exec');
-    expect(paused.streak).toBe(3);
-    expect(paused.summary).toContain('env_exec');
-    expect(paused.summary).toContain('3');
-
-    // 人工作答「终止运行」收尾。
-    const pending = pendingDecisions().filter((d) => d.sessionId === record.loopSessionId);
-    expect(pending).toHaveLength(1);
-    respondDecision(pending[0].decisionId, '终止运行');
-    fake.messages.push({
-      role: 'user',
-      content: '【人的决定】选择: 终止运行',
-      timestamp: Date.now(),
-      decision: { decisionId: pending[0].decisionId, choice: '终止运行' },
-    } as unknown as AgentMessage);
-
+    await waitFor(() => fake.invokeCount >= 3);
+    expect(record.status).toBe('running');
+    expect(dataOf(fake.sent, 'auto-run:completed')).toBeUndefined();
+    ctl.requestStop();
     await done;
     await loop;
     expect(record.status).toBe('stopped');
   });
 });
 
-describe('runAutoRunLoop(auto-run:started 契约,1.6.0)', () => {
-  it('started 广播带 criteria 数组(保留 criteriaCount 兼容)', async () => {
-    const record = makeRecord();
+describe('runAutoRunLoop(预算耗尽 → stopped)', () => {
+  it('turns 预算耗尽 → stopped(reason=budget);无 checkpoint、无 paused、无报告调用', async () => {
+    const record = makeRecord({ budget: { kind: 'turns', limit: 1, spent: 0 } });
     const fake = makeFakeDeps();
     const ctl = createAutoRunController(record);
     const loop = runAutoRunLoop(record, ctl, fake.deps);
+    await ctl.waitUntilDone();
+    await loop;
+    expect(fake.invokeCount).toBe(1);
+    expect(record.status).toBe('stopped');
+    expect(record.pauseReason).toBe('budget');
+    expect(record.budget.spent).toBe(1);
+    expect(dataOf(fake.sent, 'auto-run:paused')).toBeUndefined();
+    expect(dataOf(fake.sent, 'auto-run:completed')).toMatchObject({ id: 'run-1', outcome: 'stopped', reason: 'budget' });
+  });
+});
+
+describe('runAutoRunLoop(空转话术注入,K=3)', () => {
+  it('连续 K 轮空转 → 下轮注入内置通用话术(标注系统注入);每次检测注入一次', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps({ stallTurns: 3 });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
     const done = ctl.waitUntilDone();
-    await waitFor(() => fake.invokeCount >= 1);
-    const started = dataOf(fake.sent, 'auto-run:started') as { criteria: string[]; criteriaCount: number };
-    expect(started.criteria).toEqual(record.criteria);
-    expect(started.criteriaCount).toBe(record.criteria.length);
+    // 首轮无基线不判;第 2/3/4 轮连空转 → 第 4 轮末判定 → 第 5 轮文本注入。
+    await waitFor(() => fake.invokeTexts.length >= 6);
+    const injected = fake.invokeTexts.filter((t) => t.includes('【系统注入·空转推进话术】'));
+    expect(injected).toHaveLength(1);
+    expect(injected[0]).toContain(DEFAULT_STALL_PROMPT);
+    expect(injected[0]).toContain('「墙」');
+    expect(record.status).toBe('running');
+    ctl.requestStop();
+    await done;
+    await loop;
+  });
+
+  it('研究员自定义话术优先于内置;off → 纯继续不注入', async () => {
+    const record = makeRecord({ stallPrompt: '换个思路再试' });
+    const fake = makeFakeDeps({ stallTurns: 3 });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.invokeTexts.length >= 6);
+    const injected = fake.invokeTexts.filter((t) => t.includes('【系统注入·空转推进话术】'));
+    expect(injected).toHaveLength(1);
+    expect(injected[0]).toContain('换个思路再试');
+    ctl.requestStop();
+    await done;
+    await loop;
+  });
+
+  it('STALL_PROMPT_OFF → 空转不注入,纯继续(浪费由超时封顶)', async () => {
+    const record = makeRecord({ stallPrompt: STALL_PROMPT_OFF });
+    const fake = makeFakeDeps({ stallTurns: 3 });
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.invokeTexts.length >= 6);
+    expect(fake.invokeTexts.every((t) => !t.includes('系统注入'))).toBe(true);
+    expect(record.status).toBe('running');
     ctl.requestStop();
     await done;
     await loop;
   });
 });
 
-describe('runAutoRunLoop(tokens 预算 × 校准系数,1.6.0)', () => {
+describe('runAutoRunLoop(started / turn-completed 契约)', () => {
+  it('started 广播带 criteria 数组与 loopSessionId;turn-completed 带轮次/预算/状态', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps();
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.sent.some((s) => s.event === 'auto-run:turn-completed'));
+    const started = dataOf(fake.sent, 'auto-run:started') as { criteria: string[]; criteriaCount: number; loopSessionId: string };
+    expect(started.criteria).toEqual(record.criteria);
+    expect(started.criteriaCount).toBe(record.criteria.length);
+    expect(started.loopSessionId).toBe('ls-1');
+    // 广播 payload 的 budget 是 record.budget 活引用(生产侧 formatSse 同步
+    // 序列化无此问题)——fake 只存引用,深拷贝冻结首轮广播时的快照再断言。
+    const tc = JSON.parse(JSON.stringify(dataOf(fake.sent, 'auto-run:turn-completed'))) as { turn: number; status: string; budget: { spent?: number } };
+    expect(tc.turn).toBe(1);
+    expect(tc.status).toBe('running');
+    expect(tc.budget.spent).toBe(1);
+    ctl.requestStop();
+    await done;
+    await loop;
+  });
+});
+
+describe('runAutoRunLoop(tokens 预算 × 校准系数)', () => {
   it('loadTokenCalibration=2 → spent = 原始估算 × 2', async () => {
     const record = makeRecord({ budget: { kind: 'tokens', limit: 100_000_000, spent: 0 } });
     const fake = makeFakeDeps({ loadTokenCalibration: () => 2 });
@@ -704,23 +638,64 @@ describe('runAutoRunLoop(tokens 预算 × 校准系数,1.6.0)', () => {
     await done;
     await loop;
   });
+});
 
-  it('不注入 loadTokenCalibration → 系数 1(原口径)', async () => {
-    const record = makeRecord({ budget: { kind: 'tokens', limit: 100_000_000, spent: 0 } });
+describe('runAutoRunLoop(Esc 终止)', () => {
+  it('requestStop → stopped + auto-run:completed{outcome:stopped};spent 计入中断轮', async () => {
+    const record = makeRecord();
     const fake = makeFakeDeps();
-    fake.messages.push(msgUser('hello world'));
     const ctl = createAutoRunController(record);
     const loop = runAutoRunLoop(record, ctl, fake.deps);
     const done = ctl.waitUntilDone();
-    await waitFor(() => fake.sent.some((s) => s.event === 'auto-run:turn-completed'));
-    expect(record.budget.spent).toBe(estimateLoopTokens(fake.messages));
+    await waitFor(() => fake.invokeCount >= 1);
     ctl.requestStop();
     await done;
     await loop;
+    expect(record.status).toBe('stopped');
+    expect(record.pauseReason).toBeUndefined();
+    expect(dataOf(fake.sent, 'auto-run:completed')).toMatchObject({ id: 'run-1', outcome: 'stopped' });
+    expect(record.turns).toBeGreaterThanOrEqual(1);
+    expect(record.budget.spent).toBe(record.turns);
+    expect(fake.saved.at(-1)?.budget.spent).toBe(record.turns);
   });
 });
 
-describe('injectInteractiveWrapUp(1.6.0 envKey 口径修复)', () => {
+describe('runAutoRunLoop(终态清理本线声明,不动其他线)', () => {
+  it('Esc 后本线声明清空,其他线不动', async () => {
+    const record = makeRecord();
+    const fake = makeFakeDeps();
+    declareCompletion('other-line', '其他线声明', [], []);
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    const done = ctl.waitUntilDone();
+    await waitFor(() => fake.invokeCount >= 1);
+    declareCompletion(record.loopSessionId, '晚到的声明', [], []);
+    ctl.requestStop();
+    await done;
+    await loop;
+    expect(takeCompletionDeclaration(record.loopSessionId)).toBeNull();
+    expect(takeCompletionDeclaration('other-line')).not.toBeNull();
+  });
+});
+
+describe('runAutoRunLoop(1.7.5 显式锚传递)', () => {
+  it('invoke 收到环境锚(envKey)+工作区锚(workspaceAnchor)+线 id', async () => {
+    const record = makeRecord({ budget: { kind: 'turns', limit: 1, spent: 0 } });
+    const fake = makeFakeDeps();
+    const ctl = createAutoRunController(record);
+    const loop = runAutoRunLoop(record, ctl, fake.deps);
+    await ctl.waitUntilDone();
+    await loop;
+    expect(fake.invokeOptions.length).toBe(1);
+    expect(fake.invokeOptions[0]).toMatchObject({
+      loopSessionId: 'ls-1',
+      envKey: 'pwn-vm',
+      workspaceAnchor: '/ws',
+    });
+  });
+});
+
+describe('injectInteractiveWrapUp(收官注回交互线)', () => {
   function collectAppend(): { appended: Array<{ id: string; text: string }>; appendMessages: (id: string, msgs: AgentMessage[]) => Promise<void> } {
     const appended: Array<{ id: string; text: string }> = [];
     return {
@@ -731,17 +706,17 @@ describe('injectInteractiveWrapUp(1.6.0 envKey 口径修复)', () => {
     };
   }
 
-  it('binding.envKey=env:<id> 而 record.envKey=裸 id → 注回真实发生', () => {
-    const record = makeRecord({ envKey: 'pwn-vm', reportDir: '/out/r' });
+  it('binding.envKey=env:<id> 而 record.envKey=裸 id → 注回真实发生(不再提报告)', () => {
+    const record = makeRecord({ envKey: 'pwn-vm' });
     const { appended, appendMessages } = collectAppend();
-    injectInteractiveWrapUp(record, '最终结论文本', '已通过验收', {
+    injectInteractiveWrapUp(record, '最终结论文本', '已达成', {
       getBinding: () => ({ envKey: 'env:pwn-vm', loopSessionId: 'ls-interactive' }),
       appendMessages,
     });
     expect(appended).toHaveLength(1);
     expect(appended[0].id).toBe('ls-interactive');
     expect(appended[0].text).toContain('【auto loop 收官】');
-    expect(appended[0].text).toContain('/out/r');
+    expect(appended[0].text).toContain('ls-1');
   });
 
   it('跳过条件照旧:无绑定/绑定线即本 run 线/环境不匹配', () => {
@@ -760,337 +735,9 @@ describe('injectInteractiveWrapUp(1.6.0 envKey 口径修复)', () => {
   });
 });
 
-describe('runAutoRunLoop(Esc 终止)', () => {
-  it('requestStop → 状态 stopped + auto-run:completed{outcome:stopped}', async () => {
-    const record = makeRecord();
-    const fake = makeFakeDeps();
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone();
-    await waitFor(() => fake.invokeCount >= 1);
-    ctl.requestStop();
-    await done;
-    await loop;
-    expect(record.status).toBe('stopped');
-    expect(dataOf(fake.sent, 'auto-run:completed')).toMatchObject({ id: 'run-1', outcome: 'stopped' });
-  });
+// ===== 注册表:startAutoRun 互斥闸 / 终态摘除 =====
 
-  it('1.7.5:Esc 中停止也计入 budget.spent(spent==turns,盘上快照同值)', async () => {
-    const record = makeRecord();
-    const fake = makeFakeDeps();
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone();
-    await waitFor(() => fake.invokeCount >= 1);
-    ctl.requestStop();
-    await done;
-    await loop;
-    expect(record.status).toBe('stopped');
-    // 修复前:stop 落在 invoke 期间时循环在轮次记账前退出,turns≥1 但 spent=0。
-    expect(record.turns).toBeGreaterThanOrEqual(1);
-    expect(record.budget.spent).toBe(record.turns);
-    const last = fake.saved[fake.saved.length - 1];
-    expect(last?.budget.spent).toBe(record.turns);
-  });
-});
-
-describe('verdictRequestOfRecord（1.4.6 dogfood 实证：list 归一化）', () => {
-  const record = {
-    verdictPackage: {
-      statement: '全部达成',
-      evidenceRefs: [],
-      hitCount: 2,
-      missCount: 0,
-      criteriaPrecheck: [
-        { text: '条件一', status: 'evidence' as const },
-        { text: '条件二', status: 'partial' as const },
-        { text: '条件三', status: 'none' as const },
-      ],
-    },
-  } as never;
-
-  it('verdictPackage → 对外 verdict（evidence/partial → hasEvidence）', () => {
-    const v = verdictRequestOfRecord(record)!;
-    expect(v.statement).toBe('全部达成');
-    // A2-6(1.5.4):criteriaPrecheck 无 refs 数据——字段缺席,不再硬填空数组。
-    expect(v.criteria).toEqual([
-      { text: '条件一', hasEvidence: true },
-      { text: '条件二', hasEvidence: true },
-      { text: '条件三', hasEvidence: false },
-    ]);
-  });
-
-  it('无 verdictPackage / 空 criteriaPrecheck / 空文本 → undefined', () => {
-    expect(verdictRequestOfRecord({} as never)).toBeUndefined();
-    expect(verdictRequestOfRecord({ verdictPackage: { statement: 'x', evidenceRefs: [], hitCount: 0, missCount: 0, criteriaPrecheck: [] } } as never)).toBeUndefined();
-    expect(verdictRequestOfRecord({ verdictPackage: { statement: 'x', evidenceRefs: [], hitCount: 0, missCount: 0, criteriaPrecheck: [{ text: '  ', status: 'evidence' as const }] } } as never)).toBeUndefined();
-  });
-});
-
-describe('1.4.6 修复:预算 off-by-one + 幽灵 verdictPackage', () => {
-  it('达成声明的那一轮也计入 budget.spent(声明轮不再漏算)', async () => {
-    const record = makeRecord();
-    const fake = makeFakeDeps({
-      resolveEvent: (id) => (id === 1 ? makeEvent(1) : null),
-      invoke: async () => {
-        declareCompletion(record.loopSessionId, '全部达成,证据 #1', [1]);
-        return { text: 'done', loopSessionId: record.loopSessionId };
-      },
-      exportReport: async () => ({ ok: true, reportDir: '/out' }),
-    });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone();
-    await waitFor(() => fake.sent.some((s) => s.event === 'auto-run:verdict-requested'));
-    // 声明轮(turn=1)在 verdict 前就已计入 spent——旧实现这里 spent=0。
-    expect(record.budget.spent).toBe(1);
-    expect(ctl.resolveVerdict('pass').ok).toBe(true);
-    await done;
-    await loop;
-    expect(record.budget.spent).toBe(1);
-  });
-
-  it('终审作答即清 verdictPackage(恢复路径不再弹已作答的终审窗)', async () => {
-    const record = makeRecord();
-    const fake = makeFakeDeps({
-      resolveEvent: (id) => (id === 1 ? makeEvent(1) : null),
-      invoke: async () => {
-        declareCompletion(record.loopSessionId, '全部达成,证据 #1', [1]);
-        return { text: 'done', loopSessionId: record.loopSessionId };
-      },
-      exportReport: async () => ({ ok: true, reportDir: '/out' }),
-    });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone();
-    await waitFor(() => fake.sent.some((s) => s.event === 'auto-run:verdict-requested'));
-    expect(record.verdictPackage).toBeDefined();
-    expect(ctl.resolveVerdict('pass').ok).toBe(true);
-    await done;
-    await loop;
-    expect(record.verdictPackage).toBeUndefined();
-    // 落盘的持久化记录里也不再有 verdictPackage。
-    const lastSaved = fake.saved.at(-1)!;
-    expect(lastSaved.verdictPackage).toBeUndefined();
-    // declaration 陈述保留作历史。
-    expect(record.declaration?.statement).toContain('全部达成');
-  });
-});
-
-describe('resolveAutoRunVerdict — 孤儿记录兜底（1.4.6 走查实证）', () => {
-  let dir3: string;
-  beforeEach(() => {
-    dir3 = mkdtempSync(join(tmpdir(), 'zhishi-ar-orphan-'));
-  });
-  afterEach(() => {
-    rmSync(dir3, { recursive: true, force: true });
-  });
-
-  async function seedOrphan(status: AutoRunRecord['status']) {
-    const record = makeRecord();
-    record.status = status;
-    record.verdictPackage = buildVerdictPackage({
-      id: record.id,
-      criteria: record.criteria,
-      declaration: { statement: 's', evidenceRefs: [] },
-      resolveEvent: () => null,
-    });
-    await saveAutoRunRecord(record, { dir: dir3 });
-    return record;
-  }
-
-  it('孤儿 awaiting-verdict + pass → completed + verdictPackage 清除(落盘生效)', async () => {
-    const record = await seedOrphan('awaiting-verdict');
-    const r = await resolveAutoRunVerdict(record.id, 'pass', undefined, { dir: dir3 });
-    expect(r.success).toBe(true);
-    const saved = loadAutoRunRecord(record.id, { dir: dir3 })!;
-    expect(saved.status).toBe('completed');
-    expect(saved.verdictPackage).toBeUndefined();
-  });
-
-  it('孤儿 + fail → stopped;continue → 明确报错不可续跑;非 awaiting-verdict → 无需终审', async () => {
-    const a = await seedOrphan('awaiting-verdict');
-    expect((await resolveAutoRunVerdict(a.id, 'fail', undefined, { dir: dir3 })).success).toBe(true);
-    expect(loadAutoRunRecord(a.id, { dir: dir3 })!.status).toBe('stopped');
-
-    const b = await seedOrphan('awaiting-verdict');
-    const rc = await resolveAutoRunVerdict(b.id, 'continue', undefined, { dir: dir3 });
-    expect(rc.success).toBe(false);
-    if (!rc.success) expect(rc.error).toContain('无法续跑');
-
-    const c = await seedOrphan('completed');
-    const rd = await resolveAutoRunVerdict(c.id, 'pass', undefined, { dir: dir3 });
-    expect(rd.success).toBe(false);
-    if (!rd.success) expect(rd.error).toContain('无需终审');
-
-    const rg = await resolveAutoRunVerdict('ghost-run', 'pass', undefined, { dir: dir3 });
-    expect(rg.success).toBe(false);
-    if (!rg.success) expect(rg.error).toContain('不存在');
-  });
-});
-
-// ===== 1.6.0 auto loop 全链路审计 S1:runner 状态机修复回归 =====
-
-describe('1.6.0 修复①:终审按轮重置(第二轮终审可作答)', () => {
-  it('第二轮 declare_completion 重新弹窗等人作答,不被旧 verdict 自动消费;同轮幂等闸不变', async () => {
-    const record = makeRecord();
-    const fake = makeFakeDeps({
-      invoke: async () => {
-        fake.invokeCount += 1;
-        // 每轮都声明达成——第二轮终审若被旧 verdict 自动消费,循环会空转刷轮。
-        declareCompletion(record.loopSessionId, `第 ${fake.invokeCount} 轮达成`, []);
-        return { text: 'done', loopSessionId: record.loopSessionId };
-      },
-    });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone();
-
-    // 第一轮终审:continue → 续跑。
-    await waitFor(() => fake.sent.filter((s) => s.event === 'auto-run:verdict-requested').length === 1);
-    expect(ctl.resolveVerdict('continue', '再看看').ok).toBe(true);
-
-    // 第二轮终审弹窗:必须停在 awaiting-verdict 等人——旧实现 internals.verdict
-    // 残留 'continue',wait 立即命中、旧答案被自动消费(不再弹窗等人)。
-    await waitFor(() => fake.sent.filter((s) => s.event === 'auto-run:verdict-requested').length === 2);
-    await new Promise((r) => setTimeout(r, 120));
-    expect(record.status).toBe('awaiting-verdict');
-    expect(fake.invokeCount).toBe(2); // 没有自动续跑第三轮
-    expect(ctl.__getVerdict().verdict).toBeNull(); // 旧 verdict 已按轮重置
-
-    // 同轮幂等闸不变:第一次作答后、runner 消费前的重复作答仍拒(两个同步
-    // 调用在同一 tick,runner 尚未来得及消费)。
-    expect(ctl.resolveVerdict('pass').ok).toBe(true);
-    expect(ctl.resolveVerdict('fail').ok).toBe(false);
-
-    await done;
-    await loop;
-    expect(record.status).toBe('completed');
-  });
-});
-
-describe('1.6.0 修复②:决策超时语义(未答无限等 / 已答读 resolved 记录)', () => {
-  it('人未答:超过 decisionWaitTimeoutMs 也保持 paused,不静默续跑', async () => {
-    const record = makeRecord();
-    const fake = makeFakeDeps({ stallTurns: 1, decisionWaitTimeoutMs: 60 });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone();
-    await waitFor(() => fake.sent.some((s) =>
-      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'stall'));
-
-    // 超时上限的 4 倍时间仍未答——旧实现此时已静默续跑(running + 第 3 轮)。
-    await new Promise((r) => setTimeout(r, 250));
-    expect(record.status).toBe('paused');
-    expect(fake.invokeCount).toBe(2);
-
-    // 人作答 + marker 落地 → 恢复推进。
-    const pending = pendingDecisions().filter((d) => d.sessionId === record.loopSessionId);
-    respondDecision(pending[0].decisionId, '继续跑');
-    fake.messages.push({
-      role: 'user',
-      content: '【人的决定】选择: 继续跑',
-      timestamp: Date.now(),
-      decision: { decisionId: pending[0].decisionId, choice: '继续跑' },
-    } as unknown as AgentMessage);
-    // 恢复推进的证明 = 起了第 3 轮 invoke(stallTurns=1 时第 3 轮会立刻再
-    // 空转暂停,turn-completed 不会落地,不能等它)。
-    await waitFor(() => fake.invokeCount >= 3);
-
-    ctl.requestStop();
-    await done;
-    await loop;
-    expect(record.status).toBe('stopped');
-  });
-
-  it('人已答但 marker 未落地:超时后从 resolved 记录读 choice(不依赖 marker)', async () => {
-    const record = makeRecord();
-    const fake = makeFakeDeps({ stallTurns: 1, decisionWaitTimeoutMs: 60 });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone();
-    await waitFor(() => fake.sent.some((s) =>
-      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'stall'));
-    const pending = pendingDecisions().filter((d) => d.sessionId === record.loopSessionId);
-    expect(pending).toHaveLength(1);
-    respondDecision(pending[0].decisionId, '终止运行');
-    // 不推 marker(模拟注入 turn 卡死)——旧实现:超时后 marker 缺失一律按
-    // 「继续跑」(已答被丢弃,done 不会到来);新实现:从 resolved 记录读
-    // 「终止运行」→ stopped 收官。
-    await done;
-    await loop;
-    expect(record.status).toBe('stopped');
-    expect(dataOf(fake.sent, 'auto-run:completed')).toMatchObject({ id: 'run-1', outcome: 'stopped' });
-  });
-});
-
-describe('1.6.0 修复③:重启愈合保留 awaiting-verdict 孤儿终审通道', () => {
-  it('awaiting-verdict 不被标 stopped,愈合后仍可孤儿结算', async () => {
-    const orphan = makeRecord({ id: 'run-av', status: 'awaiting-verdict' });
-    orphan.verdictPackage = buildVerdictPackage({
-      id: orphan.id,
-      criteria: orphan.criteria,
-      declaration: { statement: 's', evidenceRefs: [] },
-      resolveEvent: () => null,
-    });
-    const running = makeRecord({ id: 'run-run', status: 'running' });
-    await saveAutoRunRecord(orphan, { dir });
-    await saveAutoRunRecord(running, { dir });
-
-    const healed = await recoverOrphanedAutoRuns({ dir });
-    expect(healed).toBe(1); // 只愈合 running
-    expect(loadAutoRunRecord('run-run', { dir })!.status).toBe('stopped');
-    expect(loadAutoRunRecord('run-av', { dir })!.status).toBe('awaiting-verdict');
-
-    // 孤儿终审通道仍可达(resolveOrphanedVerdict 按盘上记录结算)。
-    const r = await resolveAutoRunVerdict('run-av', 'pass', undefined, { dir });
-    expect(r.success).toBe(true);
-    expect(loadAutoRunRecord('run-av', { dir })!.status).toBe('completed');
-  });
-});
-
-describe('1.6.0 修复④:resolveVerdict 已停拒绝(Esc 竞态不静默丢弃)', () => {
-  it('requestStop 后 resolveVerdict 返回明确错误,作答不写入', () => {
-    const record = makeRecord({ status: 'awaiting-verdict' });
-    const ctl = createAutoRunController(record);
-    ctl.requestStop();
-    const r = ctl.resolveVerdict('pass');
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toContain('已终止');
-    expect(ctl.__getVerdict().verdict).toBeNull();
-  });
-});
-
-describe('1.6.0 修复⑤:waitForWake waiters 不泄漏', () => {
-  it('长暂停期间 race 落败的 waiter 被摘除(挂起 ≤1)', async () => {
-    const record = makeRecord();
-    const fake = makeFakeDeps({ stallTurns: 1 });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone();
-    await waitFor(() => fake.sent.some((s) =>
-      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'stall'));
-
-    // ~15 个 poll 周期(pollMs=10)——旧实现每周期泄漏一个 waiter(≈15 挂起)。
-    await new Promise((r) => setTimeout(r, 150));
-    expect(ctl.__waiterCount()).toBeLessThanOrEqual(1);
-
-    // 收尾:作答继续 → Esc。
-    const pending = pendingDecisions().filter((d) => d.sessionId === record.loopSessionId);
-    respondDecision(pending[0].decisionId, '继续跑');
-    fake.messages.push({
-      role: 'user',
-      content: '【人的决定】选择: 继续跑',
-      timestamp: Date.now(),
-      decision: { decisionId: pending[0].decisionId, choice: '继续跑' },
-    } as unknown as AgentMessage);
-    ctl.requestStop();
-    await done;
-    await loop;
-  });
-});
-
-describe('1.6.0 修复⑥⑩:startAutoRun 注册表(终态摘除 + 单实例闸路径口径)', () => {
+describe('startAutoRun(单实例闸 + 注册表)', () => {
   let dataDir: string;
   let prevDataDir: string | undefined;
   beforeEach(() => {
@@ -1108,589 +755,56 @@ describe('1.6.0 修复⑥⑩:startAutoRun 注册表(终态摘除 + 单实例闸�
 
   const startInput = { name: 't', envKey: 'pwn-vm', goal: 'g', criteria: ['c'], budget: { kind: 'turns', limit: 50 } };
 
-  it('⑥runner 终态即从 activeRuns 摘除(stop 走「不存在」语义)', async () => {
+  it('同 workspace → 拒绝;终态摘除后 stop 走「不存在」语义', async () => {
     const fake = makeFakeDeps();
     const started = await startAutoRun(startInput, '/ws', fake.deps);
     expect(started.success).toBe(true);
     if (!started.success) return;
     const id = started.data.id;
     await waitFor(() => fake.invokeCount >= 1);
+    const second = await startAutoRun(startInput, '/ws/', makeFakeDeps().deps);
+    expect(second.success).toBe(false);
+    if (!second.success) expect(second.error).toContain('已有运行中的');
     expect(stopAutoRun(id).success).toBe(true);
-    // 旧行为:终态记录永挂内存,stop 报「已终态」;新行为:摘除后报「不存在」。
+    // 终态即从 activeRuns 摘除——stop 报「不存在」。
     await waitFor(() => {
       const r = stopAutoRun(id);
       return !r.success && r.error.includes('不存在');
     });
   });
 
-  it('⑩单实例闸 workspace 比较走 workspacePathsEqual(尾斜杠等价)', async () => {
-    const fake = makeFakeDeps();
-    const first = await startAutoRun(startInput, '/ws', fake.deps);
-    expect(first.success).toBe(true);
-    if (!first.success) return;
-    // 旧实现 === 比较:'/ws/' ≠ '/ws',闸被绕过、第二个 run 起得来。
-    const second = await startAutoRun(startInput, '/ws/', makeFakeDeps().deps);
-    expect(second.success).toBe(false);
-    if (!second.success) expect(second.error).toContain('已有运行中的');
-    // 收尾:停掉第一个 run 并等注册表摘除(防泄漏进后续用例)。
-    stopAutoRun(first.data.id);
-    await waitFor(() => {
-      const r = stopAutoRun(first.data.id);
-      return !r.success && r.error.includes('不存在');
-    });
-  });
-
-  it('1.7.0 envKey 互斥闸:异 workspace 同 envKey → 拒绝(占用文案);异 envKey → 放行', async () => {
+  it('envKey 互斥闸:异 workspace 同 envKey → 拒绝;异 envKey → 放行', async () => {
     const fake = makeFakeDeps();
     const first = await startAutoRun(startInput, '/ws-a', fake.deps);
     expect(first.success).toBe(true);
     if (!first.success) return;
-    // 同 envKey、异 workspace:旧闸(仅 workspace)会放行,新闸必须拒绝。
     const second = await startAutoRun(startInput, '/ws-b', makeFakeDeps().deps);
     expect(second.success).toBe(false);
     if (!second.success) {
       expect(second.error).toContain('已被运行中的 auto run');
       expect(second.error).toContain('pwn-vm');
     }
-    // 收尾。
     stopAutoRun(first.data.id);
     await waitFor(() => {
       const r = stopAutoRun(first.data.id);
       return !r.success && r.error.includes('不存在');
     });
-  });
-});
-
-describe('1.6.0 修复⑦:run 终态清理本线 pending 决策与声明', () => {
-  it('Esc 后本线 pending/声明清空,其他线不动', async () => {
-    const record = makeRecord();
-    const fake = makeFakeDeps({
-      invoke: async () => {
-        fake.invokeCount += 1;
-        if (fake.invokeCount === 1) {
-          // 模型提请决策 → runner 进 paused(decision) 等人。
-          requestDecision(
-            { sessionId: record.loopSessionId, question: '方向?', options: ['a', 'b'] },
-            fake.deps.broadcast,
-          );
-        }
-        return { text: 'x', loopSessionId: record.loopSessionId };
-      },
-    });
-    // 其他线的待答决策/声明——不应被本 run 终态清理误伤。
-    requestDecision({ sessionId: 'other-line', question: 'q', options: ['a', 'b'] }, fake.deps.broadcast);
-    declareCompletion('other-line', '其他线声明', []);
-
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone();
-    await waitFor(() => fake.sent.some((s) =>
-      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'decision'));
-    // 模拟终态前未被 runner 消费的晚到声明(同线)。
-    declareCompletion(record.loopSessionId, '晚到的声明', []);
-    ctl.requestStop();
-    await done;
-    await loop;
-
-    expect(pendingDecisions().filter((d) => d.sessionId === record.loopSessionId)).toHaveLength(0);
-    expect(pendingDecisions().some((d) => d.sessionId === 'other-line')).toBe(true);
-    expect(takeCompletionDeclaration(record.loopSessionId)).toBeNull();
-    expect(takeCompletionDeclaration('other-line')).not.toBeNull();
-  });
-});
-
-describe('1.6.0 修复⑧:time 预算扣除暂停等待墙钟', () => {
-  it('纯函数:pausedMs 从 elapsed 扣除(缺省 0、钳负)', () => {
-    expect(computeBudgetSpent({ kind: 'time', limit: 100 }, { turns: 0, tokens: 0, elapsedMs: 70 * 60_000, pausedMs: 60 * 60_000 })).toBe(10);
-    expect(computeBudgetSpent({ kind: 'time', limit: 100 }, { turns: 0, tokens: 0, elapsedMs: 120_000 })).toBe(2);
-    expect(computeBudgetSpent({ kind: 'time', limit: 100 }, { turns: 0, tokens: 0, elapsedMs: 10, pausedMs: 100 })).toBe(0);
+    // 收尾后可再起。
+    const third = await startAutoRun({ ...startInput, envKey: 'pwn-vm' }, '/ws-b', makeFakeDeps().deps);
+    expect(third.success).toBe(true);
+    if (third.success) stopAutoRun(third.data.id);
   });
 
-  it('runner 集成:预算暂停 60 分钟虚拟墙钟,续命后 spent 不涨', async () => {
-    let nowMs = 0;
-    const record = makeRecord({ budget: { kind: 'time', limit: 10, spent: 0 } });
-    const fake = makeFakeDeps({
-      now: () => nowMs,
-      invoke: async () => {
-        fake.invokeCount += 1;
-        // 第 2 轮开始时把墙钟推到 10 分钟——本轮收尾必触发预算耗尽暂停。
-        if (fake.invokeCount === 2) nowMs = 10 * 60_000;
-        return { text: 'x', loopSessionId: 'ls-1' };
-      },
-    });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone();
-    await waitFor(() => fake.sent.some((s) =>
-      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'budget'));
-
-    nowMs += 60 * 60_000; // 暂停等人 60 分钟(虚拟墙钟)
-    expect(ctl.renewBudget(1000).ok).toBe(true);
-
-    await waitFor(() => fake.sent.some((s) =>
-      s.event === 'auto-run:turn-completed' && (s.data as { turn: number }).turn >= 3));
-    const tc = [...fake.sent].reverse().find((s) => s.event === 'auto-run:turn-completed')!
-      .data as { budget: { spent?: number } };
-    // spent = (70 总墙钟 - 60 暂停) = 10 分钟;旧口径会算成 70。
-    expect(tc.budget.spent).toBe(10);
-    expect(record.pausedMsTotal).toBe(60 * 60_000);
-
-    ctl.requestStop();
-    await done;
-    await loop;
-    expect(record.status).toBe('stopped');
-  });
-});
-
-describe('1.6.0 修复⑨:provider-error 暂停 persist 前更新 budget.spent', () => {
-  it('失败本轮(turn 已 +1)计入暂停快照的 spent', async () => {
-    const record = makeRecord();
-    const fake = makeFakeDeps({
-      invoke: async () => {
-        fake.invokeCount += 1;
-        return { error: '503 Server Overloaded', text: '', loopSessionId: 'ls-1' };
-      },
-    });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone();
-    await waitFor(() => fake.sent.some((s) =>
-      s.event === 'auto-run:paused' && (s.data as { reason: string }).reason === 'provider-error'));
-
-    const snap = fake.saved.find((r) => r.pauseReason === 'provider-error');
-    expect(snap?.turns).toBe(1);
-    expect(snap?.budget.spent).toBe(1); // 旧实现:persist 时 spent 仍是 0(少一轮)
-
-    // 收尾:作答终止 → done。
-    const pending = pendingDecisions().filter((d) => d.sessionId === record.loopSessionId);
-    respondDecision(pending[0].decisionId, '终止运行');
-    fake.messages.push({
-      role: 'user',
-      content: '【人的决定】选择: 终止运行',
-      timestamp: Date.now(),
-      decision: { decisionId: pending[0].decisionId, choice: '终止运行' },
-    } as unknown as AgentMessage);
-    await done;
-    await loop;
-    expect(record.status).toBe('stopped');
-  });
-});
-
-// ===== 1.6.3 #7:docker checkpoint 留现场(环境内 task.md) =====
-
-describe('docker checkpoint task.md(1.6.3 #7)', () => {
-  const dockerEntry = (overrides: Partial<EnvironmentEntry> = {}): EnvironmentEntry => ({
-    id: 'pwn-box',
-    kind: 'docker',
-    container: 'zhishi-pwn-abcd1234',
-    createdAt: '2026-08-26T00:00:00.000Z',
-    ...overrides,
-  });
-
-  /** 从注入 exec 收到的 argv 里取 bash -lc 的命令体,解出 base64 载荷。
-   *  1.6.9 #2：命令体先剥远端超时杀包装（timeout … bash -c "$(echo b64|base64 -d)"）
-   *  再匹配 printf 形态。 */
-  const decodeWrittenContent = (argv: string[]): string => {
-    const cmdIdx = argv.indexOf('-lc');
-    expect(cmdIdx).toBeGreaterThan(-1);
-    const raw = argv[cmdIdx + 1];
-    const unwrapped = /\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d\)/.exec(raw);
-    const body = unwrapped ? Buffer.from(unwrapped[1], 'base64').toString('utf-8') : raw;
-    const m = /^printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \/workspace\/task\.md$/.exec(body);
-    expect(m, `命令形态不符:${body}`).not.toBeNull();
-    return Buffer.from(m![1], 'base64').toString('utf-8');
-  };
-
-  it('buildDockerTaskMd:目标/验收条件/当前状态/关键上下文齐全', () => {
-    const record = makeRecord({
-      status: 'paused',
-      pauseReason: 'budget',
-      turns: 7,
-      budget: { kind: 'turns', limit: 50, spent: 7 },
-      reportDir: '/ws/reports/run-1',
-    });
-    const md = buildDockerTaskMd(record);
-    expect(md).toContain('# task.md');
-    expect(md).toContain('- 任务:demo(run id: run-1)');
-    expect(md).toContain('- 环境:pwn-vm');
-    expect(md).toContain('拿到 flag');
-    expect(md).toContain('1. 输出 flag{…}');
-    expect(md).toContain('2. PoC 稳定复现 3 次');
-    expect(md).toContain('- 运行状态:paused(暂停原因:budget)');
-    expect(md).toContain('- 已完成轮次:7');
-    expect(md).toContain('- 预算:turns 已耗 7 / 上限 50');
-    expect(md).toContain('- loop 轨迹线:ls-1');
-    expect(md).toContain('- 宿主工作区:/ws');
-    expect(md).toContain('- 报告:/ws/reports/run-1');
-    expect(md.endsWith('\n')).toBe(true);
-  });
-
-  it('buildDockerTaskMd:可缺省字段缺席时不留空行项', () => {
-    const md = buildDockerTaskMd(makeRecord({ workspace: undefined, reportDir: undefined, turns: undefined }));
-    expect(md).not.toContain('宿主工作区');
-    expect(md).not.toContain('报告:');
-    expect(md).toContain('- 已完成轮次:0');
-  });
-
-  it('buildDockerTaskMdWriteCommand:base64 往返无损(引号/换行/UTF-8)', () => {
-    const content = '含 \'单引号\' 与 "双引号"\n多行\n中文内容 flag{uäg}';
-    const cmd = buildDockerTaskMdWriteCommand(content);
-    const m = /^printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d > \/workspace\/task\.md$/.exec(cmd);
-    expect(m).not.toBeNull();
-    expect(Buffer.from(m![1], 'base64').toString('utf-8')).toBe(content);
-  });
-
-  it('容器在跑:docker exec 写入 /workspace/task.md → ok', async () => {
-    const calls: string[][] = [];
-    const exec: EnvExec = async (argv) => {
-      calls.push(argv);
-      return { exitCode: 0, stdout: '', stderr: '' } satisfies EnvExecProcessResult;
-    };
-    const record = makeRecord();
-    const r = await writeDockerTaskMdCheckpoint(dockerEntry(), record, { exec });
-    expect(r).toEqual({ ok: true });
-    expect(calls).toHaveLength(1);
-    // docker exec 通道(buildDockerExecArgv 形态):docker exec <container> bash -lc <cmd>
-    expect(calls[0].slice(0, 3)).toEqual(['docker', 'exec', 'zhishi-pwn-abcd1234']);
-    expect(decodeWrittenContent(calls[0])).toBe(buildDockerTaskMd(record));
-  });
-
-  it('容器已停止(exec 失败)+ 条目有 workspace:降级写宿主 bind-mount 源目录,告警不丢现场', async () => {
-    const exec: EnvExec = async () => ({
-      exitCode: 1, stdout: '', stderr: 'Error response from daemon: Container is not running',
-    });
-    const hostWrites: Array<{ path: string; content: string }> = [];
-    const warnings: string[] = [];
-    const record = makeRecord();
-    const r = await writeDockerTaskMdCheckpoint(
-      dockerEntry({ workspace: '/host/ws' }),
-      record,
-      { exec, hostWrite: (path, content) => { hostWrites.push({ path, content }); }, log: (m) => warnings.push(m) },
-    );
-    expect(r).toEqual({ ok: true });
-    expect(hostWrites).toHaveLength(1);
-    expect(hostWrites[0].path).toBe(join('/host/ws', 'task.md'));
-    expect(hostWrites[0].content).toBe(buildDockerTaskMd(record));
-    expect(warnings.some((w) => w.includes('降级写宿主侧'))).toBe(true);
-  });
-
-  it('容器内非零退出码(写失败)同样走降级', async () => {
-    const exec: EnvExec = async () => ({ exitCode: 1, stdout: '', stderr: 'permission denied' });
-    const hostWrites: string[] = [];
-    const r = await writeDockerTaskMdCheckpoint(
-      dockerEntry({ workspace: '/host/ws' }),
-      makeRecord(),
-      { exec, hostWrite: (path) => { hostWrites.push(path); }, log: () => {} },
-    );
-    expect(r).toEqual({ ok: true });
-    expect(hostWrites).toEqual([join('/host/ws', 'task.md')]);
-  });
-
-  it('容器写不进且条目无 workspace 登记:ok:false 可读错误(run 状态不受影响由调用方口径保证)', async () => {
-    const exec: EnvExec = async () => ({ exitCode: 1, stdout: '', stderr: 'not running' });
-    const r = await writeDockerTaskMdCheckpoint(dockerEntry(), makeRecord(), { exec, log: () => {} });
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.error).toContain('无法降级');
-      expect(r.error).toContain('not running');
+  it('start 载荷 stallPrompt 进 record;愈合缓存按 workspace 一次生效', async () => {
+    const fake = makeFakeDeps();
+    const started = await startAutoRun({ ...startInput, stallPrompt: 'custom' }, '/ws-heal', fake.deps);
+    expect(started.success).toBe(true);
+    if (!started.success) {
+      return;
     }
-  });
-
-  it('容器写不进且宿主降级写也失败:ok:false,两侧错误都在', async () => {
-    const exec: EnvExec = async () => ({ exitCode: 1, stdout: '', stderr: 'not running' });
-    const r = await writeDockerTaskMdCheckpoint(
-      dockerEntry({ workspace: '/host/ws' }),
-      makeRecord(),
-      {
-        exec,
-        hostWrite: () => { throw new Error('EROFS: read-only file system'); },
-        log: () => {},
-      },
-    );
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.error).toContain('not running');
-      expect(r.error).toContain('EROFS');
-    }
-  });
-
-  it('缺 container 定位锚的 docker 条目:execInEnvironment 解析失败也走降级/报错,不抛', async () => {
-    const hostWrites: string[] = [];
-    const r = await writeDockerTaskMdCheckpoint(
-      dockerEntry({ container: undefined, workspace: '/host/ws' }),
-      makeRecord(),
-      { hostWrite: (path) => { hostWrites.push(path); }, log: () => {} },
-    );
-    expect(r).toEqual({ ok: true });
-    expect(hostWrites).toEqual([join('/host/ws', 'task.md')]);
+    expect(started.data.record.stallPrompt).toBe('custom');
+    expect(started.data.record.status).toBe('running');
+    await waitFor(() => fake.invokeCount >= 1);
+    stopAutoRun(started.data.id);
   });
 });
-
-// ===== 1.7.1 envKey 显式锚定（CLI auto-run 链路洞实机实证） =====
-
-describe('runAutoRunLoop(1.7.1:invoke 带 envKey 显式环境锚)', () => {
-  it('runner 每轮 invoke 传 record.envKey——headless 线不依赖工作区交互选择', async () => {
-    const record = makeRecord({ policy: policyOf('on_declare:\n  report: false') });
-    const seenEnvKeys: Array<string | undefined> = [];
-    const fake = makeFakeDeps({
-      invoke: async (_input, options) => {
-        fake.invokeCount += 1;
-        seenEnvKeys.push(options.envKey);
-        if (fake.invokeCount === 1) {
-          declareCompletion(record.loopSessionId, '达成', []);
-        }
-        return { text: 'x', loopSessionId: record.loopSessionId };
-      },
-    });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    await ctl.waitUntilDone();
-    await loop;
-    expect(seenEnvKeys.length).toBeGreaterThan(0);
-    expect(seenEnvKeys.every((k) => k === 'pwn-vm')).toBe(true);
-    expect(record.status).toBe('completed');
-  });
-});
-
-// ===== 1.7.0 策略（design: 1.7.0-policy-design.md） =====
-
-function policyOf(yaml: string): AutoRunPolicy {
-  const r = parseAutoRunPolicy(yaml);
-  if (!r.ok) throw new Error(r.error);
-  return r.policy;
-}
-
-describe('validateAutoRunStart(1.7.0 策略)', () => {
-  const findEnv = (envKey: string) => (envKey === 'pwn-vm' ? { id: 'pwn-vm' } : undefined);
-  const base = { name: 'demo', envKey: 'pwn-vm', goal: 'g', criteria: ['a'], budget: { kind: 'turns', limit: 1 } };
-
-  it('合法 YAML → record.policy;非法 → 拒绝启动;缺省 = 无策略(交互模式)', () => {
-    const okR = validateAutoRunStart({ ...base, policy: 'on_stall:\n  tolerance: 2' }, { findEnv });
-    expect(okR.ok).toBe(true);
-    if (okR.ok) {
-      expect(okR.record.policy?.onStall.tolerance).toBe(2);
-      expect(okR.record.policy?.onDecision.action).toBe('stop'); // 缺节走缺省
-    }
-    const badR = validateAutoRunStart({ ...base, policy: 'on_stall:\n  action: ask' }, { findEnv });
-    expect(badR.ok).toBe(false);
-    if (!badR.ok) expect(badR.error).toMatch(/策略非法/);
-    const absent = validateAutoRunStart(base, { findEnv });
-    expect(absent.ok).toBe(true);
-    if (absent.ok) expect(absent.record.policy).toBeUndefined();
-  });
-});
-
-describe('runAutoRunLoop(1.7.0 策略:declare → 自动出报告 → completed)', () => {
-  it('policy on_declare.report=true:无 verdict-requested、无等待,completed + reportDir', async () => {
-    const record = makeRecord({ policy: policyOf('on_declare:\n  report: true') });
-    const fake = makeFakeDeps({
-      invoke: async () => {
-        declareCompletion(record.loopSessionId, '全部达成', [1]);
-        return { text: 'done', loopSessionId: record.loopSessionId };
-      },
-      exportReport: async () => ({ ok: true, reportDir: '/out/reports/auto-1' }),
-    });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    await ctl.waitUntilDone();
-    await loop;
-    expect(record.status).toBe('completed');
-    expect(record.reportDir).toBe('/out/reports/auto-1');
-    expect(record.declaration?.statement).toBe('全部达成');
-    expect(record.verdictPackage).toBeUndefined(); // 无审可答,不建验收包
-    expect(dataOf(fake.sent, 'auto-run:verdict-requested')).toBeUndefined();
-    expect(dataOf(fake.sent, 'auto-run:completed')).toMatchObject({ id: 'run-1', outcome: 'passed' });
-  });
-
-  it('policy on_declare.report=false:不出报告,completed 无 reportDir', async () => {
-    const record = makeRecord({ policy: policyOf('on_declare:\n  report: false') });
-    let exported = 0;
-    const fake = makeFakeDeps({
-      invoke: async () => {
-        declareCompletion(record.loopSessionId, '达成', []);
-        return { text: 'done', loopSessionId: record.loopSessionId };
-      },
-      exportReport: async () => { exported += 1; return { ok: true, reportDir: '/x' }; },
-    });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    await ctl.waitUntilDone();
-    await loop;
-    expect(record.status).toBe('completed');
-    expect(record.reportDir).toBeUndefined();
-    expect(exported).toBe(0);
-  });
-});
-
-describe('runAutoRunLoop(1.7.0 策略:decision 分支)', () => {
-  it('action=continue:原则注入 loop 线,无暂停继续推进', async () => {
-    const record = makeRecord({
-      policy: policyOf('on_decision:\n  action: continue\n  principles: "优先可复现"'),
-    });
-    const fake = makeFakeDeps({
-      invoke: async () => {
-        fake.invokeCount += 1;
-        if (fake.invokeCount === 1) {
-          requestDecision({ sessionId: record.loopSessionId, question: '走 A 还是 B?', options: ['A', 'B'], context: '分歧' });
-        }
-        await new Promise((r) => setTimeout(r, 1)); // 让轮次让出事件循环,waitFor 轮询可交错
-        return { text: `输出 ${fake.invokeCount}`, loopSessionId: record.loopSessionId };
-      },
-    });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone(); // 先注册:waitUntilDone 只在 __finish 排空一次
-    await waitFor(() => fake.appended.some((t) => t.includes('策略预置原则')));
-    expect(dataOf(fake.sent, 'auto-run:paused')).toBeUndefined();
-    await waitFor(() => fake.invokeCount >= 3);
-    // 一次性处置:提请只答一次,后续轮不再重复注入原则。
-    expect(fake.appended.filter((t) => t.includes('策略预置原则'))).toHaveLength(1);
-    ctl.requestStop();
-    await done;
-    await loop;
-    expect(record.status).toBe('stopped'); // Esc 收尾,非策略停止
-  });
-
-  it('action=stop:方向分歧即停', async () => {
-    const record = makeRecord({ policy: policyOf('on_decision:\n  action: stop') });
-    const fake = makeFakeDeps({
-      invoke: async () => {
-        fake.invokeCount += 1;
-        requestDecision({ sessionId: record.loopSessionId, question: 'q?', options: ['A', 'B'], context: 'c' });
-        return { text: 'x', loopSessionId: record.loopSessionId };
-      },
-    });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    await ctl.waitUntilDone();
-    await loop;
-    expect(record.status).toBe('stopped');
-    expect(record.pauseReason).toBe('decision');
-    expect(fake.invokeCount).toBe(1);
-  });
-});
-
-describe('runAutoRunLoop(1.7.0 策略:stall / failure 分支)', () => {
-  it('stall tolerance 生效且 action=stop:空转即停,无 paused 事件', async () => {
-    const record = makeRecord({ policy: policyOf('on_stall:\n  tolerance: 2\n  action: stop') });
-    const fake = makeFakeDeps();
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    await ctl.waitUntilDone();
-    await loop;
-    expect(record.status).toBe('stopped');
-    expect(record.pauseReason).toBe('stall');
-    expect(dataOf(fake.sent, 'auto-run:paused')).toBeUndefined();
-    expect(fake.invokeCount).toBe(3); // 首轮无基线不判,第 2、3 轮连空转 → 停
-  });
-
-  it('stall action=continue:宽限继续(清 streak),Esc 收尾', async () => {
-    const record = makeRecord({
-      budget: { kind: 'turns', limit: 100_000, spent: 0 }, // 预算永不耗尽,唯一出路是 Esc
-      policy: policyOf('on_stall:\n  tolerance: 2\n  action: continue'),
-    });
-    const fake = makeFakeDeps({
-      invoke: async () => {
-        fake.invokeCount += 1;
-        await new Promise((r) => setTimeout(r, 1)); // 轮次让出事件循环,保证 waitFor/requestStop 可交错
-        return { text: 'x', loopSessionId: record.loopSessionId };
-      },
-    });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    const done = ctl.waitUntilDone(); // 先注册(waitUntilDone 只在 __finish 排空一次)
-    await waitFor(() => fake.invokeCount >= 5);
-    expect(record.status).toBe('running');
-    expect(dataOf(fake.sent, 'auto-run:paused')).toBeUndefined();
-    ctl.requestStop();
-    await done;
-    await loop;
-    expect(record.status).toBe('stopped');
-  });
-
-  it('failure streak 生效且 action=stop:连败即停', async () => {
-    const record = makeRecord({
-      policy: policyOf('on_failure:\n  streak: 3\n  action: stop'),
-    });
-    const fake = makeFakeDeps();
-    fake.messages.push(msgToolResult({ toolName: 'env_exec', isError: true }));
-    fake.messages.push(msgToolResult({ toolName: 'env_exec', isError: true }));
-    fake.messages.push(msgToolResult({ toolName: 'env_exec', isError: true }));
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    await ctl.waitUntilDone();
-    await loop;
-    expect(record.status).toBe('stopped');
-    expect(record.pauseReason).toBe('repeated-failures');
-    expect(fake.invokeCount).toBe(1);
-  });
-});
-
-describe('runAutoRunLoop(1.7.0 策略:budget 分支)', () => {
-  it('action=renew:按序列自动续命,序列耗尽即停', async () => {
-    const record = makeRecord({
-      budget: { kind: 'turns', limit: 1, spent: 0 },
-      policy: policyOf('on_budget:\n  action: renew\n  renew_limits: [3]'),
-    });
-    const fake = makeFakeDeps();
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    await ctl.waitUntilDone();
-    await loop;
-    expect(record.budget.limit).toBe(3); // 续到 3,耗尽序列后停
-    expect(record.status).toBe('stopped');
-    expect(record.pauseReason).toBe('budget');
-    expect(fake.invokeCount).toBe(3); // 轮 1 耗尽→续 3;轮 2、3 跑;轮 3 耗尽序列 → 停
-    expect(dataOf(fake.sent, 'auto-run:paused')).toBeUndefined();
-  });
-
-  it('action=stop:耗尽即停', async () => {
-    const record = makeRecord({
-      budget: { kind: 'turns', limit: 1, spent: 0 },
-      policy: policyOf('on_budget:\n  action: stop'),
-    });
-    const fake = makeFakeDeps();
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    await ctl.waitUntilDone();
-    await loop;
-    expect(record.status).toBe('stopped');
-    expect(record.pauseReason).toBe('budget');
-    expect(fake.invokeCount).toBe(1);
-  });
-});
-
-describe('runAutoRunLoop(1.7.0 策略:provider-error 保守停止)', () => {
-  it('invoke 报错:不提请,直接 stopped', async () => {
-    const record = makeRecord({ policy: policyOf('on_declare:\n  report: true') });
-    const fake = makeFakeDeps({
-      invoke: async () => { fake.invokeCount += 1; return { error: '503', text: '', loopSessionId: record.loopSessionId }; },
-    });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    await ctl.waitUntilDone();
-    await loop;
-    expect(record.status).toBe('stopped');
-    expect(record.pauseReason).toBe('provider-error');
-    expect(dataOf(fake.sent, 'auto-run:paused')).toBeUndefined();
-    expect(fake.invokeCount).toBe(1);
-  });
-
-  it('1.7.4:失败中断轮也计入 budget.spent(策略/交互同口径,盘上快照不留旧值)', async () => {
-    const record = makeRecord({ policy: policyOf('on_declare:\n  report: true') });
-    const fake = makeFakeDeps({
-      invoke: async () => { fake.invokeCount += 1; return { error: '503', text: '', loopSessionId: record.loopSessionId }; },
-    });
-    const ctl = createAutoRunController(record);
-    const loop = runAutoRunLoop(record, ctl, fake.deps);
-    await ctl.waitUntilDone();
-    await loop;
-    expect(record.status).toBe('stopped');
-    // 修复前:策略分支直接 finishStoppedByPolicy,spent 恒 0(turns=1 但显示「预算 0 / N 轮」)。
-    expect(record.turns).toBe(1);
-    expect(record.budget.spent).toBe(1);
-    const last = fake.saved[fake.saved.length - 1];
-    expect(last?.budget.spent).toBe(1);
-  });
-});
-

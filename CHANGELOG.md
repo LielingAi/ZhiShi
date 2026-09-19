@@ -18,6 +18,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.7] - 2026-09-19
+
+> **auto 重做——三输入四停点**（设计 `docs/design/auto-redesign.md`）。auto run == auto loop 统一语义：auto 与 GUI 交互轨迹同构——设定目标 + 1-N 条验收条件（OR，任一满足即达成）+ 强制超时；未达成、未到超时，就一直继续，**模型没有自我退出权**（说"不可行"只是轨迹内容）。1.4.1 的 5 暂停点、1.7.0 的策略文件、verdict 终审、budget 续命、开局快照/超时 checkpoint/自动报告全部删除；declare 改 OR 语义 + 证据存在性预检；空转检测降为推进话术注入（K=3）；provider/API 故障连击 N=5 是唯一非人退出。对比实验实证（同任务 GUI 交互 vs auto）：旧 auto 因认知残缺 + 兜底早退，"GUI 能成、auto 不成"。
+
+### 新增
+- **四停点循环 runner**（`loop/auto-run.ts` 1996→948 行）：停点 = 条件命中（harness 证据确认）/ 强制超时 / 人 Esc / API 连击 5 次；轮间不停不等、无暂停点
+- **declare OR 语义 + 证据预检**：声明携带「声称达成的条件 + 证据引用」，harness 逐条对照启动锁定条件做证据存在性预检（research_events / 档案实体双源查证），未命中回注「条件未满足」继续跑
+- **空转推进话术**（CLI `--stall-prompt` / GUI 表单可选字段）：研究员自定义 > 内置默认（区分「死路」与「墙」，下不可行结论前列可拆方案）> `off` 关闭
+- **auto 路径认知对齐**：auto-run 场景同权注入安全能力清单/域判定/研究记忆反哺（此前 auto 模型缺 caps/domain/研究记忆——"GUI 能成、auto 不成"的根因，`loop/chat-engine.ts` 场景装配）
+- **结束交付物约定**（设计稿 §4b，零新机制）：轨迹 jsonl + research_events + 研究档案 + run 记录，无报告文件
+
+### 修复
+- **turnTimeout 10min 缺省杀研究回合**：`DEFAULT_TURN_TIMEOUT_MS` 与 `AUTORUN_DEFAULTS` 同步拉大到 24h（纯 liveness 守卫——只防真挂死，不是停 run 条件）
+- **AUTO_RUN 通道文案**：删「暂停点/验收点介入」，补歧义自主决策 + 假设记 Q# 档案纪律
+
+### 移除
+- 策略文件五节 schema（`src/shared/auto-run-policy.ts`、`examples/auto-run/*.yaml`、`docs/auto-run-policy.md` 转删除存根）
+- 5 暂停点（stall / repeated-failures / budget 提请 / decision 暂停 / verdict 终审）与 budget 续命、开局快照、超时 checkpoint、自动报告导出
+- GUI verdict 终审弹窗与加预算 UI；CLI `auto-run verdict/budget`、`--policy-file`
+- sse 事件 `auto-run:paused/resumed/budget-warning/verdict-requested`（终态统一 `auto-run:completed{outcome:passed|stopped|exited}`）
+
 ## [1.7.6] - 2026-09-15
 
 > **auto-run 研究批跑修复**——CVE 批跑实机驱动：单轮 turn 超时开放配置（研究型长回合被 600s 缺省掐死）+ 研究事件归属到 loop 线（报告导出/空转检测按线过滤，同工作区多 run 不再互染）。

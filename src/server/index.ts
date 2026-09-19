@@ -287,7 +287,7 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'environment/push') return await api.handleEnvironmentPush(payload as Parameters<typeof api.handleEnvironmentPush>[0]);
   // 1.2.0 研究交付——一键出报告（组装 → 敏感扫描 → 一次批准 → 回收 → 填肉 → 落盘）
   if (route === 'report/export') return await api.handleReportExport(payload as Parameters<typeof api.handleReportExport>[0]);
-  // 1.4.1 auto loop agent（design auto-loop-design.md；runner 在 loop/auto-run.ts）
+  // 1.4.1 / 1.7.7 auto loop agent（design docs/design/auto-redesign.md；runner 在 loop/auto-run.ts）
   if (route === 'auto-run/start') return await api.handleAutoRunStart(payload as Record<string, unknown>);
   if (route === 'auto-run/stop') return api.handleAutoRunStop(payload as Parameters<typeof api.handleAutoRunStop>[0]);
   // 1.6.8 M2 战役端点（list/stop/resume——设计稿 §6 观察面）
@@ -299,8 +299,6 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'claim/forget') return await api.handleClaimForget(payload as Parameters<typeof api.handleClaimForget>[0]);
   // 1.6.11 会话线任务形态读/设（首条消息前即可设——战役入口语义）
   if (route === 'session/mission') return api.handleSessionMission(payload as Parameters<typeof api.handleSessionMission>[0]);
-  if (route === 'auto-run/budget') return api.handleAutoRunBudget(payload as Parameters<typeof api.handleAutoRunBudget>[0]);
-  if (route === 'auto-run/verdict') return api.handleAutoRunVerdict(payload as Parameters<typeof api.handleAutoRunVerdict>[0]);
   if (route === 'auto-run/list') return await api.handleAutoRunList(payload as Parameters<typeof api.handleAutoRunList>[0]);
   // 1.6.3 #4：auto-run 记录清理（终态连盘删除；活跃拒绝）
   if (route === 'auto-run/clear') return await api.handleAutoRunClear(payload as Parameters<typeof api.handleAutoRunClear>[0]);

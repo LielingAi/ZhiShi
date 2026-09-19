@@ -34,7 +34,6 @@ import { isSidecarPortOverride, parseArgs } from './cli-args';
 import { buildExpertDoc, expertEditRoundTrip, parseExpertDoc } from './expert-edit';
 import { importExpertEntries, parseExpertImport } from './expert-import';
 import { EXPERT_ENTRY_KINDS, EXPERT_PROVENANCES, validateEntry, type ValidateResult } from '../shared/expert-validate';
-import { DEFAULT_AUTO_RUN_POLICY_YAML } from '../shared/auto-run-policy';
 // ---------------------------------------------------------------------------
 // Port discovery
 // ---------------------------------------------------------------------------
@@ -210,15 +209,12 @@ zhishi term open --cwd /path/to/proj --rows 40 --cols 120 [--cmd "<命令>"] [--
   zhishi term close <terminalId>
 zhishi auto-run start --name <任务名> --goal "目标" --env-key <已登记环境> \
       --criteria "验收条件1" --criteria "验收条件2" \
-      --budget-kind turns --budget-limit 30 [--policy-file auto-run.policy.yaml] [--workspace <路径>]
-    # 1.7.0 策略治理：一条命令拉起无人值守研究循环，全程自主，终态出报告。
-    # --policy-file 缺省 = 内置保守档（全暂停点保守停止、达成自动出报告）。
-    # 策略 schema 见 docs/design/1.7.0-policy-design.md；无 ask——不交互。
-  zhishi auto-run list [--workspace <路径>]     # run 记录（含待审声明/报告路径）
+      --budget-kind turns --budget-limit 30 [--stall-prompt "…|off"] [--workspace <路径>]
+    # 无人值守研究循环:每轮自动继续;任一验收条件达成(declare 附证据,系统预检)
+    # → completed;预算耗尽/超时 → stopped;provider 连击 5 次 → exited。
+    # --stall-prompt 空转推进话术(缺省=内置通用话术;off=关闭,纯继续)。
+  zhishi auto-run list [--workspace <路径>]     # run 记录
   zhishi auto-run stop <id>                    # Esc 语义终止
-  zhishi auto-run budget <id> --limit N        # 预算续命（GUI 交互 run 用）
-  zhishi auto-run verdict <id> --verdict pass|fail|continue [--note "…"]
-    # 验收终审（GUI 交互 run 的补审；策略 run 无终审——读报告即可）
   zhishi auto-run clear [--id <id>] [--workspace <路径>]   # 清终态记录（活跃拒绝）
 zhishi claim list <sessionId>       # 会话记忆快照（治理提取的 fact/decision/dead-end/todo）
   zhishi claim forget <sessionId> <claimId>   # 遗忘单条 Claim（置 archived,审计保留）
@@ -616,8 +612,8 @@ if (!result.success) {
       return;
     }
   }
-  // auto-run（1.7.0）：AI 与人是双读者——start 显眼打印 id + loopSessionId；
-  // list 一行一 run，awaiting-verdict 附声明与验收条件预检（CLI 补审入口）。
+  // auto-run（1.7.7）：AI 与人是双读者——start 显眼打印 id + loopSessionId；
+  // list 一行一 run。
   if (group === 'auto-run') {
     const data = (result.data as Record<string, unknown>) ?? {};
     if (action === 'start') {
@@ -632,15 +628,8 @@ if (!result.success) {
         return;
       }
       for (const r of records) {
-        const verdict = r.verdict as { statement?: string; criteria?: Array<{ text: string; hasEvidence: boolean }> } | undefined;
-        const report = typeof r.reportDir === 'string' && r.reportDir ? `  报告: ${r.reportDir}` : '';
-        console.log(`- ${String(r.status)}  ${String(r.id)}  「${String(r.name)}」  env=${String(r.envKey)}  turns=${String(r.turns ?? 0)}${report}`);
-        if (r.status === 'awaiting-verdict' && verdict) {
-          console.log(`    声明: ${String(verdict.statement ?? '').slice(0, 240)}`);
-          for (const c of verdict.criteria ?? []) {
-            console.log(`    ${c.hasEvidence ? '✓' : '✗'} ${c.text}`);
-          }
-        }
+        const reason = typeof r.pauseReason === 'string' && r.pauseReason ? `  原因: ${r.pauseReason}` : '';
+        console.log(`- ${String(r.status)}  ${String(r.id)}  「${String(r.name)}」  env=${String(r.envKey)}  turns=${String(r.turns ?? 0)}${reason}`);
       }
       return;
     }
@@ -649,7 +638,7 @@ if (!result.success) {
       console.log(`removed: ${removed.length > 0 ? removed.join(', ') : '（无终态记录）'}`);
       return;
     }
-    // stop/budget/verdict → 落到下方通用 ✓ 确认。
+    // stop → 落到下方通用 ✓ 确认。
   }
   // claim（1.7.2 M5：会话记忆快照的人侧入口）
   if (group === 'claim') {
@@ -2359,14 +2348,11 @@ function buildRequestBody(
     }
     return {};
   }
-  // Auto loop（1.7.0 策略治理 + CLI 补口，design: 1.7.0-policy-design.md）。
-  // start 必带策略：--policy-file 原文直传；缺省 = 内置保守档 YAML——两条路
-  // 在服务端走同一条校验链。criteria 是可重复旗标（cli-args），数组直传。
+  // Auto loop（1.7.7 收敛：三输入 + 可选空转话术，无策略文件）。
+  // criteria 是可重复旗标（cli-args），数组直传；--stall-prompt 缺省 = 内置
+  // 通用话术，off = 关闭（纯继续）。
   if (group === 'auto-run') {
     if (action === 'start') {
-      const policy = flags.policyFile !== undefined
-        ? readTextFileFlag('policy-file', String(flags.policyFile))
-        : DEFAULT_AUTO_RUN_POLICY_YAML;
       return {
         name: rest[0] ?? flags.name,
         goal: flags.goal,
@@ -2376,22 +2362,11 @@ function buildRequestBody(
           kind: flags.budgetKind,
           limit: flags.budgetLimit !== undefined ? Number(flags.budgetLimit) : undefined,
         },
-        policy,
+        ...(flags.stallPrompt !== undefined ? { stallPrompt: flags.stallPrompt } : {}),
         workspace: flags.workspace,
       };
     }
     if (action === 'stop') return { id: rest[0] ?? flags.id };
-    if (action === 'budget') {
-      return { id: rest[0] ?? flags.id, limit: flags.limit !== undefined ? Number(flags.limit) : undefined };
-    }
-    if (action === 'verdict') {
-      const verdict = flags.verdict ?? rest[1];
-      if (verdict !== 'pass' && verdict !== 'fail' && verdict !== 'continue') {
-        console.error(`Error: verdict 非法 "${String(verdict ?? '')}"（允许：pass / fail / continue）`);
-        process.exit(1);
-      }
-      return { id: rest[0] ?? flags.id, verdict, note: flags.note };
-    }
     if (action === 'list' || action === 'clear') {
       return { workspace: flags.workspace, id: flags.id };
     }

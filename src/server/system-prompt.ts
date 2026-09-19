@@ -34,10 +34,10 @@ export type InteractionScenario =
   | { type: 'desktop' }
   | { type: 'cron'; taskId: string; intervalMinutes: number; aiCanExit: boolean }
   /**
-   * 1.4.1 — auto loop agent 场景(cron 同族的 headless 通道)。与 cron 的
-   * 差异:循环是 runner 逐轮自动发起的(不是心跳定时唤醒),且研究纪律里有
-   * 「暂停点才提请人」(request_decision)——cron 模板的「不要向用户提问等
-   * 回复」与本设计直接冲突,故独立成族而不是复用 cron 场景对象。
+   * 1.4.1 / 1.7.7 — auto loop agent 场景(cron 同族的 headless 通道)。与 cron
+   * 的差异:循环是 runner 逐轮自动发起的(不是心跳定时唤醒);auto-run 线不
+   * 注册 request_decision——模型没有问询通道,遇歧义自行决策并记档案
+   * (Q# 未决问题),故独立成族而不是复用 cron 场景对象。
    */
   | { type: 'auto-run'; runId: string }
   /**
@@ -87,7 +87,7 @@ const TMPL_CHANNEL_CRON = `<zhishi-interaction-channel>
 </zhishi-interaction-channel>`;
 
 const TMPL_CHANNEL_AUTO_RUN = `<zhishi-interaction-channel>
-本会话由 auto loop 自动驱动(headless,没有实时对话方)——每轮结束系统会自动发起下一轮,不需要你逐轮请求继续;过程与结论记录在会话存档里,研究员事后回看,也会在暂停点/验收点介入。
+本会话由 auto loop 自动驱动(headless,没有实时对话方)——每轮结束系统会自动发起下一轮,不需要你逐轮请求继续;过程与结论记录在会话存档里,研究员事后回看报告与档案。遇到歧义或需要澄清时不要停等提问:自主选择最可能的路径继续推进,把问题与你的假设记入研究档案(Q# 未决问题),供研究员事后核对。
 </zhishi-interaction-channel>`;
 
 const TMPL_CHANNEL_SECURITY = `<zhishi-interaction-channel>
@@ -286,7 +286,7 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
   // L3: security 场景段（安全研究员版 P1 S1 + D1 + D4）——认知内核 + 动态能力
   // 清单 + 代码原生通道 + 研究成败信号教学 + 研究记忆反喂（蒸馏闭环的最后
   // 一环）。全部零注入语义 + 每段硬字符上限（见 system-prompt-security.ts）。
-  if (scenario.type === 'security') {
+  if (scenario.type === 'security' || scenario.type === 'auto-run') {
     const kernelSection = buildSecurityKernelSection();
     if (kernelSection) parts.push(kernelSection);
     const capabilitiesSection = buildSecurityCapabilitiesSection(

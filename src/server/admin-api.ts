@@ -45,16 +45,13 @@ import {
 } from './environment/capability-derive';
 import { provisionEnvironment } from './environment/provision';
 import { requestBoundaryAsk } from './loop/boundary-ask';
-// 1.4.1 auto loop agent(design docs/design/auto-loop-design.md)。
+// 1.4.1 / 1.7.7 auto loop agent(design docs/design/auto-redesign.md)。
 import {
   autoRunFilePath,
   defaultAutoRunsDir,
   listAutoRuns,
-  renewAutoRunBudget,
-  resolveAutoRunVerdict,
   startAutoRun,
   stopAutoRun,
-  verdictRequestOfRecord,
   type AutoRunStatus,
 } from './loop/auto-run';
 import { listCampaignRecords } from './loop/campaign';
@@ -774,31 +771,25 @@ Options for 'log':
 Options for 'list':
   --task-kind / --outcome   Filter (same enums as log)
   --limit                   Max rows (default 50)`,
-'auto-run': `zhishi auto-run — Auto loop agent (无人值守研究循环，1.7.0 策略治理)
+'auto-run': `zhishi auto-run — Auto loop agent (无人值守研究循环，1.7.7)
 Commands:
-  start      Launch a run (policy-driven, fully autonomous)
+  start      Launch a run (三输入 + 可选空转话术，全程自主)
   list       List run records (time desc; optional --workspace filter)
   stop <id>  Esc 语义终止
-  budget <id> --limit N      预算续命（GUI 交互 run）
-  verdict <id> --verdict pass|fail|continue [--note "..."]  验收终审（GUI 交互 run 补审）
   clear [--id <id>] [--workspace <路径>]  清终态记录（活跃拒绝）
 Options for 'start':
   --name <任务名>          (required)
   --goal <目标>            (required)
   --env-key <环境id>       (required; zhishi env list 查看已登记)
-  --criteria <条件>        (repeatable, at least one; 启动即锁定)
+  --criteria <条件>        (repeatable, at least one; 启动即锁定，OR 语义)
   --budget-kind turns|tokens|time   (required)
   --budget-limit N         (required)
-  --policy-file <path>     YAML 策略文件;缺省 = 内置保守档
-                           (schema: docs/design/1.7.0-policy-design.md)
+  --stall-prompt <文本|off>  空转推进话术（缺省 = 内置通用话术；off = 关闭，纯继续）
   --workspace <路径>       (default: 服务端工作区)
-策略语义（无 ask——CLI 不做交互）:
-  on_decision  stop|continue(注入 principles)   方向分歧
-  on_stall     tolerance N + stop|continue      空转
-  on_failure   streak N + stop|continue         连败
-  on_budget    stop|renew(renew_limits 序列)    预算耗尽
-  on_declare   report:true|false                达成 → 自动出报告 → completed
-  run 全程自主;人只读终态报告(list 的 reportDir)。`,
+停点只有四个:任一条件达成(declare 附证据,harness 预检)→ completed /
+预算耗尽 → stopped / Esc → stopped / provider 连续 5 次失败 → exited。
+无策略文件、无暂停点、无 checkpoint、无自动报告——结束后看轨迹、研究
+事件、档案(zhishi research list / archive list)。`,
 
   expert: `zhishi expert — 专家知识库（1.2.1 骨架期：专家审定，决策级依据）
 Commands:
@@ -3133,7 +3124,7 @@ export async function handleReportExport(payload: {
   );
   return result;
 }
-// ===== 1.4.1 auto loop agent（design docs/design/auto-loop-design.md）=====
+// ===== 1.4.1 / 1.7.7 auto loop agent（design docs/design/auto-redesign.md）=====
 // runner 本体在 loop/auto-run.ts（纯函数+注入依赖）；这里只做薄校验与调用。
 /** `auto-run/start` — 校验失败返回 4xx 可读错误（routeAdminApi 统一映射）。 */
 export async function handleAutoRunStart(payload: Record<string, unknown>): Promise<AdminResponse> {
@@ -3155,25 +3146,6 @@ export function handleAutoRunStop(payload: { id?: unknown }): AdminResponse {
   const id = typeof payload.id === 'string' ? payload.id.trim() : '';
   if (!id) return { success: false, error: 'Missing required argument: <id>' };
   const result = stopAutoRun(id);
-  return result.success ? { success: true, data: result.data } : { success: false, error: result.error };
-}
-/** `auto-run/budget` — 预算续命（仅 paused+reason=budget；新上限 > 已耗）。 */
-export function handleAutoRunBudget(payload: { id?: unknown; limit?: unknown }): AdminResponse {
-  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
-  if (!id) return { success: false, error: 'Missing required argument: <id>' };
-  const result = renewAutoRunBudget(id, payload.limit);
-  return result.success ? { success: true, data: result.data } : { success: false, error: result.error };
-}
-/** `auto-run/verdict` — 验收终审：pass 出报告 / fail|continue 注回线续跑。
- *  1.4.6：孤儿记录（sidecar 重启后内存 runner 消亡）走盘上兜底结算。 */
-export async function handleAutoRunVerdict(payload: { id?: unknown; verdict?: unknown; note?: unknown }): Promise<AdminResponse> {
-  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
-  if (!id) return { success: false, error: 'Missing required argument: <id>' };
-  const result = await resolveAutoRunVerdict(
-    id,
-    payload.verdict,
-    typeof payload.note === 'string' ? payload.note : undefined,
-  );
   return result.success ? { success: true, data: result.data } : { success: false, error: result.error };
 }
 /** `campaign/list` — 战役记录列表（1.6.8 M2；时间倒序；可选 workspace 过滤）。 */
@@ -3234,25 +3206,15 @@ export async function handleAutoRunList(payload: { workspace?: unknown }): Promi
     ? payload.workspace.trim()
     : undefined;
   const records = await listAutoRuns(workspace);
-  // 1.4.6 dogfood 实证修复：records 带 verdict 归一化字段（verdictPackage →
-  // 对外 verdict 形状）——断线后终审弹窗的唯一恢复路径。
-  return {
-    success: true,
-    data: {
-      records: records.map((r) => {
-        const verdict = verdictRequestOfRecord(r);
-        return verdict ? { ...r, verdict } : r;
-      }),
-    },
-  };
+  return { success: true, data: { records } };
 }
-/** 活跃态（不可清理）：running/paused/awaiting-verdict；终态 = completed/stopped。 */
-const AUTO_RUN_ACTIVE_STATUSES: ReadonlySet<AutoRunStatus> = new Set(['running', 'paused', 'awaiting-verdict']);
+/** 活跃态（不可清理）：running；终态 = completed/stopped/exited。 */
+const AUTO_RUN_ACTIVE_STATUSES: ReadonlySet<AutoRunStatus> = new Set(['running']);
 /** `auto-run/clear` — 1.6.3 #4 记录清理：auto-runs 目录只增不减的收口。
  *  id 指定删单条；缺省清全部终态记录（可按 workspace 过滤，口径照
- *  auto-run/list）。活跃（running/paused/awaiting-verdict）记录拒绝删除
- *  （4xx 可读错误）——先 Esc 终止再清理。状态判定走 listAutoRuns 的合并
- *  视图（内存活动记录覆盖盘上），删除对象是落盘文件（连带 .lock）。 */
+ *  auto-run/list）。活跃（running）记录拒绝删除（4xx 可读错误）——先 Esc
+ *  终止再清理。状态判定走 listAutoRuns 的合并视图（内存活动记录覆盖盘上），
+ *  删除对象是落盘文件（连带 .lock）。 */
 export async function handleAutoRunClear(payload: { id?: unknown; workspace?: unknown }): Promise<AdminResponse> {
   const id = typeof payload.id === 'string' ? payload.id.trim() : '';
   const workspace = typeof payload.workspace === 'string' && payload.workspace.trim()

@@ -5,6 +5,18 @@
 
 ---
 
+## 1.7.7 —— auto 重做（auto run == auto loop，最小语义）（立项，进行中）
+
+**缘起（2026-09-19 用户拍板立项）**：auto 过度设计——1.4.1 的 5 暂停点 + 1.7.0 的策略文件都是给「被削弱的 auto 路径」打的补丁（auto 场景缺 caps/域/研究记忆注入、turnTimeout 10min 缺省杀研究回合、澄清只能暂停）。用户定稿最小语义：**auto = 目标 + 验收条件（OR，任一满足即达成）+ 强制超时**；循环内一切自走（空转 K=3 注入话术继续、歧义自主决策、工具失败继续、provider 连击 N=5 退出），人只做三件事——开局定目标、中途 Esc、结束读报告。steering 关闭、报告模板不动、campaign 独立不并入。设计：`docs/design/auto-redesign.md`。
+
+- [x] **对齐先行（设计 §5）**：auto-run 场景同权注入 caps/域/研究记忆（chat-engine 场景装配）；turnTimeoutMs 纯 liveness 守卫（24h）；AUTO_RUN 通道文案去「暂停点/验收点」。对比验证完成：同任务 GUI 交互 vs auto-run——路径对齐效果实证（auto 从 turns=1 秒停进化到 3 轮 60 工具调用高质量论证；GUI 6h+ 持续拆墙），设计输入全部提取入稿
+- [x] **删补丁（设计 §3/§6）**：策略文件五节 + 5 暂停点 + verdict 终审 + budget 续命 + CLI/GUI 双模式分裂全部删除——auto-run.ts 1996→948 行；declare 改 OR 语义 + 证据预检回注；GUI 表单三字段 + 可选空转话术；CLI 删 verdict/budget/--policy-file 加 --stall-prompt；sse 事件族收缩
+- [~] **验证（设计 §7）**：单测（OR 预检 / N=5 退出 / 超时 stopped / 互斥 / 愈合）全绿；typecheck + unit 2365 + 全量 2540 + lint + depcruise 全绿；**dogfood 待实机**（含 §4b 交付物走查）
+
+> 边界：campaign（1.6.8）不动；越界 ask（D14）保留；开局快照 / checkpoint / 证据预检 / 报告保留。
+
+---
+
 ## 1.6.9 —— 引擎健壮性（假死/通道自堵/环境故障升级纪律）（完成）
 
 **缘起（2026-09-09 第三轮轨迹分析裁决，用户拍板立项）**：冷读轨迹（不谈挖掘）抓到两个 P0 + 一个纪律缺口，全部实锤：①**turn 假死**——模型把 output 预算全烧在 thinking 上（2 万 token 零可见内容零工具调用），引擎判 turn 结束收工，后台编译报错无人知晓，假死 9.8 小时（mtste950；同族：mtst9nns 16s 纯 thinking 零产出被用户手动杀）；②**exec 通道自堵**——超时命令进程不杀，单通道串行被堵死，后续命令全部排队超时（mts9dvha 07:48 起 76 分钟）；③**环境故障升级无纪律**——同一 agent 同会话内，环境挂了有时 76 分钟静默自扛、有时秒级文本求援，行为漂移看心情。

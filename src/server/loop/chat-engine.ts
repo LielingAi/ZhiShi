@@ -722,7 +722,7 @@ class ChatEngine {
     try {
       const caps = precomputed
         ? precomputed.caps
-        : scenario.type === 'security'
+        : scenario.type === 'security' || scenario.type === 'auto-run'
           ? await collectSecurityCapabilities(this.agentDir)
           : undefined;
       // 1.2.7 域边界：配方默认 + 内容信号动态修正；无可靠信号 → undefined
@@ -759,7 +759,7 @@ class ChatEngine {
         runtime: 'builtin',
         distilledMemory: loadDistilledMemoryForPrompt(),
         securityCapabilities: caps,
-        securityResearchMemory: scenario.type === 'security'
+        securityResearchMemory: scenario.type === 'security' || scenario.type === 'auto-run'
           ? collectResearchMemory()
           : undefined,
         securityResearchDomain: domain,
@@ -1216,7 +1216,10 @@ class ChatEngine {
       }));
     }
     // 结构性白名单——boundary 据此把幻觉工具(白名单外)拦下并记入缺口埋点。
+    // 1.7.7:工具注册同样按 toolNames 过滤(auto-run 线不注册 request_decision——
+    // 模型没有问询通道;仅靠 boundary 拦截是「注册了但被拦」,不是不注册)。
     const effectiveToolNames = toolNames;
+    const registeredTools = tools.filter((t) => effectiveToolNames.includes(t.name));
     const baseBoundary = makeBoundaryHook(env, { allowedTools: effectiveToolNames });
     // 包装 boundary:记录幻觉工具(白名单外被拦)供 turn 完成点的缺口埋点。
     const blockedToolNames: string[] = [];
@@ -1228,7 +1231,7 @@ class ChatEngine {
       return r;
     };
     const afterToolCall = makeOutputGuardHook();
-    return { tools, beforeToolCall, afterToolCall, blockedToolNames };
+    return { tools: registeredTools, beforeToolCall, afterToolCall, blockedToolNames };
   }
 
   private async runPiTurn(
@@ -1595,6 +1598,8 @@ class ChatEngine {
     const env = options.envKey
       ? findEnvironmentEntry(listEnvironments(loadConfig()), options.envKey) ?? null
       : resolveSessionEnv(this.agentDir);
+    // 1.2.7(域补丁):与交互 turn 同——域判定一次算出,执行栈与系统提示共用。
+    const scenario = options.scenario ?? resolvePiScenario();
     const toolNames = [
       ...(env ? [ENV_EXEC_TOOL_NAME, ENV_BG_TOOL_NAME, DELEGATE_TASK_TOOL_NAME] : []),
       RESEARCH_LOG_TOOL_NAME,
@@ -1602,15 +1607,15 @@ class ChatEngine {
       INTEL_SEARCH_TOOL_NAME,
       EXPERT_SEARCH_TOOL_NAME,
       EXPERT_DRAFT_TOOL_NAME,
-      REQUEST_DECISION_TOOL_NAME,
+      // 1.7.7(auto-redesign §1):auto-run 线不注册 request_decision——模型没有
+      // 问询通道,遇歧义自行决策并把问题与假设记档案(Q# 未决问题)。
+      ...(scenario.type === 'auto-run' ? [] : [REQUEST_DECISION_TOOL_NAME]),
       DECLARE_COMPLETION_TOOL_NAME,
       RECALL_TOOL_NAME,
     ];
     const storedInvoke = loadLoopSession(loopSessionId);
     const history = storedInvoke.messages;
-    // 1.2.7(域补丁):与交互 turn 同——域判定一次算出,执行栈与系统提示共用。
-    const scenario = options.scenario ?? resolvePiScenario();
-    const caps = scenario.type === 'security'
+    const caps = scenario.type === 'security' || scenario.type === 'auto-run'
       ? await collectSecurityCapabilities(this.agentDir)
       : undefined;
     const domain = caps ? resolveSessionDomain(history, caps) : undefined;

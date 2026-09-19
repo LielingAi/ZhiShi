@@ -49,7 +49,7 @@ import type {
 } from './blocks';
 import { summarizeSignal } from './blocks';
 import type { BgEvent, SubagentEvent } from './tasks';
-import { budgetKindOf, pauseReasonOf, parseVerdictRequest, type AutoRunDelta } from './auto-run';
+import { budgetKindOf, outcomeOf, type AutoRunDelta } from './auto-run';
 
 // ---------------------------------------------------------------------------
 // Payload narrowers（wire 是 unknown：pi 引擎裸字符串 / 对象 / null 都有）
@@ -828,57 +828,21 @@ export function reduceSseEvent(session: SessionState, input: SseInput): ReduceRe
       };
     }
 
-    case 'auto-run:paused': {
-      const id = str(p.id);
-      const reason = pauseReasonOf(p.reason);
-      if (!id || !reason) return { session };
-      const summary = str(p.summary);
-      return {
-        session,
-        autoRun: { kind: 'paused', id, reason, ...(summary ? { summary } : {}) },
-      };
-    }
-
-    case 'auto-run:budget-warning': {
-      const id = str(p.id);
-      if (!id) return { session };
-      // 1.4.6：server 发 budget{kind,limit,spent}——同 turn-completed 的字段口径。
-      const used = num(p.used) ?? num(rec(p.budget).spent);
-      const limit = num(p.limit) ?? num(rec(p.budget).limit);
-      return {
-        session,
-        autoRun: {
-          kind: 'budget',
-          id,
-          ...(used !== undefined ? { used } : {}),
-          ...(limit !== undefined ? { limit } : {}),
-        },
-      };
-    }
-
     case 'auto-run:completed': {
       const id = str(p.id);
       if (!id) return { session };
-      const summary = str(p.summary);
+      // 1.7.7：终态统一 auto-run:completed { outcome:'passed'|'stopped'|'exited',
+      // reason? }——归并在 applyAutoRunEvent 按 outcome 分派。
       return {
         session,
-        autoRun: { kind: 'completed', id, ...(summary ? { summary } : {}) },
+        autoRun: {
+          kind: 'completed',
+          id,
+          outcome: outcomeOf(p.outcome),
+          ...(str(p.reason) ? { reason: str(p.reason)! } : {}),
+          ...(str(p.summary) ? { summary: str(p.summary)! } : {}),
+        },
       };
-    }
-
-    case 'auto-run:verdict-requested': {
-      const id = str(p.id);
-      if (!id) return { session };
-      return { session, autoRun: { kind: 'verdict', id, verdict: parseVerdictRequest(p) } };
-    }
-
-    // 1.6.0：auto-run:resumed——verdict 续跑/暂停恢复/预算续命恢复的统一
-    // 恢复广播（服务端新增）。归并语义（paused/awaiting-verdict → running、
-    // 终态不复活）在 applyAutoRunEvent。
-    case 'auto-run:resumed': {
-      const id = str(p.id);
-      if (!id) return { session };
-      return { session, autoRun: { kind: 'resumed', id } };
     }
 
     // chat:tool-result-start / chat:tool-result-delta（服务端只发
