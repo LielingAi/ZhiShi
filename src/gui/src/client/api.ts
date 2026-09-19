@@ -895,24 +895,6 @@ export function autoRunStop(
   return client.adminPost<{ success: boolean; error?: string }>('auto-run/stop', input);
 }
 
-/** POST auto-run/budget { id, limit }（预算耗尽暂停点 → 加预算 + 续命）。 */
-export function autoRunBudget(
-  client: GuiSidecarClient,
-  input: { id: string; limit: number },
-): Promise<{ success: boolean; error?: string }> {
-  return client.adminPost<{ success: boolean; error?: string }>('auto-run/budget', input);
-}
-
-/** POST auto-run/verdict { id, verdict, note? }（验收终审三按钮；仅 awaiting-verdict 态）。
- *  1.6.0：note 终审附注（不通过理由/继续跑补充说明）——服务端 resolveVerdict
- *  已收，注回 loop 线。 */
-export function autoRunVerdict(
-  client: GuiSidecarClient,
-  input: { id: string; verdict: 'pass' | 'fail' | 'continue'; note?: string },
-): Promise<{ success: boolean; error?: string }> {
-  return client.adminPost<{ success: boolean; error?: string }>('auto-run/verdict', input);
-}
-
 /** POST auto-run/list → 原始 JSON（形状归一在 model/auto-run::parseAutoRunList）。 */
 export function autoRunList(client: GuiSidecarClient): Promise<unknown> {
   return client.adminPost<unknown>('auto-run/list', {});

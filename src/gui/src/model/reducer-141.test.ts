@@ -1,8 +1,11 @@
 /**
- * auto-run:* 事件族归约单测（1.4.1）——reducer 只做 payload 窄化出
- * ReduceResult.autoRun 增量，登记表 merge 在 model/auto-run.ts（单测见
- * auto-run.test.ts）。事件契约照 docs/design/auto-loop-design.md §7 + 1.4.1
- * 服务端并行实施口径。
+ * auto-run:* 事件族归约单测（1.4.1；1.7.7 事件族收缩）——reducer 只做
+ * payload 窄化出 ReduceResult.autoRun 增量，登记表 merge 在
+ * model/auto-run.ts（单测见 auto-run.test.ts）。
+ *
+ * 1.7.7 事件族：started / phase-changed / turn-completed / completed{outcome}。
+ * paused / budget-warning / verdict-requested / resumed 已随暂停点与终审
+ * 机制整体删除（服务端不再发射）。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -96,54 +99,36 @@ describe('auto-run:turn-completed 归约（1.4.1）', () => {
   });
 });
 
-describe('auto-run:paused 归约（1.4.1）', () => {
-  it('reason=budget + summary → paused 增量', () => {
-    expect(
-      run('auto-run:paused', { id: 'ar-1', reason: 'budget', summary: '50 轮耗尽' }).autoRun,
-    ).toEqual({ kind: 'paused', id: 'ar-1', reason: 'budget', summary: '50 轮耗尽' });
-  });
-
-  it('reason=stall / repeated-failures / decision（1.6.0 补齐）窄化通过', () => {
-    expect(run('auto-run:paused', { id: 'ar-1', reason: 'stall' }).autoRun).toMatchObject({
-      reason: 'stall',
-    });
-    expect(run('auto-run:paused', { id: 'ar-1', reason: 'repeated-failures' }).autoRun).toMatchObject({
-      reason: 'repeated-failures',
-    });
-    // 1.6.0：decision 暂停点（模型 request_decision 提请）——此前窄化丢弃。
-    expect(run('auto-run:paused', { id: 'ar-1', reason: 'decision', decisionIds: ['d-1'] }).autoRun).toMatchObject({
-      reason: 'decision',
-    });
-  });
-
-  it('reason 非法/缺失 → 事件丢弃', () => {
-    expect(run('auto-run:paused', { id: 'ar-1', reason: 'whatever' }).autoRun).toBeUndefined();
-    expect(run('auto-run:paused', { id: 'ar-1' }).autoRun).toBeUndefined();
-  });
-});
-
-describe('auto-run:budget-warning 归约（1.4.1）', () => {
-  it('used/limit 可选透传', () => {
-    expect(run('auto-run:budget-warning', { id: 'ar-1', used: 45, limit: 50 }).autoRun).toEqual({
-      kind: 'budget',
-      id: 'ar-1',
-      used: 45,
-      limit: 50,
-    });
-  });
-
-  it('缺 id → 不产出', () => {
-    expect(run('auto-run:budget-warning', { used: 1 }).autoRun).toBeUndefined();
-  });
-});
-
-describe('auto-run:completed 归约（1.4.1）', () => {
-  it('summary 可选透传', () => {
-    expect(run('auto-run:completed', { id: 'ar-1', summary: '达成' }).autoRun).toEqual({
+describe('auto-run:completed 归约（1.7.7：终态按 outcome 分派）', () => {
+  it('outcome=passed → completed 增量', () => {
+    expect(run('auto-run:completed', { id: 'ar-1', outcome: 'passed' }).autoRun).toEqual({
       kind: 'completed',
       id: 'ar-1',
-      summary: '达成',
+      outcome: 'passed',
     });
+  });
+
+  it('outcome=stopped + reason=budget → 带终态原因', () => {
+    expect(run('auto-run:completed', { id: 'ar-1', outcome: 'stopped', reason: 'budget' }).autoRun).toEqual({
+      kind: 'completed',
+      id: 'ar-1',
+      outcome: 'stopped',
+      reason: 'budget',
+    });
+  });
+
+  it('outcome=exited + reason=provider-error → 带终态原因', () => {
+    expect(run('auto-run:completed', { id: 'ar-1', outcome: 'exited', reason: 'provider-error' }).autoRun).toEqual({
+      kind: 'completed',
+      id: 'ar-1',
+      outcome: 'exited',
+      reason: 'provider-error',
+    });
+  });
+
+  it('outcome 非法/缺失回落 passed（保守按达成显示）', () => {
+    expect(run('auto-run:completed', { id: 'ar-1', outcome: 'weird' }).autoRun).toMatchObject({ outcome: 'passed' });
+    expect(run('auto-run:completed', { id: 'ar-1' }).autoRun).toMatchObject({ outcome: 'passed' });
   });
 
   it('缺 id → 不产出', () => {
@@ -151,75 +136,11 @@ describe('auto-run:completed 归约（1.4.1）', () => {
   });
 });
 
-describe('auto-run:verdict-requested 归约（1.4.1）', () => {
-  it('criteria 字符串数组 + evidence 字符串 → verdict 增量', () => {
-    const res = run('auto-run:verdict-requested', {
-      id: 'ar-1',
-      criteria: ['输出 flag{…}'],
-      evidence: 'E#12 记录了 flag 读取成功',
-    });
-    expect(res.autoRun).toEqual({
-      kind: 'verdict',
-      id: 'ar-1',
-      verdict: {
-        criteria: [{ text: '输出 flag{…}', hasEvidence: false, refs: [] }],
-        statement: 'E#12 记录了 flag 读取成功',
-      },
-    });
-  });
-
-  it('criteria 对象形状（text/refs/hasEvidence）透传', () => {
-    const res = run('auto-run:verdict-requested', {
-      id: 'ar-1',
-      criteria: [{ text: 'PoC 稳定复现', refs: ['E#7'], hasEvidence: true }],
-      evidence: { statement: 'E#7 覆盖复现' },
-    });
-    expect(res.autoRun?.kind).toBe('verdict');
-    if (res.autoRun?.kind !== 'verdict') throw new Error('unreachable');
-    expect(res.autoRun.verdict.criteria).toEqual([
-      { text: 'PoC 稳定复现', refs: ['E#7'], hasEvidence: true },
-    ]);
-    expect(res.autoRun.verdict.statement).toBe('E#7 覆盖复现');
-  });
-
-  it('缺 id → 不产出', () => {
-    expect(run('auto-run:verdict-requested', { criteria: [] }).autoRun).toBeUndefined();
-  });
-});
-
-describe('auto-run:verdict-requested — criteriaPrecheck live 形状（1.6.0 ②）', () => {
-  it('live payload（criteria + criteriaPrecheck + evidence.refs）→ 逐条 ✓/✗ 归约正确', () => {
-    // 服务端真实广播形状（server/loop/auto-run.ts verdict-requested）。
-    const res = run('auto-run:verdict-requested', {
-      id: 'ar-1',
-      criteria: ['条件一', '条件二'],
-      criteriaPrecheck: [
-        { text: '条件一', status: 'evidence' },
-        { text: '条件二', status: 'none' },
-      ],
-      evidence: {
-        statement: 'E#3 支撑条件一',
-        refs: [{ id: 3, hit: true }, { id: 4, hit: false }],
-        hitCount: 1,
-        missCount: 1,
-      },
-    });
-    expect(res.autoRun?.kind).toBe('verdict');
-    if (res.autoRun?.kind !== 'verdict') throw new Error('unreachable');
-    expect(res.autoRun.verdict.criteria).toEqual([
-      { text: '条件一', hasEvidence: true, refs: ['E#3'] },
-      { text: '条件二', hasEvidence: false, refs: [] },
-    ]);
-    expect(res.autoRun.verdict.statement).toBe('E#3 支撑条件一');
-  });
-});
-
-describe('auto-run:resumed 归约（1.6.0 ⑤）', () => {
-  it('id → resumed 增量（归并语义在 applyAutoRunEvent：paused→running）', () => {
-    expect(run('auto-run:resumed', { id: 'ar-1' }).autoRun).toEqual({ kind: 'resumed', id: 'ar-1' });
-  });
-
-  it('缺 id → 不产出', () => {
-    expect(run('auto-run:resumed', {}).autoRun).toBeUndefined();
-  });
+describe('1.7.7 已删事件族 → 不产出增量（防御：旧 sidecar 残影不误伤登记表）', () => {
+  it.each(['auto-run:paused', 'auto-run:budget-warning', 'auto-run:verdict-requested', 'auto-run:resumed'] as const)(
+    '%s → autoRun undefined',
+    (event) => {
+      expect(run(event, { id: 'ar-1', reason: 'budget', summary: 'x' }).autoRun).toBeUndefined();
+    },
+  );
 });

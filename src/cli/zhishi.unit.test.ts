@@ -8,10 +8,7 @@
  * spawn 开销约 1s/次（node --import tsx），单测超时放到 30s 兜底 Windows CI。
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -341,16 +338,8 @@ describe('A2-9 回归：expert review --json 在非 TTY 下尊重 jsonMode', () 
   }, 30_000);
 });
 
-describe('1.7.0：auto-run CLI 命令组（策略治理）', () => {
-  let policyDir: string;
-  beforeAll(() => {
-    policyDir = mkdtempSync(join(tmpdir(), 'zhishi-policy-'));
-  });
-  afterAll(() => {
-    rmSync(policyDir, { recursive: true, force: true });
-  });
-
-  it('start 全旗标 → /api/admin/auto-run/start；criteria 数组、budget 对象、policy 缺省保守档', async () => {
+describe('1.7.7：auto-run CLI 命令组（三输入 + 可选空转话术）', () => {
+  it('start 全旗标 → /api/admin/auto-run/start；criteria 数组、budget 对象、无 policy', async () => {
     captured = [];
     const r = await runCli([
       'auto-run', 'start', 'demo',
@@ -368,33 +357,34 @@ describe('1.7.0：auto-run CLI 命令组（策略治理）', () => {
     expect(req!.body.envKey).toBe('pwn-vm');
     expect(req!.body.criteria).toEqual(['输出 flag', 'PoC 稳定复现 3 次']);
     expect(req!.body.budget).toEqual({ kind: 'turns', limit: 30 });
-    expect(req!.body.policy).toContain('on_decision');
-    expect(req!.body.policy).toContain('action: stop');
+    expect(req!.body.policy).toBeUndefined();
+    expect(req!.body.stallPrompt).toBeUndefined();
   }, 30_000);
 
-  it('--policy-file 读文件原文直传（缺省档被覆盖）', async () => {
+  it('--stall-prompt 透传（off = 关闭常量）', async () => {
     captured = [];
-    const policyFile = join(policyDir, 'auto-run.policy.yaml');
-    writeFileSync(policyFile, 'on_stall:\n  tolerance: 2\n  action: continue\n', 'utf-8');
     const r = await runCli([
       'auto-run', 'start', 'demo',
       '--goal', 'g', '--env-key', 'pwn-vm', '--criteria', 'c',
       '--budget-kind', 'turns', '--budget-limit', '5',
-      '--policy-file', policyFile,
+      '--stall-prompt', '换个思路再试',
     ]);
     expect(r.code).toBe(0);
     const req = captured.find((c) => c.url === '/api/admin/auto-run/start');
     expect(req).toBeDefined();
-    expect(req!.body.policy).toContain('tolerance: 2');
-    expect(req!.body.policy).not.toContain('on_decision'); // 文件原文替换缺省档
-  }, 30_000);
+    expect(req!.body.stallPrompt).toBe('换个思路再试');
 
-  it('verdict 枚举 CLI 侧校验：非法值拒绝且不发请求', async () => {
     captured = [];
-    const r = await runCli(['auto-run', 'verdict', 'run-x', '--verdict', 'bogus']);
-    expect(r.code).not.toBe(0);
-    expect(r.stderr).toContain('非法');
-    expect(captured.some((c) => c.url === '/api/admin/auto-run/verdict')).toBe(false);
+    const r2 = await runCli([
+      'auto-run', 'start', 'demo',
+      '--goal', 'g', '--env-key', 'pwn-vm', '--criteria', 'c',
+      '--budget-kind', 'turns', '--budget-limit', '5',
+      '--stall-prompt', 'off',
+    ]);
+    expect(r2.code).toBe(0);
+    const req2 = captured.find((c) => c.url === '/api/admin/auto-run/start');
+    expect(req2).toBeDefined();
+    expect(req2!.body.stallPrompt).toBe('off');
   }, 30_000);
 
   it('list 路由与载荷（workspace 透传）', async () => {

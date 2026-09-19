@@ -5,9 +5,8 @@
  * 内存注册表/愈合缓存走 resetAutoRunRegistryForTest 复位，绝不真起 runner。
  *
  * 覆盖：
- *  - id 指定删单条：终态（completed/stopped）连盘删除（连带 .lock）；
- *  - 活跃（running/paused/awaiting-verdict）记录拒绝删除，4xx 可读错误，
- *    落盘文件不动；
+ *  - id 指定删单条：终态（completed/stopped/exited）连盘删除（连带 .lock）；
+ *  - 活跃（running）记录拒绝删除，4xx 可读错误，落盘文件不动；
  *  - id 不存在 → 可读错误；
  *  - 缺省全清终态：活跃记录保留，removed 回包只含终态 id；
  *  - workspace 过滤：只清指定工作区的终态记录（口径照 auto-run/list）；
@@ -91,19 +90,16 @@ describe('handleAutoRunClear — id 指定删单条', () => {
     expect(existsSync(fileOf('run-b'))).toBe(false);
   });
 
-  it.each(['running', 'paused', 'awaiting-verdict'] as const)(
-    '活跃态 %s → 拒绝（可读错误带状态与终止引导），落盘文件不动',
-    async (status) => {
-      // 记录 workspace 与引擎工作区（process.cwd()）不同 → 不触发本工作区
-      // 重启愈合，盘上 running/paused 保持原态（别的 sidecar 的活 run 语义）。
-      await seed(record('run-live', status, '/ws/other-place'));
-      const r = await handleAutoRunClear({ id: 'run-live' });
-      expect(r.success).toBe(false);
-      expect(r.error).toContain(status);
-      expect(r.error).toContain('auto-run/stop');
-      expect(existsSync(fileOf('run-live'))).toBe(true);
-    },
-  );
+  it('活跃态 running → 拒绝（可读错误带状态与终止引导），落盘文件不动', async () => {
+    // 记录 workspace 与引擎工作区（process.cwd()）不同 → 不触发本工作区
+    // 重启愈合，盘上 running 保持原态（别的 sidecar 的活 run 语义）。
+    await seed(record('run-live', 'running', '/ws/other-place'));
+    const r = await handleAutoRunClear({ id: 'run-live' });
+    expect(r.success).toBe(false);
+    expect(r.error).toContain('running');
+    expect(r.error).toContain('auto-run/stop');
+    expect(existsSync(fileOf('run-live'))).toBe(true);
+  });
 
   it('id 不存在 → 可读错误', async () => {
     await seed(record('run-a', 'completed'));
@@ -120,15 +116,15 @@ describe('handleAutoRunClear — 缺省全清终态', () => {
     await seed(
       record('run-done', 'completed'),
       record('run-stopped', 'stopped'),
-      record('run-wait', 'awaiting-verdict', '/ws/other-place'),
+      record('run-exit', 'exited', '/ws/other-place'),
       record('run-live', 'running', '/ws/other-place'),
     );
     const r = await handleAutoRunClear({});
     expect(r.success).toBe(true);
-    expect((r.data as { removed: string[] }).removed.sort()).toEqual(['run-done', 'run-stopped']);
+    expect((r.data as { removed: string[] }).removed.sort()).toEqual(['run-done', 'run-exit', 'run-stopped']);
     expect(existsSync(fileOf('run-done'))).toBe(false);
     expect(existsSync(fileOf('run-stopped'))).toBe(false);
-    expect(existsSync(fileOf('run-wait'))).toBe(true);
+    expect(existsSync(fileOf('run-exit'))).toBe(false);
     expect(existsSync(fileOf('run-live'))).toBe(true);
   });
 

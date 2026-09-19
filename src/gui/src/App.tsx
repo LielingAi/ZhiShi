@@ -24,7 +24,6 @@ import { Modal } from './components/Modal';
 import { BoundaryModal } from './components/BoundaryModal';
 import { DecisionModal } from './components/DecisionModal';
 import { AutoRunCard } from './components/AutoRunCard';
-import { AutoRunVerdictModal } from './components/AutoRunVerdictModal';
 import { TasksPanel } from './components/TasksPanel';
 import { QueuePanel } from './components/QueuePanel';
 import { SettingsPage } from './components/SettingsPage';
@@ -269,7 +268,6 @@ export function App(): React.JSX.Element {
       <QueuePanel />
       <BoundaryModal />
       <DecisionModal />
-      <AutoRunVerdictModal />
       <Modal />
       <Toast />
     </div>

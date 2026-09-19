@@ -55,10 +55,10 @@ describe('resolveIntelConfig', () => {
 });
 
 describe('resolveAutoRunConfig', () => {
-  it('缺省合并 AUTORUN_DEFAULTS（turnTimeoutMs 600s，与 runner 缺省同值）', () => {
+  it('缺省合并 AUTORUN_DEFAULTS（turnTimeoutMs 24h，1.7.7 起 liveness 守卫语义）', () => {
     expect(resolveAutoRunConfig(undefined)).toEqual(AUTORUN_DEFAULTS);
     expect(resolveAutoRunConfig({})).toEqual(AUTORUN_DEFAULTS);
-    expect(AUTORUN_DEFAULTS).toEqual({ turnTimeoutMs: 600_000 });
+    expect(AUTORUN_DEFAULTS).toEqual({ turnTimeoutMs: 24 * 60 * 60_000 });
   });
 
   it('合法值透传（取整），非法值回落缺省（config.json 用户可编辑，容错优先）', () => {
