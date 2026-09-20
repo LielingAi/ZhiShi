@@ -16,7 +16,49 @@ import { osFamilyOf } from './os-family';
 
 export type { EnvironmentEntry, EnvironmentKind };
 
-export const ENVIRONMENT_KINDS: readonly EnvironmentKind[] = ['ssh', 'docker', 'vm'];
+export const ENVIRONMENT_KINDS: readonly Exclude<EnvironmentKind, 'local'>[] = ['ssh', 'docker', 'vm'];
+
+/**
+ * 1.7.8 内置本机条目（design/local-env-design.md）：kind='local' 的虚拟
+ * 条目，id 恒为 'local'，os_family='windows'，无凭据字段——开箱即随环境
+ * 清单出现，不经 add 流程（语义上 = HOST_SELECTION 从「禁用态」转正为
+ * 「可锚定环境」）。
+ *
+ * 内置 ≠ 落盘：config.json 平时不含本条目（add/rm/rename/迁移等全部
+ * 写回路径因此零侵入）；只有探测刷新落能力字段时才物化一份带状态的
+ * 副本进 config（此后清单用落盘副本，见 admin-api capability-refresh）。
+ */
+export const LOCAL_ENV_ID = 'local';
+
+/** 构造内置本机条目（每次返回新对象，调用方可安全展开改写）。 */
+export function builtinLocalEntry(): EnvironmentEntry {
+  return {
+    id: LOCAL_ENV_ID,
+    kind: 'local',
+    name: '本机（Windows 宿主）',
+    osFamily: 'windows',
+    createdAt: '',
+  };
+}
+
+/** 清单是否已含本机条目（config 落盘副本或用户手工条目）。 */
+export function hasLocalEnvironment(entries: readonly EnvironmentEntry[] | undefined): boolean {
+  return (entries ?? []).some((e) => e.id === LOCAL_ENV_ID);
+}
+
+/**
+ * 读侧清单 = config 条目 + 内置本机条目（config 已含 'local' 时不重复
+ * 出现——落盘副本优先，物化后状态字段（localToolchain 等）不丢）。仅供
+ * 只读消费方（list/select/能力清单/会话锚定）；写回一律用 listEnvironments
+ * 的原始 config 口径，防止把虚拟条目 persisted 进 config.json。
+ */
+export function listEnvironmentsWithBuiltin(config: {
+  environments?: EnvironmentEntry[];
+  [key: string]: unknown;
+}): EnvironmentEntry[] {
+  const entries = listEnvironments(config);
+  return hasLocalEnvironment(entries) ? entries : [builtinLocalEntry(), ...entries];
+}
 
 export type EnvResult<T> = { ok: true } & T | { ok: false; error: string };
 
@@ -73,11 +115,13 @@ export function validateEnvironmentEntry(input: unknown): EnvResult<{ entry: Env
   }
 
   const kind = source.kind;
-  if (typeof kind !== 'string' || !ENVIRONMENT_KINDS.includes(kind as EnvironmentKind)) {
+  // 'local' 是内置 kind（builtinLocalEntry），不经 add 流程——落入通用
+  // 非法 kind 错误（可选清单不含它），语义正确且消息清晰。
+  if (typeof kind !== 'string' || !ENVIRONMENT_KINDS.includes(kind as (typeof ENVIRONMENT_KINDS)[number])) {
     return fail(`缺少或非法的 kind：${JSON.stringify(kind)}（可选：${ENVIRONMENT_KINDS.join(' / ')}）`);
   }
 
-  const entry: EnvironmentEntryInput = { id, kind: kind as EnvironmentKind };
+  const entry: EnvironmentEntryInput = { id, kind: kind as (typeof ENVIRONMENT_KINDS)[number] };
   for (const field of OPTIONAL_STRING_FIELDS) {
     const { value, error } = readOptionalString(source, field);
     if (error) return fail(error);
@@ -125,12 +169,15 @@ export function validateEnvironmentEntry(input: unknown): EnvResult<{ entry: Env
     entry.port = port;
   }
 
-  const requiredByKind: Record<EnvironmentKind, keyof EnvironmentEntryInput> = {
+  // 'local' 是内置条目、不经 add 流程（kind 检查已拦在前）——此处只列
+  // 可登记 kind 的必填字段。
+  type RegisterableKind = Exclude<EnvironmentKind, 'local'>;
+  const requiredByKind: Record<RegisterableKind, keyof EnvironmentEntryInput> = {
     ssh: 'host',
     docker: 'container',
     vm: 'vmName',
   };
-  const required = requiredByKind[entry.kind];
+  const required = requiredByKind[entry.kind as RegisterableKind];
   if (!entry[required]) {
     return fail(`kind=${entry.kind} 缺少必填字段：${required}（--${required.toLowerCase()}）`);
   }
@@ -225,6 +272,7 @@ function buildSshCommand(target: string, user?: string, keyPath?: string, port?:
  *   docker → docker:<container>
  *   vm     → vm:<vmName>
  *   ssh    → range:<host>
+ *   local  → local（宿主即环境）
  * 宿主终端无标记（等同 'host'）。标记经 `term open --env` 落到 Rust
  * TerminalManager。字段缺省时兜底 entry.id（validate 已保证按 kind 必填，
  * 兜底只为防御）。
@@ -237,6 +285,8 @@ export function envTagForEntry(entry: EnvironmentEntry): string {
       return `vm:${entry.vmName ?? entry.id}`;
     case 'ssh':
       return `range:${entry.host ?? entry.id}`;
+    case 'local':
+      return 'local';
   }
 }
 
@@ -249,9 +299,12 @@ export function envTagForEntry(entry: EnvironmentEntry): string {
  *            容器没有 bash，给 cmd.exe）
  *   vm     → address ? ssh [-i keyPath] [user@]address（同 ssh 的默认 shell 纪律）
  *            : error（指向 env exec 的 guest-exec 通道）
+ *   local  → cmd.exe（宿主 PTY——交互式 WinDbg/cdb 会话的落点，design §2）
  */
 export function resolveEnvOpenCommand(entry: EnvironmentEntry): EnvResult<{ cmd: string }> {
   switch (entry.kind) {
+    case 'local':
+      return { ok: true, cmd: 'cmd.exe' };
     case 'ssh':
       return { ok: true, cmd: buildSshCommand(entry.host!, entry.user, entry.keyPath, entry.port) };
     case 'docker': {

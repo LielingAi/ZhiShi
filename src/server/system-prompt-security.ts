@@ -41,7 +41,7 @@ import {
 import {
   envTagForEntry,
   findEnvironmentEntry,
-  listEnvironments,
+  listEnvironmentsWithBuiltin,
   type EnvironmentEntry,
 } from './environment/registry';
 import {
@@ -148,7 +148,7 @@ Recon 侦察 → Analyze 分析 → Construct 构造 → Execute 执行 → Eval
 
 const TMPL_NATIVE_CODE = `<zhishi-native-code>
 代码原生通道（一等路径，不是裸 shell 的临时组合）：
-- 工具链在环境类型里：dev 环境一开即有 clang / python3 / gdb，宿主不装编译与安全工具——需要编译调试就先有对应环境。
+- 工具链在环境类型里：dev 环境一开即有 clang / python3 / gdb，宿主不装编译与安全工具——需要编译调试就先有对应环境；选定本机（local）环境时例外：工具链就在宿主 Windows 上，在场状态以能力清单「本机工具链」探测行为准，缺失项请人点补装（模型不参与环境配置）。
 - 闭环通道：你在当前通道里没有宿主 shell，开/接环境是人侧动作（人经 zhishi env up <类型> / zhishi env open <id> 选定现场）；现场锚定后你获得 env_exec（一次性执行）/ env_bg（长任务后台）工具，编译、运行、调试在同一个环境里闭环。未锚定时说明需要哪类环境、请人开出。
 - 环境标记约定：host / docker:<容器> / vm:<名称> / range:<主机>；终端与操作按标记归属环境，跨界动作走边界确认。
 - 行为约定：写完 C/汇编直接在环境里编译跑，不要绕脚本语言重新实现；代码写在工作区、挂载进环境执行、产物落回工作区。
@@ -316,6 +316,21 @@ export function buildSecurityCapabilitiesSection(
           (missing.length > 0 ? `（声明了但环境里没有：${missing.join('、')}——需要时请在环境内安装后再用）` : ''),
       );
     }
+  }
+
+  // 1.7.8 本机工具链探测（design §3）：选定本机环境时把 vswhere MSVC /
+  // clang / cdb / WinDbg / python / git / WSL / 符号路径的 OK/MISS 摆给模型
+  // ——裸宿主没有配方域,能力集合段可能整个缺席,本行是宿主研究的工具面
+  // 真相（补装是人侧动作,模型不参与环境配置）。
+  const selectedEntry = selectedEnvironmentEntry(data);
+  if (selectedEntry?.kind === 'local' && selectedEntry.localToolchain) {
+    const tc = selectedEntry.localToolchain;
+    lines.push(
+      `本机工具链（探测于 ${tc.checkedAt}）：在场 ${tc.present.join('、') || '（无）'}` +
+        (tc.missing.length > 0
+          ? `；缺失 ${tc.missing.join('、')}——请人补装（zhishi env install msvc-build-tools | windows-sdk | windbg，或 GUI 补装入口）后再探测刷新`
+          : ''),
+    );
   }
 
   if (availableEngines.length > 0) {
@@ -775,7 +790,8 @@ export async function collectSecurityCapabilities(
 ): Promise<SecurityCapabilitiesData> {
   const engines = await (deps.detectEngines ?? detectEnvironmentEnginesCached)();
   const recipes = scanRecipes(deps.recipesRoot ?? defaultRecipesRoot());
-  const environments = listEnvironments(deps.config ?? loadConfig());
+  // 1.7.8：含内置本机条目——选定 local 时能力段拿得到 localToolchain。
+  const environments = listEnvironmentsWithBuiltin(deps.config ?? loadConfig());
   const selection = getWorkspaceSelection(
     loadSelectionStore(deps.selectionPath ?? defaultSelectionStorePath()),
     workspace,

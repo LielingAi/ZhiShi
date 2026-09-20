@@ -2,11 +2,13 @@
  * 越界 ask 通道(design §6.6 / D14)— 边界规则的「问人」补充面。
  *
  * 定位:boundary.ts 是规则硬闸(零问人,allow/deny);本模块服务另一类
- * 动作——**人可批准的越界**(四类:写宿主/用本机凭据/改网络策略/销毁有
- * 成果环境——后三类 local-cred/net-policy/destroy-env 为 D14 规划占位,
- * 当前仅 host-write 有生产者)。流程:服务端动作发起 ask → SSE
- * `chat:boundary-ask` → TUI 红色模态 → POST /chat/boundary/respond →
- * 本注册表 resolve。没有「永远允许」,每次越界都重新问(越界不该有惯性)。
+ * 动作——**人可批准的越界**(写宿主/用本机凭据/改网络策略/销毁有成果
+ * 环境/改宿主系统配置——local-cred/net-policy/destroy-env 为 D14 规划
+ * 占位,host-write 有 extract/report 生产者,system-config 为 1.7.8 本机
+ * 环境新增、生产者在 boundary.ts 的 local 通道钩子)。流程:服务端动作
+ * 发起 ask → SSE `chat:boundary-ask` → TUI 红色模态 → POST
+ * /chat/boundary/respond → 本注册表 resolve。没有「永远允许」,每次越界
+ * 都重新问(越界不该有惯性)。
  *
  * 纪律:
  *   - 超时(默认 5min)自动拒绝 + `chat:boundary-expired`(TUI 收模态)。
@@ -17,9 +19,12 @@
 
 import { broadcast } from '../sse';
 
-/** 四类越界动作;后三类(local-cred/net-policy/destroy-env)为 D14 规划
- *  占位,当前仅 host-write 有生产者(用户拍板保留枚举占位)。 */
-export type BoundaryAskKind = 'host-write' | 'local-cred' | 'net-policy' | 'destroy-env';
+/** 越界动作类别;local-cred/net-policy/destroy-env 为 D14 规划占位
+ *  （destroy-env/net-policy 当前无生产者——net-policy 语义 1.7.8 起并入
+ *  system-config）,host-write 有 extract/report 生产者;system-config 为
+ *  1.7.8 本机环境新增——宿主持久全局变更(bcdedit/reg HKLM/…),生产者
+ *  在 boundary.ts 的 local 通道钩子。 */
+export type BoundaryAskKind = 'host-write' | 'local-cred' | 'net-policy' | 'destroy-env' | 'system-config';
 
 export interface BoundaryAskView {
   askId: string;

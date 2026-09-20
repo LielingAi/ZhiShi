@@ -44,6 +44,65 @@ export type CapabilityExecFn = (
 export const CAPABILITY_PROBE_TIMEOUT_MS = 60_000;
 
 // ---------------------------------------------------------------------------
+// 纯数据 — 1.7.8 本机工具链探测面（design §3）
+// ---------------------------------------------------------------------------
+
+/**
+ * kind='local' 条目的扩展探测面（配方工具之外的本机研究工具链）。
+ * 复用批量探测协议（每行 OK:<key> / MISS:<key>），probe 是 cmd.exe 语义
+ * 的一次性命令（退出码判有无）——windows 通道最终都落 `cmd /c`
+ * （os-family.ts 的 psShellWrapper），与 buildToolCheckScript 的 windows
+ * 分支同一口径。vswhere 查 MSVC（带 VC 工具集组件的实例）、WSL 用
+ * `wsl --status`（与 engine-install 的 WSL2 前置检查同命令）、
+ * _NT_SYMBOL_PATH 是环境变量在场探测（未定义时故意跑不存在的命令
+ * 制造非零退出码——cmd 的 `if defined` 分支无法自带退出码）。
+ */
+export const LOCAL_TOOLCHAIN_PROBE: ReadonlyArray<{ key: string; label: string; probe: string }> = [
+  {
+    key: 'msvc',
+    label: 'MSVC 工具集（vswhere）',
+    probe: '"%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property instanceId | findstr /r /c:"." >NUL',
+  },
+  { key: 'clang', label: 'clang', probe: 'where clang' },
+  { key: 'cdb', label: 'cdb（命令行调试器）', probe: 'where cdb' },
+  {
+    key: 'windbg',
+    label: 'WinDbg',
+    probe: 'where windbg || dir /b "%ProgramFiles(x86)%\\Windows Kits\\10\\Debuggers\\x64\\windbg.exe" >NUL',
+  },
+  { key: 'python', label: 'python', probe: 'where python' },
+  { key: 'git', label: 'git', probe: 'where git' },
+  { key: 'wsl', label: 'WSL', probe: 'wsl.exe --status' },
+  {
+    key: 'sympath',
+    label: '_NT_SYMBOL_PATH（符号路径）',
+    probe: '(if defined _NT_SYMBOL_PATH (echo ok) else (zhishi-undefined-probe-fail))',
+  },
+];
+
+/**
+ * 本机工具链探测脚本（cmd.exe 语义，OK:/MISS: 协议行）——与
+ * buildToolCheckScript 的 windows 分支同构，可直接 ` & ` 拼接进同一次
+ * exec。纯函数，单测直击字符串协议。
+ */
+export function buildLocalToolchainProbeScript(): string {
+  return LOCAL_TOOLCHAIN_PROBE
+    .map(({ key, probe }) => `${probe} >NUL 2>&1 && echo OK:${key} || echo MISS:${key}`)
+    .join(' & ');
+}
+
+/** 探测输出 → 本机工具链在场/缺失清单（按探测面声明序，纯函数）。 */
+export function parseLocalToolchainProbe(stdout: string): { present: string[]; missing: string[] } {
+  const present: string[] = [];
+  const missing: string[] = [];
+  for (const { key } of LOCAL_TOOLCHAIN_PROBE) {
+    const ok = new RegExp(`^OK:${key}$`, 'm').test(stdout);
+    (ok ? present : missing).push(key);
+  }
+  return { present, missing };
+}
+
+// ---------------------------------------------------------------------------
 // 纯函数 — 工具 → 域反推
 // ---------------------------------------------------------------------------
 
@@ -237,6 +296,10 @@ export interface CapabilityProbeResult {
    *  （命中的首跑工具装完了，摘除；空数组 = 全部装完，调用方删字段）。
    *  探测未执行时为 undefined（调用方不动 pending）。 */
   capabilityPending?: string[];
+  /** 1.7.8：kind='local' 的本机工具链探测结果（vswhere MSVC / clang /
+   *  cdb / WinDbg / python / git / WSL / _NT_SYMBOL_PATH 的 OK/MISS）。
+   *  仅本机条目产出——普通环境 undefined。 */
+  localToolchain?: { present: string[]; missing: string[] };
 }
 
 /**
@@ -254,15 +317,23 @@ export async function probeEnvironmentCapabilities(
 ): Promise<CapabilityProbeResult | undefined> {
   const bound = boundDomainsForEntry(entry, deps.manifests);
   const surface = collectProbeSurface(deps.recipes);
+  const family = osFamilyOf(entry);
+  // 1.7.8：本机条目追加工具链探测面（vswhere MSVC / clang / cdb / WinDbg /
+  // python / git / WSL / 符号路径）——仅 windows 家族（本机环境定位就是
+  // Windows 宿主；vswhere 等探测在 cmd 语义下才有意义）。
+  const toolchainScript =
+    entry.kind === 'local' && family === 'windows' ? buildLocalToolchainProbeScript() : null;
   let probed: string[] = [];
   let missing: string[] | undefined;
   let pending: string[] | undefined;
-  if (surface.length > 0) {
+  let localToolchain: { present: string[]; missing: string[] } | undefined;
+  if (surface.length > 0 || toolchainScript !== null) {
+    const scriptParts: string[] = [];
+    if (surface.length > 0) scriptParts.push(buildToolCheckScript(surface, family));
+    if (toolchainScript !== null) scriptParts.push(toolchainScript);
     let stdout: string;
     try {
-      // 1.6.4：探测脚本按条目 OS 家族分派（windows → cmd 语义的 where 协议；
-      // 此前恒 posix，Windows 条目探测必全 MISS）。
-      const r = await deps.exec(entry, buildToolCheckScript(surface, osFamilyOf(entry)), {
+      const r = await deps.exec(entry, scriptParts.join(' & '), {
         timeoutMs: CAPABILITY_PROBE_TIMEOUT_MS,
       });
       if (!r.ok) return undefined; // 通道失败 → 不写能力字段（pending 同样不动）
@@ -276,6 +347,9 @@ export async function probeEnvironmentCapabilities(
       buildToolDomainIndex(deps.recipes, deps.manifests),
       deps.manifests,
     );
+    if (toolchainScript !== null) {
+      localToolchain = parseLocalToolchainProbe(stdout);
+    }
     // 1.4.9：MISS 清单随探测落盘——「声明了但环境里没有」是元数据可信的
     // 另一半（adopt 环境此前永远看不到缺失）。
     // 1.5.7：减去已登记待装（capabilityPending）——首跑工具正在后台安装，
@@ -289,11 +363,14 @@ export async function probeEnvironmentCapabilities(
     }
   }
   const domains = mergeCapabilityDomains(bound, probed);
-  if (domains.length === 0) return undefined;
+  // 本机条目：工具链探测有产出即返回（域集合可为空——裸宿主本就没有
+  // 配方域，能力清单靠 localToolchain 呈现，不能按旧纪律误判空集合）。
+  if (domains.length === 0 && localToolchain === undefined) return undefined;
   return {
     capabilityDomains: domains,
     capabilityDerivedAt: (deps.now?.() ?? new Date()).toISOString(),
     ...(missing !== undefined ? { capabilityMissing: missing } : {}),
     ...(pending !== undefined ? { capabilityPending: pending } : {}),
+    ...(localToolchain !== undefined ? { localToolchain } : {}),
   };
 }

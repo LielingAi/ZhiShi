@@ -135,13 +135,16 @@ import {
 import { detectEnvironmentEnginesCached } from './environment/engine-detect-cache';
 import {
   addEnvironmentEntry,
+  builtinLocalEntry,
   findEnvironmentEntry,
   listEnvironments,
+  listEnvironmentsWithBuiltin,
   removeEnvironmentEntry,
   renameEnvironmentEntry,
   resolveEnvOpenCommand,
   envTagForEntry,
   validateEnvironmentEntry,
+  LOCAL_ENV_ID,
 } from './environment/registry';
 import {
   registerTerminalEnvTag,
@@ -216,6 +219,8 @@ import {
 } from './environment/vm-build';
 import {
   installEngine,
+  installLocalToolchain,
+  isLocalToolchainKind,
 } from './environment/engine-install';
 import {
   getWorkspaceSelectionRecord,
@@ -1933,9 +1938,11 @@ export async function handleEnvironmentEngines(payload: {
 /** `environment/list` — list all registered environments (legacy configs → []).
  *  1.4.9：附带集合内工具口径（capabilityTools = {total, missing}）——GUI
  *  「在场 M/N」与缺失清单的数据源（capabilityMissing 是全探测面落盘，
- *  展示只关心能力集合涉及的工具）。 */
+ *  展示只关心能力集合涉及的工具）。
+ *  1.7.8：清单含内置本机条目（kind='local' 的 Windows 宿主，design
+ *  local-env-design.md）——config 无 'local' 时以虚拟内置条目出现。 */
 export function handleEnvironmentList(): AdminResponse {
-  const entries = listEnvironments(loadConfig());
+  const entries = listEnvironmentsWithBuiltin(loadConfig());
   const recipes = scanRecipes(defaultRecipesRoot());
   const manifests = loadDomainManifests();
   const environments = entries.map((e) => {
@@ -2024,6 +2031,9 @@ export async function handleEnvironmentRename(payload: {
 }): Promise<AdminResponse> {
   const id = typeof payload.id === 'string' ? payload.id.trim() : '';
   if (!id) return { success: false, error: 'Missing required argument: <id>' };
+  if (id === LOCAL_ENV_ID) {
+    return { success: false, error: `环境 "${LOCAL_ENV_ID}" 是内置本机条目（1.7.8）——显示名固定，不可改名` };
+  }
   if (typeof payload.name !== 'string') {
     return { success: false, error: 'Missing required argument: <name>（新名称；空串 = 清除别名回显 id）' };
   }
@@ -2059,7 +2069,8 @@ export async function handleEnvironmentOpen(payload: {
       },
     };
   }
-  const entry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
+  // 1.7.8：清单含内置本机条目——`env open local` 开宿主终端（cmd.exe）。
+  const entry = findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), id);
   if (!entry) {
     return {
       success: false,
@@ -2502,7 +2513,7 @@ export async function runEnvProbeWithCapabilities(
  */
 export async function refreshEntryCapabilities(
   entry: EnvironmentEntry,
-): Promise<{ capabilityDomains: string[]; capabilityDerivedAt: string; capabilityMissing?: string[]; capabilityPending?: string[] } | null> {
+): Promise<{ capabilityDomains: string[]; capabilityDerivedAt: string; capabilityMissing?: string[]; capabilityPending?: string[]; localToolchain?: { present: string[]; missing: string[] } } | null> {
   const probed = await probeEnvironmentCapabilities(entry, {
     recipes: scanRecipes(defaultRecipesRoot()),
     manifests: loadDomainManifests(),
@@ -2511,7 +2522,24 @@ export async function refreshEntryCapabilities(
   if (!probed) return null;
   try {
     await atomicModifyConfig((config) => {
-      const entries = listEnvironments(config).map((e) => {
+      const current = listEnvironments(config);
+      // 1.7.8 内置本机条目的物化点：虚拟条目平时不落 config——首次探测
+      // 有产出时把「内置形态 + 探测字段」作为落盘副本写进 config（此后
+      // listEnvironmentsWithBuiltin 用副本，状态字段不再丢）。config 已有
+      // 'local'（此前的副本/手工条目）→ 走正常 map 回写分支。
+      if (entry.id === LOCAL_ENV_ID && !current.some((e) => e.id === LOCAL_ENV_ID)) {
+        const materialized: EnvironmentEntry = {
+          ...builtinLocalEntry(),
+          capabilityDomains: probed.capabilityDomains,
+          capabilityDerivedAt: probed.capabilityDerivedAt,
+          capabilityMissing: probed.capabilityMissing ?? [],
+          ...(probed.localToolchain
+            ? { localToolchain: { ...probed.localToolchain, checkedAt: probed.capabilityDerivedAt } }
+            : {}),
+        };
+        return { ...config, environments: [materialized, ...current] };
+      }
+      const entries = current.map((e) => {
         if (e.id !== entry.id) return e;
         // 1.5.7：pending 三态——undefined（探测未执行/本就无 pending）保留旧值；
         // 空数组（全部装完）删字段；非空（部分装完）写新清单。
@@ -2524,6 +2552,9 @@ export async function refreshEntryCapabilities(
           // 旧缺失——缺失真相跟着最近一次真探测走。
           capabilityMissing: probed.capabilityMissing ?? [],
         };
+        if (probed.localToolchain) {
+          next.localToolchain = { ...probed.localToolchain, checkedAt: probed.capabilityDerivedAt };
+        }
         const nextPending =
           probed.capabilityPending === undefined ? oldPending : probed.capabilityPending;
         if (nextPending && nextPending.length > 0) next.capabilityPending = nextPending;
@@ -2537,13 +2568,15 @@ export async function refreshEntryCapabilities(
   return probed;
 }
 /** `environment/capability-refresh` — 重推一个登记环境的能力集合并回写
- *  （GUI 手动刷新入口）。探测通道不可用 → success:false，旧能力字段不动。 */
+ *  （GUI 手动刷新入口）。1.7.8：id='local' 解析内置本机条目——探测产出
+ *  （含本机工具链 OK/MISS）经 refreshEntryCapabilities 物化落盘。探测通道
+ *  不可用 → success:false，旧能力字段不动。 */
 export async function handleEnvironmentCapabilityRefresh(payload: {
   id?: string;
 }): Promise<AdminResponse> {
   const id = typeof payload.id === 'string' ? payload.id.trim() : '';
   if (!id) return { success: false, error: 'Missing required argument: <id>' };
-  const entry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
+  const entry = findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), id);
   if (!entry) {
     return {
       success: false,
@@ -2560,7 +2593,13 @@ export async function handleEnvironmentCapabilityRefresh(payload: {
   }
   return {
     success: true,
-    data: { id, capabilityDomains: probed.capabilityDomains, capabilityDerivedAt: probed.capabilityDerivedAt, capabilityMissing: probed.capabilityMissing ?? [] },
+    data: {
+      id,
+      capabilityDomains: probed.capabilityDomains,
+      capabilityDerivedAt: probed.capabilityDerivedAt,
+      capabilityMissing: probed.capabilityMissing ?? [],
+      ...(probed.localToolchain ? { localToolchain: probed.localToolchain } : {}),
+    },
   };
 }
 /** `environment/setup` — 1.4.9 已有环境补齐：对登记环境重放配方安装脚本
@@ -2574,12 +2613,20 @@ export async function handleEnvironmentSetup(payload: {
 }): Promise<AdminResponse> {
   const id = typeof payload.id === 'string' ? payload.id.trim() : '';
   if (!id) return { success: false, error: 'Missing required argument: <id>' };
-  const entry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
+  const entry = findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), id);
   if (!entry) {
     return {
       success: false,
       error: `未找到环境 "${id}"`,
       recoveryHint: { recoveryCommand: 'zhishi env list', message: 'See registered environment ids.' },
+    };
+  }
+  if (entry.kind === 'local') {
+    // 1.7.8：本机条目无配方绑定——setup（配方重放）不适用；缺失工具走
+    // winget 人点补装（environment/install 的本机工具链分支）。
+    return {
+      success: false,
+      error: '本机环境没有可重放的配方——缺失工具请人点补装：zhishi env install msvc-build-tools | windows-sdk | windbg',
     };
   }
   const reachable =
@@ -2730,6 +2777,15 @@ export async function handleEnvironmentDown(payload: {
     return {
       success: false,
       error: `环境 "${id}" 是 ssh 直连条目，无实体可停（停止只适用于 docker/VM 环境）`,
+    };
+  }
+  // 1.7.8：本机条目（内置虚拟条目按 id 判，物化副本按 kind 判）同样无实体
+  // 可停——照 B12 先例在引擎探测前拦下（否则 routeVmTarget 全 false 落到
+  // docker 兜底，对 'local' 报 docker 噪声错误）。
+  if (id === LOCAL_ENV_ID || downEntry?.kind === 'local') {
+    return {
+      success: false,
+      error: `环境 "${id}" 是本机环境（Windows 宿主），无实体可停——停止只适用于 docker/VM 环境`,
     };
   }
   const resolved = downEntry?.kind === 'vm'
@@ -2935,7 +2991,7 @@ export async function handleEnvironmentExtract(payload: {
   if (!id) return { success: false, error: 'Missing required argument: <id>' };
   const guestPath = typeof payload.guestPath === 'string' ? payload.guestPath.trim() : '';
   if (!guestPath) return { success: false, error: 'Missing required argument: <guestPath>(环境内绝对路径)' };
-  const entry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
+  const entry = findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), id);
   if (!entry) return { success: false, error: `未找到环境 "${id}"` };
   const resolved = resolveSshTarget(entry);
   if (!resolved.ok) return { success: false, error: resolved.error };
@@ -3000,7 +3056,7 @@ export async function handleEnvironmentPush(payload: {
   if (!hostPath) return { success: false, error: 'Missing required argument: <hostPath>(宿主文件路径)' };
   const guestPath = typeof payload.guestPath === 'string' ? payload.guestPath.trim() : '';
   if (!guestPath) return { success: false, error: 'Missing required argument: <guestPath>(环境内目标路径)' };
-  const entry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
+  const entry = findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), id);
   if (!entry) return { success: false, error: `未找到环境 "${id}"` };
   const workspace = typeof payload.workspace === 'string' && payload.workspace.trim()
     ? payload.workspace.trim()
@@ -3310,6 +3366,19 @@ export async function handleEnvironmentRm(payload: {
         recoveryCommand: 'zhishi env ps',
         message: 'See running environment instances.',
       },
+    };
+  }
+  // 1.7.8：本机条目不可删除——虚拟内置条目与物化副本同 id，在登记查找
+  // 前统一拦下（否则物化副本会落到尾部「只摘登记」分支，把 capability-
+  // refresh 的探测产物一并删掉）。要更新探测状态用 capability-refresh，
+  // 不用 rm——rm 会连探测产物一起清掉，下次 list 又重建。
+  if (id === LOCAL_ENV_ID) {
+    return {
+      success: false,
+      error:
+        `环境 "${LOCAL_ENV_ID}" 是内置本机条目（1.7.8）——随应用常在，不可删除。` +
+        '探测产物（能力集合/本机工具链）由 capability-refresh 重建/刷新：' +
+        '要更新探测状态请 zhishi env probe local，而非 rm。',
     };
   }
   const rmEntry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
@@ -3819,15 +3888,32 @@ export async function handleEnvironmentAdopt(payload: {
 }
 /** `environment/install` — 引擎缺失时的自动安装引导（P1 E1b）：检测 →
  * 已可用直接报「已就绪」；缺失则机器执行（docker 下载+验签+启动安装器 /
- * hyperv dism 启用），GUI/UAC/重启部分仍由人走完。 */
+ * hyperv dism 启用），GUI/UAC/重启部分仍由人走完。
+ * 1.7.8：engine 扩展本机工具链补装项（msvc-build-tools / windows-sdk /
+ * windbg）——winget 官方源半自动，人点触发（design §3，与 docker/hyperv
+ * 同款交互，不引入 agent 自动触发）。 */
 export async function handleEnvironmentInstall(payload: {
   engine?: string;
 }): Promise<AdminResponse> {
   const engine = typeof payload.engine === 'string' ? payload.engine.trim() : '';
+  // 1.7.8 本机工具链补装分支（winget）。
+  if (isLocalToolchainKind(engine)) {
+    const result = await installLocalToolchain(engine);
+    if (!result.ok) return { success: false, error: result.error };
+    return {
+      success: true,
+      data: {
+        engine: result.kind,
+        name: result.name,
+        alreadyAvailable: result.alreadyAvailable === true,
+        message: result.message,
+      },
+    };
+  }
   if (engine !== 'docker' && engine !== 'hyperv') {
     return {
       success: false,
-      error: 'Missing or invalid argument: <engine>（支持 docker | hyperv）',
+      error: 'Missing or invalid argument: <engine>（支持 docker | hyperv | msvc-build-tools | windows-sdk | windbg）',
       recoveryHint: {
         recoveryCommand: 'zhishi env engines',
         message: 'See which engines are available.',
@@ -3960,11 +4046,13 @@ export async function handleEnvironmentSelect(payload: {
   if (blocker) return { success: false, error: blocker };
 
   // R3 探活：选中目标是 SSH 通道条目时先验通（失败不落盘——坏环境选定 =
-  // 整个会话废掉，轨迹实证 mtoeh7nt）。
+  // 整个会话废掉，轨迹实证 mtoeh7nt）。内置本机条目（kind='local'）宿主
+  // 直 spawn、天然可达，不探。
   const sel = validated.selection as { kind?: string; id?: string; instanceId?: string };
   const targetId = sel.kind === 'env' ? sel.id : sel.kind === 'recipe' ? sel.instanceId : undefined;
+  let selectedBuiltinLocal = false;
   if (targetId) {
-    const entry = findEnvironmentEntry(listEnvironments(loadConfig()), targetId);
+    const entry = findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), targetId);
     if (entry && (entry.kind === 'ssh' || (entry.kind === 'vm' && entry.address))) {
       const probe = await selectProbeImpl(entry);
       if (!probe.ok) {
@@ -3977,6 +4065,7 @@ export async function handleEnvironmentSelect(payload: {
         };
       }
     }
+    selectedBuiltinLocal = entry?.kind === 'local' && targetId === LOCAL_ENV_ID;
   }
   try {
     const selectedAt = new Date().toISOString();
@@ -3986,7 +4075,23 @@ export async function handleEnvironmentSelect(payload: {
     // 撞车（前置闸之后的竞态），切换失败但选定已落盘——返回错误，重选即愈合。
     const switched = await switchEnvSession(workspace, envKeyForSelection(validated.selection));
     if (!switched.ok) return { success: false, error: switched.error ?? '环境会话线切换失败' };
-    return { success: true, data: { workspace, selection: validated.selection, selectedAt } };
+    return {
+      success: true,
+      data: {
+        workspace,
+        selection: validated.selection,
+        selectedAt,
+        // 1.7.8 快照缺位警示（design §5）：首次选定本机时随响应带一次性
+        // 提示——本机无快照可回滚，BSOD 级实验自担；内核研究走 pwn-win。
+        ...(selectedBuiltinLocal
+          ? {
+              warning:
+                '本机环境没有快照/回滚——BSOD 级实验请自担风险，内核研究请走 pwn-win VM（快照回滚不可替代）。' +
+                '如需研究前建系统还原点，可让人执行（属 system-config 越界，会逐次问人）。',
+            }
+          : {}),
+      },
+    };
   } catch (err) {
     return { success: false, error: `Environment selection save failed: ${err instanceof Error ? err.message : String(err)}` };
   }

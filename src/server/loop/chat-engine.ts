@@ -70,7 +70,7 @@ import type { EnvironmentEntry } from '../../shared/config-types';
 import type { ImagePayload } from '../../shared/types/image';
 import type { SystemInitInfo } from '../../shared/types/system';
 import { broadcast } from '../sse';
-import { envTagForEntry, findEnvironmentEntry, listEnvironments } from '../environment/registry';
+import { envTagForEntry, findEnvironmentEntry, listEnvironmentsWithBuiltin } from '../environment/registry';
 import { execInEnvironment } from './env-exec';
 import { maybeStartCampaign, type CampaignRuntimeDeps } from './campaign-runtime';
 import {
@@ -219,13 +219,16 @@ export function chatSendErrorStatus(error: string): number {
 // Env anchoring(工作区环境选定 → 环境条目)
 // ---------------------------------------------------------------------------
 
-/** 当前工作区选定的环境条目;host 选定/无选定/条目缺失 → null(不注册工具)。 */
+/** 当前工作区选定的环境条目;host 选定/无选定/条目缺失 → null(不注册工具)。
+ *  1.7.8：查清单含内置本机条目——选定 local 解析出条目 → 注册 env_exec /
+ *  env_bg 等执行工具（原 HOST_SELECTION「host 不注册工具」语义转正给
+ *  local；显式 host 选定仍走 null 不注册）。 */
 export function resolveSessionEnv(dir: string): EnvironmentEntry | null {
   const store = loadSelectionStore();
   const findEntry = (d: string): EnvironmentEntry | null => {
     const selection = getWorkspaceSelection(store, d);
     if (selection.kind !== 'env') return null;
-    return findEnvironmentEntry(listEnvironments(loadConfig()), selection.id) ?? null;
+    return findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), selection.id) ?? null;
   };
   const entry = findEntry(dir);
   if (entry) return entry;
@@ -248,7 +251,8 @@ export function resolveSessionEnvKey(dir: string): string {
     if (!record) return null; // 该形态无记录 → 回退另一形态
     const selection = record.selection;
     // env 选定但条目已删(悬空)→ 回退另一形态,与 resolveSessionEnv 同坑
-    if (selection.kind === 'env' && !findEnvironmentEntry(listEnvironments(loadConfig()), selection.id)) {
+    // （内置 local 条目随 listEnvironmentsWithBuiltin 在场,不判悬空）
+    if (selection.kind === 'env' && !findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), selection.id)) {
       return null;
     }
     return envKeyForSelection(selection);
@@ -277,7 +281,7 @@ export function resolveSessionEnvAnchor(dir: string): {
   const pick = (d: string): ReturnType<typeof resolveSessionEnvAnchor> => {
     const selection = getWorkspaceSelection(store, d);
     if (selection.kind === 'env') {
-      const entry = findEnvironmentEntry(listEnvironments(loadConfig()), selection.id);
+      const entry = findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), selection.id);
       return entry
         ? { kind: 'env', id: entry.id, name: entry.name ?? entry.id, type: entry.kind }
         : null;
@@ -372,7 +376,8 @@ async function reapBgOnLifecyclePoint(
 ): Promise<void> {
   const registry = getBgRegistry();
   if (!registry) return;
-  const envList = listEnvironments(loadConfig());
+  // 1.7.8：含内置本机条目——local 线上起的 bg 进程回收时按 id 找得到条目。
+  const envList = listEnvironmentsWithBuiltin(loadConfig());
   const doBroadcast = opts.broadcast ?? true;
   await reapAllBgProcesses({
     registry,
@@ -647,7 +652,7 @@ class ChatEngine {
     try {
       return await resolveChatRefs(parsed, {
         env: resolveSessionEnv(this.agentDir),
-        environments: listEnvironments(loadConfig()),
+        environments: listEnvironmentsWithBuiltin(loadConfig()),
       });
     } catch (err) {
       console.warn('[pi-engine] refs 解析失败(按无 refs 发送):', err);
@@ -1596,7 +1601,7 @@ class ChatEngine {
       return { text: '', error: PI_NO_PROVIDER_ERROR, loopSessionId };
     }
     const env = options.envKey
-      ? findEnvironmentEntry(listEnvironments(loadConfig()), options.envKey) ?? null
+      ? findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), options.envKey) ?? null
       : resolveSessionEnv(this.agentDir);
     // 1.2.7(域补丁):与交互 turn 同——域判定一次算出,执行栈与系统提示共用。
     const scenario = options.scenario ?? resolvePiScenario();
@@ -1968,7 +1973,7 @@ class ChatEngine {
    */
   private productionCampaignDeps(): CampaignRuntimeDeps {
     return {
-      findEnv: (envId) => findEnvironmentEntry(listEnvironments(loadConfig()), envId) ?? null,
+      findEnv: (envId) => findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), envId) ?? null,
       envExec: (entry, command, timeoutMs) => execInEnvironment(entry, command, { timeoutMs }),
       invokeRound: async ({ text, loopSessionId }) => {
         const r = await this.invokePiSession({ text }, { loopSessionId });

@@ -91,17 +91,24 @@ export const CONTROL_PERSIST = '10m';
 
 /**
  * EnvironmentEntry → 执行通道。
+ * - kind local：宿主机直 spawn（win32 无 ControlMaster/ssh 问题；design
+ *   §2 本地研究环境）——命令经 OS 家族包装（windows → powershell
+ *   EncodedCommand，与 ssh 通道的远端包装同一口径）。
  * - kind ssh：host 必填（registry 校验保证；防御性再查一次）。
  * - kind vm：有 address → ssh；无 address（断网隔离）→ guest 通道
  *   （vmrun runProgramInGuest,经 vmGuestExec）。两者都没有 → 「环境未就绪」。
  * - kind docker：container 必填；执行走 docker exec(无 ssh)。
  */
 export type ExecTarget =
+  | { channel: 'local' }
   | { channel: 'ssh'; target: SshTarget }
   | { channel: 'docker'; container: string }
   | { channel: 'guest'; entry: EnvironmentEntry };
 
 export function resolveExecTarget(entry: EnvironmentEntry): EnvResult<{ execTarget: ExecTarget }> {
+  if (entry.kind === 'local') {
+    return { ok: true, execTarget: { channel: 'local' } };
+  }
   if (entry.kind === 'docker') {
     if (!entry.container) {
       return { ok: false, error: `环境 "${entry.id}" 缺少 container 字段(docker 条目的定位锚)` };
@@ -137,6 +144,39 @@ export function resolvePasswordRef(ref: string | undefined): string | null {
  *  argv 单参数传入,不读 stdin)。 */
 export function buildDockerExecArgv(container: string, command: string): string[] {
   return ['docker', 'exec', container, 'bash', '-lc', command];
+}
+
+/**
+ * 1.7.8 本机执行 argv（kind='local'，纯函数）：宿主机直 spawn，无 ssh。
+ * OS 家族分派与 buildSshArgv 的远端包装完全同一口径——windows →
+ * powershell -EncodedCommand(psShellWrapper：cmd /c + $LASTEXITCODE 透传)；
+ * linux → bash -c（本地研究环境定位是 Windows 宿主，linux 分支只为
+ * 家族函数的完备性）。
+ *
+ * 与 ssh/docker 通道不同：local 的 argv 直接就是 spawn 参数表，**超时杀
+ * 包装在此内部按 argv 组装**（buildWindowsTimeoutEncodedCommand 的载荷
+ * 作 -EncodedCommand 值）——不能复用 ssh 通道「整条命令行塞进末位元素、
+ * 远端 shell 再解析」的口径（那会把 wrapper 当成 powershell 的一个参数）。
+ * timeoutMs 缺省 = 不包（调用方测试/裸用）。
+ */
+export function buildLocalExecArgv(
+  command: string,
+  family: 'linux' | 'windows' = 'windows',
+  timeoutMs?: number,
+): string[] {
+  if (family === 'windows') {
+    if (timeoutMs !== undefined) {
+      return [
+        'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+        '-EncodedCommand', buildWindowsTimeoutEncodedCommand(command, timeoutMs),
+      ];
+    }
+    return ['powershell', '-NoProfile', '-EncodedCommand', psEncode(psShellWrapper(command))];
+  }
+  if (timeoutMs !== undefined) {
+    return ['bash', '-c', buildRemoteTimeoutWrapper(command, timeoutMs, 'linux')];
+  }
+  return ['bash', '-c', command];
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +287,15 @@ export function buildPtySpawnSpec(
       spec: { file: 'docker', args: buildPtyDockerExecArgv(resolved.execTarget.container, family), family },
     };
   }
+  if (resolved.execTarget.channel === 'local') {
+    // 1.7.8：宿主 PTY（design §2——交互式 WinDbg/cdb 会话的落点）。
+    // windows 家族直接 cmd.exe（无参数即交互 shell）；linux 家族走
+    // bash 回退链（与 docker linux 容器同形状，单元素脚本）。
+    if (family === 'windows') {
+      return { ok: true, spec: { file: 'cmd.exe', args: [], family } };
+    }
+    return { ok: true, spec: { file: 'sh', args: ['-c', LINUX_INTERACTIVE_SHELL_SCRIPT], family } };
+  }
   return {
     ok: true,
     spec: { file: 'ssh', args: buildPtySshArgv(resolved.execTarget.target, family, opts), family },
@@ -262,6 +311,9 @@ export function buildPtySpawnSpec(
 export function resolveSshTarget(entry: EnvironmentEntry): EnvResult<{ target: SshTarget }> {
   if (entry.kind === 'docker') {
     return { ok: false, error: `环境 "${entry.id}" 是 docker 类型——走 docker exec 通道(resolveExecTarget),不走 ssh` };
+  }
+  if (entry.kind === 'local') {
+    return { ok: false, error: `环境 "${entry.id}" 是本机条目——宿主机直 spawn(resolveExecTarget 的 local 通道),不走 ssh` };
   }
   const host = entry.kind === 'vm' ? entry.address : entry.host;
   if (!host) {
@@ -474,26 +526,36 @@ export function resetExecTimeoutStreaksForTests(): void {
  * 语义），退出码经 $LASTEXITCODE 透传；超时按 1 标记并打标记行。
  * guest 通道（vmrun runProgramInGuest 等 Tools 自然终结）不包。
  */
+/**
+ * windows 超时杀包装的 -EncodedCommand 载荷（utf16le-b64 的引导脚本）。
+ * 三层 base64（os-family 双封装纪律的延伸）——任何引号层都不破：
+ * ① 用户命令 base64 嵌进作业体；② 作业体整体 base64（$LASTEXITCODE 必须
+ * 到作业内才解析，外层的 PS 字符串插值会提前吃掉它）；③ 引导脚本整体
+ * utf16le-base64 给 -EncodedCommand。作业不传播子进程退出码——退出码由
+ * 作业体落临时文件，外侧读回透传（PS 5.1 无 ??，别走 ChildJobs.ExitCode）。
+ * 独立成函数：local 通道直 spawn 时按 argv 组装（buildLocalExecArgv），
+ * 不走 ssh 的「整条命令行一个元素」口径。
+ */
+export function buildWindowsTimeoutEncodedCommand(command: string, timeoutMs: number): string {
+  const secs = Math.max(1, Math.ceil(timeoutMs / 1000));
+  const codeFile = `C:\\Windows\\Temp\\zhishi-exec-${Math.random().toString(36).slice(2, 10)}.code`;
+  const jobBody =
+    `$b='${psEmbedCommand(command)}';` +
+    '$c=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b));' +
+    'cmd /c $c;' +
+    `[IO.File]::WriteAllText('${codeFile}', "$LASTEXITCODE")`;
+  const inner =
+    `$body=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${psEmbedCommand(jobBody)}'));` +
+    '$j=Start-Job -ScriptBlock ([ScriptBlock]::Create($body));' +
+    `if (Wait-Job $j -Timeout ${secs}) { Receive-Job $j; Remove-Job $j -Force; if (Test-Path '${codeFile}') { exit [int](Get-Content '${codeFile}') } else { exit 0 } } ` +
+    `else { Stop-Job $j; Remove-Job $j -Force; Write-Output '[zhishi-timeout] 远端超时被强杀'; exit 1 }`;
+  return psEncode(inner);
+}
+
 export function buildRemoteTimeoutWrapper(command: string, timeoutMs: number, family: 'linux' | 'windows' = 'linux'): string {
   const secs = Math.max(1, Math.ceil(timeoutMs / 1000));
   if (family === 'windows') {
-    // 三层 base64（os-family 双封装纪律的延伸）——任何引号层都不破：
-    // ① 用户命令 base64 嵌进作业体；② 作业体整体 base64（$LASTEXITCODE 必须
-    // 到作业内才解析，外层的 PS 字符串插值会提前吃掉它）；③ 引导脚本整体
-    // utf16le-base64 给 -EncodedCommand。作业不传播子进程退出码——退出码由
-    // 作业体落临时文件，外侧读回透传（PS 5.1 无 ??，别走 ChildJobs.ExitCode）。
-    const codeFile = `C:\\Windows\\Temp\\zhishi-exec-${Math.random().toString(36).slice(2, 10)}.code`;
-    const jobBody =
-      `$b='${psEmbedCommand(command)}';` +
-      '$c=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b));' +
-      'cmd /c $c;' +
-      `[IO.File]::WriteAllText('${codeFile}', "$LASTEXITCODE")`;
-    const inner =
-      `$body=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${psEmbedCommand(jobBody)}'));` +
-      '$j=Start-Job -ScriptBlock ([ScriptBlock]::Create($body));' +
-      `if (Wait-Job $j -Timeout ${secs}) { Receive-Job $j; Remove-Job $j -Force; if (Test-Path '${codeFile}') { exit [int](Get-Content '${codeFile}') } else { exit 0 } } ` +
-      `else { Stop-Job $j; Remove-Job $j -Force; Write-Output '[zhishi-timeout] 远端超时被强杀'; exit 1 }`;
-    return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${psEncode(inner)}`;
+    return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${buildWindowsTimeoutEncodedCommand(command, timeoutMs)}`;
   }
   const b64 = Buffer.from(command, 'utf8').toString('base64');
   return `timeout -k 5 ${secs}s bash -c "$(echo ${b64} | base64 -d)"`;
@@ -536,20 +598,33 @@ export async function execInEnvironment(
     }
   }
 
+  const family = osFamilyOf(entry);
+  // 1.7.8：local 通道的超时杀包装在 buildLocalExecArgv 内部按 argv 组装
+  // （见该函数注释——直 spawn 没有「远端 shell 再解析一步」的口径可用），
+  // 故 local 跳过下方 ssh/docker 的末位替换。
+  const isLocal = execTarget.channel === 'local';
   const argv = execTarget.channel === 'docker'
     ? buildDockerExecArgv(execTarget.container, command)
-    : buildSshArgv(execTarget.target, command, {
-        controlMaster: options.controlMaster,
-        osFamily: osFamilyOf(entry),
-      });
+    : isLocal
+      ? buildLocalExecArgv(command, family, timeoutMs)
+      : buildSshArgv(execTarget.target, command, {
+          controlMaster: options.controlMaster,
+          osFamily: family,
+        });
 
   // 1.6.9 #2：远端超时杀——本地超时只杀宿主 CLI，远端进程照跑（实机事故：
   // 容器内 runaway 进程拖死 docker API，通道自堵 76 分钟）。远端侧包装让
   // 进程到点即死；本地超时留 +10s 余量（远端先答，本地兜底）。
-  const family = osFamilyOf(entry);
-  const wrappedCommand = buildRemoteTimeoutWrapper(command, timeoutMs, family);
-  const wrappedArgv = [...argv];
-  wrappedArgv[wrappedArgv.length - 1] = wrappedCommand; // 两 builder 的命令都在末位
+  // 1.7.8：local 通道同一包装语义——windows 作业包装的 Start-Job 脱离
+  // 调用会话，宿主话里跑的 runaway 一样到点被杀（组装点见上）。
+  const wrappedArgv = isLocal
+    ? argv
+    : (() => {
+        const wrappedCommand = buildRemoteTimeoutWrapper(command, timeoutMs, family);
+        const next = [...argv];
+        next[next.length - 1] = wrappedCommand; // ssh/docker builder 的命令都在末位
+        return next;
+      })();
 
   let result: EnvExecProcessResult;
   try {

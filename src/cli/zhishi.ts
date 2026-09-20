@@ -118,7 +118,10 @@ Examples:
   zhishi model set-key deepseek sk-xxx
   zhishi env engines                        # probe docker/hypervisors/ssh + install guidance
   zhishi env install docker|hyperv          # auto-install a missing engine (download + verify + launch / dism)
-  zhishi env list                           # named environments (id/kind/target/user)
+  zhishi env install msvc-build-tools|windows-sdk|windbg
+                                            # 1.7.8 本机工具链补装（winget 官方源半自动，人点触发；宿主选定 local 后的缺失项）
+  zhishi env probe local                    # 1.7.8 重推环境能力（本机 = vswhere MSVC/clang/cdb/WinDbg/python/git/WSL/符号路径）
+  zhishi env list                           # named environments (id/kind/target/user)——含内置本机条目 local
   zhishi env add --kind ssh --id dev-box --host 10.0.0.8 --user root --key-path ~/.ssh/id_ed25519
                                             # 1.5.10 起还可透传 --recipe-ids a,b --os-family linux|windows --vmx <模板.vmx>
                                             # 1.6.5：缺 --key-path 时现场输入一次登录密码即可自动配置密钥（密码不落盘）
@@ -356,6 +359,24 @@ if (!result.success) {
     if (data.alreadyAvailable) console.log(`${String(data.engine ?? '')}: 已就绪`);
     if (data.installerPath) console.log(`installer: ${String(data.installerPath)}`);
     if (data.message) console.log(String(data.message));
+    return;
+  }
+  if (group === 'env' && action === 'probe') {
+    // 1.7.8 能力重推结果：能力集合 + 本机工具链 OK/MISS（local 条目）。
+    const data = (result.data as {
+      id?: string;
+      capabilityDomains?: string[];
+      capabilityDerivedAt?: string;
+      localToolchain?: { present: string[]; missing: string[] };
+    }) ?? {};
+    console.log(`env: ${String(data.id ?? '')}（探测于 ${String(data.capabilityDerivedAt ?? '?')}）`);
+    if (Array.isArray(data.capabilityDomains)) {
+      console.log(`能力集合: ${data.capabilityDomains.join(' · ') || '（空）'}`);
+    }
+    if (data.localToolchain) {
+      console.log(`本机工具链在场: ${data.localToolchain.present.join('、') || '（无）'}`);
+      console.log(`本机工具链缺失: ${data.localToolchain.missing.join('、') || '（无）'}`);
+    }
     return;
   }
   if (group === 'env' && action === 'list') {
@@ -775,7 +796,9 @@ function printEnvList(environments: Array<Record<string, unknown>>): void {
   console.log(pad('ID', 18) + pad('KIND', 9) + pad('TARGET', 30) + 'USER');
   for (const env of environments) {
     const kind = String(env.kind ?? '');
-    const target = kind === 'vm'
+    const target = kind === 'local'
+      ? '(Windows 宿主本机)'
+      : kind === 'vm'
       ? `${String(env.vmName ?? '')}${env.address ? ` (${String(env.address)})` : ''}`
       : String(env.host ?? env.container ?? '');
     console.log(
@@ -1794,6 +1817,11 @@ function buildRoute(group: string, action: string, _rest: string[]): string {
   if (group === 'env' && action === 'remove') {
     return 'environment/rm';
   }
+  // 1.7.8：`env probe <id>` = 能力重推（environment/capability-refresh 的
+  // CLI 正门——本机条目 local 的 vswhere/工具链探测入口）。
+  if (group === 'env' && action === 'probe') {
+    return 'environment/capability-refresh';
+  }
   if (group === 'env') {
     return `environment/${action}`;
   }
@@ -2037,7 +2065,12 @@ function buildRequestBody(
     if (action === 'engines') return { forceFresh: flags.fresh === true };
     if (action === 'install') {
       // 引擎自动安装引导（P1 E1b）：zhishi env install docker|hyperv
+      // 1.7.8：+ msvc-build-tools|windows-sdk|windbg（本机工具链 winget 补装）。
       return { engine: requirePositional(rest[0] ?? (flags.engine as string | undefined), 'engine', 'env install', 'engine') };
+    }
+    if (action === 'probe') {
+      // 1.7.8 能力重推：zhishi env probe <id>（本机 = local）。
+      return { id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'id', 'env probe', 'id') };
     }
     if (action === 'list') return {};
     if (action === 'recipes') return {};

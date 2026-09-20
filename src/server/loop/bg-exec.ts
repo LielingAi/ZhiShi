@@ -23,8 +23,11 @@ import { execInEnvironment, resolveExecTarget, type EnvExec } from './env-exec';
 
 export const ENV_BG_TOOL_NAME = 'env_bg';
 export const BG_DIR = '/tmp/zhishi-bg';
-/** Windows 侧的后台目录(ProgramData 全用户可写)。 */
-export const BG_DIR_WIN = 'C:\\ProgramData\\zhishi-bg';
+/** Windows 侧的后台真相目录（%ProgramData%\zhishi-bg——1.7.8 起从环境
+ *  变量取 ProgramData 本体，重定向过 ProgramData 的宿主不落错盘；缺省
+ *  C:\ProgramData 与历史硬编码同形）。os-family.ts 的 windows 家族包装
+ *  复用本目录：kind='local' 条目 osFamily=windows，bg 命令自然落到此。 */
+export const BG_DIR_WIN = `${process.env.ProgramData ?? 'C:\\ProgramData'}\\zhishi-bg`;
 export const BG_TAG_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const DEFAULT_LOG_LIMIT = 8192;
 
@@ -299,12 +302,14 @@ export function parseBgList(stdout: string): BgListEntry[] {
 // 编排（薄包 execInEnvironment；ssh/docker 同一条路径）
 // ---------------------------------------------------------------------------
 
-function bgEntryOk(entry: EnvironmentEntry): { channel: 'ssh' | 'docker' } | { error: string } {
+function bgEntryOk(entry: EnvironmentEntry): { channel: 'ssh' | 'docker' | 'local' } | { error: string } {
   const resolved = resolveExecTarget(entry);
   if (!resolved.ok) return { error: resolved.error };
   if (resolved.execTarget.channel === 'guest') {
     return { error: 'env_bg 后台通道暂不支持 guest-exec（断网 VM），见 docs/spec/env-bg-design.md §5 三通道矩阵' };
   }
+  // 1.7.8：local 与 ssh/docker 同走 execInEnvironment 编排——windows 家族
+  // 真相文件落 %ProgramData%\zhishi-bg（BG_DIR_WIN，os-family 包装复用）。
   return { channel: resolved.execTarget.channel };
 }
 
