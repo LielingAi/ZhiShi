@@ -12,9 +12,12 @@ import { describe, expect, it } from 'vitest';
 import type { EnvironmentEntry } from '../../shared/config-types';
 import {
   addEnvironmentEntry,
+  builtinLocalEntry,
   envTagForEntry,
   findEnvironmentEntry,
+  hasLocalEnvironment,
   listEnvironments,
+  listEnvironmentsWithBuiltin,
   removeEnvironmentEntry,
   renameEnvironmentEntry,
   resolveEnvOpenCommand,
@@ -331,6 +334,72 @@ describe('legacy config compatibility (no environments field)', () => {
 
     const removed = removeEnvironmentEntry(undefined, 'dev-box');
     expect(removed.ok).toBe(false);
+  });
+});
+
+describe('1.7.8 内置本机条目（kind=local）', () => {
+  it('builtinLocalEntry：id=local / kind=local / osFamily=windows / 无凭据字段', () => {
+    const e = builtinLocalEntry();
+    expect(e.id).toBe('local');
+    expect(e.kind).toBe('local');
+    expect(e.osFamily).toBe('windows');
+    expect(e.keyPath).toBeUndefined();
+    expect(e.passwordRef).toBeUndefined();
+    expect(e.host).toBeUndefined();
+    expect(e.name).toBeTruthy();
+  });
+
+  it('listEnvironmentsWithBuiltin：空配置 → 只含内置条目；有条目 → 内置置顶', () => {
+    const empty = listEnvironmentsWithBuiltin({});
+    expect(empty).toHaveLength(1);
+    expect(empty[0]!.id).toBe('local');
+
+    const withEntries = listEnvironmentsWithBuiltin({ environments: [sshEntry()] });
+    expect(withEntries.map((e) => e.id)).toEqual(['local', 'dev-box']);
+  });
+
+  it('listEnvironmentsWithBuiltin：config 已含 local（物化副本）→ 不重复出现', () => {
+    const materialized = { ...builtinLocalEntry(), capabilityDomains: ['binary'] };
+    const list = listEnvironmentsWithBuiltin({ environments: [sshEntry(), materialized] });
+    expect(list.filter((e) => e.id === 'local')).toHaveLength(1);
+    // 落盘副本优先（状态字段不丢）。
+    expect(list.find((e) => e.id === 'local')!.capabilityDomains).toEqual(['binary']);
+  });
+
+  it('listEnvironments（写回口径）不含内置条目——add 不把它 persisted 进 config', () => {
+    const config: Record<string, unknown> = {};
+    const listed = listEnvironments(config);
+    expect(listed).toEqual([]);
+    expect(hasLocalEnvironment(listed)).toBe(false);
+    // add 流程基于 listEnvironments 的原始口径：virtual 条目不进 config。
+    const added = addEnvironmentEntry(listed, sshEntry());
+    expect(added.ok).toBe(true);
+    if (added.ok) expect(added.entries.some((e) => e.kind === 'local')).toBe(false);
+  });
+
+  it('validateEnvironmentEntry：kind=local 被拒（内置不经 add 流程）', () => {
+    const r = validateEnvironmentEntry({ id: 'local', kind: 'local' });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain('kind');
+      expect(r.error).toContain('ssh');
+    }
+  });
+
+  it('envTagForEntry：local → local（宿主即环境）', () => {
+    expect(envTagForEntry(builtinLocalEntry())).toBe('local');
+  });
+
+  it('resolveEnvOpenCommand：local → cmd.exe（宿主 PTY）', () => {
+    const r = resolveEnvOpenCommand(builtinLocalEntry());
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.cmd).toBe('cmd.exe');
+  });
+
+  it('findEnvironmentEntry 在伴随清单里按 id 找到内置条目', () => {
+    const list = listEnvironmentsWithBuiltin({ environments: [sshEntry()] });
+    expect(findEnvironmentEntry(list, 'local')?.kind).toBe('local');
+    expect(findEnvironmentEntry(list, 'dev-box')?.kind).toBe('ssh');
   });
 });
 

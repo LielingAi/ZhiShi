@@ -12,6 +12,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import type { EnvironmentEntry } from '../../shared/config-types';
 import {
   buildDockerExecArgv,
+  buildLocalExecArgv,
   buildPtyDockerExecArgv,
   buildPtySpawnSpec,
   buildPtySshArgv,
@@ -450,6 +451,99 @@ describe('1.6.9 #2：远端超时杀包装 + 自堵检测', () => {
     if (!r.ok) {
       expect(r.error).toContain('堵死');
       expect(r.error).toContain('升级人');
+    }
+  });
+});
+
+describe('1.7.8 local 通道（Windows 宿主直 spawn）', () => {
+  const LOCAL_ENTRY: EnvironmentEntry = {
+    id: 'local',
+    kind: 'local',
+    osFamily: 'windows',
+    createdAt: '',
+  };
+
+  it('resolveExecTarget:local → local 通道（无 ssh/docker 定位锚要求）', () => {
+    const r = resolveExecTarget(LOCAL_ENTRY);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.execTarget).toEqual({ channel: 'local' });
+  });
+
+  it('resolveSshTarget:local → 明确拒绝（不走 ssh）', () => {
+    const r = resolveSshTarget(LOCAL_ENTRY);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('local');
+  });
+
+  it('buildLocalExecArgv:windows → powershell EncodedCommand（psShellWrapper 口径）', () => {
+    const argv = buildLocalExecArgv('whoami /priv', 'windows');
+    expect(argv[0]).toBe('powershell');
+    expect(argv[1]).toBe('-NoProfile');
+    expect(argv[2]).toBe('-EncodedCommand');
+    // 载荷可解：psShellWrapper 的 cmd /c + 用户命令 base64。
+    const inner = Buffer.from(argv[3]!, 'base64').toString('utf16le');
+    expect(inner).toContain('cmd /c $c');
+    expect(inner).toContain('exit $LASTEXITCODE');
+    const b = /\$b='([A-Za-z0-9+/=]+)'/.exec(inner)?.[1];
+    expect(Buffer.from(b!, 'base64').toString('utf8')).toBe('whoami /priv');
+  });
+
+  it('buildLocalExecArgv:linux → bash -c（家族完备性）；带 timeoutMs → posix 超时杀包装', () => {
+    expect(buildLocalExecArgv('id', 'linux')).toEqual(['bash', '-c', 'id']);
+    const wrapped = buildLocalExecArgv('id', 'linux', 5000);
+    expect(wrapped[0]).toBe('bash');
+    expect(wrapped[1]).toBe('-c');
+    expect(wrapped[2]).toContain('timeout -k 5 5s');
+  });
+
+  it('execInEnvironment:local → 注入 exec 收到宿主 argv + 超时杀包装（argv 内部组装）', async () => {
+    const { exec, calls } = fakeExec({ exitCode: 0, stdout: 'desktop\\researcher\n', stderr: '' });
+    const r = await execInEnvironment(LOCAL_ENTRY, 'whoami', { exec });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.stdout).toBe('desktop\\researcher\n');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].argv[0]).toBe('powershell');
+    expect(calls[0].argv).toContain('-ExecutionPolicy');
+    expect(calls[0].argv).toContain('Bypass');
+    // 末位 = 作业超时杀包装的 EncodedCommand 载荷（不再是「整条命令行一个
+    // 元素」——local 直 spawn 按 argv 组装）。
+    const last = calls[0].argv[calls[0].argv.length - 1]!;
+    expect(last).not.toContain(' ');
+    const inner = Buffer.from(last, 'base64').toString('utf16le');
+    expect(inner).toContain('Start-Job');
+    expect(inner).toContain('Wait-Job $j -Timeout 120'); // DEFAULT_TIMEOUT_MS 预算
+    // 三层结构：inner → jobBody → 用户命令。
+    const bodyB64 = /FromBase64String\('([A-Za-z0-9+/=]+)'\)/.exec(inner)?.[1];
+    const jobBody = Buffer.from(bodyB64!, 'base64').toString('utf8');
+    const b = /\$b='([A-Za-z0-9+/=]+)'/.exec(jobBody)?.[1];
+    expect(Buffer.from(b!, 'base64').toString('utf8')).toBe('whoami');
+    // 本地超时 = 预算 + 10s 余量（与远端通道同一口径）。
+    expect(calls[0].timeoutMs).toBe(130_000);
+  });
+
+  it('execInEnvironment:local → 远端非零退出照样 ok:true 语义回传', async () => {
+    const { exec } = fakeExec({ exitCode: 9009, stderr: 'not recognized' });
+    const r = await execInEnvironment(LOCAL_ENTRY, 'bogus-cmd', { exec });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.exitCode).toBe(9009);
+  });
+
+  it('buildPtySpawnSpec:local windows → cmd.exe 宿主 PTY（交互式 WinDbg/cdb 会话落点）', () => {
+    const r = buildPtySpawnSpec(LOCAL_ENTRY);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.spec.file).toBe('cmd.exe');
+      expect(r.spec.args).toEqual([]);
+      expect(r.spec.family).toBe('windows');
+    }
+  });
+
+  it('buildPtySpawnSpec:local linux 家族 → sh -c bash 回退链', () => {
+    const r = buildPtySpawnSpec({ ...LOCAL_ENTRY, osFamily: 'linux' });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.spec.file).toBe('sh');
+      expect(r.spec.args).toEqual(['-c', '[ -x /bin/bash ] && exec /bin/bash; exec sh']);
     }
   });
 });

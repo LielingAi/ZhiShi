@@ -198,6 +198,26 @@ describe('buildSecurityCapabilitiesSection — 正常组装', () => {
     expect(section).toContain('当前环境：env:ghost（具名环境 ghost）');
   });
 
+  it('1.7.8 本机现场：本机工具链探测行（在场/缺失 + 补装指引）呈现给模型', () => {
+    const section = buildSecurityCapabilitiesSection(data({
+      engines: enginesReport(['ssh']),
+      environments: [
+        {
+          id: 'local',
+          kind: 'local',
+          osFamily: 'windows',
+          createdAt: '',
+          localToolchain: { present: ['msvc', 'cdb'], missing: ['windbg'], checkedAt: '2026-09-20T00:00:00Z' },
+        },
+      ],
+      selection: { kind: 'env', id: 'local' },
+    }));
+    expect(section).toContain('当前环境：local（具名环境 local）');
+    expect(section).toContain('本机工具链（探测于 2026-09-20T00:00:00Z）：在场 msvc、cdb');
+    expect(section).toContain('缺失 windbg');
+    expect(section).toContain('zhishi env install msvc-build-tools | windows-sdk | windbg');
+  });
+
   it('无任何可用引擎时明示（现场暂开不起来）', () => {
     const section = buildSecurityCapabilitiesSection(data({
       recipes: [recipe('dev', ['clang'])],
@@ -243,7 +263,10 @@ describe('collectSecurityCapabilities', () => {
     });
     expect(result.engines.hasContainerEngine).toBe(true);
     expect(result.recipes).toEqual([]);
-    expect(result.environments).toEqual([SSH_ENV]);
+    // 1.7.8：能力数据源含内置本机条目（置顶，config 无 'local' 时以虚拟条目出现）。
+    expect(result.environments).toHaveLength(2);
+    expect(result.environments[0]).toMatchObject({ id: 'local', kind: 'local', osFamily: 'windows' });
+    expect(result.environments[1]).toEqual(SSH_ENV);
     expect(result.selection).toEqual({ kind: 'host' });
   });
 });

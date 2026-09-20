@@ -23,6 +23,7 @@
  */
 
 import type { EnvironmentEntry } from '../../shared/config-types';
+import { requestBoundaryAsk } from './boundary-ask';
 import { resolveExecTarget } from './env-exec';
 import { ENV_BG_TOOL_NAME } from './bg-exec';
 import { ENV_EXEC_TOOL_NAME } from './tools';
@@ -114,6 +115,33 @@ export const CREDENTIAL_LEAK_PATTERNS: ReadonlyArray<{ pattern: RegExp; label: s
   { pattern: /providerApiKeys/i, label: 'providerApiKeys 凭据字段' },
 ];
 
+/**
+ * 1.7.8 system-config 越界模式（design §4，数据驱动数组）——宿主
+ * **持久全局变更**命令：编译/PoC/调试/workspace 内文件写读全自动放行，
+ * 但这些动作改的是整机状态、无快照可回滚，逐次问人、无「永远允许」。
+ * 只在 local 通道生效（别的环境改的是环境内，宿主全局不受影响）;
+ * net-policy 语义并入本类（netsh advfirewall 在内）。
+ */
+export const SYSTEM_CONFIG_PATTERNS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
+  { pattern: /\bbcdedit\b/i, label: 'bcdedit（启动配置）' },
+  { pattern: /\breg\s+add\s+"?HKLM/i, label: 'reg add HKLM（注册表本机根写入）' },
+  { pattern: /\bSet-ProcessMitigation\b/i, label: 'Set-ProcessMitigation（系统缓解策略）' },
+  { pattern: /\bSet-MpPreference\b/i, label: 'Set-MpPreference（Defender 全局偏好）' },
+  { pattern: /\bnetsh\s+advfirewall\b/i, label: 'netsh advfirewall（防火墙策略）' },
+  { pattern: /\bsc\s+config\b/i, label: 'sc config（服务配置持久变更）' },
+  // wevtutil cl 的同一语义长形（清事件日志）一并收编。
+  { pattern: /\bwevtutil\s+(cl|clear-log)\b/i, label: 'wevtutil cl（清事件日志）' },
+  { pattern: /\bwinget\s+install\b/i, label: 'winget install（装软件，人点补装除外）' },
+];
+
+/** 命令文本 → 首个命中的 system-config 标签；未命中 → undefined（纯函数）。 */
+export function detectSystemConfigChange(command: string): string | undefined {
+  for (const { pattern, label } of SYSTEM_CONFIG_PATTERNS) {
+    if (pattern.test(command)) return label;
+  }
+  return undefined;
+}
+
 /** c. 凭据不泄进环境(D14)。 */
 export function credentialLeakRule(): BoundaryRule {
   return {
@@ -135,6 +163,11 @@ export function credentialLeakRule(): BoundaryRule {
 export interface DefaultBoundaryOptions {
   /** 当前 loop 注册的工具名(默认仅 env_exec)。 */
   allowedTools?: string[];
+  /**
+   * 1.7.8：system-config ask 的广播函数（测试注入假广播捕获 ask 并应答）；
+   * 缺省 = boundary-ask 的 sse.broadcast。
+   */
+  broadcast?: (event: string, data: unknown) => void;
 }
 
 /** v1 默认规则集(就这三条,别扩)。 */
@@ -154,6 +187,12 @@ export function buildDefaultBoundaryRules(options: DefaultBoundaryOptions = {}):
  * 组装 runLoop 的 beforeToolCall 边界钩子。deny → { block:true, reason }
  * (pi 回注模型);allow → undefined(放行)。规则求值绝不 throw——
  * 规则异常按 deny 处理(硬闸宁可错杀)。
+ *
+ * 1.7.8 local 通道的 system-config 闸：同步规则全过后,若本 loop 锚在
+ * 本机环境(env.kind === 'local')且命令命中持久全局变更模式 → 发
+ * boundary-ask(system-config)逐次问人——批准仅本次生效,拒绝/超时按
+ * deny 回注。ask 异常按 deny 处理(硬闸宁可错杀)。非 local 环境不触发
+ * (环境内的持久变更不影响宿主,照旧全自动)。
  */
 export function makeBoundaryHook(
   env: EnvironmentEntry | null,
@@ -173,6 +212,40 @@ export function makeBoundaryHook(
     if (decision.decision === 'deny') {
       console.warn(`[boundary] deny ${toolCall.name}: ${decision.reason}`);
       return { block: true, reason: decision.reason };
+    }
+    if (
+      env?.kind === 'local' &&
+      (toolCall.name === ENV_EXEC_TOOL_NAME || toolCall.name === ENV_BG_TOOL_NAME)
+    ) {
+      const command = (args as { command?: unknown } | undefined)?.command;
+      if (typeof command === 'string') {
+        const hit = detectSystemConfigChange(command);
+        if (hit) {
+          console.warn(`[boundary] system-config ask ${toolCall.name}: ${hit}`);
+          let approved = false;
+          try {
+            approved = await requestBoundaryAsk(
+              {
+                kind: 'system-config',
+                objects: [hit, command.length > 200 ? `${command.slice(0, 200)}…` : command],
+                toolName: toolCall.name,
+                toolDescription: '命令将改变宿主系统配置（持久全局变更，无快照可回滚）',
+                options: ['批准（仅本次）', '拒绝'],
+              },
+              options.broadcast,
+            );
+          } catch (err) {
+            console.warn(`[boundary] system-config ask 异常,按 deny 处理:${err instanceof Error ? err.message : String(err)}`);
+            approved = false;
+          }
+          if (!approved) {
+            return {
+              block: true,
+              reason: `[boundary:system-config] 命令命中宿主系统配置变更(${hit})——人未批准或已超时,已拦截(D14:持久全局变更逐次问、无「永远允许」)。`,
+            };
+          }
+        }
+      }
     }
     return undefined;
   };

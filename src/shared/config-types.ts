@@ -909,9 +909,11 @@ export interface VmTemplateEntry {
 
 
 
-/** 环境条目 kind：ssh=远程主机；docker=本地容器；vm=hypervisor 虚拟机。 */
+/** 环境条目 kind：ssh=远程主机；docker=本地容器；vm=hypervisor 虚拟机；
+ *  local=Windows 宿主机（1.7.8 内置条目，不经 add 流程登记——见
+ *  registry.ts 的 builtinLocalEntry/listEnvironmentsWithBuiltin）。 */
 
-export type EnvironmentKind = 'ssh' | 'docker' | 'vm';
+export type EnvironmentKind = 'ssh' | 'docker' | 'vm' | 'local';
 
 
 
@@ -1030,6 +1032,14 @@ export interface EnvironmentEntry {
    *  （空则删字段）。与 capabilityMissing 同一纪律：探测失败不动本字段。 */
 
   capabilityPending?: string[];
+
+  /** 本机工具链探测结果（1.7.8，仅 kind='local' 条目）：vswhere MSVC /
+   *  clang / cdb / WinDbg / python / git / WSL / _NT_SYMBOL_PATH 的 OK/MISS
+   *  清单（capability-derive 的批量探测协议）。宿主条目是内置虚拟条目、
+   *  平时不落 config——本字段随首次探测刷新物化进 config.json（此后 list
+   *  用落盘副本）。普通条目不写本字段。 */
+
+  localToolchain?: { present: string[]; missing: string[]; checkedAt: string };
 
   /** ISO 时间戳，server 侧写入时盖章。 */
 

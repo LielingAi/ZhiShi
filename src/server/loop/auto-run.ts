@@ -44,7 +44,7 @@ import { invokePiSession, getPiAgentState, getEnvSessionBinding } from './chat-e
 import { appendLoopMessages, loadLoopSession, newLoopSessionId } from './session';
 import { loadArchive } from './archive';
 import { getResearchEventById, listResearchEvents } from '../memory/store';
-import { findEnvironmentEntry, listEnvironments } from '../environment/registry';
+import { findEnvironmentEntry, listEnvironmentsWithBuiltin } from '../environment/registry';
 import { envKeyForSelection } from '../environment/env-sessions';
 import { loadConfig } from '../utils/admin-config';
 import { workspacePathsEqual } from '../../shared/workspacePath';
@@ -876,7 +876,8 @@ export async function startAutoRun(
 ): Promise<AutoRunApiResult<{ id: string; record: AutoRunRecord }>> {
   await ensureOrphanRecovery(workspace);
   const validated = validateAutoRunStart(input, {
-    findEnv: (envKey) => findEnvironmentEntry(listEnvironments(loadConfig()), envKey),
+    // 1.7.8：含内置本机条目——local 选定的 workspace 跑 auto-run 时找得到条目。
+    findEnv: (envKey) => findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), envKey),
     loopSessionId: newLoopSessionId(),
   });
   if (!validated.ok) return { success: false, error: validated.error };

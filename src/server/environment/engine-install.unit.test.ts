@@ -16,11 +16,16 @@ import { afterAll, describe, expect, it } from 'vitest';
 import {
   DOCKER_DESKTOP_URL,
   DOCKER_INSTALLER_FILENAME,
+  LOCAL_TOOLCHAIN_INSTALLERS,
   buildDismEnableHyperVArgs,
   buildDockerVerifyArgs,
   buildElevatedCheckArgs,
+  buildWingetCheckArgs,
+  buildWingetInstallArgs,
   buildWslStatusArgs,
   installEngine,
+  installLocalToolchain,
+  isLocalToolchainKind,
   nonWindowsGuidance,
   parseDockerSignature,
   parseElevatedResult,
@@ -277,5 +282,125 @@ describe('installEngine 平台闸门', () => {
     const result = await installEngine('hyperv', { exec, platform: 'linux' });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain('仅 Windows');
+  });
+});
+
+
+describe('1.7.8 — 本机工具链 winget 补装（installLocalToolchain）', () => {
+  it('纯数据：三件套的 winget 官方源 id 与探测面', () => {
+    expect(LOCAL_TOOLCHAIN_INSTALLERS.map((s) => s.kind)).toEqual([
+      'msvc-build-tools', 'windows-sdk', 'windbg',
+    ]);
+    expect(LOCAL_TOOLCHAIN_INSTALLERS[0]!.wingetId).toBe('Microsoft.VisualStudio.2022.BuildTools');
+    expect(LOCAL_TOOLCHAIN_INSTALLERS[1]!.wingetId).toBe('Microsoft.WindowsSDK.10.0.26100');
+    expect(LOCAL_TOOLCHAIN_INSTALLERS[2]!.wingetId).toBe('Microsoft.WinDbg');
+    expect(isLocalToolchainKind('windbg')).toBe(true);
+    expect(isLocalToolchainKind('docker')).toBe(false);
+  });
+
+  it('buildWingetInstallArgs：--exact + 官方源 + 协议同意 + 禁交互', () => {
+    expect(buildWingetInstallArgs('Microsoft.WinDbg')).toEqual([
+      'winget', 'install',
+      '--exact', '--id', 'Microsoft.WinDbg',
+      '--source', 'winget',
+      '--accept-package-agreements',
+      '--accept-source-agreements',
+      '--disable-interactivity',
+    ]);
+  });
+
+  it('buildWingetCheckArgs：版本预检', () => {
+    expect(buildWingetCheckArgs()).toEqual(['winget', '--version']);
+  });
+
+  it('预检已装 → 短路「已就绪」，不碰 winget', async () => {
+    const { exec, calls } = scriptedExec([ok('01234567-abcd')]);
+    const result = await installLocalToolchain('msvc-build-tools', { exec, platform: 'win32' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.alreadyAvailable).toBe(true);
+      expect(result.kind).toBe('msvc-build-tools');
+    }
+    expect(calls).toHaveLength(1); // 只有 vswhere 预检
+    expect(calls[0]!.join(' ')).toContain('vswhere.exe');
+    expect(calls[0]!.join(' ')).toContain('cmd');
+  });
+
+  it('非 Windows 平台 → 明确拒绝，不执行任何命令', async () => {
+    const { exec, calls } = scriptedExec([fail()]);
+    const result = await installLocalToolchain('windbg', { exec, platform: 'darwin' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('Windows');
+    expect(calls).toHaveLength(1); // 预检之后即停（平台闸门）
+  });
+
+  it('winget 本体缺席 → 给 App Installer 指引', async () => {
+    const { exec, calls } = scriptedExec([
+      fail(), // vswhere 预检：未装
+      fail('winget 不是内部或外部命令'), // winget --version 失败
+    ]);
+    const result = await installLocalToolchain('windbg', { exec, platform: 'win32' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('应用安装程序');
+    expect(calls).toHaveLength(2);
+  });
+
+  it('非管理员 → 拦截并给管理员终端指引（hyperv 同款交互）', async () => {
+    const { exec, calls } = scriptedExec([
+      fail(), // 预检：未装
+      ok('v1.10.0'), // winget --version
+      ok('False'), // elevated 检查
+    ]);
+    const result = await installLocalToolchain('windows-sdk', { exec, platform: 'win32' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('管理员');
+      expect(result.error).toContain('zhishi env install windows-sdk');
+    }
+    expect(calls).toHaveLength(3); // 没走到 winget install
+  });
+
+  it('happy path：预检 → winget → elevated → install（官方源 argv）', async () => {
+    const { exec, calls } = scriptedExec([
+      fail(), // vswhere 预检：未装
+      ok('v1.10.0'), // winget --version
+      ok('True'), // elevated
+      ok('Successfully installed'), // winget install
+    ]);
+    const result = await installLocalToolchain('windbg', { exec, platform: 'win32' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.alreadyAvailable).toBeUndefined();
+      expect(result.message).toContain('Microsoft.WinDbg');
+    }
+    expect(calls).toHaveLength(4);
+    const installArgv = calls[3]!;
+    expect(installArgv[0]).toBe('winget');
+    expect(installArgv).toContain('--exact');
+    expect(installArgv).toContain('Microsoft.WinDbg');
+    expect(installArgv).toContain('--source');
+    expect(installArgv).toContain('winget');
+  });
+
+  it('winget install 非零退出 → 带人工下一步的错误（含手动命令）', async () => {
+    const { exec } = scriptedExec([
+      fail(),
+      ok('v1.10.0'),
+      ok('True'),
+      fail('0x8a15002b : 找不到匹配的包'),
+    ]);
+    const result = await installLocalToolchain('msvc-build-tools', { exec, platform: 'win32' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('winget 安装');
+      expect(result.error).toContain('Microsoft.VisualStudio.2022.BuildTools');
+    }
+  });
+
+  it('未知补装项 → 明确错误', async () => {
+    const { exec } = scriptedExec([]);
+    // @ts-expect-error 故意传入非法 kind
+    const result = await installLocalToolchain('not-a-thing', { exec });
+    expect(result.ok).toBe(false);
   });
 });

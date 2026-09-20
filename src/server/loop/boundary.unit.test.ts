@@ -4,18 +4,21 @@
  * 每条规则的正反例 + evaluateBoundary 求值语义 + makeBoundaryHook 的
  * pi beforeToolCall 接线(block/reason 语义)。规则是纯函数,无 I/O。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, afterEach } from 'vitest';
 
 import type { EnvironmentEntry } from '../../shared/config-types';
 import {
   buildDefaultBoundaryRules,
   credentialLeakRule,
+  detectSystemConfigChange,
   envReadyRule,
   evaluateBoundary,
   makeBoundaryHook,
   toolWhitelistRule,
+  SYSTEM_CONFIG_PATTERNS,
   type BoundaryContext,
 } from './boundary';
+import { clearBoundaryAsks, pendingBoundaryAsks, respondBoundaryAsk } from './boundary-ask';
 
 const VM_ENV: EnvironmentEntry = {
   id: 'pwn-vm',
@@ -25,6 +28,18 @@ const VM_ENV: EnvironmentEntry = {
   user: 'researcher',
   createdAt: '2026-01-01T00:00:00Z',
 };
+
+/** 1.7.8 内置本机条目形态（与 registry.builtinLocalEntry 同形）。 */
+const LOCAL_ENV: EnvironmentEntry = {
+  id: 'local',
+  kind: 'local',
+  osFamily: 'windows',
+  createdAt: '',
+};
+
+afterEach(() => {
+  clearBoundaryAsks();
+});
 
 function ctx(partial: Partial<BoundaryContext>): BoundaryContext {
   return { toolName: 'env_exec', args: { command: 'id' }, env: VM_ENV, ...partial };
@@ -181,5 +196,93 @@ describe('makeBoundaryHook(pi beforeToolCall 接线)', () => {
   it('自定义 allowedTools 生效', async () => {
     const wideHook = makeBoundaryHook(VM_ENV, { allowedTools: ['env_exec', 'read_file'] });
     expect(await wideHook(piCtx('read_file', {}))).toBeUndefined();
+  });
+});
+
+describe('system-config（1.7.8 local 通道越界 ask）', () => {
+  it('detectSystemConfigChange：八类持久全局变更逐项命中', () => {
+    expect(detectSystemConfigChange('bcdedit /set {current} testsigning on')).toContain('bcdedit');
+    expect(detectSystemConfigChange('reg add HKLM\\SYSTEM\\X /v y /d 1')).toContain('HKLM');
+    expect(detectSystemConfigChange('Set-ProcessMitigation -System -Enable DEP')).toContain('ProcessMitigation');
+    expect(detectSystemConfigChange('Set-MpPreference -DisableRealtimeMonitoring $true')).toContain('MpPreference');
+    expect(detectSystemConfigChange('netsh advfirewall set allprofiles state off')).toContain('advfirewall');
+    expect(detectSystemConfigChange('sc config wuauserv start= disabled')).toContain('sc config');
+    expect(detectSystemConfigChange('wevtutil cl System')).toContain('wevtutil');
+    expect(detectSystemConfigChange('winget install Microsoft.WinDbg')).toContain('winget');
+    expect(SYSTEM_CONFIG_PATTERNS).toHaveLength(8);
+  });
+
+  it('detectSystemConfigChange：编译/跑 PoC/调试/workspace 写读不命中（全自动面）', () => {
+    expect(detectSystemConfigChange('cl /EHsc poc.cpp')).toBeUndefined();
+    expect(detectSystemConfigChange('cdb -g target.exe')).toBeUndefined();
+    expect(detectSystemConfigChange('python fuzz.py')).toBeUndefined();
+    expect(detectSystemConfigChange('type README.md > out.txt')).toBeUndefined();
+  });
+
+  it('env-ready：local 条目（宿主机直 spawn 通道）→ 通过', () => {
+    expect(envReadyRule().check(ctx({ env: LOCAL_ENV }))).toBeUndefined();
+  });
+
+  it('local 环境命中 system-config → 发 ask；人批准 → 放行（仅本次）', async () => {
+    const sent: Array<{ event: string; data: unknown }> = [];
+    const hook = makeBoundaryHook(LOCAL_ENV, {
+      broadcast: (event, data) => sent.push({ event, data }),
+    });
+    const p = hook({
+      toolCall: { type: 'toolCall', id: 't1', name: 'env_exec', arguments: {} },
+      args: { command: 'bcdedit /set {current} testsigning on' },
+    } as never);
+    const ask = pendingBoundaryAsks().find((a) => a.kind === 'system-config');
+    expect(ask).toBeTruthy();
+    expect(sent.some((s) => s.event === 'chat:boundary-ask')).toBe(true);
+    expect(ask!.objects[0]).toContain('bcdedit');
+    respondBoundaryAsk(ask!.askId, true);
+    expect(await p).toBeUndefined();
+  });
+
+  it('local 环境命中 system-config → 人拒绝 → block 带 system-config 前缀', async () => {
+    const hook = makeBoundaryHook(LOCAL_ENV, { broadcast: () => {} });
+    const p = hook({
+      toolCall: { type: 'toolCall', id: 't1', name: 'env_exec', arguments: {} },
+      args: { command: 'netsh advfirewall set allprofiles state off' },
+    } as never);
+    const ask = pendingBoundaryAsks().find((a) => a.kind === 'system-config');
+    expect(ask).toBeTruthy();
+    respondBoundaryAsk(ask!.askId, false);
+    const r = await p;
+    expect(r?.block).toBe(true);
+    expect(r?.reason).toContain('[boundary:system-config]');
+  });
+
+  it('local 环境普通命令（编译）→ 不问直接放行', async () => {
+    const hook = makeBoundaryHook(LOCAL_ENV, { broadcast: () => {} });
+    const r = await hook({
+      toolCall: { type: 'toolCall', id: 't1', name: 'env_exec', arguments: {} },
+      args: { command: 'cl /EHsc poc.cpp' },
+    } as never);
+    expect(r).toBeUndefined();
+    expect(pendingBoundaryAsks()).toHaveLength(0);
+  });
+
+  it('env_bg 同受 system-config 闸约束；非 local 环境不触发', async () => {
+    const localHook = makeBoundaryHook(LOCAL_ENV, { broadcast: () => {} });
+    const p = localHook({
+      toolCall: { type: 'toolCall', id: 't1', name: 'env_bg', arguments: {} },
+      args: { command: 'winget install Foo.Bar' },
+    } as never);
+    const ask = pendingBoundaryAsks().find((a) => a.kind === 'system-config');
+    expect(ask).toBeTruthy();
+    respondBoundaryAsk(ask!.askId, true);
+    expect(await p).toBeUndefined();
+
+    // VM 环境：同样的命令是环境内动作，照旧全自动。
+    const vmHook = makeBoundaryHook(VM_ENV, { broadcast: () => {} });
+    expect(
+      await vmHook({
+        toolCall: { type: 'toolCall', id: 't2', name: 'env_exec', arguments: {} },
+        args: { command: 'bcdedit /set {current} testsigning on' },
+      } as never),
+    ).toBeUndefined();
+    expect(pendingBoundaryAsks()).toHaveLength(0);
   });
 });

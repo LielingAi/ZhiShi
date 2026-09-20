@@ -14,12 +14,15 @@ import type { EnvironmentEntry } from '../../shared/config-types';
 import type { EnvironmentRecipe } from './recipes';
 import {
   boundDomainsForEntry,
+  buildLocalToolchainProbeScript,
   buildRecipeDomainMap,
   buildToolDomainIndex,
   capabilityMissingInScope,
   capabilityScopeTools,
   collectProbeSurface,
+  LOCAL_TOOLCHAIN_PROBE,
   mergeCapabilityDomains,
+  parseLocalToolchainProbe,
   parseProbePresentTools,
   probeEnvironmentCapabilities,
   probedDomainsForTools,
@@ -339,6 +342,107 @@ describe('1.5.7 — capabilityPending（已登记待装：firstRunTools 声明�
     const entry: EnvironmentEntry = { ...ENTRY, capabilityPending: ['joern'] };
     const r = await probeEnvironmentCapabilities(entry, {
       recipes: FIRST_RUN_RECIPES,
+      manifests: MANIFESTS,
+      exec: () => Promise.resolve({ ok: false as const, stdout: '' }),
+    });
+    expect(r).toBeUndefined();
+  });
+});
+
+
+describe('1.7.8 — 本机工具链探测面（kind=local）', () => {
+  const LOCAL_ENTRY: EnvironmentEntry = {
+    id: 'local',
+    kind: 'local',
+    osFamily: 'windows',
+    createdAt: '',
+  };
+
+  it('LOCAL_TOOLCHAIN_PROBE 覆盖 design §3 探测面八项', () => {
+    expect(LOCAL_TOOLCHAIN_PROBE.map((t) => t.key)).toEqual([
+      'msvc', 'clang', 'cdb', 'windbg', 'python', 'git', 'wsl', 'sympath',
+    ]);
+  });
+
+  it('buildLocalToolchainProbeScript：cmd 语义 + OK:/MISS: 协议行（vswhere/WSL/符号路径可见）', () => {
+    const script = buildLocalToolchainProbeScript();
+    expect(script).toContain('vswhere.exe');
+    expect(script).toContain('OK:msvc || echo MISS:msvc');
+    expect(script).toContain('wsl.exe --status');
+    expect(script).toContain('OK:wsl || echo MISS:wsl');
+    expect(script).toContain('_NT_SYMBOL_PATH');
+    expect(script).toContain('OK:sympath || echo MISS:sympath');
+    // cmd 语句分隔符（与 buildToolCheckScript windows 分支同构）。
+    expect(script.split(' & ')).toHaveLength(LOCAL_TOOLCHAIN_PROBE.length);
+  });
+
+  it('parseLocalToolchainProbe：OK/MISS 行 → 在场/缺失清单（声明序）', () => {
+    const stdout = 'OK:msvc\r\nMISS:clang\r\nOK:cdb\r\nMISS:windbg\r\nOK:python\r\nMISS:git\r\nOK:wsl\r\nMISS:sympath\n';
+    expect(parseLocalToolchainProbe(stdout)).toEqual({
+      present: ['msvc', 'cdb', 'python', 'wsl'],
+      missing: ['clang', 'windbg', 'git', 'sympath'],
+    });
+    // 空输出全 MISS；噪音行不误判。
+    expect(parseLocalToolchainProbe('').missing).toHaveLength(LOCAL_TOOLCHAIN_PROBE.length);
+    expect(parseLocalToolchainProbe('OK:msvc-extra\n')).toMatchObject({ present: [] });
+  });
+
+  it('probeEnvironmentCapabilities:local → 一条合并探测脚本（配方面 & 工具链面），产出 localToolchain', async () => {
+    let seenScript = '';
+    const r = await probeEnvironmentCapabilities(LOCAL_ENTRY, {
+      recipes: RECIPES,
+      manifests: MANIFESTS,
+      exec: async (_e, script) => {
+        seenScript = script;
+        return {
+          ok: true as const,
+          stdout: 'OK:msvc\r\nMISS:clang\r\nOK:cdb\r\nMISS:windbg\r\nOK:python\r\nOK:git\r\nMISS:wsl\r\nMISS:sympath\n',
+        };
+      },
+    });
+    // 脚本 = 配方工具面（windows where 协议）& 工具链面，一次 exec。
+    expect(seenScript).toContain('where gdb');
+    expect(seenScript).toContain('OK:msvc');
+    expect(seenScript).toContain(' & ');
+    expect(r).toBeTruthy();
+    expect(r!.localToolchain).toEqual({
+      present: ['msvc', 'cdb', 'python', 'git'],
+      missing: ['clang', 'windbg', 'wsl', 'sympath'],
+    });
+    // 裸宿主无配方命中：域集合可为空，但结果必须有（不误判 undefined）。
+    expect(r!.capabilityDomains).toEqual([]);
+  });
+
+  it('probeEnvironmentCapabilities:local → 配方工具命中照常贡献域（工具链是追加面）', async () => {
+    const r = await probeEnvironmentCapabilities(LOCAL_ENTRY, {
+      recipes: RECIPES,
+      manifests: MANIFESTS,
+      exec: async () => ({
+        ok: true as const,
+        stdout: 'OK:gdb\r\nOK:msvc\r\nMISS:clang\r\nOK:cdb\r\nMISS:windbg\r\nOK:python\r\nOK:git\r\nOK:wsl\r\nMISS:sympath\n',
+      }),
+    });
+    expect(r!.capabilityDomains).toEqual(['binary']); // gdb → pwn/fuzz 域
+    expect(r!.localToolchain!.present).toContain('msvc');
+  });
+
+  it('probeEnvironmentCapabilities:非 local 条目 → 不跑工具链面（localToolchain undefined）', async () => {
+    let seenScript = '';
+    const r = await probeEnvironmentCapabilities(ENTRY, {
+      recipes: RECIPES,
+      manifests: MANIFESTS,
+      exec: async (_e, script) => {
+        seenScript = script;
+        return { ok: true as const, stdout: 'OK:gdb\n' };
+      },
+    });
+    expect(seenScript).not.toContain('vswhere');
+    expect(r!.localToolchain).toBeUndefined();
+  });
+
+  it('probeEnvironmentCapabilities:local 通道失败 → undefined（旧纪律：不写能力字段）', async () => {
+    const r = await probeEnvironmentCapabilities(LOCAL_ENTRY, {
+      recipes: RECIPES,
       manifests: MANIFESTS,
       exec: () => Promise.resolve({ ok: false as const, stdout: '' }),
     });
