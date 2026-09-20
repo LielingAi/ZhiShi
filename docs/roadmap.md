@@ -5,7 +5,18 @@
 
 ---
 
-## 1.7.7 —— auto 重做（auto run == auto loop，最小语义）（立项，进行中）
+## 1.7.8 —— 本地研究环境（Windows 宿主）（立项，进行中）
+
+**缘起（2026-09-20 用户拍板）**：Windows 本机漏洞研究场景（宿主机即靶标）。拍板口径：**流程与其他环境一致，不引入新自动化**——本地环境为内置已登记条目（无需登记），探测/补装复用现有机制（capability-derive 批量探测 + engine-install 半自动，人点触发），大模型不参与环境配置。设计：`docs/design/local-env-design.md`。
+
+- [~] **核心**：kind='local' 内置条目 + env-exec 本地通道 + selection 转正 + boundary 新增 system-config 越界类 + bg Windows 路径 + capability 探测面（vswhere）+ winget 半自动补装
+- [ ] 验收：选定 local → 探测 → 人点补装 → agent MSVC 编译 + cdb 调试闭环
+
+> 边界：内核/BSOD 级研究仍走 pwn-win VM（快照不可替代）；GUI 深度入口后续 slice。
+
+---
+
+## 1.7.7 —— auto 重做（auto run == auto loop，最小语义）（实现完成已发版）
 
 **缘起（2026-09-19 用户拍板立项）**：auto 过度设计——1.4.1 的 5 暂停点 + 1.7.0 的策略文件都是给「被削弱的 auto 路径」打的补丁（auto 场景缺 caps/域/研究记忆注入、turnTimeout 10min 缺省杀研究回合、澄清只能暂停）。用户定稿最小语义：**auto = 目标 + 验收条件（OR，任一满足即达成）+ 强制超时**；循环内一切自走（空转 K=3 注入话术继续、歧义自主决策、工具失败继续、provider 连击 N=5 退出），人只做三件事——开局定目标、中途 Esc、结束读报告。steering 关闭、报告模板不动、campaign 独立不并入。设计：`docs/design/auto-redesign.md`。
 
