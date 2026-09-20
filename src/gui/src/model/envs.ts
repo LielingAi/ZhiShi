@@ -242,6 +242,9 @@ export function resolveEnvState(
   if (identity.entry) {
     const e = identity.entry;
     if (psRows.some((r) => psRowMatchesEntry(r, e))) return { state: 'running', startable: false };
+    // 1.7.9：本机条目无启停语义、永远可用——恒 running（侧栏显示进「运行中」组；
+    // ps 行表达不了本机，入组由 groupSidebar 合成行承担）。
+    if (e.kind === 'local') return { state: 'running', startable: false };
     return {
       state: 'stopped',
       // 1.5.10：可启动认绑定集合——主配方 recipeId 或绑定集合 recipeIds 非空
@@ -316,6 +319,21 @@ export function groupSidebar(
     });
   }
 
+  // 1.7.9：本机条目无实体可探（ps 行表达不了）——合成「运行中」行：恒可用。
+  for (const e of envs) {
+    if (e.kind !== 'local') continue;
+    runItems.push({
+      key: e.id,
+      label: e.name ?? e.id,
+      group: 'run',
+      detail: '本机 · Windows 宿主',
+      kind: 'local',
+      warn: false,
+      startable: false,
+      capability: capabilityOf(e),
+    });
+  }
+
   const stopItems: SidebarEnvItem[] = [];
   for (const e of envs) {
     // 1.3.8 ②：状态判定走 resolveEnvState 单点（running 的在上方 ps 循环已入组）。
@@ -325,8 +343,7 @@ export function groupSidebar(
       key: e.id,
       label: e.name ?? e.id,
       group: 'stop',
-      // 1.7.8：本机条目无启停语义——不显示「已停止」，显示就绪态身份。
-      detail: e.kind === 'local' ? '本机 · Windows 宿主' : `${e.kind ?? 'env'} · 已停止`,
+      detail: `${e.kind ?? 'env'} · 已停止`,
       kind: e.kind ?? 'env',
       warn: false,
       // docker/vm 条目绑定集合（recipeId 或 recipeIds）非空才能 environment/up

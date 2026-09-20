@@ -40,6 +40,10 @@ describe('canStopEnv（1.3.8 B12：ssh 行不出停止按钮）', () => {
     expect(canStopEnv('ssh')).toBe(false);
   });
 
+  it('1.7.9：本机（local）无实体可停 → false', () => {
+    expect(canStopEnv('local')).toBe(false);
+  });
+
   it('docker / vm / hyperv / vbox → true（停止只适用于有实体的一类）', () => {
     for (const kind of ['docker', 'vm', 'hyperv', 'vbox']) {
       expect(canStopEnv(kind)).toBe(true);

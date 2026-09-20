@@ -52,5 +52,6 @@ export function envDownPlan(t: EnvDownTarget): EnvDownPlan {
  * （environment/down 对 ssh 明确报错），停止只适用于 docker/VM 系。
  */
 export function canStopEnv(kind: string): boolean {
-  return kind !== 'ssh';
+  // 1.7.9：本机条目无实体可停（服务端 down 对 local 显式拒绝）——菜单不放「停止」。
+  return kind !== 'ssh' && kind !== 'local';
 }
