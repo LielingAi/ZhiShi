@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.8] - 2026-09-20
+
+> **本地研究环境（Windows 宿主）**——宿主机即靶标的本机研究通道（设计 `docs/design/local-env-design.md`）。拍板口径：**流程与其他环境一致，零新自动化**——本地环境为内置已登记条目（kind='local'，开箱即有，无需登记），探测/补装复用现有机制（capability-derive 批量探测 + engine-install winget 半自动，人点触发），**大模型不参与环境配置**。内核/BSOD 级研究仍走 pwn-win VM（快照回滚不可替代）。
+
+### 新增
+- **kind='local' 内置本机条目**：虚拟内置（`listEnvironments` 写回口径零侵入，探测刷新才物化带状态副本）；`zhishi env list` 显示「(Windows 宿主本机)」；选定 local 即注册 env_exec/env_bg（原 HOST_SELECTION 语义转正，显式 host 选定仍不注册工具）
+- **本地执行通道**：宿主机直 spawn（win32 无 ControlMaster/ssh 包装问题）；超时杀/输出截断/自堵检测/EnvExec 注入全复用；bg 真相文件落 `%ProgramData%\zhishi-bg`；`zhishi env open local` 开宿主终端
+- **边界新增 `system-config` 越界类**：bcdedit / reg add HKLM / Set-ProcessMitigation -System / Set-MpPreference / netsh advfirewall / sc config / wevtutil cl / winget install——持久全局变更逐次问、无永远允许；workspace 内写文件全自动；credential-leak 恒生效
+- **本机探测面**（`zhishi env probe local`）：vswhere 查 MSVC、clang、cdb/WinDbg（where + Windows Kits 双探）、python、git、WSL、符号路径——OK:/MISS: 进能力清单段（新增「本机工具链」行，带补装指引）
+- **winget 半自动补装**（`zhishi env install msvc-build-tools|windows-sdk|windbg`）：官方源 --exact 安装、已装短路、非管理员/无 winget 各给清晰下一步——与 docker/hyperv 安装同一交互模式
+- **down/rm 守卫**：本机环境无实体可停/不可删除（照 ssh B12 先例，不落 docker 兜底；探测产物由 capability-refresh 重建）
+
+### 修复
+- 无（纯增量版本）
+
 ## [1.7.7] - 2026-09-19
 
 > **auto 重做——三输入四停点**（设计 `docs/design/auto-redesign.md`）。auto run == auto loop 统一语义：auto 与 GUI 交互轨迹同构——设定目标 + 1-N 条验收条件（OR，任一满足即达成）+ 强制超时；未达成、未到超时，就一直继续，**模型没有自我退出权**（说"不可行"只是轨迹内容）。1.4.1 的 5 暂停点、1.7.0 的策略文件、verdict 终审、budget 续命、开局快照/超时 checkpoint/自动报告全部删除；declare 改 OR 语义 + 证据存在性预检；空转检测降为推进话术注入（K=3）；provider/API 故障连击 N=5 是唯一非人退出。对比实验实证（同任务 GUI 交互 vs auto）：旧 auto 因认知残缺 + 兜底早退，"GUI 能成、auto 不成"。
