@@ -27,6 +27,29 @@ describe('groupSidebar', () => {
     expect(groups[2].items.map((i) => i.key)).toEqual(['kali-2024']);
   });
 
+  it('1.7.9：本机条目恒在「运行中」组（无启停语义），不进「已停止」', () => {
+    const groups = groupSidebar(
+      [...envs, { id: 'local', kind: 'local', name: '本机' }],
+      running,
+      [],
+    );
+    // resolveEnvState 单点：local 恒 running
+    expect(resolveEnvState({ entry: { id: 'local', kind: 'local' } }, [], [])).toEqual({
+      state: 'running',
+      startable: false,
+    });
+    // 运行中组合成行（ps 表达不了本机），带就绪态身份文案
+    expect(groups[0].items.map((i) => i.key)).toEqual(['pwn@docker', 'local']);
+    expect(groups[0].items[1]).toMatchObject({
+      group: 'run',
+      kind: 'local',
+      detail: '本机 · Windows 宿主',
+      startable: false,
+    });
+    // 不在已停止组
+    expect(groups[1].items.map((i) => i.key)).toEqual(['audit-box']);
+  });
+
   it('空组不渲染', () => {
     const groups = groupSidebar([], [], []);
     expect(groups).toEqual([]);
