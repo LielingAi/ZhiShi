@@ -43,6 +43,9 @@ describe('accessGate', () => {
     // 可达性问题由服务端在 select/探测时报。
     expect(accessGate(item({ group: 'stop', kind: 'ssh' }))).toEqual({ allow: true });
     expect(accessGate(item({ group: 'stop', kind: 'ssh', startable: true }))).toEqual({ allow: true });
+    // 1.7.8：本机条目（无启停语义）同 ssh 放行——点击即锚定
+    expect(accessGate(item({ group: 'stop', kind: 'local' }))).toEqual({ allow: true });
+    expect(accessGate(item({ group: 'stop', kind: 'local', startable: true }))).toEqual({ allow: true });
     // 不误伤：docker/vm 已停止仍按 startable 拦截
     expect(accessGate(item({ group: 'stop', kind: 'vm', startable: true }))).toEqual({
       allow: false,

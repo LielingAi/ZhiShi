@@ -10,6 +10,7 @@
  *                      见 server/admin-api.ts handleEnvironmentUp）。
  *                      1.5.10：ssh 条目无启动语义，点击直接放行进入——
  *                      可达性问题在开环境/探测时由服务端报错。
+ *                      1.7.8：本机（local）条目同 ssh，点击直接放行锚定。
  *   - 本机已有（unreg）→ 拦截：toast「未登记，请先在新建环境里接入」。
  *
  * 宿主会话显性化：currentEnvKey 为 null/'' 时状态栏 env 锚显示
@@ -38,7 +39,8 @@ export function accessGate(item: SidebarEnvItem): GateResult {
   if (item.group === 'unreg') return { allow: false, reason: 'unregistered' };
   // 1.5.10：ssh 条目无启动语义（恒在「已停止」组、startable 恒 false）——
   // 点击直接放行进入，可达性问题由服务端在 select/探测时报，不再拦「先启动」。
-  if (item.group === 'stop' && item.kind === 'ssh') return { allow: true };
+  // 1.7.8：本机条目（kind='local'）同样无启停语义——点击 = 锚定（select），照放行。
+  if (item.group === 'stop' && (item.kind === 'ssh' || item.kind === 'local')) return { allow: true };
   if (item.group === 'stop') {
     return { allow: false, reason: 'not-started', canStart: item.startable === true };
   }
