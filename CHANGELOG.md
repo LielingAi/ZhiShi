@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.10] - 2026-09-20
+
+> **本机条目归位「运行中」组**——本机无启停语义、永远可用，不再显示在「已停止」组。
+
+### 修复
+- **显示归位**：`resolveEnvState` 对本机恒 `running`；侧栏「运行中」组合成本机行（`本机 · Windows 宿主` + 绿色状态点）；「已停止」组不再出现本机（`src/gui/src/model/envs.ts`）
+- **菜单收口**：本机行 ⋯ 菜单不再出「停止」按钮（无实体可停，服务端 down 本就显式拒绝）（`src/gui/src/model/env-down.ts`）
+
 ## [1.7.9] - 2026-09-20
 
 > **本机条目 GUI 准入修复**——1.7.8 内置本机条目落入「已停止」组被准入闸拦截（点击弹「环境未启动」），本机永远可用不该拦。
