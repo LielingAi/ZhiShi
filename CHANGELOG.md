@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.9] - 2026-09-20
+
+> **本机条目 GUI 准入修复**——1.7.8 内置本机条目落入「已停止」组被准入闸拦截（点击弹「环境未启动」），本机永远可用不该拦。
+
+### 修复
+- **本机条目点击放行**：照 ssh 1.5.10 先例，kind='local' 点击直接锚定（select），不再弹「环境未启动」（`src/gui/src/model/access-gate.ts`）
+- **行内文案**：`local · 已停止` → `本机 · Windows 宿主`（无启停语义不显示"已停止"）（`src/gui/src/model/envs.ts`）
+
 ## [1.7.8] - 2026-09-20
 
 > **本地研究环境（Windows 宿主）**——宿主机即靶标的本机研究通道（设计 `docs/design/local-env-design.md`）。拍板口径：**流程与其他环境一致，零新自动化**——本地环境为内置已登记条目（kind='local'，开箱即有，无需登记），探测/补装复用现有机制（capability-derive 批量探测 + engine-install winget 半自动，人点触发），**大模型不参与环境配置**。内核/BSOD 级研究仍走 pwn-win VM（快照回滚不可替代）。
