@@ -325,7 +325,8 @@ export function groupSidebar(
       key: e.id,
       label: e.name ?? e.id,
       group: 'stop',
-      detail: `${e.kind ?? 'env'} · 已停止`,
+      // 1.7.8：本机条目无启停语义——不显示「已停止」，显示就绪态身份。
+      detail: e.kind === 'local' ? '本机 · Windows 宿主' : `${e.kind ?? 'env'} · 已停止`,
       kind: e.kind ?? 'env',
       warn: false,
       // docker/vm 条目绑定集合（recipeId 或 recipeIds）非空才能 environment/up
