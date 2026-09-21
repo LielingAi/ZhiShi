@@ -26,7 +26,7 @@ import type { ArchiveSnapshot } from '../model/archive';
 
 export interface EnvEntry {
   id: string;
-  kind: 'ssh' | 'docker' | 'vm';
+  kind: 'ssh' | 'docker' | 'vm' | 'local';
   name?: string;
   host?: string;
   container?: string;
