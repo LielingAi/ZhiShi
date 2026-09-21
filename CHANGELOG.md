@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.11] - 2026-09-21
+
+> **本机条目拒绝配方绑定**——本机能力面 = 实机探测结果，绑定即虚假能力。
+
+### 修复
+- **bind-recipes 守卫**：对本机条目显式拒绝（虚拟内置 id 查找前直通 + 物化副本查找后双守卫）——此前虚拟条目报「未找到环境」（误导）、物化副本可绑（注入未安装工具的虚假能力，与本机实机探测体系冲突）。文案指引 `zhishi env probe local`（`src/server/admin-api.ts`）
+- **GUI**：环境详情弹窗对本机隐藏配方绑定 UI，换成「能力面 = 实机探测」说明；`EnvEntry.kind` 类型联合补 `'local'`（`src/gui/src/components/Modal.tsx`、`src/gui/src/client/api.ts`）
+
 ## [1.7.10] - 2026-09-20
 
 > **本机条目归位「运行中」组**——本机无启停语义、永远可用，不再显示在「已停止」组。
