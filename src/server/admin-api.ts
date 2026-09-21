@@ -2683,6 +2683,10 @@ export async function handleEnvironmentSetup(payload: {
     },
   };
 }
+/** 1.7.9：本机条目的配方绑定拒绝文案（bind-recipes 守卫用，down/rm 同款模式）。 */
+const LOCAL_BIND_REJECT =
+  '本机环境不支持绑定配方——本机能力面 = 实机探测结果（绑定会注入未安装工具的虚假能力）。刷新探测：zhishi env probe local';
+
 /** `environment/bind-recipes` — 1.3.8 多配方关联侧：整体替换环境的多配方
  *  绑定集合（绑定=展示/构建来源，不进域裁决——能力集合仍以推导为准）。
  *  主配方 recipeId 恒在集合内；空集合拒绝；成功后尽力重推一次能力探测
@@ -2693,6 +2697,13 @@ export async function handleEnvironmentBindRecipes(payload: {
 }): Promise<AdminResponse> {
   const id = typeof payload.id === 'string' ? payload.id.trim() : '';
   if (!id) return { success: false, error: 'Missing required argument: <id>' };
+  // 1.7.9：本机条目不支持配方绑定——本机能力面 = 实机探测结果（绑定会把配方
+  // 声明的工具注入能力清单，但本机未必安装 = 虚假能力）。虚拟内置 id 在
+  // listEnvironments（写回口径）里查不到，这里在查找前直通拒绝，不给
+  // 「未找到环境」的误导错误。刷新探测走 environment/capability-refresh。
+  if (id === LOCAL_ENV_ID) {
+    return { success: false, error: LOCAL_BIND_REJECT };
+  }
   const raw = payload.recipeIds;
   if (!Array.isArray(raw) || raw.length === 0) {
     return { success: false, error: 'recipeIds 必须是非空字符串数组（含主配方）' };
@@ -2712,6 +2723,10 @@ export async function handleEnvironmentBindRecipes(payload: {
       error: `未找到环境 "${id}"`,
       recoveryHint: { recoveryCommand: 'zhishi env list', message: 'See registered environment ids.' },
     };
+  }
+  // 1.7.9：物化副本（capability-refresh 落盘）同为 local——同一拒绝，绑定集合不改写。
+  if (entry.kind === 'local') {
+    return { success: false, error: LOCAL_BIND_REJECT };
   }
   if (entry.recipeId && !ids.includes(entry.recipeId)) {
     return { success: false, error: `绑定集合必须包含主配方 "${entry.recipeId}"（主配方不可移除）` };

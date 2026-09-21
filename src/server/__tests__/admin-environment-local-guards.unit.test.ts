@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   __setRmDockerOpsForTests,
   __setRmDockerProbeForTests,
+  handleEnvironmentBindRecipes,
   handleEnvironmentDown,
   handleEnvironmentRm,
 } from '../admin-api';
@@ -73,6 +74,23 @@ afterEach(() => {
   process.env.HOME = prevHome;
   process.env.USERPROFILE = prevUserProfile;
   rmSync(scratch, { recursive: true, force: true });
+});
+
+describe('handleEnvironmentBindRecipes — 1.7.9 local 守卫（本机能力面 = 实机探测）', () => {
+  it('虚拟内置条目 → 拒绝（不支持绑定配方），不落「未找到环境」误导错误', async () => {
+    seedEntries([]);
+    const r = await handleEnvironmentBindRecipes({ id: 'local', recipeIds: ['pwn'] });
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/不支持绑定配方/);
+  });
+
+  it('物化副本 → 同一拒绝；绑定集合不被改写', async () => {
+    seedEntries([MATERIALIZED_LOCAL]);
+    const r = await handleEnvironmentBindRecipes({ id: 'local', recipeIds: ['pwn'] });
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/不支持绑定配方/);
+    expect(readConfig().environments?.[0].recipeIds).toBeUndefined();
+  });
 });
 
 describe('handleEnvironmentDown — 1.7.8 local 守卫（B12 同款）', () => {

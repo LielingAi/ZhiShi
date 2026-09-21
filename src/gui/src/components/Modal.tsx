@@ -1084,67 +1084,83 @@ function EnvDetailModal(): React.JSX.Element | null {
             </div>
           )}
 
-          <div className="f-label" style={{ marginTop: 12 }}>配方绑定（绑定 = 展示/构建来源，不改变能力判定）</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {pending.map((rid) => {
-              const isPrimary = rid === primary;
-              return (
-                <span key={rid} className={isPrimary ? 'cap' : 'cap reg'}>
-                  {rid}
-                  {isPrimary ? ' ⓟ' : ''}
-                  {!isPrimary && (
-                    <button
-                      className="chip-x"
-                      aria-label={`解绑 ${rid}`}
-                      onClick={() => {
-                        const r = removeRecipeBinding(pending, rid, primary);
-                        if (!r.ok) return;
-                        setPending(r.next);
-                        setDirty(true);
-                      }}
-                    >
-                      ×
-                    </button>
-                  )}
+          {entry.kind === 'local' ? (
+            <>
+              <div className="f-label" style={{ marginTop: 12 }}>配方绑定</div>
+              <div className="wiz-confirm-row">
+                <span className="wiz-k">本机</span>
+                <span className="wiz-v">
+                  本机能力面 = 实机探测结果，不支持配方绑定（绑定会注入未安装工具的虚假能力）。刷新探测：zhishi env probe local
                 </span>
-              );
-            })}
-          </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <select
-              className="f-input"
-              value=""
-              onChange={(e) => {
-                const v = e.target.value;
-                if (!v) return;
-                setPending(addRecipeBinding(pending, v));
-                setDirty(true);
-                e.target.value = '';
-              }}
-            >
-              <option value="">＋ 追加绑定配方…</option>
-              {addable.map((r) => (
-                <option key={r.id} value={r.id}>{r.id}</option>
-              ))}
-            </select>
-          </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="f-label" style={{ marginTop: 12 }}>配方绑定（绑定 = 展示/构建来源，不改变能力判定）</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {pending.map((rid) => {
+                  const isPrimary = rid === primary;
+                  return (
+                    <span key={rid} className={isPrimary ? 'cap' : 'cap reg'}>
+                      {rid}
+                      {isPrimary ? ' ⓟ' : ''}
+                      {!isPrimary && (
+                        <button
+                          className="chip-x"
+                          aria-label={`解绑 ${rid}`}
+                          onClick={() => {
+                            const r = removeRecipeBinding(pending, rid, primary);
+                            if (!r.ok) return;
+                            setPending(r.next);
+                            setDirty(true);
+                          }}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <select
+                  className="f-input"
+                  value=""
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (!v) return;
+                    setPending(addRecipeBinding(pending, v));
+                    setDirty(true);
+                    e.target.value = '';
+                  }}
+                >
+                  <option value="">＋ 追加绑定配方…</option>
+                  {addable.map((r) => (
+                    <option key={r.id} value={r.id}>{r.id}</option>
+                  ))}
+                </select>
+              </div>
+            </>
+          )}
 
           <div className="m-actions">
             <button className="btn" onClick={closeModal}>关闭</button>
-            <button
-              className="btn primary"
-              disabled={!dirty || busy}
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  await applyEnvBindings(pending);
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              应用绑定
-            </button>
+            {entry.kind !== 'local' && (
+              <button
+                className="btn primary"
+                disabled={!dirty || busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    await applyEnvBindings(pending);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                应用绑定
+              </button>
+            )}
           </div>
         </div>
       </div>
