@@ -329,8 +329,12 @@ fn merge_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 // 新安装与缺失自愈，老用户拿到的只是新增的 pentest-vm。
 // v7（1.6.4 M1）：新增 pwn-win 配方（Windows 用户态漏洞研究 VM——首个
 // os_family: windows 配方，初始化脚本为 setup.ps1）。
+// v8（1.8.0）：Windows 研究配方族——office-lab（Office 恶意文档/漏洞研究）、
+// browser-lab（Chrome 旧版漏洞研究）、win-kernel（驱动/内核调试，首个
+// debug: 段配方——vmware 命名管道由 vmEnvUp 注入 vmx）。seed-if-missing：
+// 老用户只拿到三个新目录，存量配方不动。
 
-const ENVIRONMENT_RECIPES_VERSION: &str = "7";
+const ENVIRONMENT_RECIPES_VERSION: &str = "8";
 
 /// 配方源目录的判定：bundled-environments/ 下的子目录且含 SKILL.md
 /// （与 Node 侧 src/server/environment/recipes.ts 的扫描口径一致——无

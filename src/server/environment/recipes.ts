@@ -46,6 +46,16 @@ export type VmEngine = 'vmware' | 'hyperv' | 'virtualbox';
 
 export const VM_ENGINES: readonly VmEngine[] = ['vmware', 'hyperv', 'virtualbox'];
 
+/** 1.8.0：内核调试管道声明（win-kernel 专用，v1 仅 vmware 命名管道）。
+ *  消费侧：vm-lifecycle.ts 的 ensureKernelDebugPort 在 vmEnvUp start 前把
+ *  管道注入 vmx（guest = server，宿主调试器 = client 的 kd 管道约定）。 */
+export interface RecipeDebugConfig {
+  /** v1 仅支持 pipe（vmware 命名管道）。 */
+  transport: 'pipe';
+  /** 宿主 \\.\pipe\ 端点名（不含路径前缀；白名单 [\w.-]+）。 */
+  pipe: string;
+}
+
 /** 从 SKILL.md frontmatter 解析出的原始字段（全部可选，缺失由校验环节报告）。 */
 export interface RecipeFrontmatter {
   name?: string;
@@ -67,6 +77,8 @@ export interface RecipeFrontmatter {
   /** 1.6.4：guest OS 家族（缺省 linux）。windows 配方的初始化脚本用
    *  setup.ps1（PowerShell），provision 补齐链路据此选包装与预检语义。 */
   os_family?: RecipeOsFamily;
+  /** 1.8.0：内核调试管道声明（win-kernel 专用；仅 vmware 引擎可配）。 */
+  debug?: RecipeDebugConfig;
 }
 
 /** 一个已扫描的配方；invalid 配方保留已解析字段 + 原因列表。 */
@@ -93,6 +105,8 @@ export interface EnvironmentRecipe {
   vmEngine?: VmEngine;
   /** 1.6.4：guest OS 家族（frontmatter os_family；缺省 linux）。 */
   osFamily?: RecipeOsFamily;
+  /** 1.8.0：内核调试管道声明（frontmatter debug；win-kernel 用）。 */
+  debug?: RecipeDebugConfig;
   /**
    * 正文工作流摘要（1.2.5「用」）：SKILL.md 正文（frontmatter 之后）提炼，
    * 供能力清单注入段在工具名后携带——只给裸工具名 agent 不知道何时用/怎么进。
@@ -241,6 +255,26 @@ export function parseRecipeFrontmatter(content: string): {
     }
   }
 
+  // 1.8.0：内核调试管道段（win-kernel 专用）。形态固定 { transport: pipe; pipe:
+  // <端点名> }——transport 枚举 + pipe 白名单 [\w.-]+（跨字段的引擎限制由
+  // validateRecipe 报，字段形状在这里报）。
+  if (source.debug !== undefined) {
+    const dbg = source.debug;
+    if (!dbg || typeof dbg !== 'object' || Array.isArray(dbg)) {
+      errors.push(`debug 必须是对象（内核调试管道声明，1.8.0）：{ transport: pipe; pipe: <端点名> }`);
+    } else {
+      const transport = (dbg as Record<string, unknown>).transport;
+      const pipe = (dbg as Record<string, unknown>).pipe;
+      if (transport !== 'pipe') {
+        errors.push(`非法 debug.transport：${JSON.stringify(transport)}（v1 仅支持 pipe——vmware 命名管道）`);
+      } else if (typeof pipe !== 'string' || !pipe.trim() || !/^[\w.-]+$/.test(pipe.trim())) {
+        errors.push(`非法 debug.pipe：${JSON.stringify(pipe)}（端点名白名单：[\\w.-]+，示例：kd_win-kernel）`);
+      } else {
+        frontmatter.debug = { transport: 'pipe', pipe: pipe.trim() };
+      }
+    }
+  }
+
   return { frontmatter, errors };
 }
 
@@ -264,6 +298,21 @@ export function validateRecipe(
   // 路无脚本可跑——声明了 os_family: windows 就必须给）。
   if (frontmatter.base === 'vm' && frontmatter.os_family === 'windows' && !presentFiles.has('setup.ps1')) {
     reasons.push('windows vm 配方缺少 setup.ps1（PowerShell 初始化脚本）');
+  }
+  // 1.8.0：内核调试管道仅 vmware 引擎可配（vmx 注入是 vmware 机制；
+  // hyperv/vbox 无此通道，报错并给移除指引）。字段形状（transport 枚举、
+  // pipe 白名单）由 parseRecipeFrontmatter 报。
+  if (frontmatter.debug) {
+    if (frontmatter.base !== 'vm') {
+      reasons.push('debug 内核调试管道仅 vm 配方可配（非 vm 配方请移除 debug 段）');
+    }
+    const engine: VmEngine = frontmatter.vm_engine ?? 'vmware';
+    if (engine !== 'vmware') {
+      reasons.push(
+        `debug 内核调试管道仅支持 vmware 引擎（当前 vm_engine: ${engine}；` +
+        'hyperv/vbox 请移除 debug 段，或改用 vmware 模板 VM）',
+      );
+    }
   }
   return reasons;
 }
@@ -305,6 +354,7 @@ export function buildRecipe(
     vmSnapshot: frontmatter.vm_snapshot,
     vmEngine: frontmatter.vm_engine,
     osFamily: frontmatter.os_family,
+    debug: frontmatter.debug,
     valid: reasons.length === 0,
     invalidReasons: reasons,
   };
@@ -409,6 +459,9 @@ export function buildToolCheckCommand(tools: string[]): string {
  * windows 分支是 cmd.exe 语义（两族执行通道最终都落 `cmd /c`——见
  * os-family.ts 的 psShellWrapper/psCaptureScript）：`where` 替代
  * `command -v`（PATHEXT 感知，.bat/.cmd 也能命中），python 无 3 后缀。
+ * 1.8.0：Windows 研究配方族（office-lab/browser-lab/win-kernel）声明词。
+ * 这些能力只有 Windows 形态——posix 分支给 `false`（sh 内建，恒非零退出），
+ * 保证 linux 环境探测恒 MISS，不误挂 binary 域。
  */
 export const TOOL_PROBE_COMMANDS: Readonly<Record<string, { posix: string; windows: string }>> = {
   pwntools: { posix: 'python3 -c "import pwn"', windows: 'python -c "import pwn"' },
@@ -418,6 +471,29 @@ export const TOOL_PROBE_COMMANDS: Readonly<Record<string, { posix: string; windo
   ghidra: { posix: 'command -v analyzeHeadless', windows: 'where analyzeHeadless' },
   binutils: { posix: 'command -v objdump', windows: 'where objdump' },
   nodejs: { posix: 'command -v node', windows: 'where node' },
+  // 1.8.0 Windows 研究配方族——Windows-only 能力，posix 分支恒 MISS（见上）。
+  // office-2019：Uninstall 注册表粗探（reg query 找不到也退 0，故 pipe 进
+  // findstr 以输出判有无）；chrome-old：安装位 chrome.exe 在场探测（winget
+  // 装到 Program Files，CfT 便携部署到 C:\tools\chrome-old\——版本钉死是
+  // setup 的职责，探测只判在场）；wdk：WDK KitsRoot10 注册表值；
+  // osr-loader：setup 部署位 C:\tools\osr-loader\ 文件探测；verifier：System32
+  // 自带，where 粗探。
+  'office-2019': {
+    posix: 'false',
+    windows: 'reg query "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall" /s /f "Microsoft Office" | findstr /c:"Microsoft Office" >NUL',
+  },
+  'chrome-old': {
+    posix: 'false',
+    windows: '(dir /b "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" >NUL 2>&1 || dir /b "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe" >NUL 2>&1 || dir /b "C:\\tools\\chrome-old\\chrome.exe" >NUL 2>&1)',
+  },
+  oletools: { posix: 'false', windows: 'where olevba' },
+  sysinternals: { posix: 'false', windows: 'where procmon' },
+  wdk: {
+    posix: 'false',
+    windows: 'reg query "HKLM\\SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots" /v KitsRoot10 >NUL',
+  },
+  'osr-loader': { posix: 'false', windows: 'dir /b "C:\\tools\\osr-loader\\OSRLOADER.exe" >NUL' },
+  verifier: { posix: 'false', windows: 'where verifier' },
 };
 
 /**

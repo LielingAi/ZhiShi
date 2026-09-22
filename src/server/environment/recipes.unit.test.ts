@@ -178,6 +178,92 @@ describe('os_family（1.6.4 配方 OS 家族声明）', () => {
   });
 });
 
+describe('debug 段（1.8.0 win-kernel 内核调试管道声明）', () => {
+  const DEBUG_SKILL = VALID_VM_SKILL.replace(
+    'tools: [mimikatz]',
+    'tools: [wdk]\ndebug:\n  transport: pipe\n  pipe: kd_win-kernel',
+  );
+
+  it('解析合法 debug 段 → frontmatter.debug 并透传到 EnvironmentRecipe', () => {
+    const { frontmatter, errors } = parseRecipeFrontmatter(DEBUG_SKILL);
+    expect(errors).toEqual([]);
+    expect(frontmatter.debug).toEqual({ transport: 'pipe', pipe: 'kd_win-kernel' });
+    const recipe = buildRecipe('win-kernel', '/x/win-kernel', DEBUG_SKILL, new Set(['SKILL.md', 'setup.ps1']));
+    expect(recipe.valid).toBe(true);
+    expect(recipe.debug).toEqual({ transport: 'pipe', pipe: 'kd_win-kernel' });
+  });
+
+  it('非必填：缺省 → undefined，存量配方零迁移', () => {
+    const { frontmatter, errors } = parseRecipeFrontmatter(VALID_VM_SKILL);
+    expect(errors).toEqual([]);
+    expect(frontmatter.debug).toBeUndefined();
+  });
+
+  it('坏 transport（非 pipe 枚举）→ parse 报错且不落地 debug', () => {
+    const content = DEBUG_SKILL.replace('transport: pipe', 'transport: serial');
+    const { frontmatter, errors } = parseRecipeFrontmatter(content);
+    expect(errors.some((e) => e.includes('debug.transport'))).toBe(true);
+    expect(frontmatter.debug).toBeUndefined();
+  });
+
+  it('坏 pipe 字符（反斜线/空格/冒号——白名单 [\\w.-]+）→ parse 报错', () => {
+    for (const bad of ['kd\\win-kernel', 'kd win-kernel', 'kd:win', 'kd/win']) {
+      // 单引号 YAML 标量——反斜线按字面保留（双引号标量的 \k 会被 YAML 吞掉）
+      const content = DEBUG_SKILL.replace('pipe: kd_win-kernel', `pipe: '${bad}'`);
+      const { frontmatter, errors } = parseRecipeFrontmatter(content);
+      expect(errors.some((e) => e.includes('debug.pipe')), bad).toBe(true);
+      expect(frontmatter.debug, bad).toBeUndefined();
+    }
+  });
+
+  it('合法 pipe 边界（点/横线/下划线）→ 通过', () => {
+    const content = DEBUG_SKILL.replace('pipe: kd_win-kernel', 'pipe: kd-win.kernel_2');
+    const { frontmatter, errors } = parseRecipeFrontmatter(content);
+    expect(errors).toEqual([]);
+    expect(frontmatter.debug).toEqual({ transport: 'pipe', pipe: 'kd-win.kernel_2' });
+  });
+
+  it('pipe 两端空白 → trim 后校验通过', () => {
+    const content = DEBUG_SKILL.replace('pipe: kd_win-kernel', 'pipe: " kd_win-kernel "');
+    const { frontmatter, errors } = parseRecipeFrontmatter(content);
+    expect(errors).toEqual([]);
+    expect(frontmatter.debug?.pipe).toBe('kd_win-kernel');
+  });
+
+  it('debug 段形态非法（非对象/数组）→ parse 报错，不炸解析', () => {
+    for (const bad of ['debug: pipe', 'debug: [pipe]']) {
+      const content = VALID_VM_SKILL.replace('tools: [mimikatz]', `tools: [wdk]\n${bad}`);
+      const { frontmatter, errors } = parseRecipeFrontmatter(content);
+      expect(errors.some((e) => e.includes('debug')), bad).toBe(true);
+      expect(frontmatter.debug, bad).toBeUndefined();
+    }
+  });
+
+  it('validateRecipe：debug 仅 vmware 引擎可配——hyperv/virtualbox 报错带移除指引', () => {
+    const { frontmatter } = parseRecipeFrontmatter(DEBUG_SKILL);
+    // 缺省引擎（vmware）→ 合法
+    expect(validateRecipe(frontmatter, new Set(['SKILL.md']))).toEqual([]);
+    for (const engine of ['hyperv', 'virtualbox'] as const) {
+      const withEngine = parseRecipeFrontmatter(DEBUG_SKILL.replace('base: vm', `base: vm\nvm_engine: ${engine}`));
+      const reasons = validateRecipe(withEngine.frontmatter, new Set(['SKILL.md']));
+      expect(reasons.some((r) => r.includes('vmware') && r.includes(engine)), engine).toBe(true);
+    }
+    // 显式 vm_engine: vmware → 合法
+    const vmware = parseRecipeFrontmatter(DEBUG_SKILL.replace('base: vm', 'base: vm\nvm_engine: vmware'));
+    expect(validateRecipe(vmware.frontmatter, new Set(['SKILL.md']))).toEqual([]);
+  });
+
+  it('validateRecipe：debug 仅 vm 配方可配（docker 配方带 debug → 报错）', () => {
+    const content = VALID_DOCKER_SKILL.replace(
+      'tools:\n  - nmap\n  - curl\n  - whatweb',
+      'tools:\n  - nmap\ndebug:\n  transport: pipe\n  pipe: kd_x',
+    );
+    const { frontmatter } = parseRecipeFrontmatter(content);
+    const reasons = validateRecipe(frontmatter, new Set(['SKILL.md', 'Dockerfile']));
+    expect(reasons.some((r) => r.includes('debug') && r.includes('vm'))).toBe(true);
+  });
+});
+
 describe('validateRecipe', () => {
   it('accepts a complete docker recipe', () => {
     const { frontmatter } = parseRecipeFrontmatter(VALID_DOCKER_SKILL);
@@ -406,8 +492,8 @@ describe('配方工具自检(声明 vs 实装)', () => {
   });
 });
 
-describe('声明词 → 探测命令映射（1.2.5「配」；1.6.4 双族）', () => {
-  it('TOOL_PROBE_COMMANDS:七个能力名的探测命令(posix/windows 双形态)', () => {
+describe('声明词 → 探测命令映射（1.2.5「配」；1.6.4 双族；1.8.0 Windows 研究配方族）', () => {
+  it('TOOL_PROBE_COMMANDS：能力名的探测命令（posix/windows 双形态）', () => {
     expect(TOOL_PROBE_COMMANDS).toEqual({
       pwntools: { posix: 'python3 -c "import pwn"', windows: 'python -c "import pwn"' },
       pwndbg: { posix: 'gdb -q -batch -ex "pi import pwndbg"', windows: 'gdb -q -batch -ex "pi import pwndbg"' },
@@ -416,7 +502,35 @@ describe('声明词 → 探测命令映射（1.2.5「配」；1.6.4 双族）', 
       ghidra: { posix: 'command -v analyzeHeadless', windows: 'where analyzeHeadless' },
       binutils: { posix: 'command -v objdump', windows: 'where objdump' },
       nodejs: { posix: 'command -v node', windows: 'where node' },
+      // 1.8.0 Windows 研究配方族——Windows-only 能力，posix 恒 MISS（false）。
+      'office-2019': {
+        posix: 'false',
+        windows: 'reg query "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall" /s /f "Microsoft Office" | findstr /c:"Microsoft Office" >NUL',
+      },
+      'chrome-old': {
+        posix: 'false',
+        windows: '(dir /b "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" >NUL 2>&1 || dir /b "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe" >NUL 2>&1 || dir /b "C:\\tools\\chrome-old\\chrome.exe" >NUL 2>&1)',
+      },
+      oletools: { posix: 'false', windows: 'where olevba' },
+      sysinternals: { posix: 'false', windows: 'where procmon' },
+      wdk: {
+        posix: 'false',
+        windows: 'reg query "HKLM\\SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots" /v KitsRoot10 >NUL',
+      },
+      'osr-loader': { posix: 'false', windows: 'dir /b "C:\\tools\\osr-loader\\OSRLOADER.exe" >NUL' },
+      verifier: { posix: 'false', windows: 'where verifier' },
     });
+  });
+
+  it('1.8.0 新词 → buildToolCheckScript(windows) 用映射命令探测（` & ` 协议）', () => {
+    const script = buildToolCheckScript(['office-2019', 'chrome-old', 'oletools', 'sysinternals', 'wdk', 'osr-loader', 'verifier'], 'windows');
+    expect(script).toContain('reg query "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall" /s /f "Microsoft Office" | findstr /c:"Microsoft Office" >NUL >NUL 2>&1 && echo OK:office-2019 || echo MISS:office-2019');
+    expect(script).toContain('where olevba >NUL 2>&1 && echo OK:oletools || echo MISS:oletools');
+    expect(script).toContain('where procmon >NUL 2>&1 && echo OK:sysinternals || echo MISS:sysinternals');
+    expect(script).toContain('reg query "HKLM\\SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots" /v KitsRoot10 >NUL >NUL 2>&1 && echo OK:wdk || echo MISS:wdk');
+    expect(script).toContain('dir /b "C:\\tools\\osr-loader\\OSRLOADER.exe" >NUL >NUL 2>&1 && echo OK:osr-loader || echo MISS:osr-loader');
+    expect(script).toContain('where verifier >NUL 2>&1 && echo OK:verifier || echo MISS:verifier');
+    expect(script).toContain('C:\\tools\\chrome-old\\chrome.exe');
   });
 
   it('buildToolCheckScript:PATH 前缀打头(非交互 ssh 没有 ~/.local/bin)', () => {

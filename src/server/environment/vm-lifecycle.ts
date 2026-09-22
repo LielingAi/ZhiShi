@@ -11,6 +11,7 @@
  *     2. 解析 vmx（--vm-base flag > 配方 frontmatter vm_base > vmTemplates）
  *     3. vmrun list 已含该 vmx → 幂等：只刷新 IP 返回 ok
  *     4. 快照约定：recipe.vmSnapshot 存在 → revertToSnapshot（每次 up 干净现场）
+ *     4b. debug 段（1.8.0 win-kernel）：向 vmx 注入内核调试串口管道（幂等）
  *     5. vmrun -T ws start <vmx> nogui（失败后重试一次，见下）
  *     6. vmrun getGuestIPAddress <vmx> -wait → guest 地址（需 VMware Tools）
  *   vmEnvDown(.vmx)     → vmrun stop soft（VM 文件是用户的，绝不删）
@@ -28,8 +29,9 @@
  * 调用走可注入的 `VmExec`，单测绝不真调 vmrun。
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
+import { writeFileAtomic } from '../utils/file-lock';
 import { augmentedProcessEnv, resolveCommand } from '../utils/env-utils';
 import { spawn as spawnSubprocess } from '../utils/subprocess';
 import { ENGINE_SPECS, parseEngineProbeResult } from './engines';
@@ -166,6 +168,38 @@ export function normalizeVmxPath(path: string): string {
   return path.replace(/\//g, '\\').toLowerCase();
 }
 
+/**
+ * 1.8.0 win-kernel：向 vmx 文本注入内核调试串口管道（纯函数，可单测）。
+ * vmware 的 kd 管道约定：guest = server，宿主调试器 = client——宿主侧
+ * `windbg -k com:port=\\.\pipe\<pipe>,pipe` 直连。注入 4 行：
+ *   serialN.present = "TRUE" / fileType = "pipe" /
+ *   fileName = "\\.\pipe\<pipe>"（vmx 文本中反斜线成双写）/ startConnected = "TRUE"
+ * 幂等：已有任一 serialN 的 fileName 指向同一管道 → 原样返回（重复 up 不
+ * 叠加）；已有异名 serial 设备则共存（取最小空闲序号 N）。
+ */
+export function ensureKernelDebugPort(vmxContent: string, pipe: string): string {
+  const fileName = `\\\\.\\pipe\\${pipe}`;
+  const escaped = fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // 幂等锚：任一 serialN.fileName 已指向同一管道 → 零变化。
+  if (new RegExp(`^serial\\d+\\.fileName\\s*=\\s*"${escaped}"`, 'm').test(vmxContent)) {
+    return vmxContent;
+  }
+  // 与已有异名 serial 设备共存：取最小空闲序号。
+  const used = new Set<number>();
+  for (const m of vmxContent.matchAll(/^serial(\d+)\.present\s*=\s*"TRUE"/gim)) {
+    used.add(Number(m[1]));
+  }
+  let idx = 0;
+  while (used.has(idx)) idx += 1;
+  const block = [
+    `serial${idx}.present = "TRUE"`,
+    `serial${idx}.fileType = "pipe"`,
+    `serial${idx}.fileName = "${fileName}"`,
+    `serial${idx}.startConnected = "TRUE"`,
+  ].join('\n');
+  return `${vmxContent.replace(/\s+$/, '')}\n${block}\n`;
+}
+
 // ---------------------------------------------------------------------------
 // I/O — default exec (same shape as docker-lifecycle.ts::defaultDockerExec)
 // ---------------------------------------------------------------------------
@@ -245,6 +279,30 @@ export async function ensureVmwareAvailable(exec: VmExec): Promise<string | null
 }
 
 /**
+ * 1.8.0 win-kernel：读 vmx → ensureKernelDebugPort 注入 → 有变化才原子回写
+ * （tmp+rename，writeFileAtomic 纪律）。只在 start 前、已确认 VM 不在运行
+ * 列表时调用——运行中的 VM 写 vmx 会被 vmware 忽略/覆盖。返回 null = 成功
+ * 或无需改；否则为用户可读错误（内核调试管道是本配方的核心承诺，注入
+ * 失败必须显式报错，绝不静默缺管）。
+ */
+function injectKernelDebugPortIntoVmx(vmx: string, pipe: string): string | null {
+  let content: string;
+  try {
+    content = readFileSync(vmx, 'utf-8');
+  } catch (err) {
+    return `读取 vmx 失败（${vmx}）：${err instanceof Error ? err.message : String(err)}`;
+  }
+  const next = ensureKernelDebugPort(content, pipe);
+  if (next === content) return null; // 幂等：管道已在
+  try {
+    writeFileAtomic(vmx, next);
+  } catch (err) {
+    return `内核调试管道注入失败（${vmx}）：${err instanceof Error ? err.message : String(err)}`;
+  }
+  return null;
+}
+
+/**
  * vmEnvUp（D22 直连）：对解析出的 vmx 直接操作——已在跑则幂等（只刷新
  * IP）；否则（快照约定存在则 revert）→ start nogui → 取 guest IP。
  * vmBase 缺失 / vmware 不可用 / 任一步失败都报用户可读错误；start 成功后
@@ -307,7 +365,15 @@ export async function vmEnvUp(
       }
     }
 
-    // ③ start nogui
+    // ③ 1.8.0 win-kernel：内核调试管道注入——放 revert 之后、start 之前
+    // （快照回滚可能重写 vmx，注入行须在最终版本上；本模块即 vmware 驱动，
+    // 非 vmware 引擎的 debug 段已在 validateRecipe 被拒，到不了这里）。
+    if (recipe.debug?.transport === 'pipe') {
+      const injectError = injectKernelDebugPortIntoVmx(vmx, recipe.debug.pipe);
+      if (injectError) return { ok: false, error: injectError };
+    }
+
+    // ④ start nogui
     const startResult = await exec(['vmrun', ...buildVmrunStartArgs(vmx)], VMRUN_START_TIMEOUT_MS);
     if (startResult.exitCode !== 0 || startResult.error) {
       // 实测（2026-08-15）：vmrun start 偶发「未知错误」（挂起态残留/锁文件），
@@ -322,7 +388,7 @@ export async function vmEnvUp(
     }
   }
 
-  // ④ guest IP（容错：取不到只 warn，VM 已在跑）
+  // ⑤ guest IP（容错：取不到只 warn，VM 已在跑）
   let address: string | undefined;
   const ipResult = await exec(['vmrun', ...buildVmrunGetIpArgs(vmx)], VMRUN_GET_IP_TIMEOUT_MS);
   if (ipResult.exitCode === 0 && !ipResult.error) {
