@@ -5,12 +5,26 @@
 
 ---
 
-## 1.7.8 —— 本地研究环境（Windows 宿主）（立项，进行中）
+## 1.8.0 —— Windows 研究配方族（office-lab / browser-lab / win-kernel）（立项，进行中）
+
+**缘起（2026-09-22 用户拍板）**：Windows 研究支持力度补齐——域渗透挂起（组网拓扑机制另立项），主攻内核调试 + Office/浏览器。三个 VM 配方站在 pwn-win 已验证的机制上（adopt/build/快照/断网 guest 通道/能力推导全部复用），唯一机制增量 = `debug:` frontmatter 段（win-kernel 的 vmx 串口管道注入）。设计：`docs/design/windows-research-recipes.md`。
+
+- [~] **office-lab + browser-lab**：版本钉死目标（sha256 供应链纪律）+ 符号自动配置 + oletools/sysinternals/cdb 工具链 + PageHeap/TTD 工作流——纯内容件（SKILL.md + setup.ps1）
+- [~] **win-kernel**：`debug:` 段（frontmatter 校验 + vmEnvUp 的 vmx 注入，幂等）+ guest 内 bcdedit 调试三连 + WDK 可选段；本机 WinDbg 直连闭环
+- [ ] 探测映射增量 + domain.json 挂 binary 域 + bump ENVIRONMENT_RECIPES_VERSION
+- [ ] 验证：单测（debug 校验/vmx 注入幂等/探测映射）+ 实机 dogfood（windbg -k 断点命中 / oletools→PageHeap→cdb 一趟）
+
+> 边界：AD/域渗透（组网机制）不在本版；GUI console 不做（无头为主）；所有下载件 sha256 钉死（D-T2）。
+
+---
+
+## 1.7.8 —— 本地研究环境（Windows 宿主）（已发版；1.7.9-1.7.11 三连热修）
 
 **缘起（2026-09-20 用户拍板）**：Windows 本机漏洞研究场景（宿主机即靶标）。拍板口径：**流程与其他环境一致，不引入新自动化**——本地环境为内置已登记条目（无需登记），探测/补装复用现有机制（capability-derive 批量探测 + engine-install 半自动，人点触发），大模型不参与环境配置。设计：`docs/design/local-env-design.md`。
 
-- [~] **核心**：kind='local' 内置条目 + env-exec 本地通道 + selection 转正 + boundary 新增 system-config 越界类 + bg Windows 路径 + capability 探测面（vswhere）+ winget 半自动补装
-- [ ] 验收：选定 local → 探测 → 人点补装 → agent MSVC 编译 + cdb 调试闭环
+- [x] **核心**：kind='local' 内置条目 + env-exec 本地通道 + selection 转正 + boundary 新增 system-config 越界类 + bg Windows 路径 + capability 探测面（vswhere）+ winget 半自动补装
+- [x] **验收**：选定 local → 探测 → 人点补装 → agent MSVC 编译 + cdb 调试闭环（实机五连发验证）
+- [x] **1.7.9-1.7.11 热修**：本机 GUI 准入放行（点击即锚定）→ 归位「运行中」组 → 拒绝配方绑定（能力面=实机探测，绑定即虚假能力）——全部已发版
 
 > 边界：内核/BSOD 级研究仍走 pwn-win VM（快照不可替代）；GUI 深度入口后续 slice。
 
