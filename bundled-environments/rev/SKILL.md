@@ -11,6 +11,8 @@ tools:
   - objdump
   - readelf
   - nm
+  - binwalk
+  - qemu-user-static
   - python3
 ---
 

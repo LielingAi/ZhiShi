@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openjdk-21-jre-headless \
     python3 python3-pip \
     gdb binutils radare2 file xxd \
+    binwalk qemu-user-static \
     curl wget unzip ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 

@@ -502,6 +502,11 @@ describe('声明词 → 探测命令映射（1.2.5「配」；1.6.4 双族；1.8
       ghidra: { posix: 'command -v analyzeHeadless', windows: 'where analyzeHeadless' },
       binutils: { posix: 'command -v objdump', windows: 'where objdump' },
       nodejs: { posix: 'command -v node', windows: 'where node' },
+      // qemu-user-static 包不提供同名二进制（装的是 qemu-arm/qemu-mips 等），按任一架构二进制在场判定。
+      'qemu-user-static': {
+        posix: 'command -v qemu-arm || command -v qemu-mips || command -v qemu-aarch64',
+        windows: 'where qemu-arm || where qemu-mips || where qemu-aarch64',
+      },
       // 1.8.0 Windows 研究配方族——Windows-only 能力，posix 恒 MISS（false）。
       'office-2019': {
         posix: 'false',
