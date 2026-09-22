@@ -333,8 +333,11 @@ fn merge_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 // browser-lab（Chrome 旧版漏洞研究）、win-kernel（驱动/内核调试，首个
 // debug: 段配方——vmware 命名管道由 vmEnvUp 注入 vmx）。seed-if-missing：
 // 老用户只拿到三个新目录，存量配方不动。
+// v9（1.8.1）：存量配方内容更新（seed-if-missing 下同上——触达新安装与
+// 缺失自愈）：pentest/pentest-vm 侦察件（subfinder/httpx/arjun + 工作台
+// 目录约定 + 黑盒六步）；rev 固件验证链（binwalk + qemu-user-static）。
 
-const ENVIRONMENT_RECIPES_VERSION: &str = "8";
+const ENVIRONMENT_RECIPES_VERSION: &str = "9";
 
 /// 配方源目录的判定：bundled-environments/ 下的子目录且含 SKILL.md
 /// （与 Node 侧 src/server/environment/recipes.ts 的扫描口径一致——无

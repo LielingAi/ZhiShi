@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-09-23
+
+> **渗透打点打法层**——专家库 42 条蒸馏（对抗口径：入口=RCE）+ foothold-analyst / recon-triager 双子代理 + pentest 配方侦察件。打法知识进专家库不进核心；无资产边界，唯动作红线三禁（禁破坏 / 禁 DoS / 禁删除）。设计：`docs/design/pentest-foothold-layer.md`。专家库 YAML 在 ZhiShiExpertKnowledge 仓，评审后 `zhishi expert import`。
+
+### 新增
+- **专家库 42 条（pentest 域，provenance=user）**：入口证据标准 8（四问门/反面清单/Layer-Ordering Trap/Pre-Severity Gate/Marker/Body-Diff/统计样本/撤回纪律）+ 侦察层 13（被动情报管线/凭据 OSINT/secret 正则与验证器/Swagger-GraphQL 探测/soft-404 对照/归属分诊/攻击面建模/备份高产清单/子域接管/指纹→CVE 工作流/边界设备优先/边界设备检测矩阵/退避阶梯）+ RCE 链 14（反序列化/命令注入/上传/SQLi/SSRF/SSTI/认证绕过/IDOR/Legacy-Protocol/SAML-JWT/业务逻辑/CVE 适配，全带验证靶标）+ 凭据与纪律 7（喷洒五阶段+硬顶/凭据复用矩阵/三层持久化/IOC 清理/作业启动纪律（三禁）/死路记录与 reopen/置信度三级）
+- **双子代理**：`foothold-analyst`（单点攻击面深析——假设驱动多向量验证 + 四问门 RCE 判定）、`recon-triager`（批量侦察分诊——归属筛查/假阳性过滤/置信度分级/攻击面评分 → 优先级队列）；注册进 pentest 域 `subagents[]`
+- **pentest 配方侦察件**：subfinder/httpx 入 projectdiscovery 安装循环、arjun 走 pip（镜像回落 + 降级 WARN 惯例）；两配方 SKILL.md 加工作台目录约定 `<target>/{intel,recon,enum,findings,exploit}/` 与黑盒六步工作流
+- **rev 配方固件验证链**：binwalk + qemu-user-static（`TOOL_PROBE_COMMANDS` 按任一架构二进制在场判定——包不提供同名二进制）
+
+### 修复
+- 无
+
 ## [1.8.0] - 2026-09-22
 
 > **Windows 研究配方族**——office-lab / browser-lab / win-kernel 三个 VM 配方，补齐 Windows 研究场景覆盖（域渗透挂起另立项）。全部站在 pwn-win 已验证的机制上（adopt/build/快照/断网 guest 通道/能力推导复用），唯一机制增量 = `debug:` frontmatter 段。设计：`docs/design/windows-research-recipes.md`。
