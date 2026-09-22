@@ -18,6 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-09-22
+
+> **Windows 研究配方族**——office-lab / browser-lab / win-kernel 三个 VM 配方，补齐 Windows 研究场景覆盖（域渗透挂起另立项）。全部站在 pwn-win 已验证的机制上（adopt/build/快照/断网 guest 通道/能力推导复用），唯一机制增量 = `debug:` frontmatter 段。设计：`docs/design/windows-research-recipes.md`。
+
+### 新增
+- **office-lab / browser-lab**：版本钉死的 Office/Chrome 旧版目标（下载块占位拒绝执行 + 获取指引；winget 优先；滚动发布走 Authenticode 验签——D-T2 供应链纪律的配方级落地）+ 符号自动配置（`_NT_SYMBOL_PATH` Machine 级 + symchk 缓存）+ oletools/sysinternals/cdb 工具链 + PageHeap/TTD 崩溃显形工作流（`bundled-environments/`）
+- **win-kernel**：`debug:` frontmatter 段（transport: pipe + 管道名）——`vmEnvUp` 启动前往 vmx 注入 kd 串口管道（**幂等、放 revert 后防快照覆盖、运行中 VM 绝不写、注入失败显式报错**）；guest 内 bcdedit 调试三连（debug on / dbgsettings serial / testsigning on）+ WDK 可选段；本机环境 `windbg -k com:port=\\.\pipe\<名>,pipe` 直连闭环（`src/server/environment/recipes.ts`、`vm-lifecycle.ts`）
+- **探测映射 +7 词**（office-2019/chrome-old/oletools/sysinternals/wdk/osr-loader/verifier——posix 恒 MISS 不误挂 Linux 域）；三配方挂 binary 域；`ENVIRONMENT_RECIPES_VERSION` 7→8
+
+### 修复
+- 无
+
 ## [1.7.11] - 2026-09-21
 
 > **本机条目拒绝配方绑定**——本机能力面 = 实机探测结果，绑定即虚假能力。
