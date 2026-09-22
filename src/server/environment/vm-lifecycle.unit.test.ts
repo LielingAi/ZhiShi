@@ -9,7 +9,7 @@
  * list → 幂等不 start、快照缺失跳过 revert、start 失败重试一次、down
  * 只收 .vmx、ps 返回全部运行中 vmx。
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -24,6 +24,7 @@ import {
   buildVmrunSnapshotArgs,
   buildVmrunStartArgs,
   buildVmrunStopArgs,
+  ensureKernelDebugPort,
   normalizeVmxPath,
   parseGuestIp,
   parseVmrunList,
@@ -387,5 +388,104 @@ describe('vmEnvPs', () => {
     const result = await vmEnvPs({ exec });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain('vmrun list 失败');
+  });
+});
+
+describe('ensureKernelDebugPort（1.8.0 win-kernel：vmx 注入纯函数）', () => {
+  const VMX_BASE = '.encoding = "UTF-8"\ndisplayName = "win10-kd"\n';
+
+  it('注入 4 行：serial0 管道（guest=server 约定，vmx 反斜线双写）', () => {
+    const out = ensureKernelDebugPort(VMX_BASE, 'kd_win-kernel');
+    expect(out).toBe(
+      VMX_BASE +
+      'serial0.present = "TRUE"\n' +
+      'serial0.fileType = "pipe"\n' +
+      'serial0.fileName = "\\\\.\\pipe\\kd_win-kernel"\n' +
+      'serial0.startConnected = "TRUE"\n',
+    );
+  });
+
+  it('幂等：二次调用零变化（重复 up 不叠加）', () => {
+    const once = ensureKernelDebugPort(VMX_BASE, 'kd_win-kernel');
+    expect(ensureKernelDebugPort(once, 'kd_win-kernel')).toBe(once);
+  });
+
+  it('幂等：手写等价配置（无空格形态）也不重复注入', () => {
+    const handwritten = VMX_BASE + 'serial0.present="TRUE"\nserial0.fileType="pipe"\nserial0.fileName="\\\\.\\pipe\\kd_win-kernel"\nserial0.startConnected="TRUE"\n';
+    expect(ensureKernelDebugPort(handwritten, 'kd_win-kernel')).toBe(handwritten);
+  });
+
+  it('已有异名 serial 设备共存：取最小空闲序号（serial0 被占 → serial1）', () => {
+    const withSerial0 = VMX_BASE + 'serial0.present = "TRUE"\nserial0.fileType = "file"\nserial0.fileName = "com1.log"\n';
+    const out = ensureKernelDebugPort(withSerial0, 'kd_win-kernel');
+    expect(out).toContain('serial1.fileName = "\\\\.\\pipe\\kd_win-kernel"');
+    expect(out).toContain('serial0.fileName = "com1.log"'); // 原设备不动
+  });
+
+  it('present=FALSE 的占位序号视为空闲（复用 serial0）', () => {
+    const withFalse = VMX_BASE + 'serial0.present = "FALSE"\nserial0.fileName = "com1.log"\n';
+    const out = ensureKernelDebugPort(withFalse, 'kd_x');
+    expect(out).toContain('serial0.fileName = "\\\\.\\pipe\\kd_x"');
+  });
+
+  it('尾部空白不累积：注入只加一个换行', () => {
+    const out = ensureKernelDebugPort(VMX_BASE + '\n\n', 'kd_win-kernel');
+    expect(out.endsWith('serial0.startConnected = "TRUE"\n')).toBe(true);
+    expect(out).not.toContain('\n\n\n');
+  });
+});
+
+describe('vmEnvUp debug 注入（win-kernel：revert 后、start 前回写 vmx）', () => {
+  const KD_RECIPE: EnvironmentRecipe = {
+    ...VM_RECIPE,
+    id: 'win-kernel',
+    debug: { transport: 'pipe', pipe: 'kd_win-kernel' },
+  };
+
+  it('debug 段配方：start 前注入 vmx 并回写文件（get IP 后 vmx 含管道 4 行）', async () => {
+    const root = makeTempRoot();
+    const vmx = makeVmx(root);
+    const { exec } = scriptedExec([
+      PROBE_OK,
+      ok('Total running VMs: 0\n'),
+      ok('Total snapshots: 1\nzhishi-clean\n'),
+      ok(), // revert
+      ok(), // start
+      ok('10.0.0.8\n'),
+    ]);
+    const result = await vmEnvUp(KD_RECIPE, '/w', { exec, vmBase: vmx });
+    expect(result.ok).toBe(true);
+    const content = readFileSync(vmx, 'utf-8');
+    expect(content).toContain('serial0.fileName = "\\\\.\\pipe\\kd_win-kernel"');
+    expect(content).toContain('serial0.fileType = "pipe"');
+  });
+
+  it('重复 up 幂等：已在运行列表 → 不 revert 不 start，也不重写 vmx', async () => {
+    const root = makeTempRoot();
+    const vmx = makeVmx(root);
+    const before = readFileSync(vmx, 'utf-8');
+    const { exec } = scriptedExec([
+      PROBE_OK,
+      ok(`Total running VMs: 1\n${vmx}\n`),
+      ok('10.0.0.8\n'),
+    ]);
+    const result = await vmEnvUp(KD_RECIPE, '/w', { exec, vmBase: vmx });
+    expect(result.ok).toBe(true);
+    // 运行中的 VM 绝不写 vmx（vmware 会忽略/覆盖运行期修改）
+    expect(readFileSync(vmx, 'utf-8')).toBe(before);
+  });
+
+  it('无 debug 段的配方 → vmx 原样不动', async () => {
+    const root = makeTempRoot();
+    const vmx = makeVmx(root);
+    const { exec } = scriptedExec([
+      PROBE_OK,
+      ok('Total running VMs: 0\n'),
+      ok(), // start
+      ok('10.0.0.9\n'),
+    ]);
+    const result = await vmEnvUp({ ...VM_RECIPE, vmSnapshot: undefined }, '/w', { exec, vmBase: vmx });
+    expect(result.ok).toBe(true);
+    expect(readFileSync(vmx, 'utf-8')).toBe('.encoding = "UTF-8"\ndisplayName = "ubuntu"\n');
   });
 });
