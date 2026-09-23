@@ -801,6 +801,58 @@ describe('startAutoRun(单实例闸 + 注册表)', () => {
     });
   });
 
+  it('单机多开(1.8.2):交错 invoke 并发跑完,状态/事件/落盘全程隔离', async () => {
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+      environments: [{ id: 'env-a', kind: 'local' }, { id: 'env-b', kind: 'local' }],
+    }));
+    // 双 run 各自的 invoke：A 每轮慢(40ms)、B 每轮快(10ms)——强制交错。
+    // 各自记录 start/end 时间戳，最后断言时间窗重叠（真并发而非串行）。
+    // 注：makeFakeDeps 的 save 是内存快照（不落盘）——终态从各自 fake.saved
+    // 读，等价于生产 saveAutoRunRecord 的每次 persist 切片。
+    const timeline: Array<{ run: string; phase: 'start' | 'end'; ts: number }> = [];
+    const makeDeps = (run: string, delayMs: number) => makeFakeDeps({
+      invoke: async (_input, options) => {
+        timeline.push({ run, phase: 'start', ts: Date.now() });
+        await new Promise((r) => setTimeout(r, delayMs));
+        timeline.push({ run, phase: 'end', ts: Date.now() });
+        return { text: `${run} 输出`, loopSessionId: options.loopSessionId };
+      },
+    });
+    const fakeA = makeDeps('a', 40);
+    const fakeB = makeDeps('b', 10);
+    const a = await startAutoRun(
+      { name: 'ra', envKey: 'env-a', goal: 'g', criteria: ['c'], budget: { kind: 'turns', limit: 2 } },
+      '/ws', fakeA.deps,
+    );
+    const b = await startAutoRun(
+      { name: 'rb', envKey: 'env-b', goal: 'g', criteria: ['c'], budget: { kind: 'turns', limit: 2 } },
+      '/ws', fakeB.deps,
+    );
+    expect(a.success).toBe(true);
+    expect(b.success).toBe(true);
+    if (!a.success || !b.success) return;
+    // 两条都因 turns=2 预算耗尽自然终态（无 Esc）。
+    await waitFor(() => {
+      const ra = fakeA.saved.at(-1);
+      const rb = fakeB.saved.at(-1);
+      return ra?.status === 'stopped' && rb?.status === 'stopped';
+    }, 10_000);
+    const ra = fakeA.saved.at(-1);
+    const rb = fakeB.saved.at(-1);
+    // 状态隔离：各自独立推进 2 轮、独立 persist、互不覆盖。
+    expect(ra?.turns).toBe(2);
+    expect(rb?.turns).toBe(2);
+    expect(ra?.envKey).toBe('env-a');
+    expect(rb?.envKey).toBe('env-b');
+    expect(ra?.pauseReason).toBe('budget');
+    expect(rb?.pauseReason).toBe('budget');
+    expect(ra?.id).not.toBe(rb?.id);
+    // 交错证据：a 的首轮 start 早于 b 的末轮 end（并发窗口真实重叠）。
+    const aStart = timeline.filter((t) => t.run === 'a' && t.phase === 'start').map((t) => t.ts);
+    const bEnd = timeline.filter((t) => t.run === 'b' && t.phase === 'end').map((t) => t.ts);
+    expect(Math.min(...aStart)).toBeLessThan(Math.max(...bEnd));
+  });
+
   it('envKey 互斥闸:异 workspace 同 envKey → 拒绝;异 envKey → 放行', async () => {
     const fake = makeFakeDeps();
     const first = await startAutoRun(startInput, '/ws-a', fake.deps);
