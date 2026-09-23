@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.3] - 2026-09-23
+
+> **多开正确性验证固化**。产品代码与 1.8.2 等价——本版把交错并发验证测试纳入发版链（双 run 不同延迟 invoke 交错跑完，断言状态/落盘隔离 + 时间窗重叠真并发）。
+
+### 新增
+- 多开交错并发验证测试（`auto-run.unit.test.ts`）：单机多开（同 workspace 异 envKey 并行放行）的动态正确性证据
+
+### 修复
+- 无
+
 ## [1.8.2] - 2026-09-23
 
 > **CLI auto-run 自立 + 单机多开**。设计：`docs/design/cli-sidecar-autorun.md`。
