@@ -31,6 +31,7 @@ import {
 import { INTEL_POLL_INTERVAL_MS, startIntelProgressPolling } from './intel-progress';
 import { collectRefs, fetchRefBody, formatRefHints, isValidRefId, type RefFetch } from './ref';
 import { isSidecarPortOverride, parseArgs } from './cli-args';
+import { ensureCliSidecar } from './sidecar-ensure';
 import { buildExpertDoc, expertEditRoundTrip, parseExpertDoc } from './expert-edit';
 import { importExpertEntries, parseExpertImport } from './expert-import';
 import { EXPERT_ENTRY_KINDS, EXPERT_PROVENANCES, validateEntry, type ValidateResult } from '../shared/expert-validate';
@@ -1571,11 +1572,18 @@ async function main(): Promise<void> {
       const p = Number(raw);
       if (Number.isInteger(p) && p > 0 && p < 65536) PORT = String(p);
     } catch {
-      /* 无端口文件 → 保持原报错 */
+      /* 无端口文件 → 1.8.2 起尝试 CLI 自立 sidecar（下段） */
     }
   }
   if (!PORT) {
-    console.error('Error: ZHISHI_PORT not set. This CLI runs within the ZhiShi app.');
+    // 1.8.2：无 GUI 场景（服务器/cron/pipeline）CLI 自立 sidecar——探测
+    // 失败才落报错。显式 --port / ZHISHI_PORT 的场景不经过这里（调用方负责）。
+    const ensured = await ensureCliSidecar({ log: (m) => console.error(m) });
+    if (ensured) PORT = String(ensured);
+  }
+  if (!PORT) {
+    console.error('Error: 无法连接 ZhiShi 引擎（GUI 未运行，且 CLI 自立 sidecar 失败）。');
+    console.error('  排查：① 启动 GUI 一次（初始化 CLI 与 bundled node）；② 或确认 <data-dir>/bin/zhishi 与 resources/server-dist.js 在位。');
     process.exit(3);
   }
   BASE = `http://127.0.0.1:${PORT}/api/admin`;

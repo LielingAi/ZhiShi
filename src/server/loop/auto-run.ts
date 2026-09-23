@@ -883,20 +883,19 @@ export async function startAutoRun(
   if (!validated.ok) return { success: false, error: validated.error };
   const record: AutoRunRecord = { ...validated.record, workspace };
 
-  // 单实例闸:同 workspace **或**同 envKey 已有活跃 run → 拒绝(先 Esc 再启动新 run)。
-  // workspace 比较走 workspacePathsEqual(尾斜杠/分隔符差异不算不同工作区)。
+  // 单实例闸(1.8.2 收窄):同 envKey 已有活跃 run → 拒绝——环境 = run 的执行
+  // 现场,两个 loop 同容器并发操作互相干扰,执行现场互斥保留。同 workspace
+  // 放开:各 run 有自己的 loop 线/按 rid 落盘的记录/按线过滤的事件(1.7.5),
+  // 结构上互不干扰——单机多开(CVE 批跑并行)的引擎面。
   const conflict = [...activeRuns.values()].find((a) => {
     if (a.record.status !== 'running') return false;
-    if (a.record.workspace !== undefined && workspacePathsEqual(a.record.workspace, workspace)) return true;
     return a.record.envKey === validated.record.envKey;
   });
   if (conflict) {
-    const sameWorkspace = conflict.record.workspace !== undefined
-      && workspacePathsEqual(conflict.record.workspace, workspace);
-    const error = sameWorkspace
-      ? `已有运行中的 auto run "${conflict.record.name}"(id=${conflict.record.id}),先 Esc 终止再启动新 run`
-      : `环境 "${validated.record.envKey}" 已被运行中的 auto run "${conflict.record.name}"(id=${conflict.record.id}) 占用,先 Esc 终止再启动`;
-    return { success: false, error };
+    return {
+      success: false,
+      error: `环境 "${validated.record.envKey}" 已被运行中的 auto run "${conflict.record.name}"(id=${conflict.record.id}) 占用,先 Esc 终止再启动`,
+    };
   }
 
   const deps = buildProductionAutoRunDeps(workspace, depsOverride, record.loopSessionId);

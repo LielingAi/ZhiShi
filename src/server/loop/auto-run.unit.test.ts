@@ -30,6 +30,7 @@ import {
   injectInteractiveWrapUp,
   isBudgetExhausted,
   listAutoRunRecordFiles,
+  listAutoRuns,
   loadAutoRunRecord,
   parseAutoRunRecord,
   PROVIDER_STREAK_EXIT_DEFAULT,
@@ -755,20 +756,47 @@ describe('startAutoRun(单实例闸 + 注册表)', () => {
 
   const startInput = { name: 't', envKey: 'pwn-vm', goal: 'g', criteria: ['c'], budget: { kind: 'turns', limit: 50 } };
 
-  it('同 workspace → 拒绝;终态摘除后 stop 走「不存在」语义', async () => {
+  it('同 workspace 同 envKey → 拒绝(envKey 闸);终态摘除后 stop 走「不存在」语义', async () => {
     const fake = makeFakeDeps();
     const started = await startAutoRun(startInput, '/ws', fake.deps);
     expect(started.success).toBe(true);
     if (!started.success) return;
     const id = started.data.id;
     await waitFor(() => fake.invokeCount >= 1);
+    // 同 workspace 同 envKey —— envKey 执行现场互斥仍拒(1.8.2:workspace 不再参与判冲突)。
     const second = await startAutoRun(startInput, '/ws/', makeFakeDeps().deps);
     expect(second.success).toBe(false);
-    if (!second.success) expect(second.error).toContain('已有运行中的');
+    if (!second.success) expect(second.error).toContain('已被运行中的 auto run');
     expect(stopAutoRun(id).success).toBe(true);
     // 终态即从 activeRuns 摘除——stop 报「不存在」。
     await waitFor(() => {
       const r = stopAutoRun(id);
+      return !r.success && r.error.includes('不存在');
+    });
+  });
+
+  it('单机多开(1.8.2):同 workspace 异 envKey → 并行放行', async () => {
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify({
+      environments: [{ id: 'pwn-vm', kind: 'local' }, { id: 'pwn-vm-2', kind: 'local' }],
+    }));
+    const fake = makeFakeDeps();
+    const first = await startAutoRun(startInput, '/ws', fake.deps);
+    expect(first.success).toBe(true);
+    if (!first.success) return;
+    await waitFor(() => fake.invokeCount >= 1);
+    // 同工作区第二条 run(不同环境)并行启动——不被 workspace 闸拦截。
+    const second = await startAutoRun(
+      { ...startInput, name: 't2', envKey: 'pwn-vm-2' }, '/ws', makeFakeDeps().deps,
+    );
+    expect(second.success).toBe(true);
+    if (!second.success) return;
+    // 两条都在活跃注册表里。
+    const list = await listAutoRuns('/ws');
+    expect(list.filter((r) => r.status === 'running')).toHaveLength(2);
+    stopAutoRun(first.data.id);
+    stopAutoRun(second.data.id);
+    await waitFor(() => {
+      const r = stopAutoRun(second.data.id);
       return !r.success && r.error.includes('不存在');
     });
   });

@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-09-23
+
+> **CLI auto-run 自立 + 单机多开**。设计：`docs/design/cli-sidecar-autorun.md`。
+
+### 新增
+- **CLI ensure sidecar**（`src/cli/sidecar-ensure.ts`）：无 GUI 场景（服务器/cron/pipeline）CLI 自立全局 sidecar——探测 `sidecar.port` + `/health` → 活 → 复用（GUI 拉起的照常复用）；死/无 → detached 拉起（node = `process.execPath`，server 脚本从 resources 布局推导，dev 回落 repo 源）→ 轮询健康 → 写 port 文件。落 Node CLI 层而非 Rust `cli.rs`——PATH 的 `zhishi.cmd` 不经过 `cli.rs`，Node 层才覆盖全部入口（含 `ZhiShi.exe` 直调）。显式 `--port` / `ZHISHI_PORT` 场景不 ensure（调用方负责）
+- **单机多开**：`startAutoRun` 互斥闸收窄——同 workspace 放开（各 run 独立 loop 线/按 rid 落盘/按线过滤事件，1.7.5 已就绪），同 envKey 仍拒（环境 = 执行现场，两 loop 同容器并发会互相干扰）。GUI 不改：观察第一条活跃 run、Esc 语义保留
+
+### 修复
+- 无
+
 ## [1.8.1] - 2026-09-23
 
 > **渗透打点打法层**——专家库 42 条蒸馏（对抗口径：入口=RCE）+ foothold-analyst / recon-triager 双子代理 + pentest 配方侦察件。打法知识进专家库不进核心；无资产边界，唯动作红线三禁（禁破坏 / 禁 DoS / 禁删除）。设计：`docs/design/pentest-foothold-layer.md`。专家库 YAML 在 ZhiShiExpertKnowledge 仓，评审后 `zhishi expert import`。
