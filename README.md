@@ -180,6 +180,29 @@ zhishi auto-run list      # 状态 + 报告路径
 
 策略 YAML 文档 `docs/auto-run-policy.md`；CLI 用法 `docs/auto-run-cli.md`；示例三档 `examples/auto-run/`（保守 / 平衡 / 全托管）。
 
+### CLI 自立 + 一机多 run（1.8.2）
+
+**无 GUI 跑**：`zhishi auto-run` 在服务器/计划任务里脱离 GUI 使用——首条命令自动拉起本地 sidecar（探测 `sidecar.port` + `/health`，活着就复用，GUI 拉起的照常共用），无需打开窗口。
+
+```bash
+zhishi auto-run start --name "CVE-A 复现" --goal "…" --env-key code-audit-1 \
+  --criteria "…" --budget-kind time --budget-limit 90
+```
+
+**一机多 run**：同一个 sidecar 里可并行跑多条 auto-run（批跑常态）——各 run 独立 loop 线/记录/事件，互不干扰。唯一的互斥是**同 envKey**：一个环境同时只能被一条 run 驱动（执行现场互斥）。要并行，每条 run 绑不同环境：
+
+```bash
+# 并行 3 条：各自独立环境（env up 各自建容器）
+zhishi auto-run start --name "CVE-1" --env-key audit-1 --goal "…" --criteria "…" --budget-kind time --budget-limit 90 &
+zhishi auto-run start --name "CVE-2" --env-key audit-2 --goal "…" --criteria "…" --budget-kind time --budget-limit 90 &
+zhishi auto-run start --name "CVE-3" --env-key audit-3 --goal "…" --criteria "…" --budget-kind time --budget-limit 90 &
+
+zhishi auto-run list            # 全部 run 状态（并行各一条）
+zhishi auto-run stop <id>       # 按 id 终止单条
+```
+
+容量：瓶颈依次是 provider API 并发配额（最先到顶）、Docker Desktop 的 WSL2 内存配额（Settings → Resources，建议 16 GB）、CPU 核数。i5-9300H（4C8T）/40 GB 的机器舒服并行 3–4 条；核数更多的机器可到 8 条。设计：`docs/design/cli-sidecar-autorun.md`。
+
 ### 专家知识与域包
 
 > 专家知识仓库：[ZhiShiExpertKnowledge](https://github.com/LielingAi/ZhiShiExpertKnowledge)——社区共享的判据化专家条目（SOP/判定链/方法论），下载后 `zhishi expert import` 即可入库。
