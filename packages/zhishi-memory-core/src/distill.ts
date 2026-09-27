@@ -29,7 +29,7 @@ import {
   putEntry,
   putDistilledEntry,
   retainReminders,
-} from './store';
+} from './store.js';
 
 // ===== 常量 =====
 
