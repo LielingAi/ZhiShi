@@ -37,7 +37,10 @@ export default defineConfig({
             'src/server/**/*.unit.test.ts',
             'src/cli/**/*.unit.test.ts',
             'src/gui/**/*.test.ts',
-            'packages/**/*.unit.test.ts',
+            // 抽包后的 workspace 测试（zhishi-loop-core / zhishi-memory-core）。
+            // 包内测试都是纯逻辑（真 IO 用 mkdtemp，不碰模块级单例/端口），
+            // 归 unit 池；若将来包内出现 stateful 测试，需另行加进 stateful 的 include。
+            'packages/**/*.test.ts',
           ],
           // Fast pure tests — a tight timeout surfaces accidental real I/O.
           testTimeout: 10_000,

@@ -32,7 +32,7 @@
   "scripts": {
     "build:server": "node scripts/esbuild-bundle.mjs server",
     "build:cli": "node scripts/esbuild-bundle.mjs cli",
-    "build:core": "npm run build --workspace=zhishi-loop-core",
+    "build:core": "npm run build --workspaces --if-present",
     "pretypecheck": "npm run build:core",
     "pretest": "npm run build:core",
     "pretest:unit": "npm run build:core",

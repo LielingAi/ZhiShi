@@ -1,0 +1,55 @@
+{
+  "name": "zhishi-memory-core",
+  "version": "0.1.0",
+  "description": "ZhiShi memory core — SQLite-backed memory store with decay/recall settlement, distillation arcs (cognitive + research), and trust ledger. Extracted from u-disk src/server/memory (minimal split, plan A).",
+  "type": "module",
+  "license": "AGPL-3.0",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "peerDependencies": {
+    "better-sqlite3": ">=12"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    }
+  },
+  "exports": {
+    "./store": {
+      "types": "./dist/store.d.ts",
+      "default": "./dist/store.js"
+    },
+    "./distill": {
+      "types": "./dist/distill.d.ts",
+      "default": "./dist/distill.js"
+    },
+    "./distill-research": {
+      "types": "./dist/distill-research.d.ts",
+      "default": "./dist/distill-research.js"
+    },
+    "./trust": {
+      "types": "./dist/trust.d.ts",
+      "default": "./dist/trust.js"
+    },
+    "./research-kinds": {
+      "types": "./dist/research-kinds.d.ts",
+      "default": "./dist/research-kinds.js"
+    },
+    "./workspacePath": {
+      "types": "./dist/workspacePath.d.ts",
+      "default": "./dist/workspacePath.js"
+    },
+    "./paths": {
+      "types": "./dist/paths.d.ts",
+      "default": "./dist/paths.js"
+    },
+    "./text": {
+      "types": "./dist/text.d.ts",
+      "default": "./dist/text.js"
+    }
+  }
+}
