@@ -14,7 +14,7 @@ import {
   jsonlLineRange,
   makeWindowTransform,
 } from './window-transform';
-import { segmentContext } from './context-manager';
+import { segmentContext } from 'zhishi-loop-core/context-manager';
 
 function user(text: string): AgentMessage {
   return { role: 'user', content: text, timestamp: 1 } as AgentMessage;

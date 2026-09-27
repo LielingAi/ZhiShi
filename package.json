@@ -5,6 +5,9 @@
   "version": "1.8.3",
   "license": "AGPL-3.0",
   "packageManager": "npm@10.8.2",
+  "workspaces": [
+    "packages/*"
+  ],
   "engines": {
     "node": ">=22.0.0"
   },
@@ -29,6 +32,12 @@
   "scripts": {
     "build:server": "node scripts/esbuild-bundle.mjs server",
     "build:cli": "node scripts/esbuild-bundle.mjs cli",
+    "build:core": "npm run build --workspace=zhishi-loop-core",
+    "pretypecheck": "npm run build:core",
+    "pretest": "npm run build:core",
+    "pretest:unit": "npm run build:core",
+    "prebuild:server": "npm run build:core",
+    "prebuild:cli": "npm run build:core",
     "build:gui": "cd src/gui && npm run build",
     "build:tsx-runtime": "node scripts/setup-tsx-runtime.mjs",
     "sync:bundled-skills": "node scripts/build/sync-bundled-skills.cjs",

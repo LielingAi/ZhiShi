@@ -16,7 +16,7 @@
 
 import type { ImageContent, TextContent } from '@earendil-works/pi-ai';
 
-import type { AfterToolCallHook } from './loop';
+import type { AfterToolCallHook } from './loop.js';
 
 // ---------------------------------------------------------------------------
 // Rule engine(与 boundary 同构)

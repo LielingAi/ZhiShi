@@ -16,7 +16,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
 import { appendHarvestEntries } from './harvest';
 import { createRecallTool, RECALL_MAX_CHARS, RECALL_TOOL_NAME } from './recall';
-import { appendLoopMessages } from './session';
+import { appendLoopMessages } from 'zhishi-loop-core/session';
 
 const DIR = mkdtempSync(join(tmpdir(), 'zhishi-recall-test-'));
 afterAll(() => rmSync(DIR, { recursive: true, force: true }));

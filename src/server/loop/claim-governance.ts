@@ -16,7 +16,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import {
   loadLoopSession,
   markLoopSessionClaimsCursor,
-} from './session';
+} from 'zhishi-loop-core/session';
 import {
   addEvidence,
   addFinding,
@@ -42,9 +42,9 @@ import {
   listResearchEvents,
 } from '../memory/store';
 import { isResearchBugClass, isResearchOutcome, isResearchTaskKind } from '../../shared/research-kinds';
-import { messageText } from './context-manager';
+import { messageText } from 'zhishi-loop-core/context-manager';
 import { resolveLoopModel } from './pi-provider';
-import { runLoopText } from './loop';
+import { runLoopText } from 'zhishi-loop-core/loop';
 
 // ---------------------------------------------------------------------------
 // 常量

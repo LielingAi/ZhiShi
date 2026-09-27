@@ -3,19 +3,17 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "allowJs": true,
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
+    "declaration": true,
+    "outDir": "dist",
+    "rootDir": "src",
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
-    "noEmit": true,
-    "incremental": true,
-    "jsx": "react-jsx",
     "types": ["node"]
   },
-  "include": ["src/**/*", "packages/**/*", ".claude/skills/**/*.ts"],
-  "exclude": [".claude/skills/*/cli/**"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
 }

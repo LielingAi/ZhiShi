@@ -13,7 +13,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
-import { appendLoopMessages } from './session';
+import { appendLoopMessages } from 'zhishi-loop-core/session';
 import { buildLoopTranscript } from './transcript';
 
 const DIR = mkdtempSync(join(tmpdir(), 'zhishi-loop-transcript-test-'));

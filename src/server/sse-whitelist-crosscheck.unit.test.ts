@@ -25,6 +25,9 @@ import { describe, expect, it } from 'vitest';
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const SSE_TS = join(SERVER_DIR, 'sse.ts');
+// 最小拆：sse-adapter 已迁 packages/zhishi-loop-core（SseOut 字面量仍是
+// chat-engine broadcast(sse.event) 变量的产生点，对账必须继续覆盖它）。
+const SSE_ADAPTER_TS = join(SERVER_DIR, '..', '..', 'packages', 'zhishi-loop-core', 'src', 'sse-adapter.ts');
 
 /** Recursively collect .ts files under dir (excluding tests). */
 function collectSources(dir: string): string[] {
@@ -53,7 +56,7 @@ function backendEmittedEvents(): Set<string> {
     const text = readFileSync(file, 'utf-8');
     for (const m of text.matchAll(pattern)) events.add(m[1]);
   }
-  const adapterText = readFileSync(join(SERVER_DIR, 'loop', 'sse-adapter.ts'), 'utf-8');
+  const adapterText = readFileSync(SSE_ADAPTER_TS, 'utf-8');
   for (const m of adapterText.matchAll(/event:\s*'([a-z][a-z0-9:-]+)'/g)) events.add(m[1]);
   return events;
 }

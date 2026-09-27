@@ -23,7 +23,7 @@ import {
   loopSessionFile,
   type LoopSessionMeta,
   type LoopSessionStoreOptions,
-} from './session';
+} from 'zhishi-loop-core/session';
 
 export interface LoopTranscriptToolCall {
   name: string;

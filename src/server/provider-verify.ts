@@ -12,7 +12,7 @@ import { execSync } from 'child_process';
 
 import { type ProviderEnv } from './agent-session';
 
-import { oneShotResult } from './loop/one-shot';
+import { oneShotResult } from 'zhishi-loop-core/one-shot';
 
 import { resolveLoopModelFromEnv } from './loop/pi-provider';
 

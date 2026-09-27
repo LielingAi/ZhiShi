@@ -11,8 +11,8 @@ import type { EnvironmentEntry } from '../../shared/config-types';
 
 // B8(1.2.6)回归:直接驱动真 spawnSubLoop 时 mock runLoop 边界(绝无网络/ssh)。
 const runLoopMock = vi.fn();
-vi.mock('./loop', async (importOriginal) => {
-  const orig = await importOriginal<typeof import('./loop')>();
+vi.mock('zhishi-loop-core/loop', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('zhishi-loop-core/loop')>();
   return { ...orig, runLoop: (...args: unknown[]) => runLoopMock(...args) };
 });
 

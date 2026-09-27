@@ -17,7 +17,7 @@ import {
   runClaimGovernance,
   type Extractor,
 } from './claim-governance';
-import { appendLoopMessages, loadLoopSession } from './session';
+import { appendLoopMessages, loadLoopSession } from 'zhishi-loop-core/session';
 import { loadArchive } from './archive';
 import { loadSessionClaims } from './session-claims';
 import { resetMemoryStoreForTest } from '../memory/store';

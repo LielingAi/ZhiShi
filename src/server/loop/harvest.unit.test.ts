@@ -21,7 +21,7 @@ import {
   loadHarvest,
   readHarvestEntry,
 } from './harvest';
-import type { ContextSegment } from './context-manager';
+import type { ContextSegment } from 'zhishi-loop-core/context-manager';
 
 const DIR = mkdtempSync(join(tmpdir(), 'zhishi-harvest-test-'));
 afterAll(() => rmSync(DIR, { recursive: true, force: true }));

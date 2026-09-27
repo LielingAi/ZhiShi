@@ -86,7 +86,7 @@ import { isMissionKind, MISSION_KINDS } from '../shared/mission';
 import { loadArchive } from './loop/archive';
 import { envKeyForSelection, getEnvSessionLine, loadEnvSessionsMap, removeEnvSessionsForEnvId } from './environment/env-sessions';
 import { resolveLoopModel } from './loop/pi-provider';
-import { runLoopText } from './loop/loop';
+import { runLoopText } from 'zhishi-loop-core/loop';
 import { buildLoopTranscript } from './loop/transcript';
 import { exportReport } from './report/export';
 import { loadEnabledAgents } from './agents/agent-loader';

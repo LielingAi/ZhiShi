@@ -85,7 +85,7 @@ import { pendingBoundaryAsks, respondBoundaryAsk } from './loop/boundary-ask';
 // 1.3.2 决策面板:pending 注册表 + 重连重放。
 import { pendingDecisions, respondDecision } from './loop/decision';
 // 越界/决策应答落盘 transcript 的持久化通道。
-import { appendLoopMessages, defaultLoopSessionDir, loadLoopSession, loopSessionFile } from './loop/session';
+import { appendLoopMessages, defaultLoopSessionDir, loadLoopSession, loopSessionFile } from 'zhishi-loop-core/session';
 // 1.3.3:历史面板 wire 回放(loop jsonl → 完整 wire 消息,含决策块)。
 import { buildLoopWireMessages } from './loop/wire-replay';
 // 1.3.3:attach 交互式 pty 端点(WS upgrade)。

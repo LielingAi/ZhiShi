@@ -27,7 +27,7 @@
 
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
-import type { LoopEvent } from './loop';
+import type { LoopEvent } from './loop.js';
 
 export interface SseOut {
   event: string;
