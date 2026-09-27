@@ -17,46 +17,34 @@ import {
   RESEARCH_OUTCOMES,
   RESEARCH_TASK_KINDS,
 } from './store';
-import {
-  insertEntry,
-  openExpertStore,
-  resetExpertStoreForTest,
-  type ExpertDb,
-} from '../expert/store';
-import type { ValidatedExpertEntry } from '../expert/validate';
+// 最小拆：expert_refs 查证走宿主注入端口（包不再依赖 u-disk 的 expert/store）。
+// 本文件用假实现覆盖端口契约：已知 id 集合 = "存在于 expert.db"。
+import { setExpertRefValidator } from './store';
 
 let dir: string;
 const NOW = Date.parse('2026-08-14T12:00:00Z');
+const knownExpertIds = new Set<number>();
+let nextExpertId = 1;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'zhishi-research-'));
   resetMemoryStoreForTest();
-  resetExpertStoreForTest();
+  knownExpertIds.clear();
+  nextExpertId = 1;
+  setExpertRefValidator((_baseDir, ids) => ids.filter((id) => !knownExpertIds.has(id)));
 });
 
 afterEach(() => {
+  setExpertRefValidator(undefined);
   resetMemoryStoreForTest();
-  resetExpertStoreForTest();
   rmSync(dir, { recursive: true, force: true });
 });
 
-/** 造一条合法专家条目并落 expert.db，返回条目 id（expert_refs 校验的靶子）。 */
-function seedExpertEntry(title: string, db?: ExpertDb): number {
-  const expertDb = db ?? openExpertStore(dir);
-  const value: ValidatedExpertEntry = {
-    domain: 'pentest',
-    kind: 'technique',
-    title,
-    applicability: '适用条件',
-    content: '正文',
-    criteria: '判据',
-    provenance: 'user',
-    reviewer: 'tester',
-    sourceEventId: null,
-    tags: '',
-    enabled: true,
-  };
-  return insertEntry(expertDb, value, `hash-${title}`, NOW).id;
+/** 登记一条"存在于 expert.db"的条目 id（expert_refs 校验的靶子）。 */
+function seedExpertEntry(_title: string): number {
+  const id = nextExpertId++;
+  knownExpertIds.add(id);
+  return id;
 }
 
 describe('research_events：枚举定义与校验', () => {
@@ -238,7 +226,7 @@ describe('research_events：expert_refs 引用追踪（1.2.2）', () => {
     expect(listResearchEvents({ baseDir: dir })[0].expertRefs).toBeUndefined();
   });
 
-  it('不存在的条目 id 拒绝落库（库存在/不存在两路），且不落脏数据', () => {
+  it('不存在的条目 id 拒绝落库（存在/不存在两路），且不落脏数据', () => {
     const existing = seedExpertEntry('真实条目');
     expect(() => recordResearchEvent({
       workspace: '/ws/x', taskKind: 'pentest', outcome: 'success',
@@ -246,17 +234,25 @@ describe('research_events：expert_refs 引用追踪（1.2.2）', () => {
     }, dir, NOW)).toThrow(/不存在的专家条目 id：9999/);
     expect(listResearchEvents({ baseDir: dir })).toHaveLength(0);
 
-    // expert.db 整个不存在 → 任何 id 都查无此条目
-    const dir2 = mkdtempSync(join(tmpdir(), 'zhishi-research-noexpert-'));
+    // 宿主无专家库（端口报告全部缺失）→ 任何 id 都查无此条目
+    setExpertRefValidator((_baseDir, ids) => ids);
     try {
       expect(() => recordResearchEvent({
         workspace: '/ws/x', taskKind: 'pentest', outcome: 'success',
         summary: 'x', expertRefs: [1],
-      }, dir2, NOW)).toThrow(/expert_refs/);
+      }, dir, NOW)).toThrow(/expert_refs/);
     } finally {
-      resetMemoryStoreForTest();
-      rmSync(dir2, { recursive: true, force: true });
+      setExpertRefValidator((_baseDir, ids) => ids.filter((id) => !knownExpertIds.has(id)));
     }
+  });
+
+  it('未注入端口（无专家库宿主）→ 不做查证，refs 照常落库', () => {
+    setExpertRefValidator(undefined);
+    const ev = recordResearchEvent({
+      workspace: '/ws/x', taskKind: 'pentest', outcome: 'success',
+      summary: 'x', expertRefs: [42],
+    }, dir, NOW);
+    expect(ev.expertRefs).toEqual([42]);
   });
 
   it('非法 id（0 / 负数 / 小数）拒绝落库', () => {
