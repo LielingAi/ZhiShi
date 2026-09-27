@@ -1,0 +1,209 @@
+/**
+ * pi(pi-ai 0.84)模型/provider 构造层（自研 agent loop 的模型入口）——
+ * zhishi-loop-core 包的纯半边：零仓内依赖，全部入参显式。
+ *
+ * 从 config.json 自解析的 {@link resolveLoopModel} / {@link resolveLoopModelFromEnv}
+ * 留在 u-disk 侧（src/server/loop/pi-provider.ts，依赖 config 体系）；
+ * 本文件只负责从显式 provider 描述构造 pi 运行时。
+ *
+ * provider 映射规则：
+ *   - kimi 系（id 含 kimi/moonshot，或 baseUrl 指向 api.kimi.com）
+ *     → pi-ai 内置 kimiCodingProvider()（baseUrl https://api.kimi.com/coding，
+ *     anthropic-messages，内置模型目录含 k3）；该 provider 在 PRESET_PROVIDERS
+ *     之外也能解析（baseUrl 已知，不依赖 provider 定义）。
+ *   - 其余 anthropic 协议 → createProvider 通用 anthropic-messages，baseUrl
+ *     原样透传（pi 走官方 Anthropic SDK，baseURL 语义与 ANTHROPIC_BASE_URL
+ *     一致，SDK 自己拼 /v1/messages——不要手工补 /v1）。
+ *   - openai 协议 → openai-completions / openai-responses（pi 原生讲
+ *     OpenAI 协议）。
+ *
+ * 凭据纪律：apiKey 只进 auth.resolve 闭包 / getApiKey，绝不落日志。
+ * 鉴权经 pi 的 overrides.apiKey 通道（Models.streamSimple 的
+ * options.apiKey → resolveProviderAuth 显式 key 短路，见 pi-ai
+ * auth/resolve.js），不碰 credential store / 环境变量。
+ */
+
+import {
+  createModels,
+  createProvider,
+  type Api,
+  type ApiKeyAuth,
+  type Model,
+  type Models,
+} from '@earendil-works/pi-ai';
+import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy';
+import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
+import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
+import { kimiCodingProvider } from '@earendil-works/pi-ai/providers/kimi-coding';
+
+/** kimi for coding 固定端点（与 pi-ai 内置 kimi-coding provider 一致）。 */
+export const KIMI_CODING_BASE_URL = 'https://api.kimi.com/coding';
+
+/** ProviderEnv 的结构子集（与 agent-session.ts::ProviderEnv 结构对齐，避免反向依赖）。 */
+export interface LoopProviderEnv {
+  baseUrl?: string;
+  apiKey?: string;
+  authType?: 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key';
+  apiProtocol?: 'anthropic' | 'openai';
+  maxOutputTokens?: number;
+  maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
+  upstreamFormat?: 'chat_completions' | 'responses';
+}
+
+export interface LoopModelResolution {
+  /** 含已解析 provider 的 pi Models 集合——streamFn / completeSimple 的来源。 */
+  models: Models;
+  model: Model<Api>;
+  /** 每次 LLM 调用前解析 key（pi agentLoop 的 getApiKey 契约）。 */
+  getApiKey: () => string | undefined;
+  providerId?: string;
+  modelId: string;
+}
+
+/** kimi 系判定：providerId 或 baseUrl 命中即走内置 kimi-coding。 */
+export function isKimiCodingProvider(providerId?: string, baseUrl?: string): boolean {
+  const id = (providerId ?? '').toLowerCase();
+  if (id.includes('kimi') || id.includes('moonshot')) return true;
+  return !!baseUrl && baseUrl.includes('api.kimi.com');
+}
+
+/** baseUrl 规整：去尾部斜杠（pi 透传给 SDK，双斜杠会拼出坏路径）。 */
+export function normalizeBaseUrl(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, '');
+}
+
+/**
+ * 静态 apiKey 的 ApiKeyAuth。pi 的 overrides.apiKey 通道会把显式 key 包成
+ * credential 传给 resolve——直接回吐，不读环境变量 / credential store。
+ * authType 'auth_token'/'both' 的 Bearer 语义经 ModelAuth.headers 补
+ * （pi anthropic 默认只发 x-api-key；zhishi 的 auth_token 系 provider
+ * 需要 Authorization: Bearer——与 buildClaudeSessionEnv 的语义对应）。
+ */
+export function staticApiKeyAuth(
+  apiKey: string,
+  authType?: LoopProviderEnv['authType'],
+): ApiKeyAuth {
+  const needsBearer = authType === 'auth_token' || authType === 'both' || authType === 'auth_token_clear_api_key';
+  return {
+    name: 'configured API key',
+    resolve: async ({ credential }) => {
+      const key = credential?.key ?? apiKey;
+      if (!key) return undefined;
+      return {
+        auth: {
+          apiKey: key,
+          ...(needsBearer ? { headers: { authorization: `Bearer ${key}` } } : {}),
+        },
+      };
+    },
+  };
+}
+
+export interface BuildLoopModelOptions extends LoopProviderEnv {
+  modelId: string;
+  providerId?: string;
+  /** 上下文窗口（来自 provider 模型目录；缺省给保守值）。 */
+  contextWindow?: number;
+}
+
+/**
+ * 从显式 provider 描述构造 pi 运行时。baseUrl 缺省时：kimi → 内置端点，
+ * openai → api.openai.com/v1，其余 → api.anthropic.com。
+ */
+export function buildLoopModel(opts: BuildLoopModelOptions): LoopModelResolution {
+  const protocol = opts.apiProtocol ?? 'anthropic';
+  const kimi = protocol === 'anthropic' && isKimiCodingProvider(opts.providerId, opts.baseUrl);
+  const models = createModels();
+
+  if (kimi) {
+    const provider = kimiCodingProvider();
+    // 内置目录含 k3 等；配置的 modelId 不在目录时克隆首条目改 id
+    // （目录字段——baseUrl/compat/上下文窗口——比凭空构造可靠）。
+    const catalog = provider.getModels();
+    const found = catalog.find((m) => m.id === opts.modelId);
+
+    // 1.6.12：k3 系改走 openai-completions 通道——K3 官方行为是「思考恒开 +
+    // reasoning_content 返回」（OpenAI 思考格式，见 pi#7199 / K3 API 指南）；
+    // anthropic-messages 通道分不出思考块，CoT 全裸奔进正文（实机：k3 一条
+    // 消息 3.4 万 token 全是思维链）。openai 适配器把 reasoning_content 收进
+    // thinking 信道。/coding/v1/chat/completions 端点实探存在（401 待鉴权）。
+    if (/^k3([-.]|$)/.test(opts.modelId)) {
+      const openaiModels = createModels();
+      const cat = found;
+      const model = {
+        id: opts.modelId,
+        name: cat?.name ?? opts.modelId,
+        api: 'openai-completions',
+        provider: 'kimi-coding-openai',
+        baseUrl: 'https://api.kimi.com/coding/v1',
+        reasoning: true, // k3 恒思考（官方）；reasoning_content 由 openai 适配器分离
+        input: cat?.input ?? ['text'],
+        cost: cat?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: cat?.contextWindow ?? 262_144,
+        maxTokens: cat?.maxTokens ?? 131_072,
+        // 1.6.12 实机回归修正：compat 缺省时 pi 自动检测不认识 kimi-coding
+        // （isMoonshot 只认 api.moonshot.*）→ supportsDeveloperRole 误判 true →
+        // system 消息以 'developer' 角色发送，kimi 端点 400「role 'developer'
+        // is not allowed」。钉死 compat：developer 角色关、max_tokens 字段名、
+        // reasoning_effort 支持（K3 官方支持）。
+        compat: {
+          supportsStore: false,
+          supportsDeveloperRole: false,
+          supportsReasoningEffort: true,
+          supportsUsageInStreaming: true,
+          maxTokensField: 'max_tokens',
+          supportsLongCacheRetention: false,
+          thinkingFormat: 'openai',
+        },
+      } as unknown as Model<Api>;
+      const openaiProvider = createProvider({
+        id: 'kimi-coding-openai',
+        baseUrl: 'https://api.kimi.com/coding/v1',
+        auth: { apiKey: staticApiKeyAuth(opts.apiKey ?? '', opts.authType) },
+        models: [model],
+        api: openAICompletionsApi(),
+      });
+      openaiModels.setProvider(openaiProvider);
+      return { models: openaiModels, model, getApiKey: () => opts.apiKey, providerId: opts.providerId ?? 'kimi-coding', modelId: opts.modelId };
+    }
+
+    models.setProvider(provider);
+    const model = (found ?? { ...catalog[0], id: opts.modelId, name: opts.modelId }) as Model<Api>;
+    return { models, model, getApiKey: () => opts.apiKey, providerId: opts.providerId ?? 'kimi-coding', modelId: opts.modelId };
+  }
+
+  const baseUrl = normalizeBaseUrl(
+    opts.baseUrl ?? (protocol === 'openai' ? 'https://api.openai.com/v1' : 'https://api.anthropic.com'),
+  );
+  const providerId = opts.providerId ?? 'custom';
+  const api = protocol === 'openai'
+    ? (opts.upstreamFormat === 'responses' ? 'openai-responses' : 'openai-completions')
+    : 'anthropic-messages';
+
+  const model: Model<Api> = {
+    id: opts.modelId,
+    name: opts.modelId,
+    api,
+    provider: providerId,
+    baseUrl,
+    reasoning: false,
+    input: ['text'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: opts.contextWindow ?? 200_000,
+    maxTokens: opts.maxOutputTokens ?? 8_192,
+  } as Model<Api>;
+
+  const provider = createProvider({
+    id: providerId,
+    baseUrl,
+    auth: { apiKey: staticApiKeyAuth(opts.apiKey ?? '', opts.authType) },
+    models: [model],
+    api: api === 'anthropic-messages'
+      ? anthropicMessagesApi()
+      : api === 'openai-responses'
+        ? openAIResponsesApi()
+        : openAICompletionsApi(),
+  });
+  models.setProvider(provider);
+  return { models, model, getApiKey: () => opts.apiKey, providerId, modelId: opts.modelId };
+}

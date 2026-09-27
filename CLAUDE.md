@@ -30,6 +30,8 @@
 
 - `src/server/` — Node.js 后端 Sidecar（esbuild 打包成 `server-dist.js`）。入口 `index.ts` 只做启动/路由分发（1.1.7 绞杀拆分后 ~3.8k 行）；崩溃日志 `crash-log.ts`、环境配方 seed `skills-config.ts`、cron 路由 `cron/`、sessions 路由 `routes/`、admin-api.ts admin handler 包、`report/` 报告导出（1.2.0：骨架组装 + 证据回收 + LLM 填肉 + 落盘，设计见 `docs/design/1.2.0-design.md`）
 
+- `packages/zhishi-loop-core/` — 最小拆抽出的 harness 引擎核（npm workspace，仓内经 `zhishi-loop-core/*` 子路径消费）：`loop.ts`（runLoop）、`session.ts`（jsonl 会话持久化）、`context-manager.ts`、`sse-adapter.ts`、`output-guard.ts`、`one-shot.ts`、`pi-model.ts`（buildLoopModel 纯构造）+ vendored `file-lock.ts`/`paths.ts`。仓内壳：`src/server/loop/pi-provider.ts`（config 耦合半边 + re-export）、`src/server/utils/file-lock.ts`（re-export）。新增引擎核文件进包、仓内只经子路径引用，禁止反向 import 仓内模块
+
 - `src/server/intel/` — 情报检索（1.1.2）：`intel.db`（NVD CVE + exploit-db 索引，FTS5）+ `zhishi intel update/status` + loop 工具 `intel_search`（宿主侧认知供给，与 research_log 同层）
 
 - `src/cli/` — `zhishi` CLI（同步到 `~/.zhishi/bin/`），产品能力的统一入口

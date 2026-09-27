@@ -16,9 +16,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { Type, type Static } from '@earendil-works/pi-ai';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 
-import { messageText } from './context-manager';
+import { messageText } from 'zhishi-loop-core/context-manager';
 import { readHarvestEntry, type HarvestEntry } from './harvest';
-import { defaultLoopSessionDir, loopSessionFile } from './session';
+import { defaultLoopSessionDir, loopSessionFile } from 'zhishi-loop-core/session';
 
 export const RECALL_TOOL_NAME = 'recall';
 

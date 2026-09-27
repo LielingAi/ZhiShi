@@ -22,7 +22,7 @@ import {
   messageText,
   segmentContext,
   type ContextSegment,
-} from './context-manager';
+} from 'zhishi-loop-core/context-manager';
 import {
   isClaimExpired,
   loadSessionClaims,

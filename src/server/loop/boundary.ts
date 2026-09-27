@@ -27,7 +27,7 @@ import { requestBoundaryAsk } from './boundary-ask';
 import { resolveExecTarget } from './env-exec';
 import { ENV_BG_TOOL_NAME } from './bg-exec';
 import { ENV_EXEC_TOOL_NAME } from './tools';
-import type { BeforeToolCallHook } from './loop';
+import type { BeforeToolCallHook } from 'zhishi-loop-core/loop';
 
 // ---------------------------------------------------------------------------
 // Rule engine

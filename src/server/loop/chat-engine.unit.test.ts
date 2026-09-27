@@ -19,8 +19,8 @@ vi.mock('../sse', () => ({
 }));
 
 const runLoopMock = vi.fn();
-vi.mock('./loop', async (importOriginal) => {
-  const orig = await importOriginal<typeof import('./loop')>();
+vi.mock('zhishi-loop-core/loop', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('zhishi-loop-core/loop')>();
   return { ...orig, runLoop: (...args: unknown[]) => runLoopMock(...args) };
 });
 
@@ -35,8 +35,8 @@ const loadLoopSessionMock = vi.fn();
 const appendLoopMessagesMock = vi.fn(async (..._args: unknown[]) => {});
 const truncateLoopSessionMock = vi.fn(async (..._args: unknown[]) => {});
 const forkLoopSessionMock = vi.fn(async (..._args: unknown[]) => 'fork-ls-1');
-vi.mock('./session', async (importOriginal) => {
-  const orig = await importOriginal<typeof import('./session')>();
+vi.mock('zhishi-loop-core/session', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('zhishi-loop-core/session')>();
   let seq = 0;
   return {
     ...orig,
@@ -94,7 +94,7 @@ vi.mock('../SessionStore', () => ({
 }));
 
 vi.mock('./boundary', () => ({ makeBoundaryHook: () => async () => undefined }));
-vi.mock('./output-guard', () => ({ makeOutputGuardHook: () => async () => undefined }));
+vi.mock('zhishi-loop-core/output-guard', () => ({ makeOutputGuardHook: () => async () => undefined }));
 vi.mock('./window-transform', () => ({ makeWindowTransform: () => async (m: unknown) => m, WINDOW_OVERFLOW_RETRY_RATIO: 0.15, WORKING_MEMORY_TARGET_RATIO: 0.25 }));
 
 // A1(1.3.10):invoke 零广播回归——bg 回收走可注入 mock(bg-exec 的
@@ -216,7 +216,7 @@ import {
 // A1:标题钩子槽(真实现,单测里手动装 spy——invoke 线必须不触发)。
 import { setPostTurnTitleHook } from '../turn-hooks';
 // A2-1(1.5.4)回归:用真实估算函数算校准期望值(与实现同一口径)。
-import { estimateMessagesTokens } from './context-manager';
+import { estimateMessagesTokens } from 'zhishi-loop-core/context-manager';
 // B10(1.2.6)回归:配置面会话标识的真实读取口(chat-engine 不经 mock 写它)。
 import { getSessionId } from '../agent-session';
 

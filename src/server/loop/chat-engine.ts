@@ -106,9 +106,9 @@ import { getInteractionScenario, setActiveSessionId } from '../agent-session';
 import { makeBoundaryHook } from './boundary';
 import { makeWindowTransform, WINDOW_OVERFLOW_RETRY_RATIO, WORKING_MEMORY_TARGET_RATIO } from './window-transform';
 import { buildArchiveCheckpointLine } from './archive-discipline';
-import { estimateMessagesTokens } from './context-manager';
-import { runLoop } from './loop';
-import { makeOutputGuardHook } from './output-guard';
+import { estimateMessagesTokens } from 'zhishi-loop-core/context-manager';
+import { runLoop } from 'zhishi-loop-core/loop';
+import { makeOutputGuardHook } from 'zhishi-loop-core/output-guard';
 import { createRecallTool, RECALL_TOOL_NAME } from './recall';
 import { parseChatRefs, resolveChatRefs } from './refs';
 import { firePostTurnTitleHook } from '../turn-hooks';
@@ -121,8 +121,8 @@ import {
   newLoopSessionId,
   truncateLoopSession,
   forkLoopSession,
-} from './session';
-import { mapLoopEventToSse, toolResultText, type SseOut } from './sse-adapter';
+} from 'zhishi-loop-core/session';
+import { mapLoopEventToSse, toolResultText, type SseOut } from 'zhishi-loop-core/sse-adapter';
 import { createDelegateTaskTool, DELEGATE_TASK_TOOL_NAME } from './subagent';
 import { createEnvBgTool, createEnvExecTool, createResearchLogTool, createArchiveTool, ENV_EXEC_TOOL_NAME, RESEARCH_LOG_TOOL_NAME, RESEARCH_ARCHIVE_TOOL_NAME } from './tools';
 import { loadArchive, type ArchiveSnapshot } from './archive';

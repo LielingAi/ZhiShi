@@ -28,8 +28,8 @@ import { getZhiShiDataDir } from '../utils/app-dirs';
 import { withFileLock, writeFileAtomic } from '../utils/file-lock';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
-import type { ContextSegment } from './context-manager';
-import { messageText } from './context-manager';
+import type { ContextSegment } from 'zhishi-loop-core/context-manager';
+import { messageText } from 'zhishi-loop-core/context-manager';
 
 // ---------------------------------------------------------------------------
 // 类型

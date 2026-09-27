@@ -1,0 +1,55 @@
+{
+  "name": "zhishi-loop-core",
+  "version": "0.1.0",
+  "description": "ZhiShi harness core — model-agnostic agent loop engine (pi base): runLoop, session persistence, context management, provider wiring. Extracted from u-disk src/server/loop (minimal split).",
+  "type": "module",
+  "license": "AGPL-3.0",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.84.2",
+    "@earendil-works/pi-ai": "0.84.2"
+  },
+  "exports": {
+    "./loop": {
+      "types": "./dist/loop.d.ts",
+      "default": "./dist/loop.js"
+    },
+    "./session": {
+      "types": "./dist/session.d.ts",
+      "default": "./dist/session.js"
+    },
+    "./context-manager": {
+      "types": "./dist/context-manager.d.ts",
+      "default": "./dist/context-manager.js"
+    },
+    "./sse-adapter": {
+      "types": "./dist/sse-adapter.d.ts",
+      "default": "./dist/sse-adapter.js"
+    },
+    "./output-guard": {
+      "types": "./dist/output-guard.d.ts",
+      "default": "./dist/output-guard.js"
+    },
+    "./one-shot": {
+      "types": "./dist/one-shot.d.ts",
+      "default": "./dist/one-shot.js"
+    },
+    "./pi-model": {
+      "types": "./dist/pi-model.d.ts",
+      "default": "./dist/pi-model.js"
+    },
+    "./file-lock": {
+      "types": "./dist/file-lock.d.ts",
+      "default": "./dist/file-lock.js"
+    },
+    "./paths": {
+      "types": "./dist/paths.d.ts",
+      "default": "./dist/paths.js"
+    }
+  }
+}

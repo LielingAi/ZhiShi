@@ -13,7 +13,7 @@ const oneShotMock = vi.fn();
 const resolveLoopModelFromEnvMock = vi.fn();
 const resolveLoopModelMock = vi.fn();
 
-vi.mock('../loop/one-shot', () => ({
+vi.mock('zhishi-loop-core/one-shot', () => ({
   oneShot: (...args: unknown[]) => oneShotMock(...args),
 }));
 vi.mock('../loop/pi-provider', () => ({

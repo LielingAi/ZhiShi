@@ -27,9 +27,9 @@ import { randomUUID } from 'node:crypto';
 import type { EnvironmentEntry } from '../../shared/config-types';
 import { buildDefaultBoundaryRules, makeBoundaryHook, type BoundaryRule } from './boundary';
 import { makeWindowTransform } from './window-transform';
-import { runLoop, type LoopEvent } from './loop';
+import { runLoop, type LoopEvent } from 'zhishi-loop-core/loop';
 import type { LoopModelResolution } from './pi-provider';
-import { appendLoopMessages, markLoopSessionCompacted, newLoopSessionId } from './session';
+import { appendLoopMessages, markLoopSessionCompacted, newLoopSessionId } from 'zhishi-loop-core/session';
 import { createEnvExecTool, ENV_EXEC_TOOL_NAME } from './tools';
 import { createRecallTool, RECALL_TOOL_NAME } from './recall';
 

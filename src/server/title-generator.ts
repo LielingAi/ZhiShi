@@ -36,7 +36,7 @@ import { isLikelyErrorTitle } from '../shared/titleFilters';
 
 import { capTitleAtBoundary } from '../shared/sessionTitle';
 
-import { oneShot } from './loop/one-shot';
+import { oneShot } from 'zhishi-loop-core/one-shot';
 
 import { resolveLoopModel, resolveLoopModelFromEnv } from './loop/pi-provider';
 

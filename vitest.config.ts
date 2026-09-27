@@ -37,6 +37,7 @@ export default defineConfig({
             'src/server/**/*.unit.test.ts',
             'src/cli/**/*.unit.test.ts',
             'src/gui/**/*.test.ts',
+            'packages/**/*.unit.test.ts',
           ],
           // Fast pure tests — a tight timeout surfaces accidental real I/O.
           testTimeout: 10_000,

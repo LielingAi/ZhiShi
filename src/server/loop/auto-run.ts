@@ -33,7 +33,7 @@ import { getZhiShiDataDir } from '../utils/app-dirs';
 import { withFileLock, writeFileAtomic } from '../utils/file-lock';
 import { isResearchOutcome } from '../../shared/research-kinds';
 import type { ResearchEvent } from '../memory/store';
-import { estimateMessageTokens, segmentContext, type ResearchPhase } from './context-manager';
+import { estimateMessageTokens, segmentContext, type ResearchPhase } from 'zhishi-loop-core/context-manager';
 import { takeCompletionDeclaration, clearCompletionDeclarations, precheckCompletionDeclaration } from './declare-completion';
 import type { PiSendInput } from './chat-engine';
 import type { InteractionScenario } from '../system-prompt';
@@ -41,7 +41,7 @@ import type { InteractionScenario } from '../system-prompt';
 // 生产接线依赖(函数体只在 startAutoRun 等入口使用,纯函数单测不触)。
 import { broadcast } from '../sse';
 import { invokePiSession, getPiAgentState, getEnvSessionBinding } from './chat-engine';
-import { appendLoopMessages, loadLoopSession, newLoopSessionId } from './session';
+import { appendLoopMessages, loadLoopSession, newLoopSessionId } from 'zhishi-loop-core/session';
 import { loadArchive } from './archive';
 import { getResearchEventById, listResearchEvents } from '../memory/store';
 import { findEnvironmentEntry, listEnvironmentsWithBuiltin } from '../environment/registry';

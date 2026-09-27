@@ -14,7 +14,7 @@ vi.mock('./agent-session', () => ({
   startOneShotBridge: vi.fn(),
   getSidecarPort: () => 0,
 }));
-vi.mock('./loop/one-shot', () => ({
+vi.mock('zhishi-loop-core/one-shot', () => ({
   oneShotResult: (...args: unknown[]) => oneShotResultMock(...args),
 }));
 vi.mock('./provider-probe', async (importOriginal) => {
