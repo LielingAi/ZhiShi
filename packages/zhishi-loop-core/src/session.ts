@@ -21,8 +21,8 @@ import { join } from 'node:path';
 
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
-import { getZhiShiDataDir } from './paths';
-import { withFileLock, writeFileAtomic } from './file-lock';
+import { getZhiShiDataDir } from './paths.js';
+import { withFileLock, writeFileAtomic } from './file-lock.js';
 
 // 1.7.2：截断标记自 compaction.ts 迁入（旧段级压缩已退役删除,持久化剥离
 // 仍需要认旧形态——1.5.3 及更早的 jsonl 里可能存在两类标记）。

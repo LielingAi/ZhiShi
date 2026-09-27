@@ -1,6 +1,6 @@
 {
   "name": "zhishi-loop-core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "ZhiShi harness core — model-agnostic agent loop engine (pi base): runLoop, session persistence, context management, provider wiring. Extracted from u-disk src/server/loop (minimal split).",
   "type": "module",
   "license": "AGPL-3.0",
