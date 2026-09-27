@@ -33,7 +33,7 @@ import {
   RESEARCH_TASK_KINDS,
   type MemoryKind,
   type ResearchEvent,
-} from './store';
+} from './store.js';
 
 // ===== 常量 =====
 

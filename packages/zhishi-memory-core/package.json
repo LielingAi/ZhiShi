@@ -1,6 +1,6 @@
 {
   "name": "zhishi-memory-core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "ZhiShi memory core — SQLite-backed memory store with decay/recall settlement, distillation arcs (cognitive + research), and trust ledger. Extracted from u-disk src/server/memory (minimal split, plan A).",
   "type": "module",
   "license": "AGPL-3.0",
