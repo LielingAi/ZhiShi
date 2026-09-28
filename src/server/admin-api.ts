@@ -3514,10 +3514,12 @@ export async function handleEnvironmentRm(payload: {
     error: `env rm 只对 VM 环境条目生效；"${id}" 未命中登记条目 / Hyper-V / VirtualBox（zhishi env list 查看已有环境）`,
   };
 }
-/** `environment/exec` — guest-exec 通道（P2 B2）：对 kind=vm 且无 address 的
- * 断网隔离 VM，经 vmrun 客户机通道（runProgramInGuest + copyFileFromGuest）
- * 执行一次性命令并取回 stdout/exitCode。guestPassword 是 CLI 现场输入的瞬传
- * 值（vmrun 只认密码），只用于本次调用，绝不落盘（D-T4）。 */
+/** `environment/exec` — 执行通道（P2 B2 guest-exec + 1.8.6 分派扩面）：
+ *  docker / ssh 直达条目经 execInEnvironment（loop/env-exec 统一通道：
+ *  docker exec / ssh 一站到位）；仅 kind=vm 且 guest 通道（无 address 的
+ *  断网隔离 VM）走 vmGuestExec 编排（runProgramInGuest + copyFileFromGuest）。
+ *  guestPassword 是 CLI 现场输入的瞬传值（vmrun 只认密码），只用于本次
+ *  调用，绝不落盘（D-T4）——只对 guest 通道有意义。 */
 export async function handleEnvironmentExec(payload: {
   id?: string;
   command?: string;
@@ -3545,6 +3547,14 @@ export async function handleEnvironmentExec(payload: {
   const entry = findEnvironmentEntry(listEnvironments(loadConfig()), id);
   if (!entry) {
     return { success: false, error: `未找到环境 "${id}"（zhishi env list 查看已有环境）` };
+  }
+  // 分派（1.8.6）：docker / ssh 直达走 execInEnvironment（loop/env-exec 的
+  // 统一执行通道——docker exec / ssh 一站到位）；仅断网隔离 VM 的
+  // guest 通道需要 vmGuestExec 编排（guestPassword 瞬传只对它有意义）。
+  if (entry.kind !== 'vm') {
+    const r = await execInEnvironment(entry, command, { timeoutMs: 600_000 });
+    if (!r.ok) return { success: false, error: r.error };
+    return { success: true, data: { stdout: r.stdout, exitCode: r.exitCode } };
   }
   const result = await vmGuestExec(entry, command, {
     guestUser: typeof payload.guestUser === 'string' && payload.guestUser.trim() ? payload.guestUser.trim() : undefined,
