@@ -18,6 +18,7 @@ import {
   countNucleiTemplates,
   extractCveId,
   getCveById,
+  getDataBytes,
   getDbFileSize,
   getIntelStatus,
   getMeta,
@@ -221,6 +222,29 @@ describe('裁剪', () => {
     runInTransaction(db, () => upsertCves(db, list));
     expect(pruneBySize(db, 10 * 1024 * 1024 * 1024)).toBe(0);
     expect(countCves(db)).toBe(3);
+  });
+
+  it('大小裁剪回归（2026-09-28 数据毁灭实证）：删行不缩文件不得误杀全表——保留放得下的最新数据', () => {
+    // 实机：39.8 万条全量回填后 minimal 模式 pruneBySize 按文件大小判断达标，
+    // 但 SQLite 删行不缩文件（无 VACUUM 时页只进 freelist）——循环永远看不
+    // 到「变小」，把全表删光。达标信号必须是数据实际占用（page_count -
+    // freelist_count）× page_size，删除即时反映。
+    const list: ReturnType<typeof cve>[] = [];
+    for (let i = 0; i < 1200; i++) {
+      list.push(cve(`CVE-20${String(10 + Math.floor(i / 200))}-${String(i).padStart(4, '0')}`, `20${String(10 + Math.floor(i / 200)).padStart(2, '0')}-01-01`, `描述 ${'x'.repeat(200)} ${i}`));
+    }
+    runInTransaction(db, () => upsertCves(db, list));
+    const fullBytes = getDataBytes(db);
+    const budget = Math.floor(fullBytes / 2);
+    const deleted = pruneBySize(db, budget);
+    const remaining = countCves(db);
+    expect(deleted).toBeGreaterThan(0);
+    expect(remaining).toBeGreaterThan(0); // 回归核心：预算能放下的最新行必须活着
+    expect(remaining).toBeLessThan(1200);
+    expect(getDataBytes(db)).toBeLessThanOrEqual(budget);
+    // 保新删旧：最早的年份被裁掉，最新的还在
+    expect(getCveById(db, list[1199].id)).not.toBeNull();
+    expect(getCveById(db, list[0].id)).toBeNull();
   });
 });
 
