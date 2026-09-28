@@ -382,14 +382,16 @@ export function searchCves(db: IntelDb, query: string, limit: number): IntelHit[
 
 // ===== 裁剪 =====
 
-/** WAL checkpoint（TRUNCATE）：把 WAL 并回主文件，裁剪按主文件大小判断。 */
+/** WAL checkpoint（TRUNCATE）：把 WAL 并回主文件——页面计数随之准确
+ *  （prune 的达标信号依赖它；只读场景等失败不影响裁剪判断）。 */
 function checkpoint(db: IntelDb): void {
   try {
     db.raw.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   } catch { /* 只读场景等失败不影响裁剪判断 */ }
 }
 
-/** intel.db 主文件字节数（不存在计 0）。 */
+/** intel.db 主文件字节数（不存在计 0——状态展示用；prune 不用它做达标
+ *  判断：SQLite 删行不缩文件，拿文件大小当达标信号会误杀全表）。 */
 export function getDbFileSize(db: IntelDb): number {
   try {
     return statSync(db.dbPath).size;
@@ -398,26 +400,47 @@ export function getDbFileSize(db: IntelDb): number {
   }
 }
 
+/** 数据实际占用字节：(page_count − freelist_count) × page_size。
+ *  删除即时反映（被删页进 freelist）——pruneBySize 的达标信号
+ *  （2026-09-28 数据毁灭实证修复：不能用文件大小——无 VACUUM 时文件
+ *  不随删除缩小）。 */
+export function getDataBytes(db: IntelDb): number {
+  const pageSize = (db.raw.prepare('PRAGMA page_size').get() as { page_size: number }).page_size;
+  const pageCount = (db.raw.prepare('PRAGMA page_count').get() as { page_count: number }).page_count;
+  const freelist = (db.raw.prepare('PRAGMA freelist_count').get() as { freelist_count: number }).freelist_count;
+  return Math.max(0, (pageCount - freelist) * pageSize);
+}
+
 /** window 模式裁剪：删掉 published 早于 cutoff（含无日期）的记录。 */
 export function pruneByWindow(db: IntelDb, cutoffIso: string): number {
   return db.raw.prepare('DELETE FROM cves WHERE published IS NULL OR published < ?').run(cutoffIso).changes;
 }
 
 /**
- * 自适应裁剪：主文件超 maxBytes 时按 published 升序（最旧的先删，NULL 最旧）
- * 分批删到达标或表空。返回删除条数。
+ * 自适应裁剪：数据实际占用超 maxBytes 时按 published 升序（最旧的先删，
+ * NULL 最旧）分批删到达标或表空。返回删除条数。
+ *
+ * 达标信号 = getDataBytes（(page_count − freelist) × page_size）——删除
+ * 即时反映；每批删完 checkpoint 让被删页进 freelist。收尾一次 VACUUM
+ * 回收磁盘（2026-09-28 实证：旧实现按文件大小判断——无 VACUUM 时文件
+ * 不随删除缩小，循环把 39.8 万行全表删光）。
  */
 export function pruneBySize(db: IntelDb, maxBytes: number): number {
   let deleted = 0;
   checkpoint(db);
   for (let guard = 0; guard < 2000; guard++) {
-    if (getDbFileSize(db) <= maxBytes) break;
+    if (getDataBytes(db) <= maxBytes) break;
     const del = db.raw
       .prepare('DELETE FROM cves WHERE id IN (SELECT id FROM cves ORDER BY published ASC, id ASC LIMIT 500)')
       .run().changes;
     deleted += del;
     if (del === 0) break;
     checkpoint(db);
+  }
+  if (deleted > 0) {
+    try {
+      db.raw.exec('VACUUM');
+    } catch { /* 回收磁盘失败不致命——数据正确性已由达标信号保证 */ }
   }
   return deleted;
 }
