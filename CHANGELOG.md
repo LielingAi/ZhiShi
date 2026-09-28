@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.6] - 2026-09-28
+
+> **environment/exec 扩面——docker/ssh 条目直通**。dsh-zhishi-tools 桥接实测暴露：admin exec 只服务 guest 通道 VM，docker/ssh 环境被硬拒——桥接插件的环境执行面缺主干，本版补上。
+
+### 修复
+- **`environment/exec` 分派扩面**：docker / ssh 直达条目经 `execInEnvironment`（loop/env-exec 统一执行通道：docker exec / ssh 一站到位）；仅断网隔离 guest VM 走 vmGuestExec 编排（guestPassword 瞬传只对它有意义）。实测 dev sidecar exit 0 实回容器输出
+
 ## [1.8.5] - 2026-09-28
 
 > **intel 数据毁灭修复（快速跟进）**。1.8.4 发布当天实机实证：全量回填后 `pruneBySize` 按文件大小判断达标，SQLite 删行不缩文件导致循环把全表删光——本版修复达标信号并补回归测试。
