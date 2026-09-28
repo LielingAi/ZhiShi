@@ -167,9 +167,12 @@ describe('runLoop', () => {
 
   // ── 1.5.13 模型静默看门狗 ─────────────────────────────────────────────
 
-  it('模型流式静默超阈值 → error 事件中断（实机：deepseek 挂起 99s 零 token）', async () => {
+  it('模型流式静默超阈值 → error 上屏，宽限排空捕获晚到的 done（工作不丢）', async () => {
     agentLoopMock.mockReset();
-    // 挂起的流：yield 一次后再也不产（模拟挂死的供应商连接）
+    // 挂起后恢复的流（实机 2026-09-28：deepseek 挂 90s 被判超时，55s 后
+    // 恢复并完成——旧行为在超时时 iter.return 杀掉生成器，晚到的工作与
+    // 消息全蒸发（turn 的 jsonl 永远缺失）；新契约 = error 先上屏，宽限
+    // 窗口内晚到的 agent_end 照常出 done）。
     agentLoopMock.mockReturnValue((async function* () {
       yield { type: 'message_update', message: assistantMessage(''), assistantMessageEvent: { type: 'thinking_start', contentIndex: 0, partial: assistantMessage('') } } as unknown as AgentEvent;
       await new Promise((r) => setTimeout(r, 200)); // 挂起（超过 50ms 阈值）
@@ -177,12 +180,32 @@ describe('runLoop', () => {
     })());
     const events = [];
     for await (const e of runLoop({
-      prompt: 'x', model: fakeModel, models: fakeModels, modelSilenceTimeoutMs: 50,
+      prompt: 'x', model: fakeModel, models: fakeModels, modelSilenceTimeoutMs: 50, modelWatchdogGraceMs: 500,
     })) events.push(e);
     expect(events[0].type).toBe('thinking-start');
+    const errorIdx = events.findIndex((e) => e.type === 'error');
+    expect(errorIdx).toBeGreaterThan(0);
+    expect((events[errorIdx] as { error: string }).error).toContain('模型响应超时');
+    const last = events[events.length - 1];
+    expect(last.type).toBe('done');
+    expect((last as { messages: Array<{ content: unknown }> }).messages).toHaveLength(1);
+  });
+
+  it('静默超时且宽限内仍无产出 → error 收尾、无 done（生成器被中断）', async () => {
+    agentLoopMock.mockReset();
+    // 真挂死的流：yield 一次后永不产出
+    agentLoopMock.mockReturnValue((async function* () {
+      yield { type: 'message_update', message: assistantMessage(''), assistantMessageEvent: { type: 'thinking_start', contentIndex: 0, partial: assistantMessage('') } } as unknown as AgentEvent;
+      await new Promise(() => { /* 永不 settle */ });
+    })());
+    const events = [];
+    for await (const e of runLoop({
+      prompt: 'x', model: fakeModel, models: fakeModels, modelSilenceTimeoutMs: 50, modelWatchdogGraceMs: 100,
+    })) events.push(e);
     const last = events[events.length - 1];
     expect(last.type).toBe('error');
     expect((last as { error: string }).error).toContain('模型响应超时');
+    expect(events.some((e) => e.type === 'done')).toBe(false);
   });
 
   it('工具执行阶段不计时（长 exec 合法）——静默超阈值照样正常完成', async () => {
@@ -203,7 +226,7 @@ describe('runLoop', () => {
 
   // ── 1.7.2 看门狗分层（首事件 prefill 预算 / 流间静默） ──────────────────
 
-  it('首 token 前按 firstEvent 预算计时：prefill 超时 → error 带「无首 token」文案', async () => {
+  it('首 token 前按 firstEvent 预算计时：prefill 超时 → error 带「无首 token」文案，晚到 done 照收（1.8.4 宽限排空）', async () => {
     agentLoopMock.mockReset();
     agentLoopMock.mockReturnValue((async function* () {
       await new Promise((r) => setTimeout(r, 200)); // 首事件前挂 200ms（超 50ms firstEvent 预算）
@@ -211,14 +234,16 @@ describe('runLoop', () => {
     })());
     const events = [];
     for await (const e of runLoop({
-      prompt: 'x', model: fakeModel, models: fakeModels, modelSilenceTimeoutMs: 50, modelFirstEventTimeoutMs: 50,
+      prompt: 'x', model: fakeModel, models: fakeModels, modelSilenceTimeoutMs: 50, modelFirstEventTimeoutMs: 50, modelWatchdogGraceMs: 500,
     })) events.push(e);
-    const last = events[events.length - 1];
-    expect(last.type).toBe('error');
-    expect((last as { error: string }).error).toContain('无首 token');
+    // 契约（1.8.4）：error 先上屏，宽限内晚到的 agent_end 照常出 done
+    const errorIdx = events.findIndex((e) => e.type === 'error');
+    expect(errorIdx).toBeGreaterThanOrEqual(0);
+    expect((events[errorIdx] as { error: string }).error).toContain('无首 token');
+    expect(events[events.length - 1].type).toBe('done');
   });
 
-  it('首事件预算内到达（prefill 不误杀）→ 之后按流间看门狗计时', async () => {
+  it('首事件预算内到达（prefill 不误杀）→ 之后按流间看门狗计时；晚到 done 照收（1.8.4 宽限排空）', async () => {
     agentLoopMock.mockReset();
     agentLoopMock.mockReturnValue((async function* () {
       await new Promise((r) => setTimeout(r, 30)); // prefill 30ms < firstEvent 120ms
@@ -228,12 +253,12 @@ describe('runLoop', () => {
     })());
     const events = [];
     for await (const e of runLoop({
-      prompt: 'x', model: fakeModel, models: fakeModels, modelSilenceTimeoutMs: 50, modelFirstEventTimeoutMs: 120,
+      prompt: 'x', model: fakeModel, models: fakeModels, modelSilenceTimeoutMs: 50, modelFirstEventTimeoutMs: 120, modelWatchdogGraceMs: 500,
     })) events.push(e);
     expect(events[0].type).toBe('thinking-start'); // 首事件未被 prefill 看门狗误杀
-    const last = events[events.length - 1];
-    expect(last.type).toBe('error');
-    expect((last as { error: string }).error).toContain('无任何数据流回');
+    const errorIdx = events.findIndex((e) => e.type === 'error');
+    expect((events[errorIdx] as { error: string }).error).toContain('无任何数据流回');
+    expect(events[events.length - 1].type).toBe('done');
   });
 });
 
