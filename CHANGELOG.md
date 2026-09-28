@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.4] - 2026-09-28
+
+> **记忆核独立成包 + 桥接投影面 + 看门狗工作不丢**。最小拆的关键一步：zhishi-memory-core 抽成独立 npm 包（引擎核可外嵌的实证）；sidecar 开放四个桥接端点供外部 harness（dsh-zhishi-tools）薄桥消费；loop-core 静默看门狗修复「turn 超时失败丢消息」。
+
+### 新增
+- **zhishi-memory-core 记忆核包**（`packages/zhishi-memory-core/`，最小拆方案 A）：记忆存储/蒸馏/研究域枚举抽成独立 npm workspace 包，仓内经 `zhishi-memory-core/*` 子路径消费；相对 import 补 `.js` 后缀，dist 可被裸 Node ESM 直接加载（第三方宿主嵌入的前提）
+- **admin 桥接投影面**（四端点，纯增量零改既有逻辑）：`archive/op`（模型语义档案写——复用 loop research_archive 工具执行体，举证强度同口径）、`claims/read`（治理弧产物投影）、`research/distilled`（安全蒸馏摘要投影）、`distill/run`（手动触发两条蒸馏弧）
+
+### 修复
+- **loop-core 静默看门狗宽限排空**：模型流挂起触发超时后，turn 的 loop jsonl 不再丢失——超时先上屏 error，宽限窗口（`modelWatchdogGraceMs`，缺省 60s）内复用持久 pending 继续消费，晚到的 agent_end 照常续存（实机 2026-09-28：deepseek 挂起 90s 后 55s 恢复并完成，旧行为 iter.return 杀生成器致消息蒸发；修复含 race 丢弃在途 next 的二重 bug）
+
 ## [1.8.3] - 2026-09-23
 
 > **多开正确性验证固化**。产品代码与 1.8.2 等价——本版把交错并发验证测试纳入发版链（双 run 不同延迟 invoke 交错跑完，断言状态/落盘隔离 + 时间窗重叠真并发）。
