@@ -148,6 +148,12 @@ export interface RunLoopOptions {
    * 实证)。缺省 MODEL_FIRST_EVENT_TIMEOUT_MS；测试注入小值。
    */
   modelFirstEventTimeoutMs?: number;
+  /**
+   * 1.8.4：看门狗宽限窗口（超时上屏后继续排空挂起流的时长——pi 的
+   * generator 不被消费也照跑，晚到的 agent_end 照常出 done，turn 失败
+   * 但工作不丢；缺省 MODEL_WATCHDOG_GRACE_MS；测试注入小值）。
+   */
+  modelWatchdogGraceMs?: number;
   maxTokens?: number;
 }
 
@@ -163,6 +169,10 @@ export const MODEL_SILENCE_TIMEOUT_MS = 90_000;
 /** 1.7.2：首事件看门狗缺省阈值（300s——1M 上下文 prefill 实测 60-130s；
  *  90s 静默看门狗不分 prefill 与流间,在首 chunk 到达前误杀）。 */
 export const MODEL_FIRST_EVENT_TIMEOUT_MS = 300_000;
+
+/** 1.8.4：看门狗宽限缺省窗口（60s——超时上屏后给挂起流的恢复预算；
+ *  实机：deepseek 挂起 90s 后 55s 恢复并完成，60s 覆盖该形态）。 */
+export const MODEL_WATCHDOG_GRACE_MS = 60_000;
 
 /**
  * 跑一轮 agent loop（可能含多 turn：工具调用 → 结果回注 → 再调模型），
@@ -217,16 +227,32 @@ export async function* runLoop(options: RunLoopOptions): AsyncIterable<LoopEvent
   const iter = stream[Symbol.asyncIterator]();
   let inToolExecution = false;
   let receivedAny = false;
+  // 持久 next 句柄：race 超时绝不丢弃在途 next——异步生成器的 next() 串行化，
+  // 对已挂起的 next 再发 next 只会排队，后到的 agent_end 会被吞进被丢弃的
+  // promise 里（2026-09-28 实证：超时后重发 next 读回 {done}，done 事件丢失）。
+  let pending = iter.next();
+  const advance = () => { pending = iter.next(); };
+
+  // 共享事件处理（主循环与宽限排空同一口径）：边界切换 + 映射产出，
+  // agent_end 视为终局。
+  async function* handleEvent(event: AgentEvent): AsyncGenerator<LoopEvent, boolean> {
+    if (event.type === 'tool_execution_start') inToolExecution = true;
+    else if (event.type === 'tool_execution_end') inToolExecution = false;
+    for (const mapped of mapAgentEvent(event)) yield mapped;
+    return event.type === 'agent_end';
+  }
+
   for (;;) {
     let result: IteratorResult<AgentEvent>;
     if (inToolExecution) {
       // 工具执行期：纯等，不看门狗
-      result = await iter.next();
+      result = await pending;
+      if (!result.done) advance();
     } else {
       const activeMs = receivedAny ? silenceMs : firstEventMs;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const raced = await Promise.race([
-        iter.next().then((r): { kind: 'event'; result: IteratorResult<AgentEvent> } => {
+        pending.then((r): { kind: 'event'; result: IteratorResult<AgentEvent> } => {
           clearTimeout(timer);
           return { kind: 'event', result: r };
         }),
@@ -235,27 +261,68 @@ export async function* runLoop(options: RunLoopOptions): AsyncIterable<LoopEvent
         }),
       ]);
       if (raced.kind === 'timeout') {
-        // 中断消费：通知 pi 的 generator 收尾（iter.return 传播取消）。
-        await iter.return?.(undefined).catch(() => {});
+        // 先让失败上屏（引擎据此记 failed）——但不 iter.return 杀生成器：
+        // pi 的 agent generator 不被消费也照跑（实机 2026-09-28：deepseek
+        // 挂起 90s 被判超时，55s 后恢复并完成全部工作）——杀了它，晚到的
+        // 工具产出与消息全蒸发（turn 的 loop jsonl 永远缺失）。
         yield {
           type: 'error',
           error: receivedAny
             ? `模型响应超时（${Math.round(activeMs / 1000)}s 无任何数据流回）——供应商或网络挂起，已中断。请重试或换模型。`
             : `模型响应超时（${Math.round(activeMs / 1000)}s 无首 token——上下文较大 prefill 慢或供应商挂起，已中断。可 /reset 开新会话或稍后重试。`,
         };
+        // 宽限排空（modelWatchdogGraceMs，缺省 60s）：复用同一个 pending
+        // 继续消费——晚到的事件照常映射，agent_end 到达即出 done（消息
+        // 续存依赖它：turn 失败但工作不丢）。宽限耗尽仍无产出才中断。
+        const graceMs = options.modelWatchdogGraceMs ?? MODEL_WATCHDOG_GRACE_MS;
+        const graceDeadline = Date.now() + graceMs;
+        for (;;) {
+          if (inToolExecution) {
+            // 工具执行期：纯等，不看宽限（与主循环同规则）
+            const r = await pending;
+            if (!r.done) advance();
+            if (r.done) return;
+            receivedAny = true;
+            const terminal = yield* handleEvent(r.value);
+            if (terminal) return;
+            continue;
+          }
+          const remaining = graceDeadline - Date.now();
+          if (remaining <= 0) break;
+          let graceTimer: ReturnType<typeof setTimeout> | undefined;
+          const graceRaced = await Promise.race([
+            pending.then((r): { kind: 'event'; result: IteratorResult<AgentEvent> } => {
+              clearTimeout(graceTimer);
+              return { kind: 'event', result: r };
+            }),
+            new Promise<{ kind: 'timeout' }>((resolve) => {
+              graceTimer = setTimeout(() => resolve({ kind: 'timeout' }), remaining);
+            }),
+          ]);
+          if (graceRaced.kind === 'timeout') continue;
+          result = graceRaced.result;
+          if (!result.done) advance();
+          if (result.done) return;
+          receivedAny = true;
+          const terminal = yield* handleEvent(result.value);
+          if (terminal) return;
+        }
+        // 宽限耗尽仍无产出——真的死了：中断消费（iter.return 加 1s 预算
+        // ——生成器挂在永不 settle 的 promise 上时 return 也会挂死）。
+        await Promise.race([
+          (async () => { await iter.return?.(undefined).catch(() => {}); })(),
+          new Promise((r) => setTimeout(r, 1000)),
+        ]);
         return;
       }
       result = raced.result;
+      if (!result.done) advance();
     }
     if (result.done) break;
     receivedAny = true; // 任意事件到达即切换回流间看门狗
-    const event = result.value;
     // 工具执行边界（映射前的 pi 事件名）：进入后停表，出来后恢复。
-    if (event.type === 'tool_execution_start') inToolExecution = true;
-    else if (event.type === 'tool_execution_end') inToolExecution = false;
-    for (const mapped of mapAgentEvent(event)) {
-      yield mapped;
-    }
+    const terminal = yield* handleEvent(result.value);
+    if (terminal) break;
   }
 }
 
