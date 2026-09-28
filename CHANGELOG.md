@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.5] - 2026-09-28
+
+> **intel 数据毁灭修复（快速跟进）**。1.8.4 发布当天实机实证：全量回填后 `pruneBySize` 按文件大小判断达标，SQLite 删行不缩文件导致循环把全表删光——本版修复达标信号并补回归测试。
+
+### 修复
+- **intel `pruneBySize` 达标信号改数据实际占用**（`(page_count − freelist_count) × page_size`——删除即时反映）：旧实现按文件大小判断，无 VACUUM 时文件不随删除缩小，minimal 模式（maxSizeMb=300）在大库上把全表删光（实证 398,591 行）。每批删完 checkpoint 让被删页进 freelist；收尾一次 VACUUM 回收磁盘。回归测试钉死「保新删旧、不超预算、不全灭」
+
 ## [1.8.4] - 2026-09-28
 
 > **记忆核独立成包 + 桥接投影面 + 看门狗工作不丢**。最小拆的关键一步：zhishi-memory-core 抽成独立 npm 包（引擎核可外嵌的实证）；sidecar 开放四个桥接端点供外部 harness（dsh-zhishi-tools）薄桥消费；loop-core 静默看门狗修复「turn 超时失败丢消息」。
