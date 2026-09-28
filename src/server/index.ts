@@ -271,6 +271,9 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'archive/correct') return await api.handleArchiveCorrect(payload as Parameters<typeof api.handleArchiveCorrect>[0]);
   if (route === 'archive/resolve') return await api.handleArchiveResolve(payload as Parameters<typeof api.handleArchiveResolve>[0]);
   if (route === 'archive/abandon') return await api.handleArchiveAbandon(payload as Parameters<typeof api.handleArchiveAbandon>[0]);
+  // 1.8.4 桥接投影面（dsh-zhishi-tools）：模型语义档案写 / claims 投影
+  if (route === 'archive/op') return await api.handleArchiveOp(payload as Parameters<typeof api.handleArchiveOp>[0]);
+  if (route === 'claims/read') return api.handleClaimsRead(payload as Parameters<typeof api.handleClaimsRead>[0]);
   if (route === 'environment/adopt') return await api.handleEnvironmentAdopt(payload as Parameters<typeof api.handleEnvironmentAdopt>[0]);
   if (route === 'environment/setup') return await api.handleEnvironmentSetup(payload as Parameters<typeof api.handleEnvironmentSetup>[0]);
   if (route === 'environment/install') return await api.handleEnvironmentInstall(payload as Parameters<typeof api.handleEnvironmentInstall>[0]);
@@ -328,6 +331,9 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   // 研究成败信号（安全研究员版 P1 D1，memory.db research_events 表）。
   if (route === 'research/log') return await api.handleResearchLog(payload as Parameters<typeof api.handleResearchLog>[0]);
   if (route === 'research/list') return await api.handleResearchList(payload as Parameters<typeof api.handleResearchList>[0]);
+  // 1.8.4 桥接投影面（dsh-zhishi-tools）：安全蒸馏摘要读 / 手动触发蒸馏弧
+  if (route === 'research/distilled') return api.handleResearchDistilled(payload as Parameters<typeof api.handleResearchDistilled>[0]);
+  if (route === 'distill/run') return await api.handleDistillRun(payload as Parameters<typeof api.handleDistillRun>[0]);
   // 情报横切（1.1.2）：intel.db 由 sidecar 持有，更新/状态经 admin API。
   if (route === 'intel/update') return await api.handleIntelUpdate(payload as Parameters<typeof api.handleIntelUpdate>[0]);
   if (route === 'intel/status') return api.handleIntelStatus();

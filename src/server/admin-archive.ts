@@ -6,6 +6,7 @@
 
 import { abandonEntity, correctEntity, loadArchive, resolveHypothesis, resolveQuestion } from './loop/archive';
 import { getPiSessionId } from './loop/chat-engine';
+import { createArchiveTool } from './loop/tools';
 import { broadcast } from './sse';
 
 /** 与 admin-api.ts 的 AdminResponse 形状一致（提取处保持独立定义,不回头
@@ -109,6 +110,48 @@ export async function handleArchiveAbandon(payload: {
     const archive = await abandonEntity(sessionId, { id, note: reason }, { broadcastFn: broadcast });
     return { success: true, data: { archive: archive as unknown as Record<string, unknown> } };
   } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** 1.8.4 — archive/op：模型语义的档案写（dsh-zhishi-tools 桥接场景——
+ *  外部 harness 的会话把研究实体写进指定 loop 线）。复用 loop 的
+ *  research_archive 工具执行体：举证强度（finding 必挂已存在 V#）/挂链
+ *  纪律/终态语义与本体内 agent 调用逐字同口径——不平行实现第二套。
+ *  broadcastFn 用真广播，GUI 研究面板实时更新；deps.dir 供测试注入。 */
+export interface ArchiveOpPayload {
+  sessionId?: string;
+  op?: string;
+  text?: string;
+  findingType?: string;
+  refs?: string;
+  against?: string;
+  anchor?: string;
+  id?: string;
+  reason?: string;
+  note?: string;
+}
+
+export async function handleArchiveOp(
+  payload: ArchiveOpPayload,
+  deps: { dir?: string } = {},
+): Promise<AdminResponse> {
+  const sessionId = typeof payload?.sessionId === 'string' && payload.sessionId.trim()
+    ? payload.sessionId.trim()
+    : getPiSessionId();
+  if (!sessionId) return { success: false, error: 'archive/op: 会话未锚定（先开/接会话，或显式传 sessionId）' };
+  const tool = createArchiveTool({
+    getSessionId: () => sessionId,
+    ...(deps.dir ? { dir: deps.dir } : {}),
+    broadcastFn: broadcast,
+  });
+  try {
+    const result = await tool.execute(`admin-archive-op-${Date.now()}`, payload as never);
+    const text = result.content.find((c) => c.type === 'text')?.text ?? '';
+    return { success: true, data: { text, entityId: result.details?.entityId ?? null } };
+  } catch (err) {
+    // 工具的执行期校验（举证强度/终态门/非法引用）抛出的是模型可读的
+    // 纪律文本——原样回注，调用方（外部 agent）按它纠正行为。
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
