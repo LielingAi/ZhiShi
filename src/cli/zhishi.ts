@@ -116,6 +116,7 @@ term      Drive embedded terminal (open/write/read/close)
   refs      大 payload 外溢占位取回（refs get <id>）——SSE 超大事件的全文（1.6.3）
   widget    Generative UI widget design guidelines (readme)
 config    Read/write application config
+  auth      团队大脑鉴权 token 管理（1.8.7 P1：list / add --name X --role Y / revoke <id> / enable / disable）
 status    Show app running state
   version   Show app version
   reload    Hot-reload configuration
@@ -697,6 +698,30 @@ if (!result.success) {
     }
     if (action === 'forget') {
       console.log(`forgotten: ${String(data.id ?? '')}`);
+      return;
+    }
+  }
+  // 团队大脑鉴权管理（1.8.7 P1）：add 必须打 secret（只此一次）；list 打
+  // enabled 状态 + token 元信息（无哈希）。enable/disable/revoke 落通用 ✓ 行。
+  if (group === 'auth') {
+    const data = (result.data as Record<string, unknown>) ?? {};
+    if (action === 'list') {
+      console.log(`auth: ${data.enabled ? '已启用（所有请求需 Bearer token）' : '未启用（默认回环零鉴权）'}`);
+      const tokens = Array.isArray(data.tokens) ? (data.tokens as Array<Record<string, unknown>>) : [];
+      if (tokens.length === 0) {
+        console.log('（无 token——`zhishi auth add --name <名字> --role <readonly|operator|reviewer>` 创建）');
+        return;
+      }
+      for (const t of tokens) {
+        const lastUsed = typeof t.lastUsedAt === 'string' ? `  last-used ${t.lastUsedAt}` : '';
+        console.log(`- ${String(t.id)}  ${String(t.name)}  [${String(t.role)}]  created ${String(t.createdAt)}${lastUsed}`);
+      }
+      return;
+    }
+    if (action === 'add') {
+      console.log(`✓ token 已创建: ${String(data.id ?? '')}  ${String(data.name ?? '')}  [${String(data.role ?? '')}]`);
+      console.log(`secret: ${String(data.secret ?? '')}`);
+      console.log('⚠ secret 仅此一次显示（服务端只存 SHA-256 哈希）——请立即保存；客户端经 --token / ZHISHI_TOKEN 携带。');
       return;
     }
   }
@@ -2473,6 +2498,20 @@ function buildRequestBody(
   if (group === 'claim') {
     if (action === 'list') return { sessionId: rest[0] ?? flags.sessionId };
     if (action === 'forget') return { sessionId: rest[0], id: rest[1] ?? flags.id };
+    return {};
+  }
+  // 团队大脑鉴权管理（1.8.7 P1）：role 枚举在 CLI 侧校验——非法值直接拒绝，
+  // 不发 server。secret 只存在于 add 的响应里（服务端只存哈希）。
+  if (group === 'auth') {
+    if (action === 'add') {
+      const role = String(flags.role ?? '');
+      if (!['readonly', 'operator', 'reviewer'].includes(role)) {
+        console.error(`Error: --role 非法 "${role}"（允许：readonly / operator / reviewer）`);
+        process.exit(1);
+      }
+      return { name: rest[0] ?? flags.name, role };
+    }
+    if (action === 'revoke') return { id: rest[0] ?? flags.id };
     return {};
   }
 return flags;

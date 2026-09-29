@@ -664,7 +664,9 @@ export async function handleConfigSet(payload: { key: string; value: unknown; dr
     return { success: false, error: 'Invalid key path' };
   }
 // Protect structural/sensitive keys that have dedicated commands
-  const protectedKeys = ['providerApiKeys', 'providerVerifyStatus', 'agents', 'imBotConfigs'];
+  // 1.8.7 P1：'auth' 也在此列——否则 operator 档可经 config/set 整体覆写
+  // auth.tokens 完成提权；auth 管理只走 reviewer-only 的 auth/* 专用路由。
+  const protectedKeys = ['providerApiKeys', 'providerVerifyStatus', 'agents', 'imBotConfigs', 'auth'];
   const rootKey = key.split('.')[0];
   if (protectedKeys.includes(rootKey)) {
     return { success: false, error: `Cannot set '${key}' via config set. Use dedicated commands (e.g., 'zhishi agent', 'zhishi model set-key').` };
@@ -4257,13 +4259,18 @@ async function modifyAgent(
 }
 /** Keys and patterns that contain secrets and must be redacted in config get */
 const SENSITIVE_KEY_PATTERNS = /apikey|api_key|secret|token|password/i;
-const SENSITIVE_TOP_KEYS = new Set(['providerApiKeys']);
-/** Recursively redact sensitive values in config output */
-function redactSensitiveValues(key: string, value: unknown): unknown {
+// 1.8.7 P1（R1 核查实测）：SENSITIVE_TOP_KEYS 里的 map 其内层键是「业务 id」
+// （providerApiKeys.deepseek 的 deepseek、auth.tokens[i].id），不匹配
+// SENSITIVE_KEY_PATTERNS——deepRedact 会原样回传明文 API key。这些顶层键
+// 必须走「所有字符串叶子一律脱敏」的 deepRedactAll。auth 键同理（即便
+// secretHash 会被 secret 模式命中，整键从紧）。
+const SENSITIVE_TOP_KEYS = new Set(['providerApiKeys', 'auth']);
+/** Recursively redact sensitive values in config output（导出供单测直验——R1 核查项） */
+export function redactSensitiveValues(key: string, value: unknown): unknown {
   const rootKey = key.split('.')[0];
-// Top-level known sensitive maps
+// Top-level known sensitive maps — redact EVERY string leaf regardless of key name
   if (SENSITIVE_TOP_KEYS.has(rootKey) && typeof value === 'object' && value !== null) {
-    return deepRedact(value);
+    return deepRedactAll(value);
   }
 // Any key path containing sensitive patterns
   if (SENSITIVE_KEY_PATTERNS.test(key) && typeof value === 'string') {
@@ -4290,6 +4297,21 @@ function deepRedact(obj: unknown): unknown {
       } else {
         result[k] = v;
       }
+    }
+    return result;
+  }
+  return obj;
+}
+/** Recursively walk an object and redact EVERY string leaf（顶层敏感 map 用——
+ *  内层键是业务 id 不匹配模式，逐个值脱敏才不漏明文）。 */
+function deepRedactAll(obj: unknown): unknown {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'string') return redactSecret(obj);
+  if (Array.isArray(obj)) return obj.map(item => deepRedactAll(item));
+  if (typeof obj === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      result[k] = typeof v === 'object' && v !== null ? deepRedactAll(v) : (typeof v === 'string' ? redactSecret(v) : v);
     }
     return result;
   }

@@ -32,6 +32,7 @@ import { resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
 
 import type { EnvironmentEntry } from '../../shared/config-types';
+import { verifyHttpAuth } from '../auth/gate';
 import { findEnvironmentEntry, listEnvironments } from '../environment/registry';
 import { loadConfig } from '../utils/admin-config';
 import { augmentedProcessEnv, resolveCommand } from '../utils/env-utils';
@@ -341,14 +342,32 @@ export class TermSessionManager {
 /** WS 端点路径(与 GUI attach 页的 sidecar 直连约定一致)。 */
 export const TERM_WS_PATH = '/api/admin/environment/term';
 
+/** upgrade 鉴权闸的可注入形态(与 auth/gate.verifyHttpAuth 对齐;测试注入 fake)。 */
+export type TermUpgradeAuthVerify = (input: {
+  method: string;
+  pathname: string;
+  authorization?: string | null;
+  queryToken?: string | null;
+}) => { ok: true } | { ok: false; status: 401 | 403 };
+
 /**
  * 在 sidecar 的 node http.Server 上安装 `/api/admin/environment/term`
  * 的 upgrade 处理。返回 manager(宿主可 closeAll 收尾)。
  *
  * 非本端点的 upgrade 一律 destroy——sidecar 目前没有其它 WS 消费者,
  * 悬挂的 upgrade socket 会泄漏(未来新增 WS 端点时在此统一分派)。
+ *
+ * 1.8.7 P1 鉴权闸(设计稿 R1 点名「全案最容易漏的一针」):auth.enabled 时
+ * WS upgrade 同样过 token——Authorization 头优先,`?token=` query 兜底
+ * (浏览器 WebSocket 不能自定义头);角色要求与 environment/exec 同级
+ * (operator,见 auth/roles.ts 的 environment/term 登记)。auth disabled
+ * 时 verifyHttpAuth 快速短路放行,行为与 1.8.6 一字节相同。
  */
-export function installTermUpgradeHandler(server: Server, deps: TermSessionManagerDeps = {}): TermSessionManager {
+export function installTermUpgradeHandler(
+  server: Server,
+  deps: TermSessionManagerDeps = {},
+  authVerify: TermUpgradeAuthVerify = verifyHttpAuth,
+): TermSessionManager {
   const manager = new TermSessionManager(deps);
   const wss = new WebSocketServer({ noServer: true });
 
@@ -361,6 +380,18 @@ export function installTermUpgradeHandler(server: Server, deps: TermSessionManag
       return;
     }
     if (url.pathname !== TERM_WS_PATH) {
+      socket.destroy();
+      return;
+    }
+    const authorization = request.headers.authorization;
+    const verdict = authVerify({
+      method: 'GET',
+      pathname: url.pathname,
+      authorization: (Array.isArray(authorization) ? authorization[0] : authorization) ?? null,
+      queryToken: url.searchParams.get('token'),
+    });
+    if (!verdict.ok) {
+      socket.write(`HTTP/1.1 ${verdict.status} ${verdict.status === 401 ? 'Unauthorized' : 'Forbidden'}\r\nConnection: close\r\n\r\n`);
       socket.destroy();
       return;
     }

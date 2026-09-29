@@ -90,6 +90,19 @@ import { appendLoopMessages, defaultLoopSessionDir, loadLoopSession, loopSession
 import { buildLoopWireMessages } from './loop/wire-replay';
 // 1.3.3:attach 交互式 pty 端点(WS upgrade)。
 import { installTermUpgradeHandler } from './loop/term-pty';
+// 1.8.7 P1 团队大脑:绑址参数化 + 鉴权闸 + 角色分类 + CORS 收紧 + auth 管理面。
+import { isLoopbackHost, resolveBindHost } from './auth/bind-host';
+import { verifyHttpAuth } from './auth/gate';
+import { applyCorsDecision, preflightResponse } from './auth/cors';
+import { isAuthEnabled } from './auth/gate';
+import { loadAuthConfig } from './auth/token-store';
+import {
+  handleAuthAdd,
+  handleAuthDisable,
+  handleAuthEnable,
+  handleAuthList,
+  handleAuthRevoke,
+} from './auth/admin-routes';
 // 1.3.3:@ 补全文件数据源——工作区目录树只读列表。
 import { listWorkspaceFiles } from './workspace-files';
 // M4c: openai-bridge 已删除(OpenAI 协议 provider 由 pi 原生直连)。
@@ -122,7 +135,7 @@ type SendMessagePayload = {
   // 成 grounding 段前置进 prompt(契约不变,旧客户端不传即可)。
   refs?: unknown[];
 };
-function parseArgs(argv: string[]): { agentDir: string; initialPrompt?: string; port: number; sessionId?: string } {
+function parseArgs(argv: string[]): { agentDir: string; initialPrompt?: string; port: number; sessionId?: string; host: string } {
   const args = argv.slice(2);
   const getArgValue = (flag: string) => {
     const index = args.indexOf(flag);
@@ -135,10 +148,12 @@ const agentDir = getArgValue('--agent-dir') ?? '';
   const initialPrompt = getArgValue('--prompt') ?? undefined;
   const port = Number(getArgValue('--port') ?? 3000);
   const sessionId = getArgValue('--session-id') ?? undefined;
+  // 1.8.7 P1:--host 旗标 > ZHISHI_HOST > 127.0.0.1(默认一字节不变)。
+  const host = resolveBindHost(getArgValue('--host'), process.env.ZHISHI_HOST);
 if (!agentDir) {
     throw new Error('Missing required argument: --agent-dir <path>');
   }
-return { agentDir, initialPrompt, port: Number.isNaN(port) ? 3000 : port, sessionId };
+return { agentDir, initialPrompt, port: Number.isNaN(port) ? 3000 : port, sessionId, host };
 }
 /**
  * Expand ~ to user's home directory
@@ -364,6 +379,13 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
 // Config commands
   if (route === 'config/get') return api.handleConfigGet(payload as Parameters<typeof api.handleConfigGet>[0]);
   if (route === 'config/set') return api.handleConfigSet(payload as Parameters<typeof api.handleConfigSet>[0]);
+// 1.8.7 P1 团队大脑：auth 管理面（全部 reviewer-only，角色分类见 auth/roles.ts；
+  // handler 在 auth/admin-routes.ts——小模块静态引入，不走 admin-api 惰性加载）。
+  if (route === 'auth/list') return handleAuthList();
+  if (route === 'auth/add') return await handleAuthAdd(payload);
+  if (route === 'auth/revoke') return await handleAuthRevoke(payload);
+  if (route === 'auth/enable') return await handleAuthEnable();
+  if (route === 'auth/disable') return await handleAuthDisable();
 // Task Center — tasks (v0.1.69)
   if (route === 'task/list') return await api.handleTaskList(payload as Parameters<typeof api.handleTaskList>[0]);
   if (route === 'task/get') return await api.handleTaskGet(payload as Parameters<typeof api.handleTaskGet>[0]);
@@ -433,9 +455,9 @@ function startupBeacon(step: string): void {
 }
 async function main() {
   startupBeacon(`main() entered, pid=${process.pid}, platform=${process.platform}, argv=${process.argv.length} args`);
-const { agentDir, initialPrompt, port, sessionId: initialSessionId } = parseArgs(process.argv);
+const { agentDir, initialPrompt, port, sessionId: initialSessionId, host } = parseArgs(process.argv);
   const dirDisplay = agentDir.length > 50 ? agentDir.slice(0, 3) + '...' + agentDir.slice(-44) : agentDir;
-  startupBeacon(`args parsed, port=${port}, agentDir=${dirDisplay}`);
+  startupBeacon(`args parsed, port=${port}, host=${host}, agentDir=${dirDisplay}`);
 const currentAgentDir = await ensureAgentDir(agentDir);
   startupBeacon('ensureAgentDir done');
 // Initialize unified logging system (intercepts console.log and sends to SSE)
@@ -491,11 +513,18 @@ const currentAgentDir = await ensureAgentDir(agentDir);
   };
   createDeferredInitPromise();
 // M4c: openai-bridge 已删除——bridge 处理器不复存在。
-console.log(`[startup] HTTP server binding to 127.0.0.1:${port}...`);
+// 1.8.7 P1 硬安全闸（设计稿 R1）：该 API 能 docker exec / 改配置——绑非回环
+  // 地址但未启用鉴权 = 给局域网发一把 root。拒绝启动（不是警告）。
+  if (!isLoopbackHost(host) && !loadAuthConfig().enabled) {
+    console.error(`[startup] 拒绝绑定非回环地址 ${host} —— 未启用鉴权（config.json auth.enabled≠true）。`);
+    console.error('  先在默认回环模式下 `zhishi auth add --name <名字> --role reviewer` 并 `zhishi auth enable`，再带 --host / ZHISHI_HOST 启动。');
+    process.exit(1);
+  }
+console.log(`[startup] HTTP server binding to ${host}:${port}...`);
 const httpServer = honoServe({
     // Explicit 127.0.0.1 for Rust proxy compatibility (IPv4).
     port,
-    hostname: '127.0.0.1',
+    hostname: host,
     fetch: async (request) => {
       // Pattern 6 (HTTP request boundary): each request runs inside an ALS
       // frame so any nested console.* call automatically gets correlation
@@ -507,7 +536,28 @@ const httpServer = honoServe({
       const requestId = incomingRequestId ?? randomUUIDv4Short();
       const sessionId = request.headers.get('x-zhishi-session-id') ?? undefined;
       const tabId = request.headers.get('x-zhishi-tab-id') ?? undefined;
-      return withLogContext({ requestId, sessionId, tabId }, () => handleRequest(request));
+      return withLogContext({ requestId, sessionId, tabId }, async () => {
+        // 1.8.7 P1 鉴权闸（唯一入口，包裹全部 HTTP 路由：admin/非 admin/SSE）。
+        // auth.enabled=false 时 verifyHttpAuth 快速短路放行，与 1.8.6 行为
+        // 一字节相同；CORS 收紧也只在 enabled 时生效（applyCorsDecision 内判）。
+        const pathname = new URL(request.url).pathname;
+        const verdict = verifyHttpAuth({
+          method: request.method,
+          pathname,
+          authorization: request.headers.get('authorization'),
+        });
+        if (!verdict.ok) {
+          const headers: Record<string, string> = {};
+          if (verdict.status === 401) headers['WWW-Authenticate'] = 'Bearer';
+          const denied = jsonResponse(
+            { success: false, error: verdict.status === 401 ? 'unauthorized' : 'forbidden' },
+            verdict.status,
+          );
+          for (const [k, v] of Object.entries(headers)) denied.headers.set(k, v);
+          return applyCorsDecision(request.headers.get('origin'), isAuthEnabled(), denied);
+        }
+        return applyCorsDecision(request.headers.get('origin'), isAuthEnabled(), await handleRequest(request));
+      });
     },
   } as Parameters<typeof honoServe>[0]);
   // 1.3.3:attach 交互式 pty——在 node http.Server 上挂 WS upgrade
@@ -574,15 +624,10 @@ const httpServer = honoServe({
         console.debug(`[http] ${request.method} ${pathname}`);
       }
 // Handle CORS preflight requests (for browser dev mode via Vite proxy)
+      // 1.8.7 P1：auth.enabled 时收紧为 allowlist（见 auth/cors.ts——Tauri
+      // webview + 回环 origin）；disabled 时逐字节保持 ACAO:*。
       if (request.method === 'OPTIONS') {
-        return new Response(null, {
-          status: 204,
-          headers: {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-          }
-        });
+        return preflightResponse(request.headers.get('origin'), isAuthEnabled());
       }
 // 🩺 Health check endpoints - used by Rust sidecar manager.
       //
@@ -1212,7 +1257,7 @@ return new Response('Not Found', { status: 404 });
   // /chat/stream 流量到这里;`serveStatic` 兜底只服务 placeholder 占位页
   // (P4 减法后 renderer 已删,见 serveStatic 注释),告诉误开浏览器的人
   // GUI 已不存在。
-  console.log(`[startup] Sidecar HTTP server ready on http://127.0.0.1:${port}`);
+  console.log(`[startup] Sidecar HTTP server ready on http://${host}:${port}`);
 // Pattern 2 §2.3.1 — Start the periodic GC for spilled large-value refs.
   // Runs every 60s; reaps any ref past its TTL (default 1h). The timer is
   // unref'd inside startRefsGc, so it doesn't keep the event loop alive.

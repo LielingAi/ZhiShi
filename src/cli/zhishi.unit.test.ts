@@ -95,6 +95,17 @@ beforeAll(async () => {
         }));
       } else if (req.url === '/api/admin/expert/drafts') {
         res.end(JSON.stringify({ success: true, data: { drafts: [DRAFT] } }));
+      } else if (req.url === '/api/admin/auth/add') {
+        // 1.8.7 P1：secret 只在 add 响应出现一次。
+        res.end(JSON.stringify({
+          success: true,
+          data: { id: 'tok_test01', name: body.name, role: body.role, createdAt: '2026-09-29T00:00:00.000Z', secret: 'zst_mocksecret' },
+        }));
+      } else if (req.url === '/api/admin/auth/list') {
+        res.end(JSON.stringify({
+          success: true,
+          data: { enabled: true, tokens: [{ id: 'tok_test01', name: 'A', role: 'reviewer', createdAt: '2026-09-29T00:00:00.000Z' }] },
+        }));
       } else if (req.url === '/api/admin/environment/discover') {
         // 1.5.10 发现面契约：docker 容器 / docker 镜像（docker-image 驱动）/ VM 三区。
         res.end(JSON.stringify({
@@ -489,5 +500,54 @@ describe('1.8.7 P0.5：远端模式（--server/--token）', () => {
     const statusReq = captured.find((c) => c.url === '/api/admin/status');
     expect(statusReq?.headers.authorization).toBeUndefined();
     expect(r.stderr).not.toContain('远端模式');
+  }, 30_000);
+});
+
+describe('1.8.7 P1：auth 子命令（团队大脑 token 管理）', () => {
+  it('auth add --name A --role reviewer → /api/admin/auth/add 载荷正确，stdout 打 secret 一次', async () => {
+    captured = [];
+    const r = await runCli(['auth', 'add', '--name', 'A', '--role', 'reviewer']);
+    expect(r.code).toBe(0);
+    const req = captured.find((c) => c.url === '/api/admin/auth/add');
+    expect(req).toBeDefined();
+    expect(req!.body).toEqual({ name: 'A', role: 'reviewer' });
+    expect(r.stdout).toContain('secret: zst_mocksecret');
+    expect(r.stdout).toContain('仅此一次');
+  }, 30_000);
+
+  it('auth add 非法 role → CLI 侧拒绝，不发请求', async () => {
+    captured = [];
+    const r = await runCli(['auth', 'add', '--name', 'A', '--role', 'admin']);
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain('--role');
+    expect(captured.some((c) => c.url === '/api/admin/auth/add')).toBe(false);
+  }, 30_000);
+
+  it('auth revoke <id> → /api/admin/auth/revoke { id }', async () => {
+    captured = [];
+    const r = await runCli(['auth', 'revoke', 'tok_test01']);
+    expect(r.code).toBe(0);
+    const req = captured.find((c) => c.url === '/api/admin/auth/revoke');
+    expect(req).toBeDefined();
+    expect(req!.body).toEqual({ id: 'tok_test01' });
+  }, 30_000);
+
+  it('auth list → /api/admin/auth/list，打印 enabled 状态与 token 行（无哈希）', async () => {
+    captured = [];
+    const r = await runCli(['auth', 'list']);
+    expect(r.code).toBe(0);
+    expect(captured.some((c) => c.url === '/api/admin/auth/list')).toBe(true);
+    expect(r.stdout).toContain('已启用');
+    expect(r.stdout).toContain('tok_test01');
+    expect(r.stdout).toContain('[reviewer]');
+  }, 30_000);
+
+  it('auth enable / disable → 对应路由空载荷', async () => {
+    captured = [];
+    expect((await runCli(['auth', 'enable'])).code).toBe(0);
+    expect(captured.some((c) => c.url === '/api/admin/auth/enable')).toBe(true);
+    captured = [];
+    expect((await runCli(['auth', 'disable'])).code).toBe(0);
+    expect(captured.some((c) => c.url === '/api/admin/auth/disable')).toBe(true);
   }, 30_000);
 });
