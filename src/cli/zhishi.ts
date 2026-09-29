@@ -5,7 +5,10 @@
  * to the Sidecar's Admin API. All business logic lives in the Sidecar.
  *
  * Environment:
- *   ZHISHI_PORT — Sidecar port (injected by buildClaudeSessionEnv)
+ *   ZHISHI_PORT   — Sidecar port (injected by buildClaudeSessionEnv)
+ *   ZHISHI_SERVER — 远端 sidecar base URL（1.8.7 P0.5 团队大脑；设置后不再
+ *                   探测/拉起本机 sidecar，ZHISHI_PORT 链失效）
+ *   ZHISHI_TOKEN  — 远端鉴权 Bearer token（只进 Authorization 头，不打印）
  *
  * No shebang here. `npm run build:cli` (esbuild) injects `#!/usr/bin/env node`
  * through `--banner:js` so the *built* `zhishi.js` artifact is what carries
@@ -31,6 +34,7 @@ import {
 import { INTEL_POLL_INTERVAL_MS, startIntelProgressPolling } from './intel-progress';
 import { collectRefs, fetchRefBody, formatRefHints, isValidRefId, type RefFetch } from './ref';
 import { isSidecarPortOverride, parseArgs } from './cli-args';
+import { probeRemoteHealth, resolveRemoteServer, resolveRemoteToken } from './remote';
 import { ensureCliSidecar } from './sidecar-ensure';
 import { buildExpertDoc, expertEditRoundTrip, parseExpertDoc } from './expert-edit';
 import { importExpertEntries, parseExpertImport } from './expert-import';
@@ -41,6 +45,12 @@ import { EXPERT_ENTRY_KINDS, EXPERT_PROVENANCES, validateEntry, type ValidateRes
 // Port is resolved after arg parsing (--port flag can override env)
 let PORT = process.env.ZHISHI_PORT ?? '';
 let BASE = '';
+// 远端模式状态（1.8.7 P0.5）：REMOTE=已配置 --server/ZHISHI_SERVER；
+// ROOT_BASE=sidecar 根 base（admin 之外的 /refs/:id 等非 admin 路由用）；
+// TOKEN 全局生效（--token/ZHISHI_TOKEN），所有请求挂 Authorization: Bearer。
+let REMOTE = false;
+let ROOT_BASE = '';
+let TOKEN = '';
 // ---------------------------------------------------------------------------
 // Argument parsing
 // ---------------------------------------------------------------------------
@@ -114,6 +124,9 @@ Global flags:
   --json      Output as JSON
   --dry-run   Preview changes without applying
   --port NUM  Override Sidecar port (default: $ZHISHI_PORT；env add 的 --port 是目标主机端口，不在此列)
+  --server URL  连接远端 sidecar/团队大脑，如 http://10.0.0.8:7411（default: $ZHISHI_SERVER；
+                设置后所有请求发往该地址，不再探测/拉起本机 sidecar，--port/$ZHISHI_PORT 失效）
+  --token TKN 远端鉴权 Bearer token（default: $ZHISHI_TOKEN；只进请求头，不打印不落盘）
 Examples:
   zhishi model list
   zhishi model set-key deepseek sk-xxx
@@ -239,7 +252,11 @@ async function callApi(route: string, body: Record<string, unknown> = {}): Promi
   try {
     const resp = await undiciFetch(`${BASE}/${route}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        // 1.8.7 P0.5：--token/ZHISHI_TOKEN 全局生效（本机/远端同口径）。
+        ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}),
+      },
       body: JSON.stringify(body),
       dispatcher: adminDispatcher,
     });
@@ -712,12 +729,20 @@ function printTaskCreateResult(data: Record<string, unknown>): void {
   const task = (data?.task as Record<string, unknown>) ?? data;
   const id = String(task?.id ?? '');
   const name = String(task?.name ?? '');
-  const dataDir = getZhiShiDataDir();
-  const absDocs = `${dataDir}/tasks/${id}/`;
-  const home = homedir();
-  const displayDocs = absDocs.startsWith(home)
-    ? `~${absDocs.slice(home.length)}`
-    : absDocs;
+  let displayDocs: string;
+  if (REMOTE) {
+    // 远端模式（R5 审计 #2）：tasks 落在服务器盘上，本机 getZhiShiDataDir()
+    // 拼出的路径是错的——远端只标形态 + 归属，不展示本机数据目录（直接读写
+    // 等 P4 文件传输）。
+    displayDocs = `~/.zhishi/tasks/${id}/（远端 sidecar 本机路径——本机不可直接读写）`;
+  } else {
+    const dataDir = getZhiShiDataDir();
+    const absDocs = `${dataDir}/tasks/${id}/`;
+    const home = homedir();
+    displayDocs = absDocs.startsWith(home)
+      ? `~${absDocs.slice(home.length)}`
+      : absDocs;
+  }
 console.log('\u2713 Task created');
   if (id) console.log(`  task_id:   ${id}`);
   if (name) console.log(`  name:      ${name}`);
@@ -1556,6 +1581,33 @@ async function main(): Promise<void> {
     console.log(TOP_HELP);
     return;
   }
+// 远端模式（1.8.7 P0.5 团队大脑）：--server/ZHISHI_SERVER 一经设置，端口链
+// （--port/ZHISHI_PORT/sidecar.port 文件）与 CLI 自立 sidecar 整体短路——远端
+// 不可达是硬错误，绝不回落本机（「以为连着团队大脑、实际在操作本机空
+// sidecar」的静默分叉比报错更糟）。本机模式（未设 server）下方链路一字节不变。
+  assertStringFlag(flags.server, 'server');
+  assertStringFlag(flags.token, 'token');
+  TOKEN = resolveRemoteToken(flags) ?? '';
+  let remoteServer: string | undefined;
+  try {
+    remoteServer = resolveRemoteServer(flags);
+  } catch {
+    console.error(`Error: --server "${String(flags.server ?? process.env.ZHISHI_SERVER ?? '')}" 不是合法 URL（例：http://10.0.0.8:7411 或 10.0.0.8:7411）。`);
+    process.exit(2);
+  }
+  if (remoteServer) {
+    const probe = await probeRemoteHealth(remoteServer, TOKEN || undefined);
+    if (!probe.ok) {
+      console.error(`Error: 无法连接远端 ZhiShi sidecar：${remoteServer}（${probe.error}）。`);
+      console.error('  remote mode: no local sidecar will be started——请确认远端 sidecar 已启动、地址端口可达（内网 / SSH 隧道），需要鉴权时 --token/ZHISHI_TOKEN 已正确设置。');
+      process.exit(3);
+    }
+    REMOTE = true;
+    BASE = `${remoteServer}/api/admin`;
+    ROOT_BASE = remoteServer;
+    // token 值不打印——只说「已启用」。
+    console.error(`[zhishi] 远端模式：${remoteServer}${TOKEN ? '（Bearer token 已启用）' : ''}`);
+  } else {
 // Resolve port: --port flag overrides env; 1.4.0 起 ZHISHI_PORT 未设时回落
 // sidecar.port 文件（应用启动即写，`~/.zhishi/sidecar.port`）——PATH 安装的
 // zhishi 在应用运行时独立可用，不用手动设端口。文件缺失/损坏 → 保持原报错。
@@ -1587,6 +1639,8 @@ async function main(): Promise<void> {
     process.exit(3);
   }
   BASE = `http://127.0.0.1:${PORT}/api/admin`;
+  ROOT_BASE = `http://127.0.0.1:${PORT}`;
+  }
 // 1.3.9 TUI 退役：bare `zhishi agent` 不再进入交互式 TUI——打印引导并以
   // 非零退出（防 AI 调用方/脚本误判「会话已启动」）。`agent` 子命令
   // (list/show/enable/disable/...) 继续走 Admin API。交互会话请用 GUI。
@@ -1628,10 +1682,12 @@ const group = positional[0];
       process.exit(2);
     }
     const res = await fetchRefBody(
-      `http://127.0.0.1:${PORT}`,
+      ROOT_BASE,
       id,
       undiciFetch as unknown as RefFetch,
       adminDispatcher,
+      // /refs/:id 是 sidecar 根路径（非 /api/admin），鉴权头单独带。
+      TOKEN ? { Authorization: `Bearer ${TOKEN}` } : undefined,
     );
     if (!res.ok) {
       if (res.status === 404) {

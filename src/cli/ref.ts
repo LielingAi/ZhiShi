@@ -104,7 +104,7 @@ export interface RefFetchResponse {
 
 export type RefFetch = (
   url: string,
-  init?: { method?: string; dispatcher?: unknown },
+  init?: { method?: string; headers?: Record<string, string>; dispatcher?: unknown },
 ) => Promise<RefFetchResponse>;
 
 export type RefFetchResult =
@@ -115,12 +115,15 @@ export type RefFetchResult =
 /**
  * 取回外溢全文。id 先过路由同口径校验（非法 id 不发请求，直接 400 语义）；
  * 404 → {error:'ref not found or expired'} 由调用方翻成人话（GC 降级）。
+ * headers 用于远端模式挂 Authorization（1.8.7 P0.5）——/refs/:id 是 sidecar
+ * 根路径非 admin 路由，鉴权头要单独带。
  */
 export async function fetchRefBody(
   base: string,
   id: string,
   fetchImpl: RefFetch,
   dispatcher?: unknown,
+  headers?: Record<string, string>,
 ): Promise<RefFetchResult> {
   if (!isValidRefId(id)) {
     return { ok: false, status: 400, error: `invalid ref id "${id}"` };
@@ -130,6 +133,7 @@ export async function fetchRefBody(
   try {
     res = await fetchImpl(`${root}/refs/${encodeURIComponent(id)}`, {
       method: 'GET',
+      headers,
       dispatcher,
     });
   } catch (err) {

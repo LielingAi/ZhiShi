@@ -17,6 +17,7 @@ const CLI = fileURLToPath(new URL('zhishi.ts', import.meta.url));
 interface CapturedRequest {
   url: string;
   body: Record<string, unknown>;
+  headers: Record<string, string | string[] | undefined>;
 }
 
 const DRAFT = {
@@ -40,7 +41,15 @@ function runCli(
     const child = spawn(process.execPath, ['--import', 'tsx', CLI, ...args], {
       // stdin 走管道 → 子进程 isTTY=undefined，正好覆盖「非 TTY」路径。
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, ZHISHI_PORT: String(port), ...env },
+      env: {
+        ...process.env,
+        // 置空而非删除：防止开发者本机/CI 的 ZHISHI_SERVER/ZHISHI_TOKEN 泄进
+        // 子进程让本机模式用例静默变成远端模式（空串在 CLI 侧按未设处理）。
+        ZHISHI_SERVER: '',
+        ZHISHI_TOKEN: '',
+        ZHISHI_PORT: String(port),
+        ...env,
+      },
     });
     let stdout = '';
     let stderr = '';
@@ -63,9 +72,12 @@ beforeAll(async () => {
       } catch {
         /* 非 JSON body 按空处理——本测试只关心路由命中与字段透传 */
       }
-      captured.push({ url: req.url ?? '', body });
+      captured.push({ url: req.url ?? '', body, headers: req.headers });
       res.setHeader('content-type', 'application/json');
-      if (req.url === '/refs/aaaa1111') {
+      if (req.url === '/health') {
+        // 1.8.7 P0.5 远端模式就绪判据（与 sidecar-ensure 同口径）。
+        res.end(JSON.stringify({ ok: true }));
+      } else if (req.url === '/refs/aaaa1111') {
         // 1.6.3 refs 消费端：根路径 /refs/:id 取外溢全文（非 /api/admin）。
         res.end(JSON.stringify({ toolUseId: 't1', content: 'BIG-OUTPUT' }));
       } else if (req.url === '/refs/dead0000') {
@@ -394,5 +406,88 @@ describe('1.7.7：auto-run CLI 命令组（三输入 + 可选空转话术）', (
     const req = captured.find((c) => c.url === '/api/admin/auto-run/list');
     expect(req).toBeDefined();
     expect(req!.body).toEqual({ workspace: '/ws' });
+  }, 30_000);
+});
+
+describe('1.8.7 P0.5：远端模式（--server/--token）', () => {
+  // 远端分支整体短路端口链与 ensureCliSidecar——下列用例全部不传有效
+  // ZHISHI_PORT，若 CLI 误走本机链必然 ECONNREFUSED/自立 sidecar（进程表可证）。
+  it('--server 旗标：所有请求发往该 URL（admin base 派生），不碰本机端口链', async () => {
+    captured = [];
+    const r = await runCli(['status', '--server', `http://127.0.0.1:${port}`], { ZHISHI_PORT: '1' });
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain('[zhishi] 远端模式：');
+    expect(captured.some((c) => c.url === '/health')).toBe(true);
+    expect(captured.some((c) => c.url === '/api/admin/status')).toBe(true);
+  }, 30_000);
+
+  it('base 派生：缺 scheme 补 http://、尾部斜杠剥离', async () => {
+    captured = [];
+    const r = await runCli(['status', '--server', `127.0.0.1:${port}/`]);
+    expect(r.code).toBe(0);
+    expect(captured.some((c) => c.url === '/api/admin/status')).toBe(true);
+  }, 30_000);
+
+  it('ZHISHI_SERVER 环境变量同样进入远端模式', async () => {
+    captured = [];
+    const r = await runCli(['status'], { ZHISHI_SERVER: `http://127.0.0.1:${port}`, ZHISHI_PORT: '1' });
+    expect(r.code).toBe(0);
+    expect(captured.some((c) => c.url === '/api/admin/status')).toBe(true);
+  }, 30_000);
+
+  it('优先级：--server 覆盖 ZHISHI_SERVER（env 指向死端口仍成功）', async () => {
+    captured = [];
+    const r = await runCli(
+      ['status', '--server', `http://127.0.0.1:${port}`],
+      { ZHISHI_SERVER: 'http://127.0.0.1:1' },
+    );
+    expect(r.code).toBe(0);
+    expect(captured.some((c) => c.url === '/api/admin/status')).toBe(true);
+  }, 30_000);
+
+  it('远端不可达 → 退出 3，报错含 URL 且明说不拉起本机 sidecar', async () => {
+    captured = [];
+    const r = await runCli(['status', '--server', 'http://127.0.0.1:1']);
+    expect(r.code).toBe(3);
+    expect(r.stderr).toContain('http://127.0.0.1:1');
+    expect(r.stderr).toContain('remote mode: no local sidecar will be started');
+    expect(captured.some((c) => c.url === '/api/admin/status')).toBe(false);
+  }, 30_000);
+
+  it('--token：admin 与 /refs 非 admin 路由均挂 Bearer 头；token 值不打印', async () => {
+    captured = [];
+    const r = await runCli(['status', '--server', `http://127.0.0.1:${port}`, '--token', 'test-token-xyz']);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain('Bearer token 已启用');
+    expect(r.stderr).not.toContain('test-token-xyz');
+    const statusReq = captured.find((c) => c.url === '/api/admin/status');
+    expect(statusReq?.headers.authorization).toBe('Bearer test-token-xyz');
+
+    captured = [];
+    const r2 = await runCli(['refs', 'get', 'aaaa1111', '--server', `http://127.0.0.1:${port}`, '--token', 'test-token-xyz']);
+    expect(r2.code).toBe(0);
+    expect(r2.stdout).toContain('BIG-OUTPUT');
+    const refReq = captured.find((c) => c.url === '/refs/aaaa1111');
+    expect(refReq?.headers.authorization).toBe('Bearer test-token-xyz');
+  }, 30_000);
+
+  it('ZHISHI_TOKEN 环境变量同样挂头', async () => {
+    captured = [];
+    const r = await runCli(['status'], {
+      ZHISHI_SERVER: `http://127.0.0.1:${port}`,
+      ZHISHI_TOKEN: 'env-token',
+    });
+    expect(r.code).toBe(0);
+    const statusReq = captured.find((c) => c.url === '/api/admin/status');
+    expect(statusReq?.headers.authorization).toBe('Bearer env-token');
+  }, 30_000);
+
+  it('本机模式回归：不设 --server 时不带 Authorization 头（行为一字节不变）', async () => {
+    captured = [];
+    const r = await runCli(['status']);
+    expect(r.code).toBe(0);
+    const statusReq = captured.find((c) => c.url === '/api/admin/status');
+    expect(statusReq?.headers.authorization).toBeUndefined();
+    expect(r.stderr).not.toContain('远端模式');
   }, 30_000);
 });
