@@ -1339,9 +1339,9 @@ export const PRESET_PROVIDERS: Provider[] = [
 
       { model: 'k3-256k', modelName: 'Kimi K3-256K', modelSeries: 'kimi', contextLength: 262_144, maxOutputTokens: 131_072, inputModalities: ['text', 'image'] },
 
-      { model: 'kimi-for-coding', modelName: 'Kimi K2.7 Code', modelSeries: 'kimi', contextLength: 262_144, maxOutputTokens: 32_768, inputModalities: ['text', 'image'] },
+      { model: 'kimi-for-coding', modelName: 'K2.8 Preview', modelSeries: 'kimi', contextLength: 262_144, maxOutputTokens: 32_768, inputModalities: ['text', 'image'] },
 
-      { model: 'kimi-for-coding-highspeed', modelName: 'Kimi For Coding HighSpeed', modelSeries: 'kimi', contextLength: 262_144, maxOutputTokens: 32_768, inputModalities: ['text', 'image'] },
+      { model: 'kimi-for-coding-highspeed', modelName: 'K2.7 Code Highspeed', modelSeries: 'kimi', contextLength: 262_144, maxOutputTokens: 32_768, inputModalities: ['text', 'image'] },
 
     ],
 
