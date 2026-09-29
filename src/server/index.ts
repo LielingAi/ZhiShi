@@ -1019,8 +1019,14 @@ if (pathname === '/chat/model' && request.method === 'POST') {
               const models = rec.models as Array<{ model: string }> | undefined;
               const aliases = (rec.modelAliases ?? {}) as Record<string, string>;
               const userPrimary = (config.providerPrimaryModels as Record<string, string> | undefined)?.[providerIdArg];
+              // discovered 模型（presetCustomModels——set-key 自动拉取并入的实时目录）
+              // 也必须算「有」：目录展示（handleModelList 的 merged）与切换校验
+              // 此前数据源不一致——deepseek-flash（V4.1）这类「列表里有、切换
+              // 报无模型」的误拦由此而来（2026-09-29 WREN 实测）。
+              const discovered = (config.presetCustomModels as Record<string, Array<{ model?: string }> | undefined>)?.[providerIdArg];
               const known =
                 models?.some((m) => m.model === model) ||
+                discovered?.some((m) => m.model === model) ||
                 rec.primaryModel === model ||
                 userPrimary === model ||
                 Object.values(aliases).includes(model);
@@ -1032,12 +1038,20 @@ if (pathname === '/chat/model' && request.method === 'POST') {
           } else {
             // 反查 model → providerId：
             // 1) preset + custom provider 的 models/primaryModel（deepseek、anthropic…）
-            // 2) 用户 providerPrimaryModels（覆盖 kimi k3 / deepseek flash 等非 preset provider）
-            // 3) providerModelAliases 别名（sonnet/opus/haiku → 真实模型）
+            // 2) discovered 目录（presetCustomModels——set-key 自动拉取并入；
+            //    与上一分支同一数据源纪律：deepseek-flash(V4.1) 这类不能只进
+            //    目录展示不进校验）
+            // 3) 用户 providerPrimaryModels（覆盖 kimi k3 / deepseek flash 等非 preset provider）
+            // 4) providerModelAliases 别名（sonnet/opus/haiku → 真实模型）
+            const discoveredMap = (config.presetCustomModels as Record<string, Array<{ model?: string }> | undefined>) ?? {};
             for (const provider of getAllEffectiveProviders(config)) {
               const rec = provider as unknown as Record<string, unknown>;
               const models = rec.models as Array<{ model: string }> | undefined;
-              if (models?.some((m) => m.model === model) || rec.primaryModel === model) {
+              if (
+                models?.some((m) => m.model === model) ||
+                rec.primaryModel === model ||
+                discoveredMap[provider.id]?.some((m) => m.model === model)
+              ) {
                 providerId = provider.id;
                 break;
               }

@@ -1187,6 +1187,12 @@ export const PRESET_PROVIDERS: Provider[] = [
 
       { model: 'deepseek-v4-pro', modelName: 'DeepSeek V4 Pro', modelSeries: 'deepseek', contextLength: 1_000_000, maxOutputTokens: 384_000, inputModalities: ['text'] },
 
+      // V4.1 Flash（2026-09-10 发布）——官方现行 ID 就是 deepseek-flash
+      // （端点 /v1/models 实测返回；官方文档：1M 上下文、384K 输出、原生
+      // 多模态）。旧 deepseek-v4-flash 已退役并路由到本模型。
+
+      { model: 'deepseek-flash', modelName: 'DeepSeek V4.1 Flash', modelSeries: 'deepseek', contextLength: 1_000_000, maxOutputTokens: 384_000, inputModalities: ['text', 'image'] },
+
       { model: 'deepseek-v4-flash', modelName: 'DeepSeek V4 Flash', modelSeries: 'deepseek', contextLength: 1_000_000, maxOutputTokens: 384_000, inputModalities: ['text'] },
 
     ],
