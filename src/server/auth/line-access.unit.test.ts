@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Actor } from './actor';
-import { canReadLine, canWriteLine } from './line-access';
+import { canReadLine, canWriteLine, canRespondToPending } from './line-access';
 import type { LineOwnership } from '../loop/line-ownership';
 
 const alice: Actor = { name: 'alice', role: 'operator', source: 'token' };
@@ -56,5 +56,28 @@ describe('P3b 线权限矩阵(双线制)', () => {
     expect(canWriteLine(local, alicePrivate)).toBe(true);
     expect(canReadLine(local, undefined)).toBe(true);
     expect(canWriteLine(local, undefined)).toBe(true);
+  });
+
+  it('审批应答（B 案）:reviewer 任何线可答;operator 仅答自己名下私有线', () => {
+    // reviewer：私有/共享/归属未知/admin 类（无 ownership）全可答
+    expect(canRespondToPending(reviewer, alicePrivate)).toBe(true);
+    expect(canRespondToPending(reviewer, sharedLine)).toBe(true);
+    expect(canRespondToPending(reviewer, undefined)).toBe(true);
+    // operator owner：自己名下私有线可答（「自己的线自己批」）
+    expect(canRespondToPending(alice, alicePrivate)).toBe(true);
+    // operator 非主：他人私有线 403 的判定源
+    expect(canRespondToPending(bob, alicePrivate)).toBe(false);
+    // operator 在共享线上：维持 reviewer-only（即使 operator 能写共享线）
+    expect(canRespondToPending(alice, sharedLine)).toBe(false);
+    expect(canRespondToPending(bob, sharedLine)).toBe(false);
+    // operator 在归属未知旧线 / admin 类 ask（无 ownership）：维持 reviewer-only
+    expect(canRespondToPending(bob, undefined)).toBe(false);
+    expect(canRespondToPending(bob, { updatedAt: '' })).toBe(false);
+    // readonly：一律不可答
+    expect(canRespondToPending(reader, alicePrivate)).toBe(false);
+    expect(canRespondToPending(reader, sharedLine)).toBe(false);
+    // 本机 actor 恒放行
+    expect(canRespondToPending(local, alicePrivate)).toBe(true);
+    expect(canRespondToPending(local, undefined)).toBe(true);
   });
 });

@@ -92,9 +92,9 @@ describe('非 admin 路由分类', () => {
     expect(requiredRoleFor('/api/files/upload', 'GET')).toBe(DEFAULT_ROLE);
   });
 
-  it('boundary/决策审批 = 审定人档', () => {
-    expect(requiredRoleFor('/chat/boundary/respond', 'POST')).toBe('reviewer');
-    expect(requiredRoleFor('/chat/decision/respond', 'POST')).toBe('reviewer');
+  it('boundary/决策审批路由档 = operator（B 案：豁免在 handler 内复核——reviewer 任何线可答，operator 仅答自己名下私有线）', () => {
+    expect(requiredRoleFor('/chat/boundary/respond', 'POST')).toBe('operator');
+    expect(requiredRoleFor('/chat/decision/respond', 'POST')).toBe('operator');
   });
 
   it('method 不匹配时不命中规则（GET /chat/send → 兜底）', () => {

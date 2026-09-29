@@ -89,7 +89,7 @@ import {
 // 1.8.7 P3b 双线制:研究线管理面(line/list、line/share、line/unshare)。
 import { handleLineList, handleLineShare, handleLineUnshare } from './loop/line-admin';
 // 1.8.7 P3b 双线制:线读写权限矩阵(私有/共享/归属未知)。
-import { canReadLine, canWriteLine } from './auth/line-access';
+import { canReadLine, canWriteLine, canRespondToPending } from './auth/line-access';
 import { getLineOwnership } from './loop/line-ownership';
 import { buildLoopTranscript } from './loop/transcript';
 import { isKimiCodingProvider } from './loop/pi-provider';
@@ -108,9 +108,8 @@ import { verifyHttpAuth } from './auth/gate';
 import { applyCorsDecision, preflightResponse } from './auth/cors';
 import { isAuthEnabled } from './auth/gate';
 import { loadAuthConfig } from './auth/token-store';
-// 1.8.7 P2 身份贯穿:请求 actor（currentActor）+ 角色判定（审批应答防御性复核）。
+// 1.8.7 P2 身份贯穿:请求 actor（currentActor）——审批署名与线权限复核的取值源。
 import { currentActor } from './auth/actor';
-import { roleAtLeast } from './auth/roles';
 import {
   handleAuthAdd,
   handleAuthDisable,
@@ -1190,13 +1189,16 @@ if (pathname === '/chat/model' && request.method === 'POST') {
         // 不是调用方的当前线——P3a 的 controlLineGate 在此撤掉;先查出
         // pending 的线核写权限(双线制:私有线非主 403),再应答。
         const pendingAsk = pendingBoundaryAsks().find((a) => a.askId === askId);
-        if (pendingAsk?.sessionId && !canWriteLine(currentActor(), getLineOwnership(pendingAsk.sessionId))) {
+        const askOwnership = pendingAsk?.sessionId ? getLineOwnership(pendingAsk.sessionId) : undefined;
+        if (pendingAsk?.sessionId && !canWriteLine(currentActor(), askOwnership)) {
           return jsonResponse({ success: false, error: 'forbidden' }, 403);
         }
-        // P2 审批署名 + 防御性角色复核（HTTP 闸已把本路由限到 reviewer——
-        // 这里复核的是「应答的人」本身，署名随 pending 记录留痕）。
+        // P2 审批署名 + 角色复核（respond 角色死结的 B 案——路由档已降到
+        // operator：reviewer 任何线可答；operator 仅可答**自己名下私有线**的
+        // pending（共享线/归属未知线/admin 类 ask 维持 reviewer-only），
+        // 见 auth/line-access.ts canRespondToPending）。
         const responder = currentActor();
-        if (responder.source === 'token' && !roleAtLeast(responder.role, 'reviewer')) {
+        if (!canRespondToPending(responder, askOwnership)) {
           return jsonResponse({ success: false, error: 'forbidden' }, 403);
         }
         // 1.3.2 缺口 1:扩字段——应答附带 note(可选),响应内容进 transcript。
@@ -1236,13 +1238,15 @@ if (pathname === '/chat/model' && request.method === 'POST') {
         // 注入语义——1.5.4 A2-4 既有行为;P3a 的 controlLineGate 在此撤掉),
         // 先按 pending 的线核写权限(双线制:私有线非主 403),再应答。
         const pendingDecision = getDecision(decisionId);
-        if (pendingDecision && !canWriteLine(currentActor(), getLineOwnership(pendingDecision.sessionId))) {
+        const decisionOwnership = pendingDecision ? getLineOwnership(pendingDecision.sessionId) : undefined;
+        if (pendingDecision && !canWriteLine(currentActor(), decisionOwnership)) {
           return jsonResponse({ success: false, error: 'forbidden' }, 403);
         }
         const note = typeof body.note === 'string' && body.note.trim() ? body.note.trim() : undefined;
-        // P2 审批署名 + 防御性角色复核（同 boundary/respond——闸外再核一次）。
+        // P2 审批署名 + 角色复核（respond 角色死结的 B 案——同 boundary/respond：
+        // reviewer 任何线可答；operator 仅答自己名下私有线的 pending）。
         const responder = currentActor();
-        if (responder.source === 'token' && !roleAtLeast(responder.role, 'reviewer')) {
+        if (!canRespondToPending(responder, decisionOwnership)) {
           return jsonResponse({ success: false, error: 'forbidden' }, 403);
         }
         const result = respondDecision(decisionId, choice, note, responder.name);

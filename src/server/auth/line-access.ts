@@ -38,3 +38,20 @@ export function canWriteLine(actor: Actor, ownership: LineOwnership | undefined)
   }
   return ownership.owner === actor.name;
 }
+
+/**
+ * 审批应答权限（boundary/decision respond——「respond 角色死结」的 B 案，
+ * WREN 2026-09-29 定）：
+ *   - reviewer → 任何线的 pending 都可答（审批是权威动作，跨人也归它管）；
+ *   - operator → 仅可答**自己名下私有线**上的 pending（「自己的线自己批」——
+ *     单机体验的自然延伸）；
+ *   - 共享线 / 归属未知旧线 / 不属于任何 chat 线的 admin 类 ask（无 ownership）
+ *     → 维持 reviewer-only；
+ *   - 本机（auth 关闭）恒放行——单用户行为与 1.8.6 一字节相同。
+ */
+export function canRespondToPending(actor: Actor, ownership: LineOwnership | undefined): boolean {
+  if (actor.source === 'local') return true;
+  if (roleAtLeast(actor.role, 'reviewer')) return true;
+  if (!ownership || ownership.shared || !ownership.owner) return false;
+  return ownership.owner === actor.name;
+}

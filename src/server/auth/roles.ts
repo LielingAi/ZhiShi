@@ -210,12 +210,12 @@ const NON_ADMIN_OPERATOR_POSTS = new Set([
   '/sessions/fork',
   '/sessions/switch',
   '/cron/execute-sync',
-]);
-
-/** 审批/裁决应答（reviewer——设计稿角色表「审批 boundary ask=审定人」）。 */
-const NON_ADMIN_REVIEWER_POSTS = new Set([
+  // respond 角色死结的 B 案（WREN 2026-09-29 定）：路由档降到 operator 让
+  // owner 能进 handler；「reviewer 任何线可答 / operator 仅答自己名下私有线」
+  // 的豁免在 handler 内按 pending 所属线复核（canRespondToPending，
+  // auth/line-access.ts）——共享线与归属未知线维持 reviewer-only。
   '/chat/boundary/respond',
-  '/chat/decision/respond', // 从紧：决策审批与 boundary 审批同级
+  '/chat/decision/respond',
 ]);
 
 /**
@@ -230,7 +230,6 @@ export function requiredRoleFor(pathname: string, method: string): RouteAccess {
     return ADMIN_ROUTE_ROLE[route] ?? DEFAULT_ADMIN_ROLE;
   }
   if (m === 'POST' && NON_ADMIN_OPERATOR_POSTS.has(pathname)) return 'operator';
-  if (m === 'POST' && NON_ADMIN_REVIEWER_POSTS.has(pathname)) return 'reviewer';
   if (m === 'GET' && pathname.startsWith('/refs/')) return 'readonly';
   // 1.8.7 P4 文件传输上传：写落在环境内（界内，与 environment/push 同
   // boundary 口径，不设第二层 ask）+ 受管 spill 目录；下载第一步是 admin

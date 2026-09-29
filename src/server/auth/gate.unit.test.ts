@@ -110,7 +110,10 @@ describe('auth enabled → 角色层级 enforcement', () => {
     ] as const) {
       expect(verifyHttpAuth({ method, pathname, authorization: auth }, d).ok, pathname).toBe(true);
     }
-    for (const p of ['/api/admin/archive/correct', '/api/admin/model/set-key', '/api/admin/auth/disable', '/chat/boundary/respond']) {
+    // B 案后 /chat/boundary/respond 的路由档降为 operator（豁免在 handler 内
+    // 复核）——operator 档 403 清单不再含它，另在 operator 放行清单里钉住。
+    expect(verifyHttpAuth({ method: 'POST', pathname: '/chat/boundary/respond', authorization: auth }, d).ok).toBe(true);
+    for (const p of ['/api/admin/archive/correct', '/api/admin/model/set-key', '/api/admin/auth/disable']) {
       const v = verifyHttpAuth({ method: 'POST', pathname: p, authorization: auth }, d);
       expect(v, p).toEqual({ ok: false, status: 403 });
     }
