@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.9] - 2026-09-29
+
+> **模型目录修复**：kimi / anthropic-api 的模型 ID 自动拉取打通 + kimi 目录跟进官方命名（kimi-for-coding 即 K2.8 Preview）。
+
+- **`model/set-key` 自动拉取补齐两家**：自动拉取的条件是 provider 有显式 `modelListUrl` 或 `apiProtocol === 'openai'`——kimi（apiProtocol='anthropic' + 无端点）与 anthropic-api（无端点）两条都不满足，set-key 后永远不拉、模型 ID 只能手填（WREN 实测发现，`presetCustomModels` 里它们从未有 discovered 条目）。补上官方端点：`kimi → https://api.kimi.com/coding/v1/models`（用配置 key 实测返回 4 个模型，形状兼容）、`anthropic-api → https://api.anthropic.com/v1/models`（官方文档端点）。
+- **kimi 内置目录跟进官方命名**：官方把 `kimi-for-coding` 静默升级到 **K2.8 Preview**（同一 ID 延续，端点实测 display_name 已是 K2.8 Preview）——内置目录的「Kimi K2.7 Code」改为「K2.8 Preview」，highspeed 改为「K2.7 Code Highspeed」（均与官方 display_name 一致；规格端点不返回，保持原值不臆造）。
+
 ## [1.8.8] - 2026-09-29
 
 > **团队协作补丁**：模式角标（「当前是团队模式还是单机」界面明示）+ 传输定案（SSH 隧道——混合内容实证）。
