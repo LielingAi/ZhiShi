@@ -412,3 +412,70 @@ export function stopRefsGc(): void {
     gcTimer = undefined;
   }
 }
+
+
+/**
+ * 1.8.7 P4 团队大脑——文件下载的 ref 化（environment/extract-file 用）：
+ * 把已落盘的文件**移动**进 refs 目录并补 meta，返回 LargeValueRef——客户端
+ * 经既有 GET /refs/:id 流式取回原始字节（refs JSON 语义不受影响：mimetype
+ * 由调用方给，octet-stream 时 preview 是 base64 头段）。
+ * 移动（rename 优先、跨设备回落 copy+rm）而非读进内存再写——extract 取回
+ * 的文件可达传输上限（默认 200MB），经不起 maybeSpill 的内存形态。
+ */
+export interface SpillFileOptions {
+  mimetype: string;
+  ttlMs?: number;
+  sessionId?: string;
+  previewBytes?: number;
+}
+
+export async function spillFileBody(absPath: string, opts: SpillFileOptions): Promise<LargeValueRef> {
+  const dir = ensureRefsDir();
+  const previewBytes = opts.previewBytes ?? DEFAULT_PREVIEW_BYTES;
+  const ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
+  const st = await fsp.stat(absPath);
+  const sizeBytes = st.size;
+  // 头段 preview：只读前 previewBytes（二进制走 base64，与 maybeSpill 同口径）。
+  const headHandle = await fsp.open(absPath, 'r');
+  let head: Buffer;
+  try {
+    head = Buffer.alloc(Math.min(previewBytes, sizeBytes));
+    await headHandle.read(head, 0, head.length, 0);
+  } finally {
+    await headHandle.close().catch(() => undefined);
+  }
+  const id = shortId();
+  const expiresAt = Date.now() + ttlMs;
+  const ref: LargeValueRef = {
+    kind: 'ref',
+    id,
+    sizeBytes,
+    mimetype: opts.mimetype,
+    preview: buildPreview(new Uint8Array(head), opts.mimetype, previewBytes),
+    expiresAt,
+  };
+  const meta: RefMeta = { ...ref };
+  if (opts.sessionId) meta.sessionId = opts.sessionId;
+  const dest = bodyPath(dir, id);
+  try {
+    try {
+      await fsp.rename(absPath, dest);
+    } catch {
+      // 跨设备（refs 目录被 ZHISHI_REFS_DIR 指到别的卷）回落 copy + rm。
+      await fsp.copyFile(absPath, dest);
+      await fsp.rm(absPath, { force: true });
+    }
+    try {
+      await fsp.writeFile(metaPath(dir, id), JSON.stringify(meta), 'utf-8');
+    } catch (metaErr) {
+      // meta 写失败 → body 成孤儿，先摘再抛（与 maybeSpill 同一纪律）。
+      await fsp.rm(dest, { force: true }).catch(() => undefined);
+      throw metaErr;
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn(`[refs] spillFileBody failed id=${id} path=${absPath}: ${reason}`);
+    throw new Error(`large-value-store: failed to spill file ${absPath} (id=${id}): ${reason}`);
+  }
+  return ref;
+}

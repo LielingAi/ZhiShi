@@ -49,7 +49,7 @@ describe('admin 路由分类（每档代表）', () => {
   });
 
   it('操作员档', () => {
-    for (const r of ['environment/up', 'environment/exec', 'archive/resolve', 'config/set', 'task/run', 'auto-run/start', 'claim/forget', 'distill/run', 'intel/update']) {
+    for (const r of ['environment/up', 'environment/exec', 'environment/extract-file', 'archive/resolve', 'config/set', 'task/run', 'auto-run/start', 'claim/forget', 'distill/run', 'intel/update']) {
       expect(requiredRoleFor(`/api/admin/${r}`, 'POST'), r).toBe('operator');
     }
   });
@@ -85,6 +85,11 @@ describe('非 admin 路由分类', () => {
     }
     expect(requiredRoleFor('/sessions/abc', 'DELETE')).toBe('operator');
     expect(requiredRoleFor('/sessions/abc', 'PATCH')).toBe('operator');
+  });
+
+  it('1.8.7 P4 文件上传 = 操作员档（method 敏感）', () => {
+    expect(requiredRoleFor('/api/files/upload', 'POST')).toBe('operator');
+    expect(requiredRoleFor('/api/files/upload', 'GET')).toBe(DEFAULT_ROLE);
   });
 
   it('boundary/决策审批 = 审定人档', () => {

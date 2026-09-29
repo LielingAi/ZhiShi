@@ -33,6 +33,8 @@ import {
 } from '../shared/research-kinds';
 import { INTEL_POLL_INTERVAL_MS, startIntelProgressPolling } from './intel-progress';
 import { collectRefs, fetchRefBody, formatRefHints, isValidRefId, type RefFetch } from './ref';
+// 1.8.7 P4 团队大脑——env put-file / get-file（客户端磁盘 ↔ 服务器侧环境）。
+import { downloadRefToFile, uploadFileToServer, type TransferFetch } from './file-transfer';
 import { isSidecarPortOverride, parseArgs } from './cli-args';
 import { probeRemoteHealth, resolveRemoteServer, resolveRemoteToken } from './remote';
 import { ensureCliSidecar } from './sidecar-ensure';
@@ -164,6 +166,10 @@ Examples:
   zhishi env push <env-id> <host-file> <guest-path> [--guest-user u]
                                             # push a host file into env (1.6.4): scp for networked envs,
                                             # vmrun copyFileToGuest for isolated VMs (guest password prompted)
+  zhishi env put-file <env-id> <local-file> <env-path>
+                                            # upload a CLIENT-local file into a (possibly remote) env (1.8.7 P4)
+  zhishi env get-file <env-id> <env-path> <local-file>
+                                            # download a file from a (possibly remote) env to client disk (1.8.7 P4)
   zhishi agent list                          # agent 清单（1.3.9 起交互会话迁至 GUI；agent 仅子命令）
   zhishi agent show <agent-id>              # effective defaults for a workspace
   zhishi task list
@@ -1727,6 +1733,55 @@ const group = positional[0];
       process.exit(1);
     }
     process.stdout.write(res.body.endsWith('\n') ? res.body : `${res.body}\n`);
+    return;
+  }
+// 文件传输（1.8.7 P4 团队大脑）：zhishi env put-file / get-file——客户端
+  // 磁盘 ↔ 服务器侧环境（远端模式下「本地路径」是客户端机器的，不能走
+  // environment/push 的 sidecar 本机路径语义）。二进制流不进通用 JSON 管线，
+  // 与 refs 组同理由自处理（含打印与退出码）。
+  if (group === 'env' && (action === 'put-file' || action === 'get-file')) {
+    const transferDeps = {
+      base: ROOT_BASE,
+      token: TOKEN || undefined,
+      fetchImpl: undiciFetch as unknown as TransferFetch,
+      dispatcher: adminDispatcher,
+    };
+    if (action === 'put-file') {
+      const envId = requirePositional(positional[2], 'env-id', 'env put-file');
+      const localPath = requirePositional(positional[3], 'local-file', 'env put-file');
+      const envPath = requirePositional(positional[4], 'env-path', 'env put-file');
+      const res = await uploadFileToServer(transferDeps, { envId, localPath, envPath });
+      if (!res.ok) {
+        console.error(`Error: ${res.error}`);
+        process.exit(1);
+      }
+      if (jsonMode) {
+        console.log(JSON.stringify({ success: true, data: res.data }, null, 2));
+      } else {
+        console.log(`✓ ${localPath} → ${res.data.envId}:${res.data.envPath}（${res.data.bytes} 字节，sha256 ${res.data.sha256.slice(0, 12)}…，via ${res.data.via ?? '?'}）`);
+      }
+      return;
+    }
+    // get-file：extract-file 拿 ref → /refs/:id 流式落盘 → sha256 校验。
+    const envId = requirePositional(positional[2], 'env-id', 'env get-file');
+    const envPath = requirePositional(positional[3], 'env-path', 'env get-file');
+    const localPath = requirePositional(positional[4], 'local-file', 'env get-file');
+    const prep = await callApi('environment/extract-file', { id: envId, envPath });
+    if (!prep.success) {
+      console.error(`Error: ${String(prep.error)}`);
+      process.exit(1);
+    }
+    const meta = prep.data as { refId: string; name: string; bytes: number; sha256: string };
+    const dl = await downloadRefToFile(transferDeps, { refId: meta.refId, destPath: localPath, expectedSha256: meta.sha256 });
+    if (!dl.ok) {
+      console.error(`Error: ${dl.error}`);
+      process.exit(1);
+    }
+    if (jsonMode) {
+      console.log(JSON.stringify({ success: true, data: { envId, envPath, localPath, name: meta.name, bytes: dl.bytes, sha256: dl.sha256 } }, null, 2));
+    } else {
+      console.log(`✓ ${envId}:${envPath} → ${localPath}（${dl.bytes} 字节，sha256 ${dl.sha256.slice(0, 12)}… 已校验）`);
+    }
     return;
   }
   // Simple commands (no subcommand)

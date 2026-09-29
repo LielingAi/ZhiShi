@@ -79,6 +79,10 @@ export const ADMIN_ROUTE_ROLE: Record<string, AuthRole> = {
   'environment/rollback': 'operator',
   'environment/extract': 'operator',
   'environment/push': 'operator',
+  // 1.8.7 P4 文件传输下载第一步：取回 → refs 化，落点是 HTTP 响应 + 受管
+  // refs/spill 目录——不写宿主任意路径，extract 的「写宿主 ask」语义不迁移
+  // （ask 无对象可问），角色与 extract 同档。
+  'environment/extract-file': 'operator',
   'environment/select': 'operator', // 写 env-selection.json
   'environment/current': 'readonly',
   'environment/term': 'operator', // WS upgrade 端点（实际过 term-pty 的闸，此处防御性登记）
@@ -223,6 +227,10 @@ export function requiredRoleFor(pathname: string, method: string): RouteAccess {
   if (m === 'POST' && NON_ADMIN_OPERATOR_POSTS.has(pathname)) return 'operator';
   if (m === 'POST' && NON_ADMIN_REVIEWER_POSTS.has(pathname)) return 'reviewer';
   if (m === 'GET' && pathname.startsWith('/refs/')) return 'readonly';
+  // 1.8.7 P4 文件传输上传：写落在环境内（界内，与 environment/push 同
+  // boundary 口径，不设第二层 ask）+ 受管 spill 目录；下载第一步是 admin
+  // 路由 environment/extract-file，字节取回走上面 /refs/:id（readonly）。
+  if (m === 'POST' && pathname === '/api/files/upload') return 'operator';
   if (m === 'GET' && pathname === '/api/session-state') return 'readonly';
   if (m === 'GET' && pathname === '/api/loop-session/messages') return 'readonly';
   if (m === 'GET' && pathname === '/chat/stream') return 'readonly'; // SSE 订阅=只读档

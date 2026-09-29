@@ -222,6 +222,8 @@ import { estimateMessagesTokens } from 'zhishi-loop-core/context-manager';
 import { getSessionId } from '../agent-session';
 // P2(1.8.7)回归:turn 起跑人登记面——send/invoke 起跑时按线登记请求 actor。
 import { __resetTurnOriginatorsForTests, originatorForSession } from '../auth/actor';
+// P5(1.8.7)回归:环境占用面——turn 起跑登记、收尾释放。
+import { __resetOccupancyForTests, envOccupancy, type EnvOccupancy } from '../environment/occupancy';
 import { withLogContext } from '../logger-context';
 
 const RESOLUTION = {
@@ -279,6 +281,7 @@ beforeEach(async () => {
   vi.clearAllMocks();
   bgRegistryListMock.mockReturnValue([]);
   envSessionsData.clear();
+  __resetOccupancyForTests();
   resetPiChat();
   resolveLoopModelMock.mockReturnValue(RESOLUTION);
   resolveLoopModelFromEnvMock.mockReturnValue(RESOLUTION);
@@ -1720,5 +1723,67 @@ describe('1.6.11：mission 线态（首条消息前可设——战役入口语�
     await waitTurnSettled();
     const opts = runLoopMock.mock.calls[0][0] as { systemPrompt?: string };
     expect(opts.systemPrompt ?? '').not.toContain('<zhishi-mission>');
+  });
+});
+
+describe('1.8.7 P5：环境占用（turn 起跑登记 / 收尾释放）', () => {
+  it('交互 turn：env 锚定时占用 {by: local, line}，turn 收尾释放', async () => {
+    selectionMock.mockReturnValue({ kind: 'env', id: 'pwn-vm' });
+    configEnvironments.mockReturnValue([VM_ENTRY]);
+    let duringTurn: EnvOccupancy | undefined;
+    runLoopMock.mockImplementation(async function* () {
+      duringTurn = envOccupancy('pwn-vm');
+      for (const e of doneEvents('ok')) yield e;
+    });
+    await sendPiChatMessage({ text: 'hi', model: 'k3', providerEnv: { apiKey: 'k' } });
+    await waitTurnSettled();
+    expect(duringTurn).toBeDefined();
+    expect(duringTurn!.by).toBe('local');
+    expect(duringTurn!.line).toBeTruthy();
+    expect(envOccupancy('pwn-vm')).toBeUndefined();
+  });
+
+  it('起跑人署名：ALS actor 进占用 by（团队协作的「谁在用」）', async () => {
+    selectionMock.mockReturnValue({ kind: 'env', id: 'pwn-vm' });
+    configEnvironments.mockReturnValue([VM_ENTRY]);
+    let duringTurn: EnvOccupancy | undefined;
+    runLoopMock.mockImplementation(async function* () {
+      duringTurn = envOccupancy('pwn-vm');
+      for (const e of doneEvents('ok')) yield e;
+    });
+    await withLogContext({ actorName: 'wren', actorRole: 'operator' }, async () => {
+      await sendPiChatMessage({ text: 'hi', model: 'k3', providerEnv: { apiKey: 'k' } });
+    });
+    await waitTurnSettled();
+    expect(duringTurn!.by).toBe('wren');
+    expect(envOccupancy('pwn-vm')).toBeUndefined();
+  });
+
+  it('host 选定（env=null）不登记占用', async () => {
+    selectionMock.mockReturnValue({ kind: 'host' });
+    let duringTurn: EnvOccupancy | undefined;
+    runLoopMock.mockImplementation(async function* () {
+      duringTurn = envOccupancy('pwn-vm');
+      for (const e of doneEvents('ok')) yield e;
+    });
+    await sendPiChatMessage({ text: 'hi', model: 'k3', providerEnv: { apiKey: 'k' } });
+    await waitTurnSettled();
+    expect(duringTurn).toBeUndefined();
+  });
+
+  it('invokePiSession（headless + 显式 envKey）：占用带本线，run 完成即释放', async () => {
+    configEnvironments.mockReturnValue([VM_ENTRY]);
+    let duringTurn: EnvOccupancy | undefined;
+    runLoopMock.mockImplementation(async function* () {
+      duringTurn = envOccupancy('pwn-vm');
+      for (const e of doneEvents('ok')) yield e;
+    });
+    await invokePiSession(
+      { text: 'cron 查证', providerEnv: { apiKey: 'k' } },
+      { envKey: 'pwn-vm', loopSessionId: 'ls-occ-invoke' },
+    );
+    expect(duringTurn).toBeDefined();
+    expect(duringTurn!.line).toBe('ls-occ-invoke');
+    expect(envOccupancy('pwn-vm')).toBeUndefined();
   });
 });

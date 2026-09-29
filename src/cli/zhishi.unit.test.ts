@@ -8,7 +8,11 @@
  * spawn 开销约 1s/次（node --import tsx），单测超时放到 30s 兜底 Windows CI。
  */
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -18,6 +22,8 @@ interface CapturedRequest {
   url: string;
   body: Record<string, unknown>;
   headers: Record<string, string | string[] | undefined>;
+  /** 原始请求体（非 JSON 路由——P4 文件上传的裸字节流——断字节用）。 */
+  raw: string;
 }
 
 const DRAFT = {
@@ -28,6 +34,10 @@ const DRAFT = {
   createdVia: 'agent',
   createdAt: 1720000000000,
 };
+
+// 1.8.7 P4 get-file 用例的「环境内文件」字节与预期 sha256。
+const GET_FILE_BYTES = Buffer.from('remote-poc-bytes-from-env');
+const GET_FILE_SHA = createHash('sha256').update(GET_FILE_BYTES).digest('hex');
 
 let server: Server;
 let port = 0;
@@ -72,7 +82,7 @@ beforeAll(async () => {
       } catch {
         /* 非 JSON body 按空处理——本测试只关心路由命中与字段透传 */
       }
-      captured.push({ url: req.url ?? '', body, headers: req.headers });
+      captured.push({ url: req.url ?? '', body, headers: req.headers, raw });
       res.setHeader('content-type', 'application/json');
       if (req.url === '/health') {
         // 1.8.7 P0.5 远端模式就绪判据（与 sidecar-ensure 同口径）。
@@ -84,6 +94,30 @@ beforeAll(async () => {
         // GC/TTL 过期 → 404（large-value-store 契约）。
         res.statusCode = 404;
         res.end(JSON.stringify({ error: 'ref not found or expired' }));
+      } else if ((req.url ?? '').startsWith('/api/files/upload')) {
+        // 1.8.7 P4 文件上传：裸字节流 + query（envId/envPath/name）。
+        const q = new URL(req.url ?? '', 'http://mock').searchParams;
+        res.end(JSON.stringify({
+          success: true,
+          data: {
+            refId: 'aaaa1111',
+            envId: q.get('envId'),
+            envPath: q.get('envPath'),
+            bytes: Buffer.byteLength(raw),
+            sha256: createHash('sha256').update(raw).digest('hex'),
+            via: 'docker-cp',
+          },
+        }));
+      } else if (req.url === '/api/admin/environment/extract-file') {
+        // 1.8.7 P4 文件下载第一步：回 ref 元信息（字节走 /refs/:id）。
+        res.end(JSON.stringify({
+          success: true,
+          data: { refId: 'dl000001', name: 'out.bin', bytes: GET_FILE_BYTES.length, sha256: GET_FILE_SHA },
+        }));
+      } else if (req.url === '/refs/dl000001') {
+        // 1.8.7 P4 文件下载第二步：流式回原始字节。
+        res.setHeader('content-type', 'application/octet-stream');
+        res.end(GET_FILE_BYTES);
       } else if (req.url === '/api/admin/config/get') {
         // printResult 深扫用例：响应里嵌 {kind:'ref'} 占位。
         res.end(JSON.stringify({
@@ -241,6 +275,60 @@ describe('1.6.4 M0：env push 路由与载荷（传入通道）', () => {
     expect(r.code).not.toBe(0);
     expect(r.stderr).toContain('guest-path');
     expect(captured.some((c) => c.url === '/api/admin/environment/push')).toBe(false);
+  }, 30_000);
+});
+
+describe('1.8.7 P4：env put-file / get-file（客户端磁盘 ↔ 服务器侧环境）', () => {
+  it('put-file：本地文件裸流 POST /api/files/upload（query + 字节原样 + Content-Length）', async () => {
+    captured = [];
+    const dir = mkdtempSync(join(tmpdir(), 'zhishi-cli-p4-'));
+    try {
+      const local = join(dir, 'poc.txt');
+      writeFileSync(local, 'poc-upload-0123456789');
+      const r = await runCli(['env', 'put-file', 'zhishi-env-pwn-1', local, '/work/poc.txt']);
+      expect(r.stderr).not.toContain('ECONNREFUSED');
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('✓');
+      expect(r.stdout).toContain('/work/poc.txt');
+      const req = captured.find((c) => c.url.startsWith('/api/files/upload'));
+      expect(req).toBeDefined();
+      const q = new URL(req!.url, 'http://mock').searchParams;
+      expect(q.get('envId')).toBe('zhishi-env-pwn-1');
+      expect(q.get('envPath')).toBe('/work/poc.txt');
+      expect(q.get('name')).toBe('poc.txt');
+      expect(req!.raw).toBe('poc-upload-0123456789');
+      expect(req!.headers['content-length']).toBe(String('poc-upload-0123456789'.length));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('get-file：extract-file 拿 ref → /refs/:id 流式落盘（sha256 校验过）', async () => {
+    captured = [];
+    const dir = mkdtempSync(join(tmpdir(), 'zhishi-cli-p4-'));
+    try {
+      const dest = join(dir, 'out.bin');
+      const r = await runCli(['env', 'get-file', 'zhishi-env-pwn-1', '/work/out.bin', dest]);
+      expect(r.stderr).not.toContain('ECONNREFUSED');
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain('✓');
+      expect(r.stdout).toContain('已校验');
+      const prep = captured.find((c) => c.url === '/api/admin/environment/extract-file');
+      expect(prep).toBeDefined();
+      expect(prep!.body).toEqual({ id: 'zhishi-env-pwn-1', envPath: '/work/out.bin' });
+      expect(captured.some((c) => c.url === '/refs/dl000001')).toBe(true);
+      expect(readFileSync(dest).equals(GET_FILE_BYTES)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('put-file 缺 <env-path> → 用法报错且不发请求', async () => {
+    captured = [];
+    const r = await runCli(['env', 'put-file', 'zhishi-env-pwn-1', 'poc.txt']);
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain('env-path');
+    expect(captured.some((c) => c.url.startsWith('/api/files/upload'))).toBe(false);
   }, 30_000);
 });
 

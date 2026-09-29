@@ -30,6 +30,27 @@ import { taskConclusionFor } from './cron/task-conclusions';
 import { existsSync , mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync } from 'fs';
 import { ensureDirSync } from './utils/fs-utils';
 import { resolveSshTarget, execInEnvironment, buildScpArgv, buildScpUploadArgv } from './loop/env-exec';
+// 1.8.7 P4 团队大脑——文件传输（客户端 ↔ 服务器侧环境）：取回机器 +
+// refs 化在本模块消费；上传路由本体在 environment/file-transfer.ts。
+import {
+  getFilesSpillDir,
+  guestBasename,
+  maxTransferBytes,
+  resolveTransferEnv,
+  takeFileFromEnv,
+} from './environment/file-transfer';
+import { spillFileBody } from './utils/large-value-store';
+// 1.8.7 P5 团队大脑——环境占用（in-memory；投影进 list/ps，冲突操作带
+// warning 软语义，boundary-ask 附占用信息）。
+import {
+  claimEnvIfFree,
+  envOccupancy,
+  forceReleaseEnv,
+  formatOccupancyWarning,
+  releaseEnv,
+} from './environment/occupancy';
+import { createHash, randomBytes } from 'crypto';
+import { createReadStream, statSync } from 'fs';
 import { buildToolCheckScript, parseToolCheckOutput } from './environment/recipes';
 import {
   CAPABILITY_PROBE_TIMEOUT_MS,
@@ -1974,7 +1995,10 @@ export function handleEnvironmentList(): AdminResponse {
   const manifests = loadDomainManifests();
   const environments = entries.map((e) => {
     const scope = capabilityMissingInScope(e, recipes, manifests);
-    return scope ? { ...e, capabilityTools: scope } : e;
+    const withScope = scope ? { ...e, capabilityTools: scope } : e;
+    // 1.8.7 P5 占用投影（additive）：谁在用、哪条线、自何时；无占用不加键。
+    const occ = envOccupancy(e.id);
+    return occ ? { ...withScope, occupancy: occ } : withScope;
   });
   return { success: true, data: { environments } };
 }
@@ -2145,6 +2169,14 @@ export function handleEnvironmentRecipes(): AdminResponse {
 /** `environment/up` — 1.5.10 三层模型：同配方容器在跑幂等返回 / 已停止
  *  docker start 现场续上 / 无容器有镜像直接 run / 无镜像 build+run（docker
  *  配方）；VM 配方拷贝模板 + 起 VM（P2 vmrun 驱动）。 */
+/** 1.8.7 P5：up 幂等命中他人占用中的环境 → warning（软语义，不阻断；
+ *  本地单用户同一 actor 永不触发）。 */
+function upOccupancyWarning(envId: string): { warning?: string } {
+  const occ = envOccupancy(envId);
+  return occ && occ.by !== currentActor().name
+    ? { warning: formatOccupancyWarning(envId, occ) }
+    : {};
+}
 export async function handleEnvironmentUp(payload: {
   recipe?: string;
   workspace?: string;
@@ -2270,7 +2302,7 @@ export async function handleEnvironmentUp(payload: {
         console.warn(`[environment/up] VM 已启动但 env 条目回写失败：${err instanceof Error ? err.message : String(err)}`);
       }
     }
-    return { success: true, data: { instance } };
+    return { success: true, data: { instance, ...upOccupancyWarning(instance.name) } };
   }
   const result = await envUp(recipe, workspace, {
     logDir: join(getZhiShiDataDir(), 'logs', 'environments'),
@@ -2282,7 +2314,7 @@ export async function handleEnvironmentUp(payload: {
   } catch (err) {
     console.warn(`[environment/up] docker 已启动但 env 条目回写失败：${err instanceof Error ? err.message : String(err)}`);
   }
-  return { success: true, data: { instance: result.instance } };
+  return { success: true, data: { instance: result.instance, ...upOccupancyWarning(result.instance.name) } };
 }
 /**
  * docker 配方的注册表回写（1.5.10 从 environment/up 抽出，up/rebuild/reset
@@ -2835,6 +2867,15 @@ export async function handleEnvironmentDown(payload: {
     : undefined;
   const vmwareVmx = resolved?.ok ? resolved.vmx : undefined;
   const vmwareHit = vmwareVmx !== undefined;
+  // 1.8.7 P5 环境占用：占用中的环境被 down 是大事（占用方的线将随环境
+  // 中断）——结果带 warning（软语义不阻断；占用方自己 down 也照警，断的
+  // 是自己的线）。成功即无条件摘占用（环境没了，「谁在用」随之失效）。
+  const downOcc = envOccupancy(id);
+  const downWarning = downOcc ? formatOccupancyWarning(id, downOcc, { loud: true }) : undefined;
+  const downData = (removed: unknown): Record<string, unknown> => {
+    forceReleaseEnv(id);
+    return { removed, ...(downWarning ? { warning: downWarning } : {}) };
+  };
   const target = routeVmTarget({
     vmwareInstance: vmwareHit,
     hypervVm: vmwareHit ? false : await hypervVmExists(id),
@@ -2843,23 +2884,29 @@ export async function handleEnvironmentDown(payload: {
   if (target === 'vmware') {
     const vmResult = await vmEnvDown(vmwareVmx!);
     if (!vmResult.ok) return { success: false, error: vmResult.error };
-    return { success: true, data: { removed: vmResult.stopped } };
+    return { success: true, data: downData(vmResult.stopped) };
   }
   if (target === 'hyperv') {
     const hypervResult = await hypervEnvDown(id);
     if (!hypervResult.ok) return { success: false, error: hypervResult.error };
-    return { success: true, data: { removed: hypervResult.stopped } };
+    return { success: true, data: downData(hypervResult.stopped) };
   }
   if (target === 'vbox') {
     const vboxResult = await vboxEnvDown(id);
     if (!vboxResult.ok) return { success: false, error: vboxResult.error };
-    return { success: true, data: { removed: vboxResult.stopped } };
+    return { success: true, data: downData(vboxResult.stopped) };
   }
-  const result = await envDown(id);
+  const result = await envDownImpl(id);
   if (!result.ok) return { success: false, error: result.error };
   // 1.5.10：docker down = 暂停（容器保留现场）。响应键沿用 removed（与 VM
   // 分支同形状，GUI 只刷新侧栏），语义以本注释为准。
-  return { success: true, data: { removed: result.stopped } };
+  return { success: true, data: downData(result.stopped) };
+}
+/** docker down 通道的测试注入点（1.8.7 P5；生产 = envDown 真实 docker
+ *  stop——照 __setPsSourcesForTests 惯例，绝不真连引擎）。 */
+let envDownImpl = envDown;
+export function __setEnvDownForTests(fn: typeof envDown | null): void {
+  envDownImpl = fn ?? envDown;
 }
 /** W1 — snapshot/rollback 的条目解析:登记 vm 环境 + vmx 定位(1.3.7 起
  * 统一走 resolveVmxForEntry:条目 vmx 字段优先,缺省回落 vmName→vmTemplates
@@ -3044,9 +3091,15 @@ export async function handleEnvironmentExtract(payload: {
   const destDir = join(workspace, 'output', 'extracted', id);
   // 越界询问:写宿主。人批准前 HTTP 请求一直 pending(客户端模态在等)。
   // 1.3.2 契约补全:带工具名/说明/选项,展示文案由服务端给出。
+  // 1.8.7 P5：占用信息随 ask 呈现——审批人看得见「这环境有人在用」。
+  const extractOcc = envOccupancy(id);
   const approved = await requestBoundaryAsk({
     kind: 'host-write',
-    objects: [`${id}:${guestPath}`, `→ 宿主 ${destDir}`],
+    objects: [
+      `${id}:${guestPath}`,
+      `→ 宿主 ${destDir}`,
+      ...(extractOcc ? [`（${formatOccupancyWarning(id, extractOcc)}）`] : []),
+    ],
     toolName: 'environment/extract',
     toolDescription: '把环境内成果提取回宿主',
     options: ['批准写入', '拒绝'],
@@ -3144,6 +3197,64 @@ export async function handleEnvironmentPush(payload: {
     return { success: true, data: { pushedTo: guestPath, via: 'scp' } };
   } finally {
     clearTimeout(timer);
+  }
+}
+// ===== 1.8.7 P4 团队大脑——文件下载（客户端 ← 服务器侧环境）=====
+/** 取回机器的测试注入点（生产 = takeFileFromEnv 真 docker cp/scp；
+ *  照 __setPsSourcesForTests 惯例，admin 接线测试注入假通道，绝不真连环境）。 */
+let takeFileImpl = takeFileFromEnv;
+export function __setFileTakeForTests(fn: typeof takeFileFromEnv | null): void {
+  takeFileImpl = fn ?? takeFileFromEnv;
+}
+/** 流式 sha256（取回文件可达上限 200MB，不读进内存）。 */
+async function hashFileSha256(absPath: string): Promise<string> {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(absPath)) {
+    hash.update(chunk as Uint8Array);
+  }
+  return hash.digest('hex');
+}
+/**
+ * `environment/extract-file` — 下载第一步：环境内文件取回 sidecar 受管暂存
+ * → 落成 refs 大值 ref → 回 {refId, name, bytes, sha256}；原始字节由客户端
+ * 另发 GET /refs/:id 取回（既有路由流式服务，refs JSON 语义不受影响）。
+ * 与 environment/extract 的分工：extract 落到 **sidecar 本机工作区**（写
+ * 宿主 → boundary-ask）；本路由的落点是 **HTTP 响应**（+受管 refs/spill
+ * 目录，与 refs 大值外溢同一受管面）——宿主盘没有新写入对象，ask 无对象
+ * 可问，故不过 boundary-ask（与上传路由同一口径，见 file-transfer.ts 模块头）。
+ */
+export async function handleEnvironmentExtractFile(payload: {
+  id?: string;
+  envPath?: string;
+}): Promise<AdminResponse> {
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!id) return { success: false, error: 'Missing required argument: <id>' };
+  const envPath = typeof payload.envPath === 'string' ? payload.envPath.trim() : '';
+  if (!envPath) return { success: false, error: 'Missing required argument: <envPath>(环境内文件路径)' };
+  const entry = resolveTransferEnv(id);
+  if (!entry) return { success: false, error: `未找到环境 "${id}"` };
+  const staging = join(getFilesSpillDir(), `inbound-${randomBytes(6).toString('hex')}`);
+  mkdirSync(staging, { recursive: true });
+  try {
+    const taken = await takeFileImpl(entry, envPath, staging);
+    if (!taken.ok) return { success: false, error: taken.error };
+    const st = statSync(taken.savedPath);
+    if (!st.isFile()) {
+      return { success: false, error: `"${envPath}" 不是单个文件（目录回收请用 environment/extract 或打包后重试）` };
+    }
+    if (st.size > maxTransferBytes()) {
+      return { success: false, error: `文件超过大小上限（${Math.round(maxTransferBytes() / 1024 / 1024)}MB，ZHISHI_FILES_MAX_BYTES 可调）` };
+    }
+    const sha256 = await hashFileSha256(taken.savedPath);
+    // ref 化是移动语义（spillFileBody rename 进 refs 目录）——暂存目录随后
+    // 整体摘掉，refs 侧由 TTL GC 收尾。
+    const ref = await spillFileBody(taken.savedPath, { mimetype: 'application/octet-stream' });
+    return {
+      success: true,
+      data: { refId: ref.id, name: guestBasename(envPath), bytes: st.size, sha256, expiresAt: ref.expiresAt },
+    };
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
   }
 }
 /** `report/export` — 1.2.0 研究交付：一键出报告（design 1.2.0）。
@@ -3577,20 +3688,38 @@ export async function handleEnvironmentExec(payload: {
   if (!entry) {
     return { success: false, error: `未找到环境 "${id}"（zhishi env list 查看已有环境）` };
   }
-  // 分派（1.8.6）：docker / ssh 直达走 execInEnvironment（loop/env-exec 的
-  // 统一执行通道——docker exec / ssh 一站到位）；仅断网隔离 VM 的
-  // guest 通道需要 vmGuestExec 编排（guestPassword 瞬传只对它有意义）。
-  if (entry.kind !== 'vm') {
-    const r = await execInEnvironment(entry, command, { timeoutMs: 600_000 });
-    if (!r.ok) return { success: false, error: r.error };
-    return { success: true, data: { stdout: r.stdout, exitCode: r.exitCode } };
+  // 1.8.7 P5 环境占用：exec 期间空闲才登记（不踩 turn 的线占用）；他人
+  // 占用 → 结果带 warning（软语义不阻断；本地单用户同一 actor 永不触发）。
+  const execActor = currentActor();
+  const execOcc = envOccupancy(entry.id);
+  const occWarning = execOcc && execOcc.by !== execActor.name
+    ? formatOccupancyWarning(entry.id, execOcc)
+    : undefined;
+  const occToken = claimEnvIfFree(entry.id, { by: execActor.name });
+  try {
+    // 分派（1.8.6）：docker / ssh 直达走 execInEnvironment（loop/env-exec 的
+    // 统一执行通道——docker exec / ssh 一站到位）；仅断网隔离 VM 的
+    // guest 通道需要 vmGuestExec 编排（guestPassword 瞬传只对它有意义）。
+    if (entry.kind !== 'vm') {
+      const r = await envExecImpl(entry, command, { timeoutMs: 600_000 });
+      if (!r.ok) return { success: false, error: r.error };
+      return { success: true, data: { stdout: r.stdout, exitCode: r.exitCode, ...(occWarning ? { warning: occWarning } : {}) } };
+    }
+    const result = await vmGuestExec(entry, command, {
+      guestUser: typeof payload.guestUser === 'string' && payload.guestUser.trim() ? payload.guestUser.trim() : undefined,
+      guestPassword: typeof payload.guestPassword === 'string' && payload.guestPassword ? payload.guestPassword : undefined,
+    }, { templates: loadConfig().vmTemplates });
+    if (!result.ok) return { success: false, error: result.error };
+    return { success: true, data: { stdout: result.stdout, exitCode: result.exitCode, ...(occWarning ? { warning: occWarning } : {}) } };
+  } finally {
+    if (occToken) releaseEnv(entry.id, occToken);
   }
-  const result = await vmGuestExec(entry, command, {
-    guestUser: typeof payload.guestUser === 'string' && payload.guestUser.trim() ? payload.guestUser.trim() : undefined,
-    guestPassword: typeof payload.guestPassword === 'string' && payload.guestPassword ? payload.guestPassword : undefined,
-  }, { templates: loadConfig().vmTemplates });
-  if (!result.ok) return { success: false, error: result.error };
-  return { success: true, data: { stdout: result.stdout, exitCode: result.exitCode } };
+}
+/** exec 直达通道的测试注入点（1.8.7 P5；生产 = execInEnvironment 真实
+ *  docker exec/ssh——照 __setPsSourcesForTests 惯例，绝不真连环境）。 */
+let envExecImpl = execInEnvironment;
+export function __setEnvExecForTests(fn: typeof execInEnvironment | null): void {
+  envExecImpl = fn ?? execInEnvironment;
 }
 /** `environment/ps` — 运行中实例合集（P2 B3 四源 + D22）：docker 容器
  * （zhishi.env label）+ vmware 环境（vmrun list ∩ 登记条目 vmx）+
@@ -3722,7 +3851,12 @@ export async function handleEnvironmentPs(): Promise<AdminResponse> {
     seen.add(r.id);
     return true;
   });
-  return { success: true, data: { instances } };
+  // 1.8.7 P5 占用投影（additive）：运行中实例谁在占用，随 ps 行下发。
+  const withOccupancy = instances.map((r) => {
+    const occ = envOccupancy(r.id);
+    return occ ? { ...r, occupancy: occ } : r;
+  });
+  return { success: true, data: { instances: withOccupancy } };
 }
 /**
  * `environment/discover` — D28 自动发现本机环境（只读，不写配置）。

@@ -306,6 +306,8 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'environment/extract') return await api.handleEnvironmentExtract(payload as Parameters<typeof api.handleEnvironmentExtract>[0]);
   // 1.6.4 M0 传入通道（extract 的反向：scp 上传 / vmrun copyFileToGuest）
   if (route === 'environment/push') return await api.handleEnvironmentPush(payload as Parameters<typeof api.handleEnvironmentPush>[0]);
+  // 1.8.7 P4 团队大脑：文件下载第一步（取回 → refs 化；字节走 GET /refs/:id）
+  if (route === 'environment/extract-file') return await api.handleEnvironmentExtractFile(payload as Parameters<typeof api.handleEnvironmentExtractFile>[0]);
   // 1.2.0 研究交付——一键出报告（组装 → 敏感扫描 → 一次批准 → 回收 → 填肉 → 落盘）
   if (route === 'report/export') return await api.handleReportExport(payload as Parameters<typeof api.handleReportExport>[0]);
   // 1.4.1 / 1.7.7 auto loop agent（design docs/design/auto-redesign.md；runner 在 loop/auto-run.ts）
@@ -718,6 +720,23 @@ const httpServer = honoServe({
           return jsonResponse({ error: 'ref body missing' }, 404);
         }
         return fr;
+      }
+// 1.8.7 P4 团队大脑——文件上传（客户端磁盘 → 服务器侧环境）：裸字节流 +
+      // query（envId/envPath/name），本体在 environment/file-transfer.ts
+      // （spill 暂存 → 既有 push 机器进环境）。与 refs 同点绕过 deferred-init
+      // gate——只依赖 env 配置与受管 spill 目录，不依赖 agent 状态。
+      // 角色闸在 auth/roles.ts（operator）；boundary 语义见 file-transfer 模块头。
+      if (pathname === '/api/files/upload' && request.method === 'POST') {
+        const { handleFileUpload } = await import('./environment/file-transfer');
+        const result = await handleFileUpload({
+          // Node ≥22 的 web ReadableStream 可异步迭代；类型层面无
+          // dom.asynciterable lib，此处显式断言（运行语义不变）。
+          body: request.body as unknown as AsyncIterable<Uint8Array> | null,
+          envId: url.searchParams.get('envId') ?? '',
+          envPath: url.searchParams.get('envPath') ?? '',
+          name: url.searchParams.get('name') ?? undefined,
+        });
+        return jsonResponse(result.body, result.status);
       }
 // ── Deferred init gate ────────────────────────────────────────────────
       // All other routes depend on agent state (currentAgentDir, session

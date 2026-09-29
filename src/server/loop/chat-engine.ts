@@ -139,6 +139,8 @@ import { filterAgentsByDomain, loadBundledAgents } from '../agents/bundled-agent
 // 1.8.7 P2 身份贯穿：turn 起跑人捕获（send 时抓请求 actor，起跑时按线登记；
 // turn 内产物——决策/纠正/claims/research 事件/boundary ask——按起跑人署名）。
 import { currentActor, originatorForSession, setTurnOriginator, type Actor } from '../auth/actor';
+// 1.8.7 P5 团队大脑——环境占用登记（turn 起跑/收尾；in-memory，警告不阻断）。
+import { claimEnv, releaseEnv, type OccupancyToken } from '../environment/occupancy';
 
 // ---------------------------------------------------------------------------
 // Types(原 module state 段的接口 + Send 段接口,class 语法要求上移至此)
@@ -897,6 +899,12 @@ class ChatEngine {
 
     // system-init(每会话一次,形状对齐 SDK 的 chat:system-init)。
     const env = resolveSessionEnv(this.agentDir);
+    // 1.8.7 P5 环境占用：turn 起跑即登记锚定环境（起跑人 + 本线），turn
+    // 收尾（下方 finally，含 Esc 中断）按 token 释放——过期释放摘不掉
+    // 别人的新占用。host 选定（env=null）无占用可登记。
+    const occupancyToken: OccupancyToken | null = env
+      ? claimEnv(env.id, { by: originator?.name ?? currentActor().name, line: turnSessionId })
+      : null;
     // 1.6.8 M2：mission=挖掘的会话线起跑战役（唯一入口；注册表单实例闸幂等，
     // 已有活跃战役则 no-op）。战役本体在 loop/campaign*.ts——引擎只负责触发，
     // 介入回合走 invokePiSession（本线 headless）。
@@ -1040,6 +1048,9 @@ class ChatEngine {
         // fire-and-forget,kill 失败绝不阻塞收尾(reapAllBgProcesses 不抛)。
         // 1.6.0:按归属线回收——只杀本交互线发起的 bg,invoke 线的不连坐。
         void reapBgOnLifecyclePoint('turn-end', { ownerSessionId: turnSessionId });
+        // 1.8.7 P5：turn 收尾释放环境占用（token 匹配才摘——本 turn 起跑后
+        // 环境若被别的线登记过，本释放不动它）。
+        if (occupancyToken) releaseEnv(occupancyToken.envId, occupancyToken);
         this.busy = false;
         this.streamingAssistantId = null;
         this.currentAbort = null;
@@ -1626,6 +1637,11 @@ class ChatEngine {
     const env = options.envKey
       ? findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), options.envKey) ?? null
       : resolveSessionEnv(this.agentDir);
+    // 1.8.7 P5 环境占用：headless invoke 线同样登记（起跑人 + 本线），run
+    // 完成即释放（含 timeoutMs detach 后后台跑完——占用跟到真实收尾）。
+    const invokeOccupancyToken: OccupancyToken | null = env
+      ? claimEnv(env.id, { by: currentActor().name, line: loopSessionId })
+      : null;
     // 1.2.7(域补丁):与交互 turn 同——域判定一次算出,执行栈与系统提示共用。
     const scenario = options.scenario ?? resolvePiScenario();
     const toolNames = [
@@ -1755,6 +1771,11 @@ class ChatEngine {
       (r) => r,
       (err): { text: string; error: string } => ({ text: '', error: err instanceof Error ? err.message : String(err) }),
     );
+    // 1.8.7 P5：invoke 线真实收尾（含 detach 后后台跑完）即释放占用。
+    if (invokeOccupancyToken) {
+      const token = invokeOccupancyToken;
+      void safeRun.finally(() => releaseEnv(token.envId, token));
+    }
     if (!options.timeoutMs) {
       return { ...(await safeRun), loopSessionId };
     }
