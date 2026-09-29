@@ -1248,7 +1248,9 @@ function AppearanceTab(): React.JSX.Element {
 // ── 页面装配 ──────────────────────────────────────────────────────────
 
 export function SettingsPage(): React.JSX.Element {
-  const [pg, setPg] = useState<string>('model');
+  // 初始页签从 store 读（StatusBar 模式角标经 openSettingsTab('connection') 直达；
+  // 常规入口缺省 'model'，与旧行为一致）。
+  const [pg, setPg] = useState<string>(() => useGuiStore.getState().settingsTab ?? 'model');
   const setPage = useGuiStore((s) => s.setPage);
 
   return (

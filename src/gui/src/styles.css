@@ -300,6 +300,19 @@ kbd {
 .statusbar .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 .conn-state { color: var(--amber); font-family: var(--mono); font-size: 11.5px; }
 
+/* 模式角标（1.8.7）：团队大脑 / 本机 —— 当前操作落在哪个大脑上必须一眼可见。 */
+.mode-badge {
+  font-family: var(--mono); font-size: 11.5px; font-weight: 600;
+  border-radius: 5px; padding: 2px 8px; cursor: pointer;
+  border: 1px solid var(--border-soft);
+  transition: background .1s, color .1s, border-color .1s;
+  max-width: 320px; overflow: hidden; text-overflow: ellipsis;
+}
+.mode-badge:hover { background: var(--panel-2); }
+.mode-badge.local { color: var(--muted); }
+.mode-badge.remote { color: var(--cyan); border-color: var(--cyan); }
+.mode-badge.failed { color: var(--amber); border-color: var(--amber); }
+
 .input-area { padding: 8px 16px 12px; }
 .input-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
 .input-box {

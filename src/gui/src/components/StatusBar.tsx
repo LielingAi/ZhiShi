@@ -9,11 +9,14 @@ import type React from 'react';
 import { selectCurrentSession, useGuiStore } from '../store/useGuiStore';
 import { hostAnchorLabel } from '../model/access-gate';
 import { bgStatusSegments } from '../model/tasks';
+import { loadConnection } from '../model/connection';
 
 export function StatusBar(): React.JSX.Element {
   const session = useGuiStore(selectCurrentSession);
   const envKey = useGuiStore((s) => s.currentEnvKey);
   const connectionState = useGuiStore((s) => s.connectionState);
+  const connectError = useGuiStore((s) => s.connectError);
+  const openSettingsTab = useGuiStore((s) => s.openSettingsTab);
   const openOverlay = useGuiStore((s) => s.openOverlay);
   const bgTasks = useGuiStore((s) => s.bgTasks);
   const subagents = useGuiStore((s) => s.subagents);
@@ -38,10 +41,46 @@ export function StatusBar(): React.JSX.Element {
 
   const segments = bgStatusSegments(bgTasks, subagents);
 
+  // 模式角标（1.8.7——「我当前是团队模式还是单机模式」必须在界面上有明确
+  // 表示，不然使用者会忘记自己在哪个大脑上操作。本机=dim；团队大脑连上=
+  // cyan；连接失败=amber；点击直达设置→连接）。
+  const conn = loadConnection(typeof window !== 'undefined' ? window.localStorage : undefined);
+  const brainHost = conn.serverUrl.replace(/^https?:\/\//, '');
+  const modeBadge = conn.mode !== 'remote'
+    ? {
+        text: '本机',
+        cls: 'local',
+        title: '当前：单机模式（本机 sidecar）——点击改连接',
+      }
+    : connectionState === 'live'
+      ? {
+          text: `团队大脑 · ${brainHost}`,
+          cls: 'remote',
+          title: `当前：团队模式（远端大脑 ${conn.serverUrl}）——点击改连接`,
+        }
+      : connectionState === 'failed'
+        ? {
+            text: '团队大脑 · 连接失败',
+            cls: 'failed',
+            title: `${connectError ?? '连接失败'}——点击改连接`,
+          }
+        : {
+            text: '团队大脑 · 连接中…',
+            cls: 'remote',
+            title: `正在连接团队大脑（${conn.serverUrl}）`,
+          };
+
   return (
     <div className="statusbar">
       <span className={`status-dot ${dotClass}`} />
       <span className="env-anchor">{hostAnchorLabel(envKey)}</span>
+      <span
+        className={`mode-badge ${modeBadge.cls}`}
+        title={modeBadge.title}
+        onClick={() => openSettingsTab('connection')}
+      >
+        {modeBadge.text}
+      </span>
       <span className="seg">
         <b>{phaseText}</b>
       </span>

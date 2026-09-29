@@ -407,6 +407,8 @@ export interface GuiState {
   modal: ModalState | null;
   drawer: DrawerState | null;
   page: Page;
+  /** 打开设置页时的初始页签（StatusBar 的模式角标 → 'connection'；默认 'model'）。 */
+  settingsTab: string;
   toast: string | null;
   toastNonce: number;
   /** 历史 overlay 选中 → 回填输入框的一次性载荷。 */
@@ -530,6 +532,8 @@ export interface GuiState {
   closeDrawer(): void;
   setDrawerSearch(q: string): void;
   setPage(page: Page): void;
+  /** 打开设置页并指定初始页签（模式角标直达「连接」）。 */
+  openSettingsTab(tab: string): void;
   showToast(msg: string): void;
   clearToast(): void;
   addRef(ref: Ref): void;
@@ -652,6 +656,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   modal: null,
   drawer: null,
   page: 'chat',
+  settingsTab: 'model',
   toast: null,
   toastNonce: 0,
   inputFill: null,
@@ -2337,6 +2342,10 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
 
   setPage(page) {
     set({ page });
+  },
+
+  openSettingsTab(tab) {
+    set({ page: 'settings', settingsTab: tab });
   },
 
   showToast(msg) {
