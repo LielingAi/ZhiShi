@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.10] - 2026-09-29
+
+> **模型切换校验修复**：discovered 目录（set-key 自动拉取的实时模型）可切可选 + 内置收录 `deepseek-flash`（DeepSeek V4.1 Flash）。
+
+- **「列表有、切换报无模型」绝根**：`model/list` 展示合并 `presetCustomModels`，而 `/model use` 的校验只查内置目录——discovered 模型（如 `deepseek-flash`）看得见却切不了（WREN 实测「供应商 deepseek 无模型： deepseek-flash」）。两个分支（显式供应商校验 + model→provider 反查）都把 `presetCustomModels` 计入「有模型」判定。
+- **内置收录 `deepseek-flash`（DeepSeek V4.1 Flash）**：官方 2026-09-10 发布的现行 Flash 模型，规范 ID 就是 `deepseek-flash`（1M 上下文 / 384K 输出 / 原生多模态，端点实测 + 官方文档一致）；旧 `deepseek-v4-flash` 已退役并路由到本模型，保留兼容不删。
+
 ## [1.8.9] - 2026-09-29
 
 > **模型目录修复**：kimi / anthropic-api 的模型 ID 自动拉取打通 + kimi 目录跟进官方命名（kimi-for-coding 即 K2.8 Preview）。
