@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.7] - 2026-09-29
+
+> **团队协作周期开启**（设计定稿见 `docs/design/1.8.7-team-collaboration.md`）。WREN 两个已拍板决策：研究线双线制（共享线与私有线都要）、环境全部在服务器上。dsh 插件（dsh-zhishi-tools）弃用、不在本周期范围。
+> 已落地：团队协作方案 + 复杂度量表 + 风险分级（R1 鉴权与秘钥暴露面 / R2 P3 引擎多线化 / R3 数据迁移 / R4 多人审批语义 / R5 客户端本地路径残留 / R6 版本兼容）+ 验收门槛（含「所有新行为 opt-in、本地单用户路径一字节不变」的兼容性原则）。即将动工：P0.5 客户端远端模式 → P1 大脑可达 + 鉴权。
+
 ## [1.8.6] - 2026-09-28
 
 > **environment/exec 扩面——docker/ssh 条目直通**。dsh-zhishi-tools 桥接实测暴露：admin exec 只服务 guest 通道 VM，docker/ssh 环境被硬拒——桥接插件的环境执行面缺主干，本版补上。
