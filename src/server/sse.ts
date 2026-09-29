@@ -645,10 +645,19 @@ export function getClients(): SseClient[] {
   return Array.from(clients);
 }
 
-export function createSseClient(onClose: (client: SseClient) => void): {
+export function createSseClient(onClose: (client: SseClient) => void, opts: {
+  /**
+   * 1.8.7 P3a 按线寻址：false = 只读历史视图(/chat/stream?sessionId=<非当前
+   * 线>)——不进全局扇出集合(broadcast 永不送达;P3a 全部 live 事件都属于
+   * 当前线,送进即串线),也跳过 log 历史与 last-value cache 重放(那些都是
+   * 当前线/全局事件);心跳保活照旧。缺省 true = 今日语义逐字节不变。
+   */
+  live?: boolean;
+} = {}): {
   client: SseClient;
   response: Response;
 } {
+  const live = opts.live ?? true;
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
   let client: SseClient | null = null;
   // `pending` holds payloads queued before the stream's start() handler hooks
@@ -887,30 +896,35 @@ export function createSseClient(onClose: (client: SseClient) => void): {
     }
   };
 
-  clients.add(client);
-  console.log(`[sse] client connected id=${client.id} total=${clients.size}`);
+  if (live) {
+    clients.add(client);
+  }
+  console.log(`[sse] client connected id=${client.id} total=${clients.size}${live ? '' : ' (history-view, no live fan-out)'}`);
 
   // Send cached log history to newly connected client (Ring Buffer for early logs)
   // Only replay logs from BEFORE this client connected — logs after connectTime
   // are already delivered by live broadcast (client was added to `clients` above).
+  // (live:false 的历史视图跳过——log 属于全局/当前线,不属于被查看的历史线。)
   const connectTime = localTimestamp();
-  try {
-    import('./logger').then(({ getLogHistory }) => {
-      const history = getLogHistory();
-      const replayEntries = history.filter(e => e.timestamp < connectTime);
-      if (replayEntries.length > 0) {
-        // Small delay to ensure connection is stable
-        setTimeout(() => {
-          replayEntries.forEach(entry => {
-            client?.send('chat:log', entry);
-          });
-        }, 200);
-      }
-    }).catch(() => {
-      // Ignore if logger not yet initialized
-    });
-  } catch {
-    // Ignore
+  if (live) {
+    try {
+      import('./logger').then(({ getLogHistory }) => {
+        const history = getLogHistory();
+        const replayEntries = history.filter(e => e.timestamp < connectTime);
+        if (replayEntries.length > 0) {
+          // Small delay to ensure connection is stable
+          setTimeout(() => {
+            replayEntries.forEach(entry => {
+              client?.send('chat:log', entry);
+            });
+          }, 200);
+        }
+      }).catch(() => {
+        // Ignore if logger not yet initialized
+      });
+    } catch {
+      // Ignore
+    }
   }
 
   // Replay last-value cache to newly connected client.
@@ -922,7 +936,8 @@ export function createSseClient(onClose: (client: SseClient) => void): {
   // React's useEffect registers the Tauri listener AFTER first render, so a synchronous
   // replay arrives before the listener is ready and gets silently dropped.
   // 200ms matches the log replay delay and gives React enough time to mount.
-  if (lastValueCache.size > 0) {
+  // (live:false 的历史视图同样跳过——cache 里全是当前线状态。)
+  if (live && lastValueCache.size > 0) {
     setTimeout(() => {
       for (const [event, cached] of lastValueCache) {
         console.log(`[sse] replaying cached ${event} to client ${client?.id}`);

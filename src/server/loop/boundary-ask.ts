@@ -44,6 +44,12 @@ export interface BoundaryAskView {
    */
   requestedBy?: string;
   respondedBy?: string;
+  /**
+   * 1.8.7 P3a 按线寻址(additive)：ask 来源的 loop 线 id（system-config 等
+   * 引擎内生产者经 makeBoundaryHook 挂入；admin 类生产者不挂）。可选——
+   * 旧调用方/旧记录无此字段，下游按缺省兜底。
+   */
+  sessionId?: string;
 }
 
 interface PendingAsk extends BoundaryAskView {
@@ -77,6 +83,8 @@ export function requestBoundaryAsk(
     options?: string[];
     /** P2 署名：ask 归属（turn 起跑人/请求 actor 名）。 */
     requestedBy?: string;
+    /** P3a 按线寻址：ask 来源的 loop 线 id（可选）。 */
+    sessionId?: string;
   },
   broadcastFn: BroadcastFn = broadcast,
 ): Promise<boolean> {
@@ -91,6 +99,7 @@ export function requestBoundaryAsk(
       ...(input.toolDescription ? { toolDescription: input.toolDescription } : {}),
       ...(input.options && input.options.length > 0 ? { options: input.options } : {}),
       ...(input.requestedBy ? { requestedBy: input.requestedBy } : {}),
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
     };
     const timer = setTimeout(() => {
       if (!pending.delete(askId)) return;
@@ -120,7 +129,7 @@ export function respondBoundaryAsk(askId: string, approve: boolean, responder?: 
 
 /** /chat/stream 重连重放源:当前全部待答 ask。 */
 export function pendingBoundaryAsks(): BoundaryAskView[] {
-  return [...pending.values()].map(({ askId, kind, objects, toolName, toolDescription, options, requestedBy }) => ({
+  return [...pending.values()].map(({ askId, kind, objects, toolName, toolDescription, options, requestedBy, sessionId }) => ({
     askId,
     kind,
     objects,
@@ -128,6 +137,7 @@ export function pendingBoundaryAsks(): BoundaryAskView[] {
     ...(toolDescription ? { toolDescription } : {}),
     ...(options ? { options } : {}),
     ...(requestedBy ? { requestedBy } : {}),
+    ...(sessionId ? { sessionId } : {}),
   }));
 }
 

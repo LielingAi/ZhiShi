@@ -47,7 +47,6 @@ import {
   createWriteStream,
   existsSync,
   mkdirSync,
-  readdirSync,
   renameSync,
   rmSync,
   statSync,

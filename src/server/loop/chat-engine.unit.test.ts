@@ -8,6 +8,9 @@
  * 绝无网络/ssh/真盘。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
@@ -188,8 +191,10 @@ import {
   applyPiMissionChange,
   cancelPiQueueItem,
   chatSendErrorStatus,
+  controlLineGate,
   ensureMetaLoopLine,
   envSwitchBlocker,
+  getActiveLoopSessionId,
   getPiAgentState,
   getPiCurrentSessionRef,
   getPiLineMission,
@@ -204,6 +209,7 @@ import {
   noteBgFinishedForTests,
   PI_NO_PROVIDER_ERROR,
   resetPiChat,
+  resolveLineAddress,
   resolveLoopEngine,
   resolveSessionEnv,
   rewindPiChat,
@@ -1785,5 +1791,101 @@ describe('1.8.7 P5：环境占用（turn 起跑登记 / 收尾释放）', () => 
     expect(duringTurn).toBeDefined();
     expect(duringTurn!.line).toBe('ls-occ-invoke');
     expect(envOccupancy('pwn-vm')).toBeUndefined();
+  });
+});
+
+describe('1.8.7 P3a：引擎注册表 + 按线寻址（行为保持重构）', () => {
+  it('注册表：当前线恒 active；未知线 unknown；盘上既有线 known（ZHISHI_DATA_DIR 临时重定向）', () => {
+    expect(getActiveLoopSessionId()).toBe(getPiSessionId());
+    expect(resolveLineAddress(getPiSessionId())).toBe('active');
+    expect(resolveLineAddress('ls-p3a-no-such-line')).toBe('unknown');
+    // 盘上既有线（非当前线）→ known：临时数据目录里放一条 jsonl
+    const tmpDir = mkdtempSync(join(tmpdir(), 'zhishi-p3a-'));
+    try {
+      mkdirSync(join(tmpDir, 'loop-sessions'), { recursive: true });
+      writeFileSync(join(tmpDir, 'loop-sessions', 'ls-p3a-disk.jsonl'), '{"v":1}\n');
+      const prev = process.env.ZHISHI_DATA_DIR;
+      process.env.ZHISHI_DATA_DIR = tmpDir;
+      try {
+        expect(resolveLineAddress('ls-p3a-disk')).toBe('known');
+        // 当前线判定不看盘（即使盘上同名文件不存在）
+        expect(resolveLineAddress(getPiSessionId())).toBe('active');
+      } finally {
+        if (prev === undefined) delete process.env.ZHISHI_DATA_DIR;
+        else process.env.ZHISHI_DATA_DIR = prev;
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('换线语义保持：switch/reset 后注册表活跃线跟随（syncEngineRegistry）', async () => {
+    getSessionMetadataMock.mockReturnValue({ id: 'meta-p3a', agentDir: 'E:/ws' });
+    const before = getPiSessionId();
+    expect(await switchPiSession('meta-p3a')).toBe(true);
+    expect(getPiSessionId()).not.toBe(before);
+    expect(getActiveLoopSessionId()).toBe(getPiSessionId());
+    expect(resolveLineAddress(getPiSessionId())).toBe('active');
+    const switchedLine = getPiSessionId();
+    resetPiChat();
+    expect(getPiSessionId()).not.toBe(switchedLine);
+    expect(getActiveLoopSessionId()).toBe(getPiSessionId());
+    expect(resolveLineAddress(switchedLine)).not.toBe('active');
+  });
+
+  it('busy 强停换线（B3）在注册表下保持：不等待旧 turn 收尾，活跃线立即跟随新线', async () => {
+    const release = gateFirstTurn();
+    await sendPiChatMessage({ text: 'one' });
+    expect(getPiAgentState().sessionState).toBe('running');
+    getSessionMetadataMock.mockReturnValue({ id: 'meta-p3a-busy', agentDir: 'E:/ws' });
+    const oldLine = getPiSessionId();
+    // busy 中 switch：强停旧 turn（abort），活跃线立即指向新线——不等收尾
+    expect(await switchPiSession('meta-p3a-busy')).toBe(true);
+    expect(getActiveLoopSessionId()).toBe(getPiSessionId());
+    expect(getActiveLoopSessionId()).not.toBe(oldLine);
+    release();
+    await waitTurnSettled();
+    // 旧 turn 被判死刑：其收尾不得把活跃线拨回旧线
+    expect(getActiveLoopSessionId()).not.toBe(oldLine);
+    expect(getPiAgentState().sessionState).toBe('idle');
+  });
+
+  it('controlLineGate：缺省/空串/当前线放行；他线 → line_not_active 结构化错误', () => {
+    const active = getActiveLoopSessionId();
+    expect(controlLineGate(undefined)).toBeNull();
+    expect(controlLineGate(null)).toBeNull();
+    expect(controlLineGate('')).toBeNull();
+    expect(controlLineGate(active)).toBeNull();
+    expect(controlLineGate('ls-other-line')).toEqual({
+      error: 'line_not_active',
+      activeSessionId: active,
+      requestedSessionId: 'ls-other-line',
+    });
+  });
+
+  it('广播按线打标：turn 全程 chat:status / message-replay / context-usage 带本线 sessionId', async () => {
+    const line = getActiveLoopSessionId();
+    await sendPiChatMessage({ text: 'hi', model: 'k3', providerEnv: { apiKey: 'k' } });
+    await waitTurnSettled();
+    const tagged = broadcastMock.mock.calls.filter((c) =>
+      c[0] === 'chat:status' || c[0] === 'chat:message-replay' || c[0] === 'chat:context-usage');
+    expect(tagged.length).toBeGreaterThan(0);
+    for (const [, data] of tagged) {
+      expect((data as { sessionId?: string }).sessionId).toBe(line);
+    }
+  });
+
+  it('队列事件按线打标：steering-added / steering-cancelled 带本线 sessionId', async () => {
+    const line = getActiveLoopSessionId();
+    const release = gateFirstTurn();
+    await sendPiChatMessage({ text: 'one' });
+    const steer = await sendPiChatMessage({ text: '改方向' });
+    const added = broadcastMock.mock.calls.find((c) => c[0] === 'chat:steering-added');
+    expect((added![1] as { sessionId?: string }).sessionId).toBe(line);
+    expect(cancelPiQueueItem(steer.queueId!)).toBe('改方向');
+    const cancelled = broadcastMock.mock.calls.find((c) => c[0] === 'chat:steering-cancelled');
+    expect((cancelled![1] as { sessionId?: string }).sessionId).toBe(line);
+    release();
+    await waitTurnSettled();
   });
 });

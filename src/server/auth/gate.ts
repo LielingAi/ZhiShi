@@ -21,7 +21,6 @@ import {
   findTokenBySecret,
   loadAuthConfigCached,
   touchLastUsedThrottled,
-  type AuthConfig,
   type AuthConfigLoader,
 } from './token-store';
 

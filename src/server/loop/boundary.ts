@@ -170,6 +170,9 @@ export interface DefaultBoundaryOptions {
   broadcast?: (event: string, data: unknown) => void;
   /** 1.8.7 P2：system-config ask 的归属署名（turn 起跑人）；缺省不署名。 */
   getRequestedBy?: () => string | undefined;
+  /** 1.8.7 P3a：system-config ask 挂线 id（additive，P3b 按线分流路由键）；
+   *  缺省不带（旧调用方形状不变）。 */
+  getSessionId?: () => string | undefined;
 }
 
 /** v1 默认规则集(就这三条,别扩)。 */
@@ -234,6 +237,7 @@ export function makeBoundaryHook(
                 toolDescription: '命令将改变宿主系统配置（持久全局变更，无快照可回滚）',
                 options: ['批准（仅本次）', '拒绝'],
                 ...(options.getRequestedBy?.() ? { requestedBy: options.getRequestedBy() } : {}),
+                ...(options.getSessionId?.() ? { sessionId: options.getSessionId() } : {}),
               },
               options.broadcast,
             );

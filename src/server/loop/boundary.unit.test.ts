@@ -240,6 +240,35 @@ describe('system-config（1.7.8 local 通道越界 ask）', () => {
     expect(await p).toBeUndefined();
   });
 
+  it('P3a：getSessionId 选项 → system-config ask 视图挂线 id（additive）；缺省不带', async () => {
+    const sent: Array<{ event: string; data: unknown }> = [];
+    const hook = makeBoundaryHook(LOCAL_ENV, {
+      broadcast: (event, data) => sent.push({ event, data }),
+      getSessionId: () => 'ls-line-1',
+    });
+    const p = hook({
+      toolCall: { type: 'toolCall', id: 't1', name: 'env_exec', arguments: {} },
+      args: { command: 'bcdedit /set {current} testsigning on' },
+    } as never);
+    const ask = pendingBoundaryAsks().find((a) => a.kind === 'system-config');
+    expect(ask).toBeTruthy();
+    expect(ask!.sessionId).toBe('ls-line-1');
+    const view = sent.find((x) => x.event === 'chat:boundary-ask')!.data as { sessionId?: string };
+    expect(view.sessionId).toBe('ls-line-1');
+    respondBoundaryAsk(ask!.askId, true);
+    expect(await p).toBeUndefined();
+    // 缺省 getSessionId：视图不带该字段（旧调用方形状不变）
+    const sent2: Array<{ event: string; data: unknown }> = [];
+    const hook2 = makeBoundaryHook(LOCAL_ENV, { broadcast: (event, data) => sent2.push({ event, data }) });
+    const p2 = hook2({
+      toolCall: { type: 'toolCall', id: 't2', name: 'env_exec', arguments: {} },
+      args: { command: 'bcdedit /set {current} testsigning on' },
+    } as never);
+    const ask2 = pendingBoundaryAsks().find((a) => a.kind === 'system-config');
+    expect('sessionId' in (ask2 as unknown as Record<string, unknown>)).toBe(false);
+    respondBoundaryAsk(ask2!.askId, true);
+    await p2;
+  });
   it('local 环境命中 system-config → 人拒绝 → block 带 system-config 前缀', async () => {
     const hook = makeBoundaryHook(LOCAL_ENV, { broadcast: () => {} });
     const p = hook({
