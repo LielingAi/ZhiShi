@@ -1127,6 +1127,12 @@ export const PRESET_PROVIDERS: Provider[] = [
 
     authType: 'both',
 
+    // set-key 后自动拉模型目录（anthropic 官方 GET /v1/models——2026-09-29
+    // 实测 401=端点存在；响应 {data:[{id, display_name}]}，解析形状兼容）——
+    // 此前无 modelListUrl 且 apiProtocol 非 'openai'，discoverProviderModels
+    // 直接跳过，只能吃内置写死目录。
+    modelListUrl: 'https://api.anthropic.com/v1/models',
+
     config: {
 
       baseUrl: 'https://api.anthropic.com',
@@ -1305,6 +1311,11 @@ export const PRESET_PROVIDERS: Provider[] = [
     authType: 'auth_token',
 
     apiProtocol: 'anthropic',
+
+    // set-key 后自动拉模型目录（2026-09-29 实测：401=端点存在；配置 key 返回
+    // {data:[{id}]}×4，与内置目录一致）——此前 apiProtocol='anthropic' 且无
+    // modelListUrl，discoverProviderModels 直接跳过，模型 ID 只能手填。
+    modelListUrl: 'https://api.kimi.com/coding/v1/models',
 
     websiteUrl: 'https://www.kimi.com/coding',
 
