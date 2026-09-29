@@ -1196,9 +1196,11 @@ if (pathname === '/chat/model' && request.method === 'POST') {
         // P2 审批署名 + 角色复核（respond 角色死结的 B 案——路由档已降到
         // operator：reviewer 任何线可答；operator 仅可答**自己名下私有线**的
         // pending（共享线/归属未知线/admin 类 ask 维持 reviewer-only），
-        // 见 auth/line-access.ts canRespondToPending）。
+        // 见 auth/line-access.ts canRespondToPending）。仅当 pending 真实存在
+        // 才核归属——不存在的 ask 走下方 respondBoundaryAsk 的 404（否则
+        // operator 对「已过期/不存在」一律收到误导性的 403）。
         const responder = currentActor();
-        if (!canRespondToPending(responder, askOwnership)) {
+        if (pendingAsk && !canRespondToPending(responder, askOwnership)) {
           return jsonResponse({ success: false, error: 'forbidden' }, 403);
         }
         // 1.3.2 缺口 1:扩字段——应答附带 note(可选),响应内容进 transcript。
@@ -1245,8 +1247,10 @@ if (pathname === '/chat/model' && request.method === 'POST') {
         const note = typeof body.note === 'string' && body.note.trim() ? body.note.trim() : undefined;
         // P2 审批署名 + 角色复核（respond 角色死结的 B 案——同 boundary/respond：
         // reviewer 任何线可答；operator 仅答自己名下私有线的 pending）。
+        // 仅当 pending 真实存在才核归属——不存在的决策走下方 respondDecision
+        // 的 404/409（否则 operator 对「已失效/不存在」一律收到误导性的 403）。
         const responder = currentActor();
-        if (!canRespondToPending(responder, decisionOwnership)) {
+        if (pendingDecision && !canRespondToPending(responder, decisionOwnership)) {
           return jsonResponse({ success: false, error: 'forbidden' }, 403);
         }
         const result = respondDecision(decisionId, choice, note, responder.name);

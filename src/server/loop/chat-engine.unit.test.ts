@@ -475,6 +475,10 @@ describe('P2 turn 起跑人捕获(1.8.7 身份贯穿)', () => {
     await withLogContext({ actorName: 'alice', actorRole: 'reviewer' }, () =>
       sendPiChatMessage({ text: 'one' }),
     );
+    // P3b 新语义:steering 排队的前提是「同一条线」——bob 若与 alice 不共线,
+    // 会被懒铸到自己的线并发跑(不排队)。把当前线标为共享线(operator 可写
+    // 共享线,bob 因此留在 alice 这条线上),再让他在 busy 中发送。
+    lineOwnershipData.set(getPiSessionId(), { owner: 'alice', shared: true, updatedAt: '' });
     // busy 中第二条(另一成员)进 steering
     const s2 = await withLogContext({ actorName: 'bob', actorRole: 'operator' }, () =>
       sendPiChatMessage({ text: 'steer-two' }),

@@ -654,7 +654,9 @@ class ChatEngine {
   private async persistEnvSessionLine(): Promise<void> {
     if (!this.boundSessionMetaId || !this.agentDir) return;
     try {
-      await ensureLineOwner(this.sessionId, currentActor().name);
+      if (currentActor().source === 'token') {
+        await ensureLineOwner(this.sessionId, currentActor().name);
+      }
       await setEnvSessionLine(this.agentDir, this.currentEnvKey, this.sessionId, undefined, this.lineSegment());
     } catch (err) {
       console.warn('[pi-engine] env-sessions 映射写盘失败:', err);
@@ -1723,6 +1725,12 @@ class ChatEngine {
     // (cron execute-sync / auto-run runner 链)抓到的是请求 actor,
     // 否则 LOCAL_ACTOR;turn 内产物按此署名。
     setTurnOriginator(loopSessionId, currentActor());
+    // P3b 修复：headless 铸造新线即登 owner（与交互线同一纪律——归属
+    // 只在 persistEnvSessionLine 写的话，headless 线永远「归属未知」）。
+    // 仅 token actor 才写归属（local 的线保持「归属未知」旧语义）。
+    if (!options.loopSessionId && currentActor().source === 'token') {
+      await ensureLineOwner(loopSessionId, currentActor().name);
+    }
     const resolution = input.providerEnv
       ? resolveLoopModelFromEnv(input.providerEnv, input.model ?? '')
       : resolveLoopModel();
@@ -1977,6 +1985,13 @@ class ChatEngine {
       this.sessionId = newLoopSessionId();
       this.boundSessionMetaId = null;
       this.messages = [];
+      // P3b 修复：新线铸造即登 owner——归属只在 persistEnvSessionLine 写的话，
+      // 未绑环境映射的线永远「归属未知」（全员可读、share 仅 reviewer）。
+      // 仅 token actor 才写归属——local（单机/auth 关闭）的线保持「归属未知」
+      // 旧语义（legacy：全员可读、operator+ 可写），单机行为逐字节不变。
+      if (currentActor().source === 'token') {
+        await ensureLineOwner(this.sessionId, currentActor().name);
+      }
       console.log(`[pi-engine] 环境分线 → 新线 ${envKey}(loop=${this.sessionId})`);
     }
     // B10(1.2.6):切线即写配置面会话标识——有绑定写 meta id,无绑定(新线/
@@ -2089,6 +2104,14 @@ class ChatEngine {
     );
     this.sessionId = newLoopSessionId();
     this.boundSessionMetaId = null;
+    // P3b 修复：reset 铸造新线即登 owner（sync 方法——fire-and-forget；
+    // 毫秒级原子写，紧随其后的 share/读请求到达时已就位）。仅 token actor
+    // 才写归属（local 的线保持「归属未知」旧语义，单机逐字节不变）。
+    if (currentActor().source === 'token') {
+      void ensureLineOwner(this.sessionId, currentActor().name).catch(
+        (err) => console.warn('[pi-engine] reset 登记线 owner 失败:', err),
+      );
+    }
     // B10(1.2.6):reset 后引擎已离开旧 meta——配置面会话标识置新随机值
     // (对齐 initializeAgent 占位语义),cron 回报不再拿到僵尸 id。
     setActiveSessionId(randomUUID());
@@ -2235,6 +2258,11 @@ class ChatEngine {
 
     const forkId = await forkLoopSession(this.sessionId, cutIndex);
     this.sessionId = forkId;
+    // P3b 修复：fork 铸造新线即登 owner（forker = 新线的归属人）。
+    // 仅 token actor 才写归属（local 的线保持「归属未知」旧语义）。
+    if (currentActor().source === 'token') {
+      await ensureLineOwner(this.sessionId, currentActor().name);
+    }
     this.boundSessionMetaId = null; // 首条消息时 ensureSessionBound 建新 meta
     // B10(1.2.6):fork 换血后尚无绑定——同 reset,配置面标识置新随机值。
     setActiveSessionId(randomUUID());
@@ -2275,6 +2303,13 @@ let registryAgentDir = '';
  * 某 actor 的当前线:① 显式指针;② 环境分线映射按 actor 归属段解析
  * (私有键 → 共享键 → 旧键);③ 启动线(单用户兜底——本机模式恒到此,
  * 与 1.8.6 逐字节相同)。
+ *
+ * ③ 的团队模式修正（2026-09-29 冒烟实测揪出）：启动引擎的线会被人 reset
+ * 换血（boot 引擎原地换 sessionId）——若换血后的线登记在**别人**名下
+ * （alice reset 出的私有线），无指针的 bob 会把「别人的私有线」当自己的
+ * 当前线继承（SSE 对 callerLine 跳过读权限检查 = 直接进 live 视图）。所以
+ * 兜底线在「归属是别人的私有线」时不继承：为该 actor 铸一条他自己的私有线
+ * （懒铸造,写入指针;归属未知旧线照旧继承——legacy 语义）。
  */
 export function getActiveLoopSessionIdForActor(actorName: string): string {
   const pointed = activeLines.get(actorName);
@@ -2284,7 +2319,17 @@ export function getActiveLoopSessionIdForActor(actorName: string): string {
     const line = getEnvSessionLine(loadEnvSessionsMap(), registryAgentDir, envKey, { actor: actorName });
     if (line) return line.loopSessionId;
   }
-  return bootEngine.getPiSessionId();
+  const bootLine = bootEngine.getPiSessionId();
+  const bootOwnership = getLineOwnership(bootLine);
+  if (bootOwnership?.owner && bootOwnership.owner !== actorName && !bootOwnership.shared) {
+    const fresh = newLoopSessionId();
+    void ensureLineOwner(fresh, actorName).catch(
+      (err) => console.warn('[pi-engine] 懒铸造 actor 私有线登记 owner 失败:', err),
+    );
+    activeLines.set(actorName, fresh);
+    return fresh;
+  }
+  return bootLine;
 }
 
 /** 当前线 id(调用方 actor 的活跃线;无 ALS 帧 = local)——按线寻址的
