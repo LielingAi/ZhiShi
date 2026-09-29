@@ -20,8 +20,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.8.7] - 2026-09-29
 
-> **团队协作周期开启**（设计定稿见 `docs/design/1.8.7-team-collaboration.md`）。WREN 两个已拍板决策：研究线双线制（共享线与私有线都要）、环境全部在服务器上。dsh 插件（dsh-zhishi-tools）弃用、不在本周期范围。
-> 已落地：团队协作方案 + 复杂度量表 + 风险分级（R1 鉴权与秘钥暴露面 / R2 P3 引擎多线化 / R3 数据迁移 / R4 多人审批语义 / R5 客户端本地路径残留 / R6 版本兼容）+ 验收门槛（含「所有新行为 opt-in、本地单用户路径一字节不变」的兼容性原则）。即将动工：P0.5 客户端远端模式 → P1 大脑可达 + 鉴权。
+> **团队协作**（设计定稿见 `docs/design/1.8.7-team-collaboration.md`）：一个团队大脑（服务器上唯一的 sidecar）+ 远端客户端（应用 / CLI）。研究线双线制（共享线与私有线都要）、环境全部在服务器上。dsh 插件（dsh-zhishi-tools）弃用、不在本周期范围。
+
+### 客户端远端模式（P0.5）
+
+- CLI `zhishi --server http://host:port --token …`（/ `ZHISHI_SERVER` / `ZHISHI_TOKEN`）：一经设置，所有请求发往该地址，`--port`/`ZHISHI_PORT`/`sidecar.port` 链与「本地自立 sidecar」整体短路——远端不可达是硬错误，绝不静默回落本机；token 挂 `Authorization: Bearer`（admin 与非 admin 路由同口径）。本机模式一字节不变。
+- GUI 设置新增「连接」页（本机 / 团队大脑，地址 + token）：远端时 Rust 的本地 sidecar spawn 彻底关死（`start_global_sidecar` 一处闸盖住启动直调与 monitor 自动重启；`remote-mode` marker 文件解决「webview 加载晚于启动 spawn」的竞态）；远端不可达 = 明确 failed 态。
+
+### 大脑可达 + 鉴权（P1）
+
+- `--host` / `ZHISHI_HOST` 绑址参数化（默认 `127.0.0.1`，本地一字节不变）；**硬安全闸**：非回环地址 + 未启用鉴权 → 拒绝启动（该 API 能 docker exec，绑外网无鉴权 = 给局域网发 root）。
+- 唯一鉴权闸 `verifyHttpAuth` 包裹全部 HTTP（admin/非 admin/SSE/WS upgrade——term pty 单独过闸，Authorization 头优先、`?token=` 兜底）；token 只存 SHA-256 哈希；auth 关闭且回环时与 1.8.6 逐字节一致。
+- 角色三档（readonly < operator < reviewer）+ 全量路由分类表（`src/server/auth/roles.ts`，100+ 条逐条归类；未登记兜底 = reviewer，fail closed）。auth 管理面：`zhishi auth list/add/revoke/enable/disable`（add 只打印一次 secret，落库只存哈希；enable 零 token 拒绝防锁死；`config/set` 的 protectedKeys 加 `auth` 防提权）。
+- CORS：auth 关闭时逐字节保持 `ACAO:*`；启用时收紧为 allowlist（Tauri webview 两种 origin + 回环）。
+- **顺带修复存量 bug**：`config/get` 明文回传 `providerApiKeys`（脱敏函数只按键名匹配，map 内层键是 provider id 不匹配）——现整棵子树所有字符串叶子一律脱敏。
+
+### 身份贯穿（P2）
+
+- actor 管线：鉴权闸返回 actor（token 命中 = 连接身份；关闭时 = 文档化 `local`），挂进既有 ALS 日志上下文；turn 起跑人捕获（send 时抓请求 actor → 起跑时按线登记，cron/auto-run 的 headless 入口在 invoke 时抓）。
+- 五处署名缝（全加字段、旧数据全容忍缺值）：`CorrectionEntry.byUser`、expert `reviewer`（auth 启用时一律取连接身份——表单字段不能冒签）、trust `actorName`、`research_events` 加 `by` 列（memory.db 迁移，迁移前强制备份）、`SessionClaim.owner`。
+- boundary/decision 归属：pending 条目带 `requestedBy`/`respondedBy`；respond 端点做纵深角色校验并记录应答者。
+
+### 文件传输 + 环境占用（P4/P5）
+
+- 文件传输：`zhishi env put-file / get-file`——成员笔记本 ↔ 服务器环境端到端（上传经托管 spill + 内容哈希去重 + 200MB 上限，docker cp 补面；下载经 refs 库，写盘时校验 sha256）。真 docker 端到端实证。
+- 环境占用：内存占用模型（哪条线/谁在用/何时起），`environment/list` 与 `ps` 投影；up/down/exec 撞他人占用时带警告（警告不锁）；boundary-ask 的 objects 带占用行（审批者看得见）。
+
+### 双线制 + 多引擎并发（P3）
+
+- **引擎多线化**（P3a 行为保持重构 + P3b 放上限）：`defaultEngine` 单例 → 按线的引擎注册表；per-line busy/steering 队列/abort——线 A 的 turn 不再阻塞线 B；空闲 30 分钟回收（transcript 在盘不丢历史），下次访问惰性重建；活跃线变 per-actor（本机恒 `local`，单用户逐字节一致）。
+- **双线制**：私有线默认（owner 读写），共享线显式开（`zhishi line share/unshare <id>`，已存在的私有线可转团队线）；`env-sessions` 键扩展 `workspace::[user|shared]::envKey` 且旧键回读（现有 22 条线的映射不断链）；归属未知的旧线 = 全员可读、operator+ 可写。
+- **SSE 按线分流**：`broadcast(event, payload, {line})` 路由元数据通道——payload 形状钉死的事件线上字节零变化，过滤发生在 fan-out 层；私有线只发给 owner，共享线发给全体。
+- **respond 角色死结的 B 案**（WREN 定）：boundary/decision 应答路由档降 operator，规则 = reviewer 任何线可答、operator 仅答自己名下私有线（「自己的线自己批」），共享线与归属未知线维持 reviewer-only。
+
+### 冒烟实弹揪出的修复
+
+隔离数据目录起真 server + 三档 token 实弹，揪出三个单测未盖住的归属缺陷并修复：① 新线铸造不登 owner（`/chat/reset` 的私有线永远「归属未知」，非主读拿到 200、owner 自己 share 被 forbidden）；② 未知 actor 的「当前线」继承别人的私有线（懒铸一条自己的线代替）；③ respond 权限检查先于存在性（operator 对不存在的 ask 收到误导性 403，应 404）。
+
+### 兼容性承诺
+
+所有新行为 opt-in：绑址默认 `127.0.0.1`、auth 只在配了 token 时启用、远端模式是显式开关、引擎上限默认不放——本地单用户路径与 1.8.6 一字节不变（全量测试 219 文件 2878 passed 钉住）。
 
 ## [1.8.6] - 2026-09-28
 
