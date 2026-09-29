@@ -15,6 +15,7 @@ const storeMocks = vi.hoisted(() => ({
   deleteSession: vi.fn(),
   getAllSessionMetadata: vi.fn((): SessionMetadata[] => []),
   getSessionData: vi.fn(),
+  getSessionMetadata: vi.fn((): SessionMetadata | null => null),
   getSessionsByAgentDir: vi.fn((): SessionMetadata[] => []),
   isDesktopSessionSource: (source?: string) => !source || source === 'desktop',
   updateSessionMetadata: vi.fn(),
@@ -31,9 +32,15 @@ const agentSessionMocks = vi.hoisted(() => ({
 
 const chatEngineMocks = vi.hoisted(() => ({
   forkPiChat: vi.fn(),
+  getActiveLoopSessionId: vi.fn(() => 'active-loop-line'),
   getPiMessages: vi.fn((): unknown[] => []),
   switchPiSession: vi.fn(),
   applyPiMissionChange: vi.fn(),
+}));
+
+// P3b 双线制:线归属元数据 mock(不碰真盘;默认无记录 = 归属未知,权限放行)。
+vi.mock('../loop/line-ownership', () => ({
+  getLineOwnership: vi.fn(() => undefined),
 }));
 
 vi.mock('../SessionStore', () => storeMocks);

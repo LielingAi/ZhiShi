@@ -119,6 +119,7 @@ term      Drive embedded terminal (open/write/read/close)
   widget    Generative UI widget design guidelines (readme)
 config    Read/write application config
   auth      团队大脑鉴权 token 管理（1.8.7 P1：list / add --name X --role Y / revoke <id> / enable / disable）
+  line      研究线双线制（1.8.7 P3b：list [--workspace W] / share <loopSessionId> / unshare <loopSessionId>）
 status    Show app running state
   version   Show app version
   reload    Hot-reload configuration
@@ -407,6 +408,13 @@ if (!result.success) {
   if (group === 'env' && action === 'list') {
     const data = (result.data as { environments?: Array<Record<string, unknown>> }) ?? {};
     printEnvList(data.environments ?? []);
+    return;
+  }
+  if (group === 'line' && action === 'list') {
+    // 1.8.7 P3b 研究线清单：* = 调用方当前线;归属段(shared/私有 owner/
+    // legacy 旧线)+ live/busy 标记。
+    const data = (result.data as { activeLoopSessionId?: string; lines?: Array<Record<string, unknown>> }) ?? {};
+    printLineList(data.lines ?? []);
     return;
   }
   if (group === 'env' && action === 'open') {
@@ -860,6 +868,30 @@ function printEnvList(environments: Array<Record<string, unknown>>): void {
       : String(env.host ?? env.container ?? '');
     console.log(
       pad(String(env.id ?? ''), 18) + pad(kind, 9) + pad(target, 30) + String(env.user ?? ''),
+    );
+  }
+}
+/** 1.8.7 P3b `zhishi line list`：一行一线——* = 调用方当前线;归属
+ *  (shared / 私有 owner / legacy 旧线)+ live/busy 标记。 */
+function printLineList(lines: Array<Record<string, unknown>>): void {
+  const pad = (s: string, n: number) => s.padEnd(n);
+  if (lines.length === 0) {
+    console.log('(no lines — 环境选定后首个 turn 开线；zhishi env list 看环境)');
+    return;
+  }
+  console.log('  ' + pad('LOOP-SESSION', 40) + pad('ENV', 22) + pad('LINE', 18) + 'STATE');
+  for (const line of lines) {
+    const marker = line.active === true ? '*' : ' ';
+    const ownership = line.shared === true
+      ? 'shared'
+      : typeof line.owner === 'string' && line.owner
+        ? `private:${String(line.owner)}`
+        : 'legacy(归属未知)';
+    const state = [line.live === true ? 'live' : '', line.busy === true ? 'busy' : '']
+      .filter(Boolean)
+      .join(',');
+    console.log(
+      `${marker} ${pad(String(line.loopSessionId ?? ''), 40)}${pad(String(line.envKey ?? ''), 22)}${pad(ownership, 18)}${state}`,
     );
   }
 }
@@ -2032,6 +2064,14 @@ function buildRequestBody(
       return { id: rest[0] ?? flags.id };
     }
     return {};
+  }
+  // 研究线双线制（1.8.7 P3b）：list 带 workspace（缺省进程 cwd）；
+  // share/unshare 带 loopSessionId。
+  if (group === 'line') {
+    if (action === 'share' || action === 'unshare') {
+      return { loopSessionId: rest[0] ?? flags.id };
+    }
+    return { workspace: flags.workspace ? String(flags.workspace) : process.cwd() };
   }
   // Memory（记忆库检索：agent 按需想起的通道）
   if (group === 'memory') {

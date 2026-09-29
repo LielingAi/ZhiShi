@@ -12,6 +12,7 @@ import {
   deleteSession,
   getAllSessionMetadata,
   getSessionData,
+  getSessionMetadata,
   getSessionsByAgentDir,
   isDesktopSessionSource,
   updateSessionMetadata,
@@ -23,8 +24,14 @@ import { resolveLastRealUserMessagePreview, shrinkSessionMessagesForClient } fro
 
 import { getSessionId } from '../agent-session';
 
-import { applyPiMissionChange, forkPiChat, getPiMessages, switchPiSession } from '../loop/chat-engine';
+import { applyPiMissionChange, forkPiChat, getActiveLoopSessionId, getPiMessages, switchPiSession } from '../loop/chat-engine';
 import { isMissionKind, MISSION_KINDS } from '../../shared/mission';
+
+// 1.8.7 P3b 双线制:fork/switch 的线权限闸（私有线:非主写 403 / 非主且非
+// reviewer 读 403;矩阵见 auth/line-access.ts）。
+import { currentActor } from '../auth/actor';
+import { canReadLine, canWriteLine } from '../auth/line-access';
+import { getLineOwnership } from '../loop/line-ownership';
 
 import type { SessionMetadata } from '../types/session';
 
@@ -116,6 +123,11 @@ export async function handleForkSession(request: Request, jsonResponse: JsonResp
 
           return jsonResponse({ success: false, error: 'Missing messageId' }, 400);
 
+        }
+
+        // P3b 双线制写闸:fork 写的是调用方当前线——私有线非主 403。
+        if (!canWriteLine(currentActor(), getLineOwnership(getActiveLoopSessionId()))) {
+          return jsonResponse({ success: false, error: 'forbidden' }, 403);
         }
 
         // pi 引擎:fork 已实现(forkPiChat——复制前半段到新 loop session,
@@ -652,6 +664,20 @@ export async function handleSwitchSession(request: Request, jsonResponse: JsonRe
 
           return jsonResponse({ success: false, error: 'sessionId is required.' }, 400);
 
+        }
+
+
+
+        // P3b 双线制读闸:目标是私有线且调用方不可读(owner + reviewer 之外)
+
+        // → 403,不静默接上别人的私有线。meta 无 loopSessionId 绑定(待愈合
+
+        // 新线)无归属可查,放行。
+
+        const targetLoopId = getSessionMetadata(payload.sessionId)?.loopSessionId;
+
+        if (targetLoopId && !canReadLine(currentActor(), getLineOwnership(targetLoopId))) {
+          return jsonResponse({ success: false, error: 'forbidden' }, 403);
         }
 
 

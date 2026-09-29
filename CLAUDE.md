@@ -16,7 +16,7 @@
 
 | 桌面宿主 | Tauri v2 (Rust)——GUI 窗口（webview 渲染 `src/gui` 产物）+ sidecar Owner、Panel API（term / 端口发现）、Management API、CronTaskManager、托盘（打开会话/exit）、updater、统一日志。三入口（桌面图标/托盘/二次实例）统一聚焦 GUI 主窗口（`--minimized` 开机自启不弹）。已删：W6 减法（invoke_handler 全部 IPC 命令、SearchEngine（tantivy）、browser.rs、sse_proxy、global_shortcut、attachment_protocol、webview2_check、macos 窗框 hacks、workspace_files 命令层（path_safety 保留））+ 1.3.9 tui_launcher（TUI 退役随删） |
 
-| 后端 | Node.js ≥22 + 自研 loop（`src/server/loop/`，pi 底座钉版；单例 Sidecar，会话按环境分线） |
+| 后端 | Node.js ≥22 + 自研 loop（`src/server/loop/`，pi 底座钉版；单例 Sidecar，会话按环境分线；1.8.7 P3b 起引擎按线并存——per-line busy/steering/abort + 空闲回收，「当前线」per-actor，本机单 actor 语义不变） |
 
 | 通信 | GUI ↔ Sidecar 直连 HTTP+SSE+WS（127.0.0.1）；Rust panel_api 代理 term/管理面（reqwest via `local_http` 模块） |
 
@@ -257,6 +257,7 @@ Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**不**�
 ### 会话按环境分线（1.1.6）
 
 - 每个环境一条独立会话线：映射文件 `~/.zhishi/env-sessions.json`，行键 = `${规范化workspace}::${环境键}` → loopSessionId（`src/server/environment/env-sessions.ts`，写走 withFileLock + tmp+rename）。环境键：env → `env:<id>`、recipe → `recipe:<instanceId>`、host → `host`；workspace 键一律 resolve + 统一正斜杠（斜杠漂移是活体坑）。
+- 1.8.7 P3b 双线制：行键加归属段 = `${规范化workspace}::${owner|shared}::${环境键}`（读 = 私有键 → 共享键 → 旧两段式键回读，R3；写只写新格式）。线的 owner/shared 元数据在 `~/.zhishi/line-ownership.json`（`src/server/loop/line-ownership.ts`）；归属未知旧线的文档化缺省 = 全员可读、operator+ 可写（权限矩阵 `src/server/auth/line-access.ts`）。`line/share` + `line/unshare`（`src/server/loop/line-admin.ts`）转共享/转回私有并重挂映射行归属段。
 - 联动：`environment/select` busy 前置闸（先于落盘，「响应进行中，先 Esc 停止再切换环境」）→ 落盘 → `switchEnvSession` 切线（有映射接线/无映射开新线/同环境幂等；旧线先回填映射防丢）。新线的映射写盘点在 `ensureSessionBound` 绑定之后——映射永不指向无绑定的线。
 - 启动恢复 env-aware：引擎 `restorePiSession` + GUI 会话恢复都按「当前选定环境」接线；「按全 workspace 最新 meta 接线」旧语义已废除（分线下最新多半是别的环境的线）。`resetPiChat` 同步清当前环境键的映射（防旧历史复活）。cron（1.2.6 批次 B 起）走 `invokePiSession` 独立 invoke 通道——不切引擎线、不进 steering/队列，按任务 meta 的 loopSessionId 解析目标线（无绑定当场愈合开线），读该线历史跑完续存回同一条线（文件锁串行化）；仅无 sessionId 的兜底分支跟随引擎当前线。
 - 交互正门：GUI 主窗口（1.3.9 起 TUI 退役；TUI 正门 `enterGate`/`gateReentry` 与终端鼠标捕获（1.1.6 受控恢复）等 TUI 渲染细节随删——现 attach 终端为 xterm + WS pty 双模式）。

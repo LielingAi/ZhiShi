@@ -15,10 +15,26 @@ import { join } from 'node:path';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
 // ---- mocks ----
+// (P3b:本文件的行尾是混合 CRLF/LF——编辑保留原样,不统一。)
 
 const broadcastMock = vi.fn();
 vi.mock('../sse', () => ({
   broadcast: (...args: unknown[]) => broadcastMock(...args),
+  // P3b:按线分流探针注入点——单测不挂真注册表,sse 本体被 mock,空实现即可。
+  __setLineLiveProbe: () => {},
+}));
+
+// P3b 双线制:线归属元数据 mock(内存 Map,不碰真盘 ~/.zhishi/line-ownership.json)。
+const lineOwnershipData = new Map<string, { owner?: string; shared?: boolean; updatedAt: string }>();
+vi.mock('./line-ownership', () => ({
+  getLineOwnership: (id: string) => lineOwnershipData.get(id),
+  ensureLineOwner: async (id: string, owner: string) => {
+    if (!lineOwnershipData.has(id)) lineOwnershipData.set(id, { owner, updatedAt: '' });
+  },
+  setLineShared: async (id: string, shared: boolean, owner?: string) => {
+    const prev = lineOwnershipData.get(id) ?? { updatedAt: '' };
+    lineOwnershipData.set(id, { ...prev, shared, ...(owner !== undefined ? { owner } : {}) });
+  },
 }));
 
 const runLoopMock = vi.fn();
@@ -77,6 +93,9 @@ vi.mock('../environment/env-sessions', () => ({
     envSessionsData.delete(`${normWs(ws)}::${key}`);
   },
   removeEnvSessionsForEnvId: async () => {},
+  // P3b:三段式行键的归属段字面量 + initForLine 的环境键反查(单测恒未命中)。
+  SHARED_LINE_SEGMENT: 'shared',
+  findEnvKeyForLoopSession: () => null,
 }));
 
 const configEnvironments = vi.fn(() => [] as unknown[]);
@@ -287,6 +306,7 @@ beforeEach(async () => {
   vi.clearAllMocks();
   bgRegistryListMock.mockReturnValue([]);
   envSessionsData.clear();
+  lineOwnershipData.clear();
   __resetOccupancyForTests();
   resetPiChat();
   resolveLoopModelMock.mockReturnValue(RESOLUTION);

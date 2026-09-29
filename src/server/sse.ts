@@ -5,7 +5,57 @@ type SseClient = {
   id: string;
   send: (event: string, data: unknown) => void;
   close: () => void;
+  /**
+   * 1.8.7 P3b 按线分流：本客户端订阅的 loop 线（/chat/stream 连接时按
+   * 调用方 actor 的当前线或显式 ?sessionId= 解析）。undefined = 旧式
+   * 全量订阅（收一切，含按线路由的事件——向后兼容）。
+   */
+  line?: string;
 };
+
+// ──────────────────────────────────────────────────────────────────────────
+// 1.8.7 P3b 按线分流（双线制 + 多引擎）：
+//
+// broadcast(event, payload, { line }) 第三参是**路由元数据通道**——payload
+// 形状钉死的事件（chat:message-chunk/error/stopped 的 string|null payload、
+// 决策事件族）靠它分流，payload 逐字节不动。路由键取值序：
+//   1. opts.line（显式元数据）；
+//   2. object payload 的 additive sessionId（P3a 已挂）；
+//   都没有 → 全局事件，fan-out 全体（genuinely global 的 compat 语义）。
+//
+// 分流只针对「有 live 引擎的线」：引擎注册表经 __setLineLiveProbe 挂探针
+// （sse 是底层模块，不能反向 import chat-engine——环）。探针判定非 live
+// （headless cron/auto-run 线、已被空闲回收的线）→ 回退全局 fan-out——
+// 本机单引擎语义与 1.8.6 逐字节相同（没有人订阅 headless 线，它们的事件
+// 今天就是全员可达的）。
+// ──────────────────────────────────────────────────────────────────────────
+
+/** 按线分流探针：某线是否有 live 引擎（chat-engine 注册表注入）。缺省
+ *  恒 false = 一切全局（未挂探针的环境——sse 单测——保持旧 fan-out）。 */
+let lineLiveProbe: (line: string) => boolean = () => false;
+
+/** 注入/复位按线分流探针（chat-engine 模块加载时注入注册表视角）。 */
+export function __setLineLiveProbe(probe: ((line: string) => boolean) | null): void {
+  lineLiveProbe = probe ?? (() => false);
+}
+
+/** 事件的路由键：显式 {line} 优先，其次 object payload 的 sessionId。 */
+function routingKeyOf(data: unknown, opts?: { line?: string }): string | undefined {
+  if (opts?.line) return opts.line;
+  if (data && typeof data === 'object') {
+    const sid = (data as { sessionId?: unknown }).sessionId;
+    if (typeof sid === 'string' && sid) return sid;
+  }
+  return undefined;
+}
+
+/** 本事件是否送达某客户端（按线分流判定）。 */
+function shouldDeliver(client: SseClient, routingKey: string | undefined): boolean {
+  if (client.line === undefined) return true; // 旧式全量订阅
+  if (routingKey === undefined) return true; // 全局事件
+  if (!lineLiveProbe(routingKey)) return true; // 无 live 引擎的线 = 全局（headless/已回收）
+  return client.line === routingKey;
+}
 
 const encoder = new TextEncoder();
 
@@ -232,6 +282,8 @@ const HEARTBEAT_INTERVAL_MS = 15000;
 // Only cache chat:status — chat:system-init is already replayed inline by the /chat/stream
 // handler (index.ts), so caching it here would cause duplicate delivery that poisons
 // isStreamingRef in the frontend.
+// P3b:缓存键 = `${event}::${路由键}`——chat:status 是按线状态,各线各存一份;
+// 重放按订阅线过滤(见 createSseClient 的 replay 段)。
 const CACHED_EVENTS = new Set(['chat:status']);
 const LAST_VALUE_CACHE_KEY = '__zhishi_sse_lvc__';
 const lastValueCache: Map<string, unknown> =
@@ -480,7 +532,9 @@ const SILENT_EVENTS = new Set(['chat:log']);
 // and its frequency is lower to begin with. Keeping the rule narrow avoids
 // semantic surprises.
 const CHUNK_COALESCE_MS = 40;
-const chunkBuffers = new Map<string, { merged: string; timer: ReturnType<typeof setTimeout> }>();
+// P3b:缓冲键 = `${event}::${路由键}`——两条线的 token 流绝不进同一个
+// 合并窗(串线即丢字);entry 记回 event/line 供 flush 时分流。
+const chunkBuffers = new Map<string, { event: string; line?: string; merged: string; timer: ReturnType<typeof setTimeout> }>();
 
 // Events that don't carry ordering semantics with the text stream and must
 // NOT cause a pending-chunk buffer drain. `chat:log` fires from inside the
@@ -496,12 +550,12 @@ const NON_FLUSHING_EVENTS = new Set<string>(['chat:log']);
 // mixing cannot happen here. If that invariant ever changes, key the buffer
 // by client id instead.
 
-function flushCoalescedChunk(event: string): void {
-  const entry = chunkBuffers.get(event);
+function flushCoalescedChunk(key: string): void {
+  const entry = chunkBuffers.get(key);
   if (!entry) return;
-  chunkBuffers.delete(event);
+  chunkBuffers.delete(key);
   clearTimeout(entry.timer);
-  dispatchWithSpillGuard(event, entry.merged);
+  dispatchWithSpillGuard(entry.event, entry.merged, entry.line ? { line: entry.line } : undefined);
 }
 
 function flushAllCoalesced(): void {
@@ -511,7 +565,7 @@ function flushAllCoalesced(): void {
   for (const k of keys) flushCoalescedChunk(k);
 }
 
-function broadcastImmediate(event: string, data: unknown): void {
+function broadcastImmediate(event: string, data: unknown, opts?: { line?: string }): void {
   if (AGGREGATED_EVENTS.has(event)) {
     recordStreamingLog(event, data);
   } else {
@@ -520,24 +574,31 @@ function broadcastImmediate(event: string, data: unknown): void {
   if (!SILENT_EVENTS.has(event) && !AGGREGATED_EVENTS.has(event)) {
     console.log(`[sse] ${event} -> ${summarizePayload(event, data)}`);
   }
-  // Update last-value cache for stateful events
+  // P3b 按线分流:路由键 = 显式 {line} ?? payload.sessionId;只对有 live
+  // 引擎的线过滤(无引擎 = 全局,headless 线语义不变)。
+  const routingKey = routingKeyOf(data, opts);
+  // Update last-value cache for stateful events（键带路由后缀,各线各一份）
   if (CACHED_EVENTS.has(event)) {
-    lastValueCache.set(event, data);
+    lastValueCache.set(`${event}::${routingKey ?? ''}`, data);
   }
   for (const client of clients) {
+    if (!shouldDeliver(client, routingKey)) continue;
     client.send(event, data);
   }
 }
 
-export function broadcast(event: string, data: unknown): void {
+export function broadcast(event: string, data: unknown, opts?: { line?: string }): void {
   if (event === 'chat:message-chunk' && typeof data === 'string') {
-    let entry = chunkBuffers.get(event);
+    const bufferKey = `${event}::${opts?.line ?? ''}`;
+    let entry = chunkBuffers.get(bufferKey);
     if (!entry) {
       entry = {
+        event,
+        ...(opts?.line ? { line: opts.line } : {}),
         merged: data,
-        timer: setTimeout(() => flushCoalescedChunk(event), CHUNK_COALESCE_MS),
+        timer: setTimeout(() => flushCoalescedChunk(bufferKey), CHUNK_COALESCE_MS),
       };
-      chunkBuffers.set(event, entry);
+      chunkBuffers.set(bufferKey, entry);
     } else {
       entry.merged += data;
     }
@@ -550,7 +611,7 @@ export function broadcast(event: string, data: unknown): void {
   if (chunkBuffers.size > 0 && !NON_FLUSHING_EVENTS.has(event)) {
     flushAllCoalesced();
   }
-  dispatchWithSpillGuard(event, data);
+  dispatchWithSpillGuard(event, data, opts);
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -593,7 +654,7 @@ function measurePayloadBytes(data: unknown): number {
   }
 }
 
-function dispatchWithSpillGuard(event: string, data: unknown): void {
+function dispatchWithSpillGuard(event: string, data: unknown, opts?: { line?: string }): void {
   const sizeBytes = measurePayloadBytes(data);
   if (sizeBytes > SPILL_INLINE_MAX_BYTES) {
     spillInFlight++;
@@ -609,12 +670,12 @@ function dispatchWithSpillGuard(event: string, data: unknown): void {
         });
         if ('inline' in spilled) {
           // 防御分支：按字节数已超阈值，maybeSpill 恒走落盘；此分支不可达。
-          broadcastImmediate(event, data);
+          broadcastImmediate(event, data, opts);
         } else {
           console.warn(
             `[sse] 大 payload 外溢 event=${event} sizeBytes=${spilled.sizeBytes} → ref=${spilled.id}（全文走 GET /refs/${spilled.id}）`,
           );
-          broadcastImmediate(event, spilled);
+          broadcastImmediate(event, spilled, opts);
         }
       } catch (err) {
         // fail closed：外溢失败绝不回退内联（红线即防此刻的 MB 级泛洪）——
@@ -623,7 +684,7 @@ function dispatchWithSpillGuard(event: string, data: unknown): void {
           `[sse] 大 payload 外溢失败 event=${event} sizeBytes=${sizeBytes}:`,
           err instanceof Error ? err.message : String(err),
         );
-        broadcastImmediate(event, { error: 'large_payload_spill_failed', sizeBytes });
+        broadcastImmediate(event, { error: 'large_payload_spill_failed', sizeBytes }, opts);
       } finally {
         spillInFlight--;
       }
@@ -632,10 +693,10 @@ function dispatchWithSpillGuard(event: string, data: unknown): void {
   }
   if (spillInFlight > 0) {
     // spill 在飞——排到串行尾链之后广播，保住事件时序。
-    enqueueBehindSpillTail(() => broadcastImmediate(event, data));
+    enqueueBehindSpillTail(() => broadcastImmediate(event, data, opts));
     return;
   }
-  broadcastImmediate(event, data);
+  broadcastImmediate(event, data, opts);
 }
 
 /**
@@ -653,6 +714,13 @@ export function createSseClient(onClose: (client: SseClient) => void, opts: {
    * 当前线/全局事件);心跳保活照旧。缺省 true = 今日语义逐字节不变。
    */
   live?: boolean;
+  /**
+   * 1.8.7 P3b 按线分流：本客户端订阅的 loop 线（/chat/stream 连接时由
+   * 服务端按调用方 actor 的当前线或显式 ?sessionId= 解析传入）。带线
+   * 客户端只收「全局事件 + 本线事件」；缺省 undefined = 旧式全量订阅
+   * （收一切，向后兼容）。
+   */
+  line?: string;
 } = {}): {
   client: SseClient;
   response: Response;
@@ -858,6 +926,7 @@ export function createSseClient(onClose: (client: SseClient) => void, opts: {
 
   client = {
     id: randomUUID(),
+    ...(opts.line ? { line: opts.line } : {}),
     send: (event, data) => {
       try {
         const payload = formatSse(event, data);
@@ -899,7 +968,7 @@ export function createSseClient(onClose: (client: SseClient) => void, opts: {
   if (live) {
     clients.add(client);
   }
-  console.log(`[sse] client connected id=${client.id} total=${clients.size}${live ? '' : ' (history-view, no live fan-out)'}`);
+  console.log(`[sse] client connected id=${client.id} total=${clients.size}${live ? '' : ' (history-view, no live fan-out)'}${opts.line ? ` line=${opts.line}` : ''}`);
 
   // Send cached log history to newly connected client (Ring Buffer for early logs)
   // Only replay logs from BEFORE this client connected — logs after connectTime
@@ -937,9 +1006,18 @@ export function createSseClient(onClose: (client: SseClient) => void, opts: {
   // replay arrives before the listener is ready and gets silently dropped.
   // 200ms matches the log replay delay and gives React enough time to mount.
   // (live:false 的历史视图同样跳过——cache 里全是当前线状态。)
+  // P3b:缓存键 = `${event}::${路由键}`——带线客户端只重放「全局(空后缀)
+  // + 本线 + 无 live 引擎的线」三档;旧式全量订阅(line undefined)重放全部。
   if (live && lastValueCache.size > 0) {
+    const subscribedLine = opts.line;
     setTimeout(() => {
-      for (const [event, cached] of lastValueCache) {
+      for (const [cacheKey, cached] of lastValueCache) {
+        const sep = cacheKey.indexOf('::');
+        const event = sep >= 0 ? cacheKey.slice(0, sep) : cacheKey;
+        const keyLine = sep >= 0 ? cacheKey.slice(sep + 2) : '';
+        if (subscribedLine !== undefined && keyLine !== '' && keyLine !== subscribedLine && lineLiveProbe(keyLine)) {
+          continue; // 别的 live 线的状态不重放给本线订阅者
+        }
         console.log(`[sse] replaying cached ${event} to client ${client?.id}`);
         client?.send(event, cached);
       }

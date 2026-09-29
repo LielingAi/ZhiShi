@@ -67,7 +67,7 @@ const pending = new Map<string, PendingAsk>();
 
 export const BOUNDARY_ASK_TIMEOUT_MS = 5 * 60_000;
 
-export type BroadcastFn = (event: string, data: unknown) => void;
+export type BroadcastFn = (event: string, data: unknown, opts?: { line?: string }) => void;
 
 /**
  * 发起一次越界询问。resolve(人批准?)在 respond/超时前一直 pending。
@@ -103,11 +103,13 @@ export function requestBoundaryAsk(
     };
     const timer = setTimeout(() => {
       if (!pending.delete(askId)) return;
-      broadcastFn('chat:boundary-expired', { askId });
+      // P3b:expired 同样按线分流(路由元数据通道,payload 形状不动)。
+      broadcastFn('chat:boundary-expired', { askId }, input.sessionId ? { line: input.sessionId } : undefined);
       resolvePromise(false);
     }, timeoutMs);
     pending.set(askId, { ...view, resolve: resolvePromise, timer });
-    broadcastFn('chat:boundary-ask', view);
+    // P3b:按线分流——ask 属于来源线(sessionId 挂 payload 的同时做路由键)。
+    broadcastFn('chat:boundary-ask', view, input.sessionId ? { line: input.sessionId } : undefined);
   });
 }
 

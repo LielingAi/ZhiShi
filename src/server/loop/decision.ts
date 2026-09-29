@@ -27,7 +27,7 @@ import { getZhiShiDataDir } from '../utils/app-dirs';
 import { openExpertStore, type ExpertEntry } from '../expert/store';
 import { searchExpertEntries, EXPERT_SEARCH_LIMIT } from '../expert/search';
 
-export type BroadcastFn = (event: string, data: unknown) => void;
+export type BroadcastFn = (event: string, data: unknown, opts?: { line?: string }) => void;
 
 export const REQUEST_DECISION_TOOL_NAME = 'request_decision';
 
@@ -144,13 +144,14 @@ export function requestDecision(
     ...(input.requestedBy ? { requestedBy: input.requestedBy } : {}),
   };
   pending.set(decisionId, record);
+  // P3b:按线分流——路由走元数据通道(形状钉死的 payload 逐字节不动)。
   broadcastFn('chat:decision-request', {
     decisionId,
     question: record.question,
     options: record.options,
     expertHits: record.expertHits,
     ...(record.requestedBy ? { requestedBy: record.requestedBy } : {}),
-  });
+  }, { line: input.sessionId });
   return record;
 }
 

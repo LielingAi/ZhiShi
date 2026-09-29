@@ -5,9 +5,13 @@
  * 仍读取仅为兼容,显式请求 'sdk' 时一次性告警并回落 pi(见
  * resolveLoopEngine)。外壳与 agent-session 同构的微型版:会话状态收拢在
  * ChatEngine 实例字段(sessionId/messages/queue/busy/abort;1.1.7 ②
- * 由模块级 let 机械收拢;1.8.7 P3a 起文件底部为引擎注册表——
- * Map<loopSessionId, ChatEngine> + 活跃指针,一台上限仍在,facade
- * 经注册表取活跃引擎),事件经同一个 sse.broadcast 通道发出——
+ * 由模块级 let 机械收拢;1.8.7 P3a 起文件底部为引擎注册表;P3b 放掉
+ * 一台上限——Map<loopSessionId, ChatEngine> 多引擎并存 + **per-actor
+ * 活跃线指针**(actor 名 → loopSessionId;本机模式恒单 actor 'local',
+ * 行为与单例逐字节相同),busy/steering/abort 全 per-line,线 A 的 turn
+ * 不挡线 B;引擎按线惰性创建(盘上有 transcript,回收不丢历史),空闲
+ * 超阈值(默认 30min,busy 永不回收)即 dispose,下次访问惰性重建),
+ * 事件经同一个 sse.broadcast 通道发出(按线分流的路由键随事件走)——
  * TUI/渲染器零改动。
  *
  * 接线:
@@ -72,7 +76,7 @@ import { computeContextUsage } from '../../shared/contextUsage';
 import type { EnvironmentEntry } from '../../shared/config-types';
 import type { ImagePayload } from '../../shared/types/image';
 import type { SystemInitInfo } from '../../shared/types/system';
-import { broadcast } from '../sse';
+import { broadcast, __setLineLiveProbe } from '../sse';
 import { envTagForEntry, findEnvironmentEntry, listEnvironmentsWithBuiltin } from '../environment/registry';
 import { execInEnvironment } from './env-exec';
 import { maybeStartCampaign, type CampaignRuntimeDeps } from './campaign-runtime';
@@ -84,12 +88,17 @@ import {
 } from '../environment/selection';
 import {
   envKeyForSelection,
+  findEnvKeyForLoopSession,
   getEnvSessionLine,
   loadEnvSessionsMap,
   normalizeWorkspaceKey,
   removeEnvSessionLine,
   setEnvSessionLine,
+  SHARED_LINE_SEGMENT,
 } from '../environment/env-sessions';
+// 1.8.7 P3b 双线制：线的归属元数据（owner/shared；persist/reset 的归属段
+// 判定源；store 本体在 loop/line-ownership.ts）。
+import { ensureLineOwner, getLineOwnership } from './line-ownership';
 import { loadDistilledMemoryForPrompt } from '../memory/distill';
 import { buildSystemPromptAppend, type InteractionScenario } from '../system-prompt';
 import { collectResearchMemory, collectSecurityCapabilities, resolveSessionDomain, type SecurityCapabilitiesData } from '../system-prompt-security';
@@ -404,12 +413,13 @@ async function reapBgOnLifecyclePoint(
   });
 }
 
-/** 某 workspace 当前选定环境的分线绑定(environment/current 的 TUI 接线数据源)。 */
+/** 某 workspace 当前选定环境的分线绑定(environment/current 的 TUI 接线数据源)。
+ *  P3b:归属段解析按请求 actor(ALS;无帧 = local)。 */
 export function getEnvSessionBinding(
   workspace: string,
 ): { envKey: string; loopSessionId: string; sessionMetaId: string | null } | null {
   const envKey = resolveSessionEnvKey(workspace);
-  const line = getEnvSessionLine(loadEnvSessionsMap(), workspace, envKey);
+  const line = getEnvSessionLine(loadEnvSessionsMap(), workspace, envKey, { actor: currentActor().name });
   if (!line) return null;
   const meta = getSessionsByAgentDir(workspace).find(
     (s) => (s as { loopSessionId?: string }).loopSessionId === line.loopSessionId,
@@ -488,6 +498,28 @@ class ChatEngine {
   private lineMissions = new Map<string, string>();
 
   // -------------------------------------------------------------------------
+  // P3b 多引擎：空闲回收的活跃度戳（注册表 sweep 只读;turn 收尾与注册表
+  // 访问两路打戳——长跑 turn 结束不立刻被判「闲置 N 分钟」）
+  // -------------------------------------------------------------------------
+
+  private lastUsedAt = Date.now();
+
+  /** 注册表访问/turn 收尾打戳。 */
+  markUsed(): void {
+    this.lastUsedAt = Date.now();
+  }
+
+  /** 距上次活动 ms（注册表 sweep 判据）。 */
+  idleMs(now: number = Date.now()): number {
+    return now - this.lastUsedAt;
+  }
+
+  /** 注册表 sweep 的 busy 判据（不组装 getPiAgentState 全量）。 */
+  isEngineBusy(): boolean {
+    return this.busy;
+  }
+
+  // -------------------------------------------------------------------------
   // Engine switch(M4c 硬切:恒 pi;sdk 请求一次性告警回落)
   // -------------------------------------------------------------------------
 
@@ -517,7 +549,7 @@ class ChatEngine {
   /** W1 — GUI 状态行数据源(sse.ts 已注册 'chat:status'):状态变迁时广播。
    *  P3a:additive sessionId——状态属于本引擎当前线,P3b 按线分流的路由键。 */
   private broadcastChatStatus(): void {
-    broadcast('chat:status', { sessionState: this.busy ? 'running' : 'idle', sessionId: this.sessionId });
+    broadcast('chat:status', { sessionState: this.busy ? 'running' : 'idle', sessionId: this.sessionId }, { line: this.sessionId });
   }
 
   /** sidecar 启动时初始化;pi 引擎下尝试续接最近的 loop 会话。 */
@@ -529,6 +561,26 @@ class ChatEngine {
     // 仍能按 tag+pid 回收,不会变孤儿。不重播 chat:bg-started(TUI 侧
     // 状态行有自己的内存登记,重复广播反而制造重影)。
     initBgRegistry(dir);
+  }
+
+  /**
+   * P3b 多引擎：按线惰性起引擎——注册表为某条非启动线建引擎时调用。
+   * 与 initPiChatEngine 的差异(刻意)：直接装载指定 loop 线(不查环境分线
+   * 映射——调用方已点名线);bg 登记表是 workspace 全局单例,启动引擎已
+   * 初始化,这里不重装(重装会把登记表整个换新,丢掉别的线登记的条目)。
+   * 全程同步读盘(loadLoopSession 裸读惯例),注册表 getOrCreate 保持同步。
+   */
+  initForLine(dir: string, loopSessionId: string): void {
+    this.agentDir = dir;
+    this.sessionId = loopSessionId;
+    this.boundSessionMetaId = this.findBoundMetaId(loopSessionId);
+    // currentEnvKey 反查分线映射(知道这条线挂在哪个环境键;persist/reset
+    // 的归属段写盘要用);查不到留 host 缺省。
+    const envKey = findEnvKeyForLoopSession(loadEnvSessionsMap(), dir, loopSessionId);
+    if (envKey) this.currentEnvKey = envKey;
+    const stored = loadLoopSession(loopSessionId);
+    this.messages = this.loopMessagesToWire(stored.messages);
+    console.log(`[pi-engine] 惰性起引擎 loop=${loopSessionId}(${stored.messages.length} 条消息,meta=${this.boundSessionMetaId ?? '无'})`);
   }
 
   getPiAgentState(): {
@@ -587,13 +639,23 @@ class ChatEngine {
     return meta?.id ?? null;
   }
 
+  /** P3b 双线制：本线的 env-sessions 归属段——共享线挂 'shared' 键,
+   *  私有线挂 owner 键(归属未登记 = 当前 actor;本机模式恒 'local')。 */
+  private lineSegment(): string {
+    const ownership = getLineOwnership(this.sessionId);
+    if (ownership?.shared) return SHARED_LINE_SEGMENT;
+    return ownership?.owner ?? currentActor().name;
+  }
+
   /** 分线映射写盘(1.1.6 #4):「当前环境键 → 当前 loopSessionId」。只在绑定
    *  存在时写——映射永不指向没有 SessionStore 绑定的线(新线的首次写盘点在
-   *  ensureSessionBound 之后;切换前的旧线回填见 switchEnvSession)。 */
+   *  ensureSessionBound 之后;切换前的旧线回填见 switchEnvSession)。
+   *  P3b:写盘前补登线 owner(仅首次,不覆盖既有归属),行键带归属段。 */
   private async persistEnvSessionLine(): Promise<void> {
     if (!this.boundSessionMetaId || !this.agentDir) return;
     try {
-      await setEnvSessionLine(this.agentDir, this.currentEnvKey, this.sessionId);
+      await ensureLineOwner(this.sessionId, currentActor().name);
+      await setEnvSessionLine(this.agentDir, this.currentEnvKey, this.sessionId, undefined, this.lineSegment());
     } catch (err) {
       console.warn('[pi-engine] env-sessions 映射写盘失败:', err);
     }
@@ -607,7 +669,9 @@ class ChatEngine {
   private async restorePiSession(): Promise<void> {
     const envKey = resolveSessionEnvKey(this.agentDir);
     this.currentEnvKey = envKey;
-    const line = getEnvSessionLine(loadEnvSessionsMap(), this.agentDir, envKey);
+    // P3b:归属段解析——启动 actor 恒 local(无 ALS 帧),私有键 → 共享键 →
+    // 旧键(R3 回读),首个命中生效。
+    const line = getEnvSessionLine(loadEnvSessionsMap(), this.agentDir, envKey, { actor: currentActor().name });
     if (!line) return;
     const stored = loadLoopSession(line.loopSessionId);
     if (stored.messages.length === 0) return;
@@ -707,7 +771,7 @@ class ChatEngine {
     const originator = currentActor();
     if (this.busy) {
       this.steering.push({ queueId, input, grounding, originator });
-      broadcast('chat:steering-added', { queueId, messageText: text.slice(0, 100), sessionId: this.sessionId });
+      broadcast('chat:steering-added', { queueId, messageText: text.slice(0, 100), sessionId: this.sessionId }, { line: this.sessionId });
       console.log(`[pi-engine] 消息进 steering 队列 queueId=${queueId}(深度=${this.steering.length})`);
       return { queued: true, queueId, isInFlight: false, steering: true };
     }
@@ -892,7 +956,7 @@ class ChatEngine {
     };
     this.messages.push(userMessage);
     // P3a:additive sessionId——echo 属于本 turn 快照线(P3b 按线分流路由键)。
-    broadcast('chat:message-replay', { message: userMessage, sessionId: turnSessionId });
+    broadcast('chat:message-replay', { message: userMessage, sessionId: turnSessionId }, { line: turnSessionId });
     // 1.4.4 研究档案：本轮的来源锚（档案实体 anchorMessageId 指向这里）。
     this.currentTurnUserMessageId = userMessage.id;
 
@@ -959,7 +1023,7 @@ class ChatEngine {
         tools: toolNames,
         permissionMode: input.permissionMode,
       };
-      broadcast('chat:system-init', { info: this.systemInitInfo, sessionId: this.sessionId, runtime: 'builtin', engine: 'pi' });
+      broadcast('chat:system-init', { info: this.systemInitInfo, sessionId: this.sessionId, runtime: 'builtin', engine: 'pi' }, { line: this.sessionId });
     }
 
     // 流式 assistant 占位(/chat/stream 重放时按 id 跳过,由 live 事件重建)。
@@ -992,7 +1056,7 @@ class ChatEngine {
           timestamp: new Date().toISOString(),
         };
         this.messages.push(wireMsg);
-        broadcast('chat:message-replay', { message: wireMsg, sessionId: turnSessionId });
+        broadcast('chat:message-replay', { message: wireMsg, sessionId: turnSessionId }, { line: turnSessionId });
       }
       const bgMessages: AgentMessage[] = bgNotes.map((note) => ({
         role: 'user',
@@ -1023,9 +1087,9 @@ class ChatEngine {
             : {}),
         };
         this.messages.push(wireMsg);
-        broadcast('chat:message-replay', { message: wireMsg, sessionId: turnSessionId });
+        broadcast('chat:message-replay', { message: wireMsg, sessionId: turnSessionId }, { line: turnSessionId });
         // 已离开 steering 队列(注入即消费):清 TUI 队列条目,与 stop/cancel 同事件。
-        broadcast('chat:steering-cancelled', { queueId: item.queueId, sessionId: turnSessionId });
+        broadcast('chat:steering-cancelled', { queueId: item.queueId, sessionId: turnSessionId }, { line: turnSessionId });
       }
       return [...bgMessages, ...drained.map((item) => {
         const itemText = item.input.text.trim();
@@ -1045,7 +1109,7 @@ class ChatEngine {
     void this.runPiTurn(input, resolution, env, toolNames, assistantMessage, this.currentAbort, effectiveGrounding, turnSessionId, getSteeringMessages)
       .catch((err) => {
         console.error('[pi-engine] turn 异常:', err);
-        broadcast('chat:message-error', err instanceof Error ? err.message : String(err));
+        broadcast('chat:message-error', err instanceof Error ? err.message : String(err), { line: turnSessionId });
       })
       .finally(() => {
         // Phase 3:turn 结束(含 Esc 中断——abort 后 runPiTurn 正常走到这)
@@ -1057,6 +1121,8 @@ class ChatEngine {
         // 1.8.7 P5：turn 收尾释放环境占用（token 匹配才摘——本 turn 起跑后
         // 环境若被别的线登记过，本释放不动它）。
         if (occupancyToken) releaseEnv(occupancyToken.envId, occupancyToken);
+        // P3b：turn 收尾打活跃度戳——长跑 turn 刚结束不该被空闲回收误判。
+        this.markUsed();
         this.busy = false;
         this.streamingAssistantId = null;
         this.currentAbort = null;
@@ -1070,7 +1136,7 @@ class ChatEngine {
         if (this.steering.length > 0) {
           const orphaned = this.steering.splice(0, this.steering.length);
           for (const item of orphaned) {
-            broadcast('chat:steering-cancelled', { queueId: item.queueId, sessionId: this.sessionId });
+            broadcast('chat:steering-cancelled', { queueId: item.queueId, sessionId: this.sessionId }, { line: this.sessionId });
           }
           this.queue.unshift(...orphaned);
           console.log(`[pi-engine] ${orphaned.length} 条 steering 未赶上注入,转 FIFO 队首续跑`);
@@ -1099,14 +1165,14 @@ class ChatEngine {
       messageText: next.input.text.trim().slice(0, 100),
       isInFlight: true,
       sessionId: this.sessionId,
-    });
+    }, { line: this.sessionId });
     console.log(`[pi-engine] 自动接下一条 queueId=${next.queueId}(剩余=${this.queue.length})`);
     // startResolvedTurn 同步返回;解析失败(模型不可用)时报错并继续 promote。
     const attempt = (): void => {
       const result = this.startResolvedTurn(next.input, next.grounding, next.queueId, next.originator);
       if (result.error) {
         console.error('[pi-engine] 队列消息启动失败:', result.error);
-        broadcast('chat:message-error', result.error);
+        broadcast('chat:message-error', result.error, { line: this.sessionId });
         this.promotePiQueue();
       }
     };
@@ -1114,7 +1180,7 @@ class ChatEngine {
       attempt();
     } catch (err) {
       console.error('[pi-engine] 队列消息启动失败:', err);
-      broadcast('chat:message-error', err instanceof Error ? err.message : String(err));
+      broadcast('chat:message-error', err instanceof Error ? err.message : String(err), { line: this.sessionId });
       this.promotePiQueue();
     }
   }
@@ -1188,14 +1254,14 @@ class ChatEngine {
             ownerSessionId: sessionId,
             onLifecycle: (ev) => {
               if (ev.kind === 'started') {
-                broadcast('chat:bg-started', { tag: ev.tag, pid: ev.pid, commandPreview: ev.commandPreview, sessionId });
+                broadcast('chat:bg-started', { tag: ev.tag, pid: ev.pid, commandPreview: ev.commandPreview, sessionId }, { line: sessionId });
               } else {
                 broadcast('chat:bg-finished', {
                   tag: ev.tag,
                   status: ev.status,
                   ...(ev.exitCode !== undefined ? { exitCode: ev.exitCode } : {}),
                   sessionId,
-                });
+                }, { line: sessionId });
                 // 1.6.7 R2：完成信号回注 loop——进缓冲，由 turn 起跑 grounding /
                 // steering 两个注入点排干（此前只广播 GUI，agent 只能 sleep 轮询）。
                 this.pendingBgNotes.push({ tag: ev.tag, status: ev.status, exitCode: ev.exitCode });
@@ -1218,7 +1284,7 @@ class ChatEngine {
           ? {
               notify: {
                 started: (taskId, description) => {
-                  broadcast('chat:subagent-started', { taskId, description, sessionId });
+                  broadcast('chat:subagent-started', { taskId, description, sessionId }, { line: sessionId });
                 },
                 finished: (taskId, description, summary, error, childLoopSessionId) => {
                   const trimmed = summary.length > 200 ? `${summary.slice(0, 200)}…` : summary;
@@ -1234,7 +1300,7 @@ class ChatEngine {
                     ...(childLoopSessionId ? { loopSessionId: childLoopSessionId } : {}),
                     // P3a:additive sessionId——事件归属的父线(P3b 按线分流路由键)。
                     sessionId,
-                  });
+                  }, { line: sessionId });
                 },
               },
               onLoopEvent: (taskId, event) => {
@@ -1245,7 +1311,7 @@ class ChatEngine {
                     name: event.toolName,
                     input: event.args ?? {},
                     sessionId,
-                  });
+                  }, { line: sessionId });
                 } else if (event.type === 'tool-result') {
                   broadcast('chat:subagent-tool-result-complete', {
                     subagentId: taskId,
@@ -1253,7 +1319,7 @@ class ChatEngine {
                     content: toolResultText(event.result),
                     isError: event.isError,
                     sessionId,
-                  });
+                  }, { line: sessionId });
                 }
               },
             }
@@ -1378,11 +1444,14 @@ class ChatEngine {
     // P3a:additive sessionId——runLoop 事件流(thinking/tool-use/message-complete
     // 等 object payload)全部属于本 turn 快照线,P3b 按线分流的路由键。
     // string payload(chat:message-chunk 的增量文本)形状被客户端钉死,不强包,
-    // 维持原样(P3b 分流 token 流需另做信封,不在本步)。
+    // 维持原样——P3b 分流走 broadcast 第三参的路由元数据通道({line}),
+    // payload 形状逐字节不动。
     const tagLinePayload = (data: unknown): unknown =>
       typeof data === 'object' && data !== null
         ? { ...(data as Record<string, unknown>), sessionId: turnSessionId }
         : data;
+    const broadcastLine = (event: string, data: unknown): void =>
+      broadcast(event, tagLinePayload(data), { line: turnSessionId });
 
     // 1.2.7(§四) 溢出兜底:pi agentLoop 无内建压缩重试——done 时按
     // isContextOverflow 判定(provider 错误正则/静默溢出/length 截断),命中
@@ -1457,17 +1526,17 @@ class ChatEngine {
         if (event.type === 'done') {
           if (willRetry) continue;
           if (deferredError) {
-            for (const sse of deferredError) broadcast(sse.event, tagLinePayload(sse.data));
+            for (const sse of deferredError) broadcastLine(sse.event, sse.data);
             deferredError = null;
           }
         }
         for (const sse of mapLoopEventToSse(event, { model: resolution.modelId, startedAt })) {
-          broadcast(sse.event, tagLinePayload(sse.data));
+          broadcastLine(sse.event, sse.data);
         }
       }
       if (!willRetry) {
         // 防御:流异常结束(无 done)时补播延迟的错误条,不吞错。
-        if (deferredError) for (const sse of deferredError) broadcast(sse.event, tagLinePayload(sse.data));
+        if (deferredError) for (const sse of deferredError) broadcastLine(sse.event, sse.data);
         break;
       }
       overflowRetried = true;
@@ -1508,7 +1577,7 @@ class ChatEngine {
         model: resolution.modelId,
         lookupWindow: () => resolution.model.contextWindow || null,
       });
-      broadcast('chat:context-usage', { ...usage, sessionId: turnSessionId });
+      broadcast('chat:context-usage', { ...usage, sessionId: turnSessionId }, { line: turnSessionId });
     }
 
     // M4c — turn 完成点挂点(蒸馏弧/标题;原 SDK turn 完成处的同等埋点)。
@@ -1531,7 +1600,8 @@ class ChatEngine {
     if (emptyTurn && !this.pendingEmptyContinuation) {
       const limitNote = hitOutputLimit ? '（stopReason=length：output 预算截断，thinking 烧穿的直接证据）' : '';
       broadcast('chat:message-error',
-        `连续 ${this.emptyTurnStreak} 回合无可见产出${limitNote}——已停止自动续跑；请换模型或降 thinking 档后重试`);
+        `连续 ${this.emptyTurnStreak} 回合无可见产出${limitNote}——已停止自动续跑；请换模型或降 thinking 档后重试`,
+        { line: turnSessionId });
     }
   }
 
@@ -1890,7 +1960,8 @@ class ChatEngine {
     // 回填写盘让出事件循环期间可能有新 turn 起跑——复查,撞车则放弃本次切换
     // (选定已落盘,返回错误由调用方上抛,重选即愈合)。
     if (this.busy) return { ok: false, error: '响应进行中,先 Esc 停止再切换环境' };
-    const line = getEnvSessionLine(loadEnvSessionsMap(), this.agentDir, envKey);
+    // P3b:归属段解析——选定/切线按调用方 actor 找线(私有键 → 共享键 → 旧键)。
+    const line = getEnvSessionLine(loadEnvSessionsMap(), this.agentDir, envKey, { actor: currentActor().name });
     const stored = line ? loadLoopSession(line.loopSessionId) : null;
     this.queue = [];
     this.steering = [];
@@ -1927,20 +1998,21 @@ class ChatEngine {
   stopPiChat(): boolean {
     let acted = false;
     for (const item of this.queue) {
-      broadcast('queue:cancelled', { queueId: item.queueId, sessionId: this.sessionId });
+      broadcast('queue:cancelled', { queueId: item.queueId, sessionId: this.sessionId }, { line: this.sessionId });
       acted = true;
     }
     this.queue = [];
     for (const item of this.steering) {
-      broadcast('chat:steering-cancelled', { queueId: item.queueId, sessionId: this.sessionId });
+      broadcast('chat:steering-cancelled', { queueId: item.queueId, sessionId: this.sessionId }, { line: this.sessionId });
       acted = true;
     }
     this.steering = [];
     if (this.busy && this.currentAbort) {
       this.currentAbort.abort();
       // P3a 刻意不带 sessionId:payload 恒为 null,改成对象即破坏现有客户端
-      // 形状(GUI reducer 按 null 消费);P3b 分流靠伴随的 chat:status 事件。
-      broadcast('chat:message-stopped', null);
+      // 形状(GUI reducer 按 null 消费);P3b 分流走路由元数据通道({line}),
+      // payload 逐字节不动。
+      broadcast('chat:message-stopped', null, { line: this.sessionId });
       acted = true;
     }
     // W1 — stop 后状态回 idle(turn 收尾的 finally 会再发一次同值,幂等)。
@@ -1953,13 +2025,13 @@ class ChatEngine {
     const idx = this.queue.findIndex((item) => item.queueId === queueId);
     if (idx >= 0) {
       const [item] = this.queue.splice(idx, 1);
-      broadcast('queue:cancelled', { queueId, sessionId: this.sessionId });
+      broadcast('queue:cancelled', { queueId, sessionId: this.sessionId }, { line: this.sessionId });
       return item.input.text;
     }
     const steeringIdx = this.steering.findIndex((item) => item.queueId === queueId);
     if (steeringIdx >= 0) {
       const [item] = this.steering.splice(steeringIdx, 1);
-      broadcast('chat:steering-cancelled', { queueId, sessionId: this.sessionId });
+      broadcast('chat:steering-cancelled', { queueId, sessionId: this.sessionId }, { line: this.sessionId });
       return item.input.text;
     }
     return null;
@@ -1987,11 +2059,11 @@ class ChatEngine {
   resetPiChat(): void {
     if (this.currentAbort) this.currentAbort.abort();
     for (const item of this.queue) {
-      broadcast('queue:cancelled', { queueId: item.queueId, sessionId: this.sessionId });
+      broadcast('queue:cancelled', { queueId: item.queueId, sessionId: this.sessionId }, { line: this.sessionId });
     }
     this.queue = [];
     for (const item of this.steering) {
-      broadcast('chat:steering-cancelled', { queueId: item.queueId, sessionId: this.sessionId });
+      broadcast('chat:steering-cancelled', { queueId: item.queueId, sessionId: this.sessionId }, { line: this.sessionId });
     }
     this.steering = [];
     this.pendingBgNotes = []; // 1.6.7 R2：reset 清场，bg 通知不跨会话残留
@@ -2011,7 +2083,8 @@ class ChatEngine {
     }
     // 1.1.6 #4:同步清当前环境键的分线映射——否则 reset 后按映射恢复会把
     // reset 前的历史整个复活(与上面摘 loopSessionId 绑定同一类活体事故)。
-    void removeEnvSessionLine(this.agentDir, this.currentEnvKey).catch(
+    // P3b:按本线归属段清(共享线清 shared 键;新旧键同清,防旧键回读复活)。
+    void removeEnvSessionLine(this.agentDir, this.currentEnvKey, undefined, this.lineSegment()).catch(
       (err) => console.warn('[pi-engine] reset 清 env-sessions 映射失败:', err),
     );
     this.sessionId = newLoopSessionId();
@@ -2073,7 +2146,7 @@ class ChatEngine {
     if (this.busy) {
       const queueId = randomUUID();
       this.steering.push({ queueId, input: { text: note }, grounding: '' });
-      broadcast('chat:steering-added', { queueId, messageText: note.slice(0, 100), sessionId: this.sessionId });
+      broadcast('chat:steering-added', { queueId, messageText: note.slice(0, 100), sessionId: this.sessionId }, { line: this.sessionId });
     } else {
       this.pendingMissionNotes.push(note);
     }
@@ -2102,7 +2175,7 @@ class ChatEngine {
       mission: mission ?? null,
       label: mission && isMissionKind(mission) ? MISSION_LABELS[mission] : '无类型',
       sessionId: this.sessionId,
-    });
+    }, { line: this.sessionId });
   }
 
   /**
@@ -2169,69 +2242,181 @@ class ChatEngine {
     this.messages = this.loopMessagesToWire(loadLoopSession(forkId).messages);
     this.streamingAssistantId = null;
     this.systemInitInfo = null;
-    broadcast('chat:status', { sessionState: 'idle', sessionId: this.sessionId });
+    broadcast('chat:status', { sessionState: 'idle', sessionId: this.sessionId }, { line: this.sessionId });
     console.log(`[pi-engine] fork → 新会话 ${forkId}(截点 ${cutIndex} 条 loop 消息)`);
     return { success: true, sessionId: forkId };
   }
 }
 
 // ---------------------------------------------------------------------------
-// 引擎注册表(1.8.7 P3a 第一步:引擎实例表 + 活跃指针——一台上限仍在)
+// 引擎注册表(1.8.7 P3a 第一步建结构;P3b 放掉一台上限)
 //
-// engines: Map<loopSessionId, ChatEngine> + activeEngine 活跃指针。本步恒只有
-// 一台引擎(活跃引擎),Map 恒只有一项(键 = 活跃引擎当前 loopSessionId);
-// 「当前线」语义与 defaultEngine 单例逐字节相同——switch/reset/switchEnvSession/
-// fork 仍在同一实例内原地换血(含 switchPiSession 的 busy 强停杀旧线 turn),
-// 换线 id 后由 syncEngineRegistry 重同步键(单台 → clear+set 即换键,不新建/
-// 不淘汰实例)。注册表只是 P3b 多引擎的寻址结构预留;facade 全部经
-// getActiveEngine() 取实例,调用点零改动。
+// engines: Map<loopSessionId, ChatEngine>——P3b 起多引擎并存,一条活跃线一台,
+// busy/steering/abort 全 per-line(线 A 的 turn 不挡线 B)。「当前线」从单一
+// 活跃指针变为 **per-actor 活跃线指针** activeLines(actor 名 → loopSessionId):
+// 本机模式恒单 actor 'local',退化成与单例逐字节相同的语义;团队模式按请求
+// actor(ALS)各走各的当前线。引擎按线惰性创建(getOrCreateEngine:盘上有
+// transcript,initForLine 同步装载),空闲超阈值即 dispose(不丢历史),下次
+// 访问惰性重建。facade 全部经 getActiveEngine()(内部按 currentActor 解析),
+// 调用点零改动。
 // ---------------------------------------------------------------------------
 
 const engines = new Map<string, ChatEngine>();
-// P3a 恒指向唯一引擎;P3b 放掉一台上限后活跃指针才会重指(届时改 let)。
-const activeEngine = new ChatEngine();
-engines.set(activeEngine.getPiSessionId(), activeEngine);
+/** per-actor 活跃线指针(actor 名 → loopSessionId)。缺省解析见
+ *  getActiveLoopSessionIdForActor(指针 → 环境分线映射按 actor → 启动线)。 */
+const activeLines = new Map<string, string>();
+/** 启动引擎(initPiChatEngine 初始化的那台;注册表换键时随之重指)。 */
+let bootEngine = new ChatEngine();
+engines.set(bootEngine.getPiSessionId(), bootEngine);
+/** 注册表工作区(initPiChatEngine 捕获;惰性建引擎的 agentDir)。 */
+let registryAgentDir = '';
 
-/** 换线类操作(init/switch/switchEnvSession/reset/fork)后重同步注册表键。 */
-function syncEngineRegistry(): void {
-  engines.clear();
-  engines.set(activeEngine.getPiSessionId(), activeEngine);
+/**
+ * 某 actor 的当前线:① 显式指针;② 环境分线映射按 actor 归属段解析
+ * (私有键 → 共享键 → 旧键);③ 启动线(单用户兜底——本机模式恒到此,
+ * 与 1.8.6 逐字节相同)。
+ */
+export function getActiveLoopSessionIdForActor(actorName: string): string {
+  const pointed = activeLines.get(actorName);
+  if (pointed) return pointed;
+  if (registryAgentDir) {
+    const envKey = resolveSessionEnvKey(registryAgentDir);
+    const line = getEnvSessionLine(loadEnvSessionsMap(), registryAgentDir, envKey, { actor: actorName });
+    if (line) return line.loopSessionId;
+  }
+  return bootEngine.getPiSessionId();
 }
 
-/** 注册表活跃引擎(P3a 恒为唯一一台)。 */
-function getActiveEngine(): ChatEngine {
-  return activeEngine;
-}
-
-/** 当前线 id(活跃引擎的 loopSessionId)——按线寻址的「当前线」判定源。 */
+/** 当前线 id(调用方 actor 的活跃线;无 ALS 帧 = local)——按线寻址的
+ *  「当前线」判定源。 */
 export function getActiveLoopSessionId(): string {
-  return activeEngine.getPiSessionId();
+  return getActiveLoopSessionIdForActor(currentActor().name);
 }
 
-/** 按线寻址的归属判定:'active' 当前线(live 视图/控制按今日语义);
- *  'known' 盘上存在的既有线(只读历史视图;P3a 无引擎在其上);
+/** 按线取引擎,没有则惰性创建(盘上有 transcript,initForLine 同步装载)。 */
+function getOrCreateEngine(loopSessionId: string): ChatEngine {
+  const existing = engines.get(loopSessionId);
+  if (existing) {
+    existing.markUsed();
+    return existing;
+  }
+  const created = new ChatEngine();
+  created.initForLine(registryAgentDir, loopSessionId);
+  created.markUsed();
+  engines.set(loopSessionId, created);
+  return created;
+}
+
+/** 注册表活跃引擎(调用方 actor 的当前线;缺引擎惰性创建)。 */
+function getActiveEngine(): ChatEngine {
+  return getOrCreateEngine(getActiveLoopSessionId());
+}
+
+/** 某线上是否有 live 引擎(SSE 按线分流的探针;/api/session-state 的诚实回报源)。 */
+export function hasLiveEngine(loopSessionId: string): boolean {
+  return engines.has(loopSessionId);
+}
+
+/** live 引擎的只读访问(不创建)——/api/session-state、/chat/queue/status 的
+ *  按线回报。无线/无引擎 → undefined。 */
+export function getLiveEngineState(loopSessionId: string): {
+  sessionState: string;
+  queue: Array<{ id: string; messagePreview: string; kind: 'fifo' | 'steering' }>;
+} | undefined {
+  const engine = engines.get(loopSessionId);
+  if (!engine) return undefined;
+  return { sessionState: engine.getPiAgentState().sessionState, queue: engine.getPiQueueStatus() };
+}
+
+/** 换线类操作(init/switch/switchEnvSession/reset/fork)后重同步注册表键:
+ *  只重挂本引擎(P3b 多引擎并存,别的线不动)。per-actor 活跃指针不在这里
+ *  动——别的 actor 可能正指着被换走的旧线(下次访问惰性重建即可);调用方
+ *  自己的指针由各 switch facade 显式改指(activeLines.set)。 */
+function syncEngineRegistry(engine: ChatEngine): void {
+  const current = engine.getPiSessionId();
+  for (const [key, value] of Array.from(engines.entries())) {
+    if (value === engine && key !== current) engines.delete(key);
+  }
+  engines.set(current, engine);
+}
+
+/** 按线寻址的归属判定:'active' 有 live 引擎(live 视图/控制按今日语义);
+ *  'known' 盘上存在的既有线(只读历史视图/惰性起引擎);
  *  'unknown' 无此线(404)。 */
 export type LineAddress = 'active' | 'known' | 'unknown';
 export function resolveLineAddress(loopSessionId: string): LineAddress {
-  if (loopSessionId === activeEngine.getPiSessionId()) return 'active';
-  // P3b 预留:非活跃引擎的线同样算 live;P3a 单引擎下不可达。
   if (engines.has(loopSessionId)) return 'active';
   return existsSync(loopSessionFile(loopSessionId, defaultLoopSessionDir())) ? 'known' : 'unknown';
 }
 
 /**
- * 按线寻址(控制/写路由共用闸):sessionId 缺省/空串/= 当前线 → null 放行
- * (今日语义);≠ 当前线 → 结构化 line_not_active 错误(调用方 409 返回,
- * 绝不静默操作到错的线上)。P3a 单引擎:只有当前线可被控制。
+ * 按线寻址(控制/写路由共用闸):sessionId 缺省/空串/= 调用方当前线 → null
+ * 放行(今日语义);≠ 调用方当前线 → 结构化 line_not_active 错误(调用方
+ * 409 返回,绝不静默操作到错的线上)。P3b:「当前线」per-actor——A 的闸只
+ * 拦 A 的非当前线,不拦 B 的。
  */
 export function controlLineGate(
   sessionId: unknown,
 ): { error: 'line_not_active'; activeSessionId: string; requestedSessionId: string } | null {
   if (typeof sessionId !== 'string' || sessionId === '') return null;
-  const active = activeEngine.getPiSessionId();
+  const active = getActiveLoopSessionId();
   if (sessionId === active) return null;
   return { error: 'line_not_active', activeSessionId: active, requestedSessionId: sessionId };
 }
+
+// ---------------------------------------------------------------------------
+// 空闲回收(P3b 第三步):引擎闲置超阈值即 dispose——transcript 全量在盘上
+// (loop-sessions/*.jsonl),回收不丢历史;下次访问 getOrCreateEngine 惰性重建。
+// busy(turn 进行中)的引擎永不回收。阈值:ZHISHI_ENGINE_IDLE_EVICT_MINUTES
+// > config engineIdleEvictMinutes > 默认 30 分钟。
+// ---------------------------------------------------------------------------
+
+const DEFAULT_ENGINE_IDLE_EVICT_MINUTES = 30;
+
+function engineIdleEvictMs(): number {
+  const envRaw = Number(process.env.ZHISHI_ENGINE_IDLE_EVICT_MINUTES);
+  if (Number.isFinite(envRaw) && envRaw > 0) return envRaw * 60_000;
+  const configRaw = Number((loadConfig() as { engineIdleEvictMinutes?: unknown }).engineIdleEvictMinutes);
+  if (Number.isFinite(configRaw) && configRaw > 0) return configRaw * 60_000;
+  return DEFAULT_ENGINE_IDLE_EVICT_MINUTES * 60_000;
+}
+
+/** sweep 一轮:闲置超阈值的非 busy 引擎 dispose(返回回收的线 id;测试直调)。 */
+export function sweepIdleEngines(now: number = Date.now()): string[] {
+  const evictMs = engineIdleEvictMs();
+  const evicted: string[] = [];
+  for (const [line, engine] of Array.from(engines.entries())) {
+    if (engine.isEngineBusy()) continue; // turn 进行中永不回收
+    if (engine.idleMs(now) < evictMs) continue;
+    engines.delete(line);
+    evicted.push(line);
+    console.log(`[pi-engine] 空闲回收 loop=${line}(闲置 ${Math.round(engine.idleMs(now) / 60_000)}min ≥ 阈值 ${Math.round(evictMs / 60_000)}min;transcript 在盘上,下次访问惰性重建)`);
+  }
+  return evicted;
+}
+
+let evictTimer: ReturnType<typeof setInterval> | null = null;
+
+/** 启动周期 sweep(initPiChatEngine 调用一次;unref 不拖住事件循环)。 */
+function startEngineEvictionTimer(): void {
+  if (evictTimer) return;
+  evictTimer = setInterval(() => sweepIdleEngines(), 60_000);
+  evictTimer.unref?.();
+}
+
+/** 测试复位:清空注册表与活跃指针,重造启动引擎(各测试文件隔离用)。 */
+export function __resetEnginesForTests(): void {
+  engines.clear();
+  activeLines.clear();
+  bootEngine = new ChatEngine();
+  engines.set(bootEngine.getPiSessionId(), bootEngine);
+  registryAgentDir = '';
+}
+
+// P3b:SSE 按线分流的探针注入——「有 live 引擎的线」的事件只送达该线订阅者;
+// 无引擎的线(headless cron/auto-run、已空闲回收)回退全局 fan-out(1.8.6
+// 语义逐字节保持)。sse 是底层模块,探针由本模块反向注入,防静态环。
+__setLineLiveProbe((line) => engines.has(line));
 
 // ---------------------------------------------------------------------------
 // facade(1.1.7 ② 收拢;1.8.7 P3a 经注册表取活跃引擎):按原签名逐个委托,
@@ -2252,8 +2437,13 @@ export function isPiEngine(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 export async function initPiChatEngine(dir: string): Promise<void> {
-  await getActiveEngine().initPiChatEngine(dir);
-  syncEngineRegistry();
+  registryAgentDir = dir;
+  await bootEngine.initPiChatEngine(dir);
+  syncEngineRegistry(bootEngine);
+  // per-actor 指针缺省:启动 actor(local)指到启动线。
+  activeLines.set('local', bootEngine.getPiSessionId());
+  // P3b:空闲回收周期 sweep(unref,不拖住事件循环)。
+  startEngineEvictionTimer();
 }
 
 export function getPiAgentState(): ReturnType<ChatEngine['getPiAgentState']> {
@@ -2307,7 +2497,10 @@ export async function invokePiSession(
   return getActiveEngine().invokePiSession(input, options);
 }
 
-/** 1.3.2 决策注入——人的决定以 user 消息注入回 loop(单例线经 steering/直发,跨线经 invoke)。 */
+/** 1.3.2 决策注入——人的决定以 user 消息注入回 loop。
+ *  P3b 按 pending 所属线寻址:目标线有 live 引擎 → 那台引擎的
+ *  steering/直发通道(本线语义);无 live 引擎 → headless invoke 注入到
+ *  目标线(jsonl 持久化,不起交互引擎,不串线)。 */
 export function injectPiDecision(decision: {
   decisionId: string;
   sessionId: string;
@@ -2316,7 +2509,25 @@ export function injectPiDecision(decision: {
   note?: string;
   expertRefs?: string[];
 }): Promise<{ success: boolean; error?: string }> {
-  return getActiveEngine().injectDecision(decision);
+  const target = engines.get(decision.sessionId);
+  if (target) {
+    target.markUsed();
+    return target.injectDecision(decision);
+  }
+  // 无 live 引擎的线(cron/auto-run 等 headless 线):invoke 通道注入。
+  const text = formatDecisionInjectionContent(decision);
+  return getActiveEngine().invokePiSession(
+    {
+      text,
+      decision: {
+        decisionId: decision.decisionId,
+        choice: decision.choice,
+        ...(decision.note ? { note: decision.note } : {}),
+        ...(decision.expertRefs && decision.expertRefs.length > 0 ? { expertRefs: decision.expertRefs } : {}),
+      },
+    },
+    { loopSessionId: decision.sessionId },
+  ).then((r) => ({ success: !r.error, ...(r.error ? { error: r.error } : {}) }));
 }
 
 /** B2(1.2.6)— 引擎当前线的只读快照(cron「跟随当前线」语义的数据源)。 */
@@ -2325,9 +2536,12 @@ export function getPiCurrentSessionRef(): { loopSessionId: string; sessionMetaId
 }
 
 export async function switchPiSession(metaId: string): Promise<boolean> {
-  const switched = await getActiveEngine().switchPiSession(metaId);
-  // 幂等命中(同一会话)sessionId 不变,sync 是无害 no-op;换线后重同步键。
-  syncEngineRegistry();
+  const engine = getActiveEngine();
+  const switched = await engine.switchPiSession(metaId);
+  // 幂等命中(同一会话)sessionId 不变,sync 是无害 no-op;换线后重同步键,
+  // 调用方活跃指针改指新线(别的 actor 的指针不动——他们的线惰性重建)。
+  syncEngineRegistry(engine);
+  if (switched) activeLines.set(currentActor().name, engine.getPiSessionId());
   return switched;
 }
 
@@ -2336,8 +2550,10 @@ export function envSwitchBlocker(workspace: string): string | null {
 }
 
 export async function switchEnvSession(workspace: string, envKey: string): Promise<{ ok: boolean; error?: string }> {
-  const result = await getActiveEngine().switchEnvSession(workspace, envKey);
-  syncEngineRegistry();
+  const engine = getActiveEngine();
+  const result = await engine.switchEnvSession(workspace, envKey);
+  syncEngineRegistry(engine);
+  if (result.ok) activeLines.set(currentActor().name, engine.getPiSessionId());
   return result;
 }
 
@@ -2376,8 +2592,10 @@ export function getPiQueueSnapshotEvents(): Array<{
 }
 
 export function resetPiChat(): void {
-  getActiveEngine().resetPiChat();
-  syncEngineRegistry();
+  const engine = getActiveEngine();
+  engine.resetPiChat();
+  syncEngineRegistry(engine);
+  activeLines.set(currentActor().name, engine.getPiSessionId());
 }
 
 export async function rewindPiChat(userMessageId: string): Promise<{ success: boolean; error?: string }> {
@@ -2385,7 +2603,9 @@ export async function rewindPiChat(userMessageId: string): Promise<{ success: bo
 }
 
 export async function forkPiChat(messageId: string): Promise<{ success: boolean; error?: string; sessionId?: string }> {
-  const result = await getActiveEngine().forkPiChat(messageId);
-  syncEngineRegistry();
+  const engine = getActiveEngine();
+  const result = await engine.forkPiChat(messageId);
+  syncEngineRegistry(engine);
+  if (result.success) activeLines.set(currentActor().name, engine.getPiSessionId());
   return result;
 }

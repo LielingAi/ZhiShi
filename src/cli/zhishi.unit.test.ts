@@ -140,6 +140,21 @@ beforeAll(async () => {
           success: true,
           data: { enabled: true, tokens: [{ id: 'tok_test01', name: 'A', role: 'reviewer', createdAt: '2026-09-29T00:00:00.000Z' }] },
         }));
+      } else if (req.url === '/api/admin/line/list') {
+        // 1.8.7 P3b 研究线清单：归属段/owner/shared/live/busy/active 投影。
+        res.end(JSON.stringify({
+          success: true,
+          data: {
+            workspace: body.workspace,
+            activeLoopSessionId: 'ls-a1',
+            lines: [
+              { loopSessionId: 'ls-a1', envKey: 'env:pwn-vm', segment: 'alice', owner: 'alice', shared: false, live: true, busy: true, active: true, updatedAt: 'u1' },
+              { loopSessionId: 'ls-t2', envKey: 'host', segment: 'shared', owner: 'alice', shared: true, live: false, busy: false, active: false, updatedAt: 'u2' },
+            ],
+          },
+        }));
+      } else if (req.url === '/api/admin/line/share' || req.url === '/api/admin/line/unshare') {
+        res.end(JSON.stringify({ success: true, data: { loopSessionId: body.loopSessionId, shared: req.url.endsWith('/share') } }));
       } else if (req.url === '/api/admin/environment/discover') {
         // 1.5.10 发现面契约：docker 容器 / docker 镜像（docker-image 驱动）/ VM 三区。
         res.end(JSON.stringify({
@@ -637,5 +652,42 @@ describe('1.8.7 P1：auth 子命令（团队大脑 token 管理）', () => {
     captured = [];
     expect((await runCli(['auth', 'disable'])).code).toBe(0);
     expect(captured.some((c) => c.url === '/api/admin/auth/disable')).toBe(true);
+  }, 30_000);
+});
+
+describe('1.8.7 P3b：line 子命令（研究线双线制）', () => {
+  it('line list --workspace W → /api/admin/line/list 带 workspace,打印归属/active/busy 标记', async () => {
+    captured = [];
+    const r = await runCli(['line', 'list', '--workspace', 'E:/ws']);
+    expect(r.code).toBe(0);
+    const req = captured.find((c) => c.url === '/api/admin/line/list');
+    expect(req).toBeDefined();
+    expect(req!.body).toEqual({ workspace: 'E:/ws' });
+    // * = 调用方当前线;shared / private:owner 归属标记;live,busy 状态
+    expect(r.stdout).toContain('ls-a1');
+    expect(r.stdout).toContain('private:alice');
+    expect(r.stdout).toContain('shared');
+    expect(r.stdout).toContain('live,busy');
+    expect(r.stdout).toMatch(/^\* +ls-a1/m);
+  }, 30_000);
+
+  it('line share <id> → /api/admin/line/share { loopSessionId }', async () => {
+    captured = [];
+    const r = await runCli(['line', 'share', 'ls-a1']);
+    expect(r.code).toBe(0);
+    const req = captured.find((c) => c.url === '/api/admin/line/share');
+    expect(req).toBeDefined();
+    expect(req!.body).toEqual({ loopSessionId: 'ls-a1' });
+  }, 30_000);
+
+  it('line unshare <id> → /api/admin/line/unshare { loopSessionId }（远端模式同样成立）', async () => {
+    captured = [];
+    const r = await runCli(['line', 'unshare', 'ls-t2', '--server', `http://127.0.0.1:${port}`, '--token', 'test-token-xyz']);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain('远端模式');
+    const req = captured.find((c) => c.url === '/api/admin/line/unshare');
+    expect(req).toBeDefined();
+    expect(req!.body).toEqual({ loopSessionId: 'ls-t2' });
+    expect(req?.headers.authorization).toBe('Bearer test-token-xyz');
   }, 30_000);
 });

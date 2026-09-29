@@ -179,6 +179,11 @@ export const ADMIN_ROUTE_ROLE: Record<string, AuthRole> = {
   'auth/revoke': 'reviewer',
   'auth/enable': 'reviewer',
   'auth/disable': 'reviewer',
+  // ── 1.8.7 P3b 研究线双线制：list=只读；share/unshare=操作员起
+  //  （owner 可能是 operator；reviewer/owner 复核在 line-admin 内做）──
+  'line/list': 'readonly',
+  'line/share': 'operator',
+  'line/unshare': 'operator',
 };
 
 /** 未登记的 admin 路由一律按最高档（fail closed）。 */
