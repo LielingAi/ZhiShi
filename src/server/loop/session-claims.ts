@@ -43,6 +43,9 @@ export interface SessionClaim {
   status: SessionClaimStatus;
   /** 被本条目取代的旧条目 id（conflict 收敛记录）。 */
   supersedes?: string;
+  /** 1.8.7 P2 署名（additive）：本条线的归属（turn 起跑人/请求 actor 名）。
+   *  可空——1.8.6 及更早的 claim 无此字段，治理弧按缺省兜底。 */
+  owner?: string;
   createdAt: string;
   updatedAt: string;
   lastTouchedAt: string;

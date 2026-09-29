@@ -22,6 +22,7 @@ import { Type, type Static } from '@earendil-works/pi-ai';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 
 import { broadcast } from '../sse';
+import { originatorForSession } from '../auth/actor';
 import { getZhiShiDataDir } from '../utils/app-dirs';
 import { openExpertStore, type ExpertEntry } from '../expert/store';
 import { searchExpertEntries, EXPERT_SEARCH_LIMIT } from '../expert/search';
@@ -61,6 +62,10 @@ export interface DecisionPending {
   choice?: string;
   note?: string;
   resolvedAt?: string;
+  /** 1.8.7 P2 署名(additive)：提请时所在 turn 的起跑人 / 应答人。
+   *  均可选——旧记录无此字段，消费方按缺省兜底。 */
+  requestedBy?: string;
+  respondedBy?: string;
 }
 
 const pending = new Map<string, DecisionPending>();
@@ -120,6 +125,8 @@ export function requestDecision(
     context?: string;
     expertHits?: string[];
     expertRefs?: string[];
+    /** P2 署名：提请时所在 turn 的起跑人。 */
+    requestedBy?: string;
   },
   broadcastFn: BroadcastFn = broadcast,
 ): DecisionPending {
@@ -134,6 +141,7 @@ export function requestDecision(
     expertRefs: input.expertRefs ?? [],
     createdAt: new Date().toISOString(),
     resolved: false,
+    ...(input.requestedBy ? { requestedBy: input.requestedBy } : {}),
   };
   pending.set(decisionId, record);
   broadcastFn('chat:decision-request', {
@@ -141,6 +149,7 @@ export function requestDecision(
     question: record.question,
     options: record.options,
     expertHits: record.expertHits,
+    ...(record.requestedBy ? { requestedBy: record.requestedBy } : {}),
   });
   return record;
 }
@@ -151,15 +160,17 @@ export type RespondDecisionResult =
 
 /**
  * 人已作答:登记 choice/note 并标记 resolved。幂等——同一 decisionId 的
- * 重复 respond 返回 reason='resolved',调用方不得重复注入。
+ * 重复 respond 返回 reason='resolved',调用方不得重复注入（first-answer-wins
+ * 语义不变）。responder = 应答人署名（P2 additive）。
  */
-export function respondDecision(decisionId: string, choice: string, note?: string): RespondDecisionResult {
+export function respondDecision(decisionId: string, choice: string, note?: string, responder?: string): RespondDecisionResult {
   const d = pending.get(decisionId);
   if (!d) return { ok: false, reason: 'unknown' };
   if (d.resolved) return { ok: false, reason: 'resolved' };
   d.resolved = true;
   d.choice = choice;
   if (note) d.note = note;
+  if (responder) d.respondedBy = responder;
   d.resolvedAt = new Date().toISOString();
   return { ok: true, decision: d };
 }
@@ -262,7 +273,17 @@ export function createDecisionTool(
       const { expertHits, expertRefs } = buildExpertHitSummaries(hits);
 
       const record = requestDecision(
-        { sessionId: getSessionId(), question, options, context, expertHits, expertRefs },
+        {
+          sessionId: getSessionId(),
+          question,
+          options,
+          context,
+          expertHits,
+          expertRefs,
+          // P2 署名：决策归属 = 本 turn 起跑人（turn 异步跑出请求 ALS 帧后
+          // 仍能回答「谁问的」）。
+          requestedBy: originatorForSession(getSessionId()).name,
+        },
         broadcastFn,
       );
       return {

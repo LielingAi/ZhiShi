@@ -136,6 +136,9 @@ import { ENV_BG_TOOL_NAME, envBgReap } from './bg-exec';
 import { getBgRegistry, initBgRegistry } from './bg-registry';
 import { reapAllBgProcesses } from './bg-reap';
 import { filterAgentsByDomain, loadBundledAgents } from '../agents/bundled-agents';
+// 1.8.7 P2 身份贯穿：turn 起跑人捕获（send 时抓请求 actor，起跑时按线登记；
+// turn 内产物——决策/纠正/claims/research 事件/boundary ask——按起跑人署名）。
+import { currentActor, originatorForSession, setTurnOriginator, type Actor } from '../auth/actor';
 
 // ---------------------------------------------------------------------------
 // Types(原 module state 段的接口 + Send 段接口,class 语法要求上移至此)
@@ -172,6 +175,9 @@ interface PiQueueItem {
   input: PiSendInput;
   /** W1 — refs 解析出的 grounding 段(send 时解析,随条目走)。 */
   grounding: string;
+  /** P2 — send 时抓到的请求 actor(promote 成 turn 时登记为起跑人;
+   *  缺省 = 起跑时现抓/LOCAL)。 */
+  originator?: Actor;
 }
 
 export interface PiSendInput {
@@ -660,15 +666,16 @@ class ChatEngine {
     }
   }
 
-  /** 模型解析 + 启动 turn(send/queue 两入口共用;调用前须确认 !busy)。 */
-  private startResolvedTurn(input: PiSendInput, grounding: string, queueId?: string): PiSendResult {
+  /** 模型解析 + 启动 turn(send/queue 两入口共用;调用前须确认 !busy)。
+   *  originator(P2):本条消息的请求 actor——起跑时登记为本线起跑人。 */
+  private startResolvedTurn(input: PiSendInput, grounding: string, queueId?: string, originator?: Actor): PiSendResult {
     const resolution = input.providerEnv
       ? resolveLoopModelFromEnv(input.providerEnv, input.model ?? '')
       : resolveLoopModel();
     if (!resolution) {
       return { error: PI_NO_PROVIDER_ERROR };
     }
-    this.startPiTurn(input, resolution, grounding, queueId);
+    this.startPiTurn(input, resolution, grounding, queueId, originator);
     return { queued: false, isInFlight: true, queueId };
   }
 
@@ -688,14 +695,17 @@ class ChatEngine {
     // B5(1.2.6):queueId 恒分配(直接开 turn 的也带)——steering/FIFO 排队
     // 与 wire 消息归属的关联键(queue:* 事件族按它对账)。
     const queueId = randomUUID();
+    // P2:send 时抓请求 actor(此时仍在请求 ALS 帧内)——直接起跑/steering
+    // 排队/FIFO 兜底三条路都按发起人署名。
+    const originator = currentActor();
     if (this.busy) {
-      this.steering.push({ queueId, input, grounding });
+      this.steering.push({ queueId, input, grounding, originator });
       broadcast('chat:steering-added', { queueId, messageText: text.slice(0, 100) });
       console.log(`[pi-engine] 消息进 steering 队列 queueId=${queueId}(深度=${this.steering.length})`);
       return { queued: true, queueId, isInFlight: false, steering: true };
     }
 
-    return this.startResolvedTurn(input, grounding, queueId);
+    return this.startResolvedTurn(input, grounding, queueId, originator);
   }
 
   /**
@@ -824,8 +834,10 @@ class ChatEngine {
 
   /** 启动一个 turn(fire-and-forget);调用前须确认 !busy。
    *  queueId(B5):本条消息的来源队列项 id——记入 wire 用户消息
-   *  (queue:* 事件族按它对账)。 */
-  private startPiTurn(input: PiSendInput, resolution: LoopModelResolution, grounding: string, queueId?: string): void {
+   *  (queue:* 事件族按它对账)。
+   *  originator(P2):本条消息的请求 actor——起跑即按快照线登记为起跑人;
+   *  缺省(空产出续跑等引擎自生 turn)不动登记表,沿用本线已有归属。 */
+  private startPiTurn(input: PiSendInput, resolution: LoopModelResolution, grounding: string, queueId?: string, originator?: Actor): void {
     const text = input.text.trim();
     this.busy = true;
     this.currentAbort = new AbortController();
@@ -844,6 +856,9 @@ class ChatEngine {
     // 里到达的 done.messages)属于起跑时那条线;动态读 this.sessionId 会把
     // 旧 turn 尾部追加进新会话 jsonl(串线)。
     const turnSessionId = this.sessionId;
+    // P2:起跑即登记本线起跑人——turn 异步跑出请求 ALS 帧后,turn 内产物
+    // (决策/纠正/claims/research 事件/boundary ask)按起跑人署名。
+    if (originator) setTurnOriginator(turnSessionId, originator);
     // W1 — 状态行数据源:turn 开始(running)。
     this.broadcastChatStatus();
 
@@ -1070,7 +1085,7 @@ class ChatEngine {
     console.log(`[pi-engine] 自动接下一条 queueId=${next.queueId}(剩余=${this.queue.length})`);
     // startResolvedTurn 同步返回;解析失败(模型不可用)时报错并继续 promote。
     const attempt = (): void => {
-      const result = this.startResolvedTurn(next.input, next.grounding, next.queueId);
+      const result = this.startResolvedTurn(next.input, next.grounding, next.queueId, next.originator);
       if (result.error) {
         console.error('[pi-engine] 队列消息启动失败:', result.error);
         broadcast('chat:message-error', result.error);
@@ -1225,7 +1240,11 @@ class ChatEngine {
     // 模型没有问询通道;仅靠 boundary 拦截是「注册了但被拦」,不是不注册)。
     const effectiveToolNames = toolNames;
     const registeredTools = tools.filter((t) => effectiveToolNames.includes(t.name));
-    const baseBoundary = makeBoundaryHook(env, { allowedTools: effectiveToolNames });
+    const baseBoundary = makeBoundaryHook(env, {
+      allowedTools: effectiveToolNames,
+      // P2:system-config ask 的归属 = 本 turn 起跑人。
+      getRequestedBy: () => originatorForSession(sessionId).name,
+    });
     // 包装 boundary:记录幻觉工具(白名单外被拦)供 turn 完成点的缺口埋点。
     const blockedToolNames: string[] = [];
     const beforeToolCall: typeof baseBoundary = async (ctx, signal) => {
@@ -1594,6 +1613,10 @@ class ChatEngine {
     } = {},
   ): Promise<{ text: string; error?: string; loopSessionId: string }> {
     const loopSessionId = options.loopSessionId ?? newLoopSessionId();
+    // P2:headless invoke 线同样登记起跑人——调用点若仍在请求 ALS 帧内
+    // (cron execute-sync / auto-run runner 链)抓到的是请求 actor,
+    // 否则 LOCAL_ACTOR;turn 内产物按此署名。
+    setTurnOriginator(loopSessionId, currentActor());
     const resolution = input.providerEnv
       ? resolveLoopModelFromEnv(input.providerEnv, input.model ?? '')
       : resolveLoopModel();

@@ -297,6 +297,26 @@ describe('createResearchLogTool', () => {
     }
   });
 
+  it('P2 署名：by = turn 起跑人（originator 登记）；无登记兜底 local', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'zhishi-research-log-tool-'));
+    try {
+      const { setTurnOriginator, __resetTurnOriginatorsForTests } = await import('../auth/actor');
+      __resetTurnOriginatorsForTests();
+      setTurnOriginator('ls-by-1', { name: 'alice', role: 'reviewer', source: 'token' });
+      const tool = createResearchLogTool('E:/work', { baseDir, loopSessionId: 'ls-by-1' });
+      await tool.execute('tc-by', { task_kind: 'pentest', outcome: 'success', summary: '拿下域控' });
+      expect(listResearchEvents({ limit: 10, baseDir })[0].by).toBe('alice');
+      // 无登记 → LOCAL（本地模式 uniform 形状）
+      const plain = createResearchLogTool('E:/work', { baseDir });
+      await plain.execute('tc-by-2', { task_kind: 'pentest', outcome: 'fail', summary: '没打下来' });
+      expect(listResearchEvents({ limit: 10, baseDir }).find((e) => e.summary === '没打下来')?.by).toBe('local');
+      __resetTurnOriginatorsForTests();
+    } finally {
+      resetMemoryStoreForTest();
+      rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+
   it('合法参数直接落库( harness 原生,不经 shell)', async () => {    const baseDir = mkdtempSync(join(tmpdir(), 'zhishi-research-log-tool-'));
     try {
       const tool = createResearchLogTool('E:/work', { baseDir });

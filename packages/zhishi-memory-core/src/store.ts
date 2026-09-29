@@ -303,7 +303,8 @@ function openDb(baseDir: string): SqliteDatabase {
       kind TEXT NOT NULL,
       delta INTEGER NOT NULL,
       reason TEXT NOT NULL,
-      score_after INTEGER NOT NULL
+      score_after INTEGER NOT NULL,
+      actor_name TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_trust_ts ON trust_events(ts);
     CREATE TABLE IF NOT EXISTS trust_meta (key TEXT PRIMARY KEY, value TEXT);
@@ -337,7 +338,8 @@ function openDb(baseDir: string): SqliteDatabase {
       trajectory_ref TEXT,
       distilled_at INTEGER,
       expert_refs TEXT,
-      loop_session_id TEXT
+      loop_session_id TEXT,
+      "by" TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_research_events_query ON research_events(task_kind, outcome, ts);
     INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', '1');
@@ -371,6 +373,27 @@ function openDb(baseDir: string): SqliteDatabase {
     }
   } catch (err) {
     console.warn('[memory/store] research_events.loop_session_id migration failed (non-fatal):', err);
+  }
+  // 1.8.7 P2：research_events 加 by 列（署名——团队协作下每条记录回答「谁」）。
+  // 同一幂等 ALTER 先例：老库走 ALTER，新库 CREATE 已含；存量事件该列为
+  // NULL（读出按 undefined 处理）。列名 by 是 SQL 关键字，一律加引号。
+  try {
+    const cols = db.prepare('PRAGMA table_info(research_events)').all() as Array<{ name: string }>;
+    if (cols.length > 0 && !cols.some((c) => c.name === 'by')) {
+      db.exec('ALTER TABLE research_events ADD COLUMN "by" TEXT');
+    }
+  } catch (err) {
+    console.warn('[memory/store] research_events.by migration failed (non-fatal):', err);
+  }
+  // 1.8.7 P2：trust_events 加 actor_name 列（署名——actor 二分之外记下具体
+  // 是谁）。同一幂等 ALTER 先例；存量事件该列为 NULL。
+  try {
+    const cols = db.prepare('PRAGMA table_info(trust_events)').all() as Array<{ name: string }>;
+    if (cols.length > 0 && !cols.some((c) => c.name === 'actor_name')) {
+      db.exec('ALTER TABLE trust_events ADD COLUMN actor_name TEXT');
+    }
+  } catch (err) {
+    console.warn('[memory/store] trust_events.actor_name migration failed (non-fatal):', err);
   }
   migrateLegacy(baseDir, db);
   dbCache.set(baseDir, db);
@@ -1084,6 +1107,8 @@ export interface ResearchEvent {
   expertRefs?: number[];
   /** 产生该事件的 loop 线 id（1.7.5 起填；run 报告/空转检测按线过滤用。存量事件无）。 */
   loopSessionId?: string;
+  /** 署名（1.8.7 P2 起填；团队大脑下回答「谁记的」——turn 起跑人/请求 actor 名。存量事件无）。 */
+  by?: string;
 }
 
 export interface RecordResearchEventInput {
@@ -1095,6 +1120,8 @@ export interface RecordResearchEventInput {
   trajectoryRef?: string;
   expertRefs?: number[];
   loopSessionId?: string;
+  /** 署名（1.8.7 P2；可空 = 未署名）。 */
+  by?: string;
 }
 
 interface ResearchEventRow {
@@ -1108,6 +1135,7 @@ interface ResearchEventRow {
   trajectory_ref: string | null;
   expert_refs: string | null;
   loop_session_id: string | null;
+  by: string | null;
 }
 
 /** expert_refs 列（逗号分隔 id 串）→ id 数组；空/NULL → undefined。 */
@@ -1130,6 +1158,7 @@ function toResearchEvent(r: ResearchEventRow): ResearchEvent {
     ...(r.trajectory_ref != null ? { trajectoryRef: r.trajectory_ref } : {}),
     ...(expertRefs ? { expertRefs } : {}),
     ...(r.loop_session_id != null ? { loopSessionId: r.loop_session_id } : {}),
+    ...(r.by != null ? { by: r.by } : {}),
   };
 }
 
@@ -1165,12 +1194,13 @@ export function recordResearchEvent(
   }
   const database = db(baseDir);
   database.prepare(
-    'INSERT INTO research_events (ts, workspace, task_kind, outcome, bug_class, summary, trajectory_ref, expert_refs, loop_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO research_events (ts, workspace, task_kind, outcome, bug_class, summary, trajectory_ref, expert_refs, loop_session_id, "by") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(
     now, input.workspace, input.taskKind, input.outcome, input.bugClass ?? null,
     input.summary, input.trajectoryRef ?? null,
     input.expertRefs && input.expertRefs.length > 0 ? input.expertRefs.join(',') : null,
     input.loopSessionId ?? null,
+    input.by ?? null,
   );
   const id = (database.prepare('SELECT last_insert_rowid() AS id').get() as { id: number }).id;
   return toResearchEvent({
@@ -1178,6 +1208,7 @@ export function recordResearchEvent(
     bug_class: input.bugClass ?? null, summary: input.summary, trajectory_ref: input.trajectoryRef ?? null,
     expert_refs: input.expertRefs && input.expertRefs.length > 0 ? input.expertRefs.join(',') : null,
     loop_session_id: input.loopSessionId ?? null,
+    by: input.by ?? null,
   });
 }
 

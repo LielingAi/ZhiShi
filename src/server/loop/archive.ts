@@ -93,6 +93,9 @@ export interface CorrectionEntry {
   id: string;
   targetId: string;
   by: CorrectionBy;
+  /** 1.8.7 P2 署名（additive）：操作者名（请求 actor / turn 起跑人）。
+   *  可空——1.8.6 及更早的纠正条目无此字段，消费方按缺省兜底。 */
+  byUser?: string;
   reason: string;
   createdAt: string;
 }
@@ -443,6 +446,8 @@ export async function addQuestion(
 export interface CorrectInput {
   id: string;
   by: CorrectionBy;
+  /** P2 署名（additive）：操作者名；缺省不署名（旧行为）。 */
+  byUser?: string;
   reason: string;
 }
 
@@ -476,7 +481,14 @@ export async function correctEntity(
     }
     markDependentsForReview(draft.entities, target.id, reason);
     const rid = nextCorrectionId(draft.meta.counters);
-    draft.corrections.push({ id: rid, targetId: target.id, by: input.by, reason, createdAt: now });
+    draft.corrections.push({
+      id: rid,
+      targetId: target.id,
+      by: input.by,
+      ...(input.byUser ? { byUser: input.byUser } : {}),
+      reason,
+      createdAt: now,
+    });
     draft.meta.updatedAt = now;
     return draft;
   }, { dir: options.dir });
@@ -485,14 +497,16 @@ export async function correctEntity(
   return snapshot;
 }
 
-/** 模型证伪自己的假设（falsify 的专门入口，by=model 的纠正别名）。 */
+/** 模型证伪自己的假设（falsify 的专门入口，by=model 的纠正别名）。
+ *  byUser（P2 additive）：本 turn 起跑人署名，缺省不署名（旧行为）。 */
 export async function falsifyHypothesis(
   sessionId: string,
   id: string,
   reason: string,
   options: ArchiveMutationOptions = {},
+  byUser?: string,
 ): Promise<ArchiveSnapshot> {
-  return correctEntity(sessionId, { id, by: 'model', reason }, options);
+  return correctEntity(sessionId, { id, by: 'model', ...(byUser ? { byUser } : {}), reason }, options);
 }
 
 export interface ResolveInput {

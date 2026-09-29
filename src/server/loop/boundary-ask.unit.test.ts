@@ -101,3 +101,37 @@ describe('requestBoundaryAsk', () => {
     expect(Object.keys(view).sort()).toEqual(['askId', 'kind', 'objects']);
   });
 });
+
+describe('P2 署名(requestedBy/respondedBy, additive)', () => {
+  it('requestedBy 随广播与重放走;respondedBy 落在应答返回视图;first-answer-wins 不变', async () => {
+    const sent: { event: string; data: unknown }[] = [];
+    const promise = requestBoundaryAsk(
+      { kind: 'system-config', objects: ['bcdedit'], requestedBy: 'alice' },
+      (e, d) => sent.push({ event: e, data: d }),
+    );
+    const view = sent[0].data as Record<string, unknown>;
+    expect(view.requestedBy).toBe('alice');
+    // 重连重放同样带归属
+    expect(pendingBoundaryAsks()[0].requestedBy).toBe('alice');
+
+    const r1 = respondBoundaryAsk(view.askId as string, true, 'bob');
+    expect(r1.ok).toBe(true);
+    expect(r1.view?.requestedBy).toBe('alice');
+    expect(r1.view?.respondedBy).toBe('bob');
+    // 重复应答仍幂等（先到先答，第二答无 respondedBy 可记）
+    expect(respondBoundaryAsk(view.askId as string, false, 'carol').ok).toBe(false);
+    await expect(promise).resolves.toBe(true);
+  });
+
+  it('旧记录兼容：不带 requestedBy 的 ask 视图无该字段;应答不带 responder 无 respondedBy', async () => {
+    const sent: { event: string; data: unknown }[] = [];
+    const promise = requestBoundaryAsk({ kind: 'host-write', objects: [] }, (e, d) => sent.push({ event: e, data: d }));
+    const view = sent[0].data as Record<string, unknown>;
+    expect('requestedBy' in view).toBe(false);
+    expect('requestedBy' in (pendingBoundaryAsks()[0] as unknown as Record<string, unknown>)).toBe(false);
+    const r = respondBoundaryAsk(view.askId as string, false);
+    expect(r.ok).toBe(true);
+    expect('respondedBy' in (r.view as unknown as Record<string, unknown>)).toBe(false);
+    await expect(promise).resolves.toBe(false);
+  });
+});

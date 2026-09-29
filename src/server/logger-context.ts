@@ -29,6 +29,9 @@ export interface LogContext {
     turnId?: string;
     /** Runtime label e.g. 'claude-code' | 'codex' | 'gemini' | 'builtin'. */
     runtime?: string;
+    /** 1.8.7 P2：请求身份（过闸后由 index.ts 并入）——actor.ts currentActor() 的读取面。 */
+    actorName?: string;
+    actorRole?: string;
 }
 
 /**
@@ -149,6 +152,8 @@ export function getLogContext(): LogContext | undefined {
         requestId: als.requestId ?? ambient.requestId,
         turnId: als.turnId ?? ambient.turnId,
         runtime: als.runtime ?? ambient.runtime,
+        actorName: als.actorName ?? ambient.actorName,
+        actorRole: als.actorRole ?? ambient.actorRole,
     };
 }
 

@@ -26,6 +26,9 @@ export interface TrustTransitionInput {
   to: string;
   actor: TransitionActor;
   source?: string;
+  /** 1.8.7 P2 署名（additive）：actor 二分之外记下具体是谁（请求 actor 名）。
+   *  可空 = 未署名（存量事件/缓冲导入均为 NULL）。 */
+  actorName?: string;
 }
 
 export interface TrustEvent {
@@ -36,6 +39,8 @@ export interface TrustEvent {
   delta: number;
   reason: string;
   scoreAfter: number;
+  /** 1.8.7 P2 署名（additive，可空）。 */
+  actorName?: string;
 }
 
 export interface TrustLedgerView {
@@ -104,14 +109,15 @@ function maybeSuggest(db: SqliteDatabase, score: number, baseline: number): void
 
 // ===== 公开 API =====
 
-/** 记一笔状态迁移（Rust 钩子经 admin trust/event 调用）。返回是否记账。 */
-export function recordTrustTransition(input: TrustTransitionInput): boolean {
+/** 记一笔状态迁移（Rust 钩子经 admin trust/event 调用）。返回是否记账。
+ *  baseDir 仅测试注入（默认全局数据目录）。 */
+export function recordTrustTransition(input: TrustTransitionInput, baseDir?: string): boolean {
   const classified = classifyTransition(input);
   if (!classified) return false;
-  const db = openTrustDb();
+  const db = openTrustDb(baseDir);
   const score = getScore(db) + classified.delta;
   db.prepare(
-    'INSERT INTO trust_events (ts, task_id, task_name, kind, delta, reason, score_after) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO trust_events (ts, task_id, task_name, kind, delta, reason, score_after, actor_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(
     Date.now(),
     input.taskId,
@@ -120,17 +126,18 @@ export function recordTrustTransition(input: TrustTransitionInput): boolean {
     classified.delta,
     classified.reason,
     score,
+    input.actorName ?? null,
   );
   metaSet(db, 'score', String(score));
   maybeSuggest(db, score, getBaseline(db));
   return true;
 }
 
-export function readTrustLedger(limit = 200): TrustLedgerView {
-  const db = openTrustDb();
+export function readTrustLedger(limit = 200, baseDir?: string): TrustLedgerView {
+  const db = openTrustDb(baseDir);
   const rows = db
     .prepare('SELECT * FROM trust_events ORDER BY ts DESC LIMIT ?')
-    .all(limit) as Array<{ ts: number; task_id: string; task_name: string; kind: string; delta: number; reason: string; score_after: number }>;
+    .all(limit) as Array<{ ts: number; task_id: string; task_name: string; kind: string; delta: number; reason: string; score_after: number; actor_name: string | null }>;
   return {
     score: getScore(db),
     baselineScore: getBaseline(db),
@@ -143,6 +150,8 @@ export function readTrustLedger(limit = 200): TrustLedgerView {
       delta: r.delta,
       reason: r.reason,
       scoreAfter: r.score_after,
+      // P2：存量事件无 actor_name（NULL）→ 不带字段（additive）。
+      ...(r.actor_name != null ? { actorName: r.actor_name } : {}),
     })),
   };
 }

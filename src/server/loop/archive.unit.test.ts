@@ -122,6 +122,19 @@ describe('纠正语义（append-only + 状态翻转 + 级联不连坐）', () =>
     await expect(correctEntity(sessionId, { id: 'H#99', by: 'human', reason: 'x' }, { dir })).rejects.toThrow(/不存在/);
     await expect(correctEntity(sessionId, { id: 'H#1', by: 'human', reason: '  ' }, { dir })).rejects.toThrow(/reason/);
   });
+
+  it('P2 署名:byUser 随纠正条目落盘(additive);不带的旧调用方无该字段(旧记录兼容)', async () => {
+    await seedArchive();
+    const out = await correctEntity(sessionId, { id: 'C#1', by: 'human', byUser: 'alice', reason: '审定后纠正' }, { dir });
+    expect(out.corrections[0]).toMatchObject({ by: 'human', byUser: 'alice' });
+    // 落盘后读回仍在（持久化形状含 byUser）
+    expect(loadArchive(sessionId, { dir }).corrections[0].byUser).toBe('alice');
+    // 旧调用方（无 byUser）→ 字段缺省，by 形状不动
+    const out2 = await correctEntity(sessionId, { id: 'V#1', by: 'model', reason: '模型自纠' }, { dir });
+    const r2 = out2.corrections.find((c) => c.targetId === 'V#1')!;
+    expect(r2.by).toBe('model');
+    expect('byUser' in r2).toBe(false);
+  });
 });
 
 describe('证伪与解决专门入口', () => {

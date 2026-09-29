@@ -206,3 +206,59 @@ describe('createDecisionTool', () => {
     expect(pendingDecisions()).toHaveLength(0);
   });
 });
+
+// ===== P2 署名(requestedBy/respondedBy, additive) =====
+
+describe('P2 署名', () => {
+  it('requestDecision: requestedBy 落 pending + 随广播(additive);respondedBy 由 respond 登记', () => {
+    const sent: { event: string; data: unknown }[] = [];
+    const rec = requestDecision(
+      { sessionId: 'ls-1', question: 'q', options: ['a', 'b'], requestedBy: 'alice' },
+      (e, d) => sent.push({ event: e, data: d }),
+    );
+    expect(rec.requestedBy).toBe('alice');
+    expect((sent[0].data as Record<string, unknown>).requestedBy).toBe('alice');
+    expect(pendingDecisions()[0].requestedBy).toBe('alice');
+
+    const r = respondDecision(rec.decisionId, 'a', undefined, 'bob');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.decision.respondedBy).toBe('bob');
+    // 幂等不变：重复应答不覆盖 respondedBy
+    expect(respondDecision(rec.decisionId, 'b', undefined, 'carol')).toEqual({ ok: false, reason: 'resolved' });
+    expect(r.ok && r.decision.respondedBy).toBe('bob');
+  });
+
+  it('旧记录兼容：无 requestedBy 时广播/记录均无该字段;respond 无 responder 无 respondedBy', () => {
+    const sent: { event: string; data: unknown }[] = [];
+    const rec = requestDecision({ sessionId: 'ls-1', question: 'q', options: ['a', 'b'] }, (e, d) => sent.push({ event: e, data: d }));
+    expect('requestedBy' in rec).toBe(false);
+    expect('requestedBy' in (sent[0].data as Record<string, unknown>)).toBe(false);
+    const r = respondDecision(rec.decisionId, 'a');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect('respondedBy' in r.decision).toBe(false);
+  });
+
+  it('request_decision 工具:requestedBy = 本 turn 起跑人(originator 登记)', async () => {
+    const { setTurnOriginator, __resetTurnOriginatorsForTests } = await import('../auth/actor');
+    __resetTurnOriginatorsForTests();
+    setTurnOriginator('ls-turn-9', { name: 'alice', role: 'reviewer', source: 'token' });
+    const sent: { event: string; data: unknown }[] = [];
+    const tool = createDecisionTool({
+      baseDir: dir,
+      getSessionId: () => 'ls-turn-9',
+      broadcastFn: (e, d) => sent.push({ event: e, data: d }),
+    });
+    await tool.execute('t1', { question: 'q?', options: ['a', 'b'] });
+    expect(pendingDecisions()[0].requestedBy).toBe('alice');
+    expect((sent[0].data as Record<string, unknown>).requestedBy).toBe('alice');
+    __resetTurnOriginatorsForTests();
+  });
+
+  it('request_decision 工具:无起跑人登记 → 兜底 LOCAL（本地模式 uniform 形状）', async () => {
+    const { __resetTurnOriginatorsForTests } = await import('../auth/actor');
+    __resetTurnOriginatorsForTests();
+    const tool = createDecisionTool({ baseDir: dir, getSessionId: () => 'ls-no-reg', broadcastFn: () => {} });
+    await tool.execute('t1', { question: 'q?', options: ['a', 'b'] });
+    expect(pendingDecisions()[0].requestedBy).toBe('local');
+  });
+});

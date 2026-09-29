@@ -195,6 +195,7 @@ import {
   getPiLineMission,
   getPiMessages,
   getPiQueueStatus,
+  getPiSessionId,
   getPiSystemInitInfo,
   initPiChatEngine,
   injectPiDecision,
@@ -219,6 +220,9 @@ import { setPostTurnTitleHook } from '../turn-hooks';
 import { estimateMessagesTokens } from 'zhishi-loop-core/context-manager';
 // B10(1.2.6)回归:配置面会话标识的真实读取口(chat-engine 不经 mock 写它)。
 import { getSessionId } from '../agent-session';
+// P2(1.8.7)回归:turn 起跑人登记面——send/invoke 起跑时按线登记请求 actor。
+import { __resetTurnOriginatorsForTests, originatorForSession } from '../auth/actor';
+import { withLogContext } from '../logger-context';
 
 const RESOLUTION = {
   models: {},
@@ -408,6 +412,52 @@ describe('send 流程(基础)', () => {
     expect(content[1]).toEqual({ type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' });
     const wire = getPiMessages().find((m) => m.role === 'user');
     expect(wire?.attachments?.[0]).toMatchObject({ name: 'shot.png', isImage: true });
+  });
+});
+
+describe('P2 turn 起跑人捕获(1.8.7 身份贯穿)', () => {
+  beforeEach(() => {
+    __resetTurnOriginatorsForTests();
+  });
+
+  it('send 带请求身份 → 起跑即按线登记;无身份 → LOCAL', async () => {
+    await withLogContext({ actorName: 'alice', actorRole: 'reviewer' }, () =>
+      sendPiChatMessage({ text: 'one' }),
+    );
+    await waitTurnSettled();
+    expect(originatorForSession(getPiSessionId())).toEqual({ name: 'alice', role: 'reviewer', source: 'token' });
+
+    resetPiChat(); // 新线
+    await sendPiChatMessage({ text: 'two' });
+    await waitTurnSettled();
+    expect(originatorForSession(getPiSessionId())).toEqual({ name: 'local', role: 'reviewer', source: 'local' });
+  });
+
+  it('headless invoke(cron 通道)同样登记起跑人', async () => {
+    const r = await withLogContext({ actorName: 'bob', actorRole: 'operator' }, () =>
+      invokePiSession({ text: 'cron 任务' }, { loopSessionId: 'ls-p2-invoke' }),
+    );
+    expect(r.error).toBeUndefined();
+    expect(originatorForSession('ls-p2-invoke')).toEqual({ name: 'bob', role: 'operator', source: 'token' });
+  });
+
+  it('turn 末 steering 孤儿转 FIFO promote:新 turn 起跑人 = 该消息的发送人', async () => {
+    const release = gateFirstTurn();
+    await withLogContext({ actorName: 'alice', actorRole: 'reviewer' }, () =>
+      sendPiChatMessage({ text: 'one' }),
+    );
+    // busy 中第二条(另一成员)进 steering
+    const s2 = await withLogContext({ actorName: 'bob', actorRole: 'operator' }, () =>
+      sendPiChatMessage({ text: 'steer-two' }),
+    );
+    expect(s2.steering).toBe(true);
+    // 首 turn 收尾:steering 未赶上注入 → 转 FIFO 队首 → promote 起跑独立 turn
+    release();
+    // FIFO promote 的 turn 已把起跑人换成 bob(排队条目随带发送人)
+    await vi.waitFor(() => {
+      expect(originatorForSession(getPiSessionId()).name).toBe('bob');
+    }, { timeout: 3000, interval: 10 });
+    await waitTurnSettled();
   });
 });
 

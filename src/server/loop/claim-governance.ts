@@ -42,6 +42,8 @@ import {
   listResearchEvents,
 } from '../memory/store';
 import { isResearchBugClass, isResearchOutcome, isResearchTaskKind } from '../../shared/research-kinds';
+// 1.8.7 P2 署名：claims/research 事件的归属 = 本线起跑人（无登记回落当前 actor）。
+import { originatorForSession } from '../auth/actor';
 import { messageText } from 'zhishi-loop-core/context-manager';
 import { resolveLoopModel } from './pi-provider';
 import { runLoopText } from 'zhishi-loop-core/loop';
@@ -289,6 +291,8 @@ export async function runClaimGovernance(
       return { ...c, salience: decayed };
     });
     let seq = file.meta.nextSeq;
+    // P2 署名：本线归属（turn 起跑人；治理弧迟到于 turn，无登记回落当前 actor）。
+    const claimOwner = originatorForSession(sessionId).name;
     for (const c of admitted.claims) {
       const text = c.text.trim();
       const hash = claimContentHash(c.kind, text);
@@ -306,6 +310,7 @@ export async function runClaimGovernance(
         ...(c.validFrom ? { validFrom: c.validFrom } : {}),
         ...(c.validTo ? { validTo: c.validTo } : {}),
         status: 'active',
+        owner: claimOwner,
         createdAt: timestamp,
         updatedAt: timestamp,
         lastTouchedAt: timestamp,
@@ -348,6 +353,8 @@ export async function runClaimGovernance(
         outcome: ev.outcome as never,
         summary: ev.summary.trim(),
         ...(ev.bugClass ? { bugClass: ev.bugClass as never } : {}),
+        // P2 署名：治理弧落库的研究事件同样按线归属。
+        by: claimOwner,
       });
     }
 

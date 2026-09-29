@@ -38,6 +38,12 @@ export interface BoundaryAskView {
   toolName?: string;
   toolDescription?: string;
   options?: string[];
+  /**
+   * 1.8.7 P2 署名(additive)：ask 的归属（turn 起跑人/请求 actor 名）与
+   * 应答人。均可选——旧调用方/旧记录无此字段，下游按缺省兜底。
+   */
+  requestedBy?: string;
+  respondedBy?: string;
 }
 
 interface PendingAsk extends BoundaryAskView {
@@ -69,6 +75,8 @@ export function requestBoundaryAsk(
     toolName?: string;
     toolDescription?: string;
     options?: string[];
+    /** P2 署名：ask 归属（turn 起跑人/请求 actor 名）。 */
+    requestedBy?: string;
   },
   broadcastFn: BroadcastFn = broadcast,
 ): Promise<boolean> {
@@ -82,6 +90,7 @@ export function requestBoundaryAsk(
       ...(input.toolName ? { toolName: input.toolName } : {}),
       ...(input.toolDescription ? { toolDescription: input.toolDescription } : {}),
       ...(input.options && input.options.length > 0 ? { options: input.options } : {}),
+      ...(input.requestedBy ? { requestedBy: input.requestedBy } : {}),
     };
     const timer = setTimeout(() => {
       if (!pending.delete(askId)) return;
@@ -96,27 +105,29 @@ export function requestBoundaryAsk(
 /**
  * 人已在 TUI/GUI 作答。返回原视图(kind/objects 等)供调用方把应答
  * (含 note)落盘进 transcript。askId 未知/已答 → ok=false(幂等,
- * 重复应答不炸)。
+ * 重复应答不炸——first-answer-wins 语义不变)。responder = 应答人
+ * 署名(P2 additive,落在返回视图上)。
  */
-export function respondBoundaryAsk(askId: string, approve: boolean): BoundaryAskResponse {
+export function respondBoundaryAsk(askId: string, approve: boolean, responder?: string): BoundaryAskResponse {
   const ask = pending.get(askId);
   if (!ask) return { ok: false, view: null };
   pending.delete(askId);
   clearTimeout(ask.timer);
   ask.resolve(approve === true);
   const { resolve: _resolve, timer: _timer, ...view } = ask;
-  return { ok: true, view };
+  return { ok: true, view: { ...view, ...(responder ? { respondedBy: responder } : {}) } };
 }
 
 /** /chat/stream 重连重放源:当前全部待答 ask。 */
 export function pendingBoundaryAsks(): BoundaryAskView[] {
-  return [...pending.values()].map(({ askId, kind, objects, toolName, toolDescription, options }) => ({
+  return [...pending.values()].map(({ askId, kind, objects, toolName, toolDescription, options, requestedBy }) => ({
     askId,
     kind,
     objects,
     ...(toolName ? { toolName } : {}),
     ...(toolDescription ? { toolDescription } : {}),
     ...(options ? { options } : {}),
+    ...(requestedBy ? { requestedBy } : {}),
   }));
 }
 

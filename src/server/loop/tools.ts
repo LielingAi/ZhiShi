@@ -21,6 +21,8 @@ import {
   type BgExecOptions,
 } from './bg-exec';
 import { getBgRegistry, type BgRegistry } from './bg-registry';
+// 1.8.7 P2 署名：turn 起跑人（research_log 的 by / research_archive 纠正的 byUser）。
+import { originatorForSession } from '../auth/actor';
 import {
   recordResearchEvent,
   RESEARCH_BUG_CLASSES,
@@ -359,6 +361,8 @@ export function createResearchLogTool(
         ...(params.trajectory_ref ? { trajectoryRef: params.trajectory_ref } : {}),
         ...(expertRefs && expertRefs.length > 0 ? { expertRefs } : {}),
         ...(options.loopSessionId ? { loopSessionId: options.loopSessionId } : {}),
+        // P2 署名：turn 起跑人（无线锚时回落当前 ALS actor/LOCAL）。
+        by: originatorForSession(options.loopSessionId).name,
       }, options.baseDir);
       // 1.2.2 promote 常态化:结案(success/stuck)留痕成功后在返回文本里带晋升
       // 提示——harness 原生、零时序猜测;fail 不带(失败教训走蒸馏弧,不是专家知识)。
@@ -546,7 +550,8 @@ export function createArchiveTool(
         case 'falsify': {
           if (!params.id) throw new Error('research_archive: falsify 需要 id(H#N)');
           if (!params.reason?.trim()) throw new Error('research_archive: falsify 需要 reason(错在哪、为什么)');
-          await falsifyHypothesis(sid, params.id, params.reason, common());
+          // P2 署名：模型证伪也记 byUser（本 turn 起跑人——谁的研究线）。
+          await falsifyHypothesis(sid, params.id, params.reason, common(), originatorForSession(sid).name);
           return { content: [{ type: 'text', text: `研究档案已更新:${params.id} 已证伪(${params.reason.slice(0, 80)})——排除的路也是成果,已留痕` }], details: { entityId: params.id } };
         }
         case 'abandon': {
@@ -574,7 +579,7 @@ export function createArchiveTool(
         case 'correct': {
           if (!params.id) throw new Error('research_archive: correct 需要 id(C#N/V#N)');
           if (!params.reason?.trim()) throw new Error('research_archive: correct 需要 reason(错在哪、为什么)');
-          await correctEntity(sid, { id: params.id, by: 'model', reason: params.reason }, common());
+          await correctEntity(sid, { id: params.id, by: 'model', byUser: originatorForSession(sid).name, reason: params.reason }, common());
           return { content: [{ type: 'text', text: `研究档案已更新:${params.id} 已纠正(${params.reason.slice(0, 80)})——引用它的条目已标记待复核` }], details: { entityId: params.id } };
         }
         default:

@@ -96,6 +96,25 @@ describe('runClaimGovernance（fake 提取器）', () => {
     expect(loadLoopSession('s1', { dir }).meta?.claimsCursor).toBe(3);
   });
 
+  it('P2 署名：新 claim/研究事件带 owner/by（起跑人登记）；无登记兜底 local', async () => {
+    const { setTurnOriginator, __resetTurnOriginatorsForTests } = await import('../auth/actor');
+    __resetTurnOriginatorsForTests();
+    setTurnOriginator('s-owned', { name: 'alice', role: 'reviewer', source: 'token' });
+    await makeSession('s-owned', [msg('user', '分析目标', 1), msg('assistant', '分析中', 2)]);
+    const r = await runClaimGovernance('s-owned', { extract: FAKE_OK, dir, workspace: '/ws' });
+    expect(r.ok).toBe(true);
+    const claims = loadSessionClaims('s-owned', { dir });
+    expect(claims.claims.every((c) => c.owner === 'alice')).toBe(true);
+    // 治理弧落库的研究事件同样署名
+    const { listResearchEvents } = await import('../memory/store');
+    expect(listResearchEvents({ limit: 10, workspace: '/ws' })[0]?.by).toBe('alice');
+    // 无登记的线 → LOCAL（本地模式 uniform 形状）
+    await makeSession('s-plain', [msg('user', 'x', 1), msg('assistant', 'y', 2)]);
+    await runClaimGovernance('s-plain', { extract: FAKE_OK, dir, workspace: '/ws' });
+    expect(loadSessionClaims('s-plain', { dir }).claims.every((c) => c.owner === 'local')).toBe(true);
+    __resetTurnOriginatorsForTests();
+  });
+
   it('提取失败 → 游标不推进 + 审计带 error', async () => {
     await makeSession('s1', [msg('user', 'hi', 1)]);
     const failing: Extractor = async () => ({ ok: false, error: '模型不可用' });

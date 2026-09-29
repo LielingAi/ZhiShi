@@ -15,6 +15,7 @@
  *   真正的请求仍会过闸。
  */
 
+import { LOCAL_ACTOR, type Actor } from './actor';
 import { requiredRoleFor, roleAtLeast, type AuthRole } from './roles';
 import {
   findTokenBySecret,
@@ -41,11 +42,13 @@ export interface VerifyDeps {
 }
 
 export type AuthVerdict =
-  | { ok: true; role: AuthRole | null; tokenId: string | null }
+  // P2：actor 恒在场（形状统一）——token 命中 = token 身份；放行路径 =
+  // LOCAL_ACTOR（auth 关闭/开放路由/预检，role/tokenId=null 表示未经鉴权）。
+  | { ok: true; role: AuthRole | null; tokenId: string | null; actor: Actor }
   | { ok: false; status: 401 | 403 };
 
 /** 放行（auth 关闭 / 开放路由 / 预检）。role/tokenId=null 表示未经鉴权。 */
-const OPEN_VERDICT: AuthVerdict = { ok: true, role: null, tokenId: null };
+const OPEN_VERDICT: AuthVerdict = { ok: true, role: null, tokenId: null, actor: LOCAL_ACTOR };
 
 /** 从 Authorization 头取 Bearer token（取不到返回 undefined）。 */
 export function extractBearerToken(authorization?: string | null): string | undefined {
@@ -77,5 +80,5 @@ export function verifyHttpAuth(input: VerifyInput, deps: VerifyDeps = {}): AuthV
   if (!entry) return { ok: false, status: 401 };
   if (!roleAtLeast(entry.role, required)) return { ok: false, status: 403 };
   (deps.touch ?? touchLastUsedThrottled)(entry.id);
-  return { ok: true, role: entry.role, tokenId: entry.id };
+  return { ok: true, role: entry.role, tokenId: entry.id, actor: { name: entry.name, role: entry.role, source: 'token' } };
 }

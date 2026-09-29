@@ -96,6 +96,9 @@ import { verifyHttpAuth } from './auth/gate';
 import { applyCorsDecision, preflightResponse } from './auth/cors';
 import { isAuthEnabled } from './auth/gate';
 import { loadAuthConfig } from './auth/token-store';
+// 1.8.7 P2 身份贯穿:请求 actor（currentActor）+ 角色判定（审批应答防御性复核）。
+import { currentActor } from './auth/actor';
+import { roleAtLeast } from './auth/roles';
 import {
   handleAuthAdd,
   handleAuthDisable,
@@ -556,7 +559,13 @@ const httpServer = honoServe({
           for (const [k, v] of Object.entries(headers)) denied.headers.set(k, v);
           return applyCorsDecision(request.headers.get('origin'), isAuthEnabled(), denied);
         }
-        return applyCorsDecision(request.headers.get('origin'), isAuthEnabled(), await handleRequest(request));
+        // 1.8.7 P2 身份贯穿：过闸 actor 并入 ALS 帧（沿用 log-context，不另起
+        // 第二套上下文）——请求链上 currentActor() 可取；auth 关闭时 verdict
+        // 带 LOCAL_ACTOR，本地模式零行为变化。
+        return withLogContext(
+          { actorName: verdict.actor.name, actorRole: verdict.actor.role },
+          async () => applyCorsDecision(request.headers.get('origin'), isAuthEnabled(), await handleRequest(request)),
+        );
       });
     },
   } as Parameters<typeof honoServe>[0]);
@@ -803,6 +812,8 @@ if (pathname === '/chat/stream' && request.method === 'GET') {
               question: d.question,
               options: d.options,
               expertHits: d.expertHits,
+              // P2 additive：谁提的（重放同样可见）。
+              ...(d.requestedBy ? { requestedBy: d.requestedBy } : {}),
             });
           }
           const piInitInfo = getPiSystemInitInfo();
@@ -1022,9 +1033,15 @@ if (pathname === '/chat/model' && request.method === 'POST') {
         if (!askId) {
           return jsonResponse({ success: false, error: 'Missing askId' }, 400);
         }
+        // P2 审批署名 + 防御性角色复核（HTTP 闸已把本路由限到 reviewer——
+        // 这里复核的是「应答的人」本身，署名随 pending 记录留痕）。
+        const responder = currentActor();
+        if (responder.source === 'token' && !roleAtLeast(responder.role, 'reviewer')) {
+          return jsonResponse({ success: false, error: 'forbidden' }, 403);
+        }
         // 1.3.2 缺口 1:扩字段——应答附带 note(可选),响应内容进 transcript。
         const note = typeof body.note === 'string' && body.note.trim() ? body.note.trim() : undefined;
-        const result = respondBoundaryAsk(askId, body.approve === true);
+        const result = respondBoundaryAsk(askId, body.approve === true, responder.name);
         if (!result.ok) {
           return jsonResponse({ success: false, error: 'ask 不存在或已作答/已过期' }, 404);
         }
@@ -1053,7 +1070,12 @@ if (pathname === '/chat/model' && request.method === 'POST') {
           return jsonResponse({ success: false, error: 'Missing decisionId or choice' }, 400);
         }
         const note = typeof body.note === 'string' && body.note.trim() ? body.note.trim() : undefined;
-        const result = respondDecision(decisionId, choice, note);
+        // P2 审批署名 + 防御性角色复核（同 boundary/respond——闸外再核一次）。
+        const responder = currentActor();
+        if (responder.source === 'token' && !roleAtLeast(responder.role, 'reviewer')) {
+          return jsonResponse({ success: false, error: 'forbidden' }, 403);
+        }
+        const result = respondDecision(decisionId, choice, note, responder.name);
         if (!result.ok) {
           return jsonResponse(
             {
@@ -1071,6 +1093,8 @@ if (pathname === '/chat/model' && request.method === 'POST') {
           choice,
           ...(d.note ? { note: d.note } : {}),
           expertRefs: d.expertRefs,
+          // P2 additive：谁批的。
+          ...(d.respondedBy ? { respondedBy: d.respondedBy } : {}),
         });
         // 1.5.4(A2-4): 跨线注入(决策来自 cron invoke 等 headless 线)会经
         // invokePiSession 同步跑完整个 agent turn——分钟级。HTTP 应答不能挂起

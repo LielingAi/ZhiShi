@@ -8,6 +8,8 @@ import { abandonEntity, correctEntity, loadArchive, resolveHypothesis, resolveQu
 import { getPiSessionId } from './loop/chat-engine';
 import { createArchiveTool } from './loop/tools';
 import { broadcast } from './sse';
+// 1.8.7 P2 署名：人纠正的 byUser = 请求 actor（token 命中即真实成员名）。
+import { currentActor } from './auth/actor';
 
 /** 与 admin-api.ts 的 AdminResponse 形状一致（提取处保持独立定义,不回头
  *  依赖 admin-api——绞杀纪律:抽出块不回指主文件）。 */
@@ -52,7 +54,8 @@ export async function handleArchiveCorrect(payload: {
   try {
     const archive = await correctEntity(
       sessionId,
-      { id, by: 'human', reason },
+      // P2：byUser = 请求 actor（团队大脑下回答「谁纠正的」；本地模式 = LOCAL）。
+      { id, by: 'human', byUser: currentActor().name, reason },
       { broadcastFn: broadcast },
     );
     return { success: true, data: { archive: archive as unknown as Record<string, unknown> } };

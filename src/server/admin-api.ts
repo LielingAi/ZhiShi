@@ -125,6 +125,8 @@ import {
   type TrustTransitionInput,
 } from './memory/trust';
 import { spawn as spawnSubprocess } from './utils/subprocess';
+// 1.8.7 P2 身份贯穿：请求 actor（research/trust/expert 署名与 boundary ask 归属）。
+import { currentActor } from './auth/actor';
 import {
   VALID_RUNTIMES,
   buildRuntimeChangePatch,
@@ -1378,6 +1380,8 @@ export async function handleResearchLog(payload: {
       ...(typeof payload.bugClass === 'string' && payload.bugClass ? { bugClass: payload.bugClass as ResearchBugClass } : {}),
       summary: payload.summary,
       ...(typeof payload.trajectoryRef === 'string' && payload.trajectoryRef ? { trajectoryRef: payload.trajectoryRef } : {}),
+      // P2 署名：LLM 自助入口经 admin API——请求 actor（团队大脑下=成员名）。
+      by: currentActor().name,
     });
     return { success: true, data: { event } };
   } catch (err) {
@@ -1655,9 +1659,15 @@ export async function handleExpertAdd(payload: Record<string, unknown>, deps: Ex
   }
   // 1.5.1 判据化硬校验（四必填之一）：reviewer 必填——每条都要有名有姓的
   // 审定人（权威级可追溯：「以它为准」的前提是知道谁拍的板）。
-  const reviewer = typeof payload?.reviewer === 'string' && payload.reviewer.trim()
-    ? payload.reviewer.trim()
-    : null;
+  // 1.8.7 P2 覆盖规则：auth 启用（token actor）时 reviewer 一律取连接身份
+  // （payload 里的 reviewer 被忽略——表单字段不能冒签他人）；auth 关闭
+  // （本地模式）保持原契约：payload.reviewer 必填。
+  const actor = currentActor();
+  const reviewer = actor.source === 'token'
+    ? actor.name
+    : typeof payload?.reviewer === 'string' && payload.reviewer.trim()
+      ? payload.reviewer.trim()
+      : null;
   if (!reviewer) {
     return { success: false, error: 'expert/add: reviewer 必填（谁审定的——判据化契约，权威级可追溯）' };
   }
@@ -1690,6 +1700,12 @@ export async function handleExpertUpdate(payload: Record<string, unknown>, deps:
     const db = openExpertStore(deps.baseDir ?? getZhiShiDataDir());
     const existing = getEntryById(db, id);
     if (!existing) return { success: false, error: `expert/update: 条目 #${id} 不存在` };
+    // P2 覆盖规则：auth 启用时显式传入的 reviewer 被连接身份覆盖（不能冒签）；
+    // 未传则沿用原值（编辑不转嫁审定人）。本地模式行为不变。
+    const updateActor = currentActor();
+    const reviewer = updateActor.source === 'token' && payload.reviewer !== undefined
+      ? updateActor.name
+      : payload.reviewer !== undefined ? payload.reviewer : existing.reviewer;
     const result = validateEntry({
       domain: payload.domain ?? existing.domain,
       kind: payload.kind ?? existing.kind,
@@ -1698,7 +1714,7 @@ export async function handleExpertUpdate(payload: Record<string, unknown>, deps:
       content: payload.content ?? existing.content,
       criteria: payload.criteria ?? existing.criteria,
       provenance: existing.provenance,
-      reviewer: payload.reviewer !== undefined ? payload.reviewer : existing.reviewer,
+      reviewer,
       sourceEventId: payload.sourceEventId !== undefined ? payload.sourceEventId : existing.sourceEventId,
       tags: payload.tags ?? existing.tags,
       enabled: payload.enabled !== undefined ? payload.enabled : existing.enabled,
@@ -1757,6 +1773,12 @@ export async function handleExpertReview(payload: {
       return { success: true, data: { discarded: draftId } };
     }
     const edited = payload.edited ?? {};
+    // P2 覆盖规则：auth 启用时审定人 = 连接身份（edited.reviewer 不能冒签——
+    // 批准这个动作的人就是 reviewer）；本地模式保持 edited.reviewer ?? 草稿值。
+    const reviewActor = currentActor();
+    const reviewer = reviewActor.source === 'token'
+      ? reviewActor.name
+      : edited.reviewer ?? draft.reviewer;
     const result = validateEntry({
       domain: edited.domain ?? draft.domain,
       kind: edited.kind ?? draft.kind,
@@ -1765,7 +1787,7 @@ export async function handleExpertReview(payload: {
       content: edited.content ?? draft.content,
       criteria: edited.criteria ?? draft.criteria,
       provenance: draft.provenance,
-      reviewer: edited.reviewer ?? draft.reviewer,
+      reviewer,
       sourceEventId: edited.sourceEventId ?? draft.sourceEventId,
       tags: edited.tags ?? draft.tags,
     });
@@ -1895,7 +1917,8 @@ export async function handleTrustEvent(payload: TrustTransitionInput): Promise<A
   if (!payload || typeof payload.taskId !== 'string' || typeof payload.from !== 'string' || typeof payload.to !== 'string') {
     return { success: false, error: 'usage: trust/event { taskId, taskName, from, to, actor, source? }' };
   }
-  const recorded = recordTrustTransition(payload);
+  // P2 署名：actor 二分（agent/user）不动，旁记具体是谁（请求 actor 名）。
+  const recorded = recordTrustTransition({ ...payload, actorName: currentActor().name });
   return { success: true, data: { recorded } };
 }
 export async function handleTrustLedger(payload: { limit?: number }): Promise<AdminResponse> {
@@ -3027,6 +3050,8 @@ export async function handleEnvironmentExtract(payload: {
     toolName: 'environment/extract',
     toolDescription: '把环境内成果提取回宿主',
     options: ['批准写入', '拒绝'],
+    // P2 署名：ask 归属 = 发起提取的请求 actor。
+    requestedBy: currentActor().name,
   });
   if (!approved) return { success: false, error: '越界提取已被拒绝或超时(写宿主需人批准)' };
   ensureDirSync(destDir);
@@ -3157,6 +3182,8 @@ export async function handleReportExport(payload: {
         toolName: 'report/export',
         toolDescription: '把证据与报告落回宿主',
         options: ['批准写入', '拒绝'],
+        // P2 署名：ask 归属 = 发起导出的请求 actor。
+        requestedBy: currentActor().name,
       }),
       narrate: async (prompt, systemPrompt) => {
         if (!resolution) return { error: '模型不可用（无 provider/key）' };

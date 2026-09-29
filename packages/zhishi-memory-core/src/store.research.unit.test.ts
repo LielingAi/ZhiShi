@@ -301,3 +301,71 @@ describe('research_events：expert_refs 引用追踪（1.2.2）', () => {
     expect(listResearchEvents({ baseDir: dir })).toHaveLength(2);
   });
 });
+
+describe('research_events：by 署名列（1.8.7 P2）', () => {
+  it('by 落库并读回；不带 by 的事件 by 缺省（additive，旧行为零变化）', () => {
+    const ev = recordResearchEvent({
+      workspace: '/ws/x', taskKind: 'pentest', outcome: 'success', summary: '署名事件', by: 'alice',
+    }, dir, NOW);
+    expect(ev.by).toBe('alice');
+    expect(listResearchEvents({ baseDir: dir })[0].by).toBe('alice');
+
+    const plain = recordResearchEvent({
+      workspace: '/ws/x', taskKind: 'pentest', outcome: 'fail', summary: '无署名',
+    }, dir, NOW + 1);
+    expect(plain.by).toBeUndefined();
+    expect(listResearchEvents({ baseDir: dir })[0].by).toBeUndefined();
+  });
+
+  it('老库（1.8.6 表：无 by 列）幂等迁移出 by，旧数据无损；二次打开幂等', () => {
+    resetMemoryStoreForTest();
+    const nodeRequire = createRequire(import.meta.url);
+    const Database = nodeRequire('better-sqlite3') as (p: string) => {
+      exec: (sql: string) => unknown;
+      prepare: (sql: string) => { run: (...args: unknown[]) => unknown; get: () => { c: number } };
+      close: () => void;
+    };
+    const legacy = Database(join(dir, 'memory.db'));
+    legacy.exec(`
+      CREATE TABLE research_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL, workspace TEXT NOT NULL, task_kind TEXT NOT NULL,
+        outcome TEXT NOT NULL, bug_class TEXT, summary TEXT NOT NULL,
+        trajectory_ref TEXT, distilled_at INTEGER, expert_refs TEXT, loop_session_id TEXT
+      );
+      CREATE TABLE trust_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL, task_id TEXT NOT NULL, task_name TEXT NOT NULL,
+        kind TEXT NOT NULL, delta INTEGER NOT NULL, reason TEXT NOT NULL, score_after INTEGER NOT NULL
+      );
+      INSERT INTO research_events (ts, workspace, task_kind, outcome, summary)
+        VALUES (${NOW - 1000}, '/ws/old', 'binary', 'success', '老事件');
+      INSERT INTO trust_events (ts, task_id, task_name, kind, delta, reason, score_after)
+        VALUES (${NOW - 1000}, 't1', '任务', 'deposit', 1, 'agent_done', 1);
+    `);
+    legacy.close();
+
+    // 第一次打开：by / actor_name 两列 ALTER 出来；旧事件读回 by 缺省
+    const rows = listResearchEvents({ baseDir: dir });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary).toBe('老事件');
+    expect(rows[0].by).toBeUndefined();
+    // trust_events.actor_name 同库迁移（openTrustDb 触发同一 db() 初始化）
+    resetMemoryStoreForTest();
+    const check = Database(join(dir, 'memory.db'));
+    const trustCols = (check.prepare('PRAGMA table_info(trust_events)') as unknown as { all: () => Array<{ name: string }> }).all().map((c) => c.name);
+    expect(trustCols).toContain('actor_name');
+    const researchCols = (check.prepare('PRAGMA table_info(research_events)') as unknown as { all: () => Array<{ name: string }> }).all().map((c) => c.name);
+    expect(researchCols).toContain('by');
+    expect(check.prepare('SELECT COUNT(*) AS c FROM research_events').get().c).toBe(1);
+    check.close();
+
+    // 第二次打开（重置连接缓存后重开同一文件）：迁移幂等不炸，新列可写
+    resetMemoryStoreForTest();
+    const ev = recordResearchEvent({
+      workspace: '/ws/old', taskKind: 'binary', outcome: 'stuck', summary: '迁移后署名', by: 'bob',
+    }, dir, NOW);
+    expect(ev.by).toBe('bob');
+    expect(listResearchEvents({ baseDir: dir })).toHaveLength(2);
+  });
+});
