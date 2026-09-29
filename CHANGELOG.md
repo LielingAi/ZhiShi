@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.8] - 2026-09-29
+
+> **团队协作补丁**：模式角标（「当前是团队模式还是单机」界面明示）+ 传输定案（SSH 隧道——混合内容实证）。
+
+- **状态栏模式角标**（WREN 提出）：常驻显示当前操作落在哪个大脑上——`本机`（dim）/ `团队大脑 · <host>`（cyan，tooltip 给完整 URL）/ `团队大脑 · 连接失败`（amber，tooltip 给具体错误）/ 连接中；点击经 `openSettingsTab('connection')` 直达设置 → 连接页（store 新增 `settingsTab` 初始页签字段，常规入口缺省 'model' 与旧行为一致）。
+- **传输定案 = SSH 隧道（实证）**：成员 GUI 直接填 `http://<服务器IP>` 会被 Chrome 混合内容规则在请求发出前拦截（webview 的 `http://tauri.localhost` 是安全上下文，非回环 http 不允许——回环豁免，这就是本机 `127.0.0.1` 一直没事的原因）。可用路径：SSH 隧道（`ssh -L 7411:127.0.0.1:7411 user@server`，成员连 `http://127.0.0.1:7411`）/ HTTPS（后续）/ 本机回环；CLI 不受此限。设计文档开放问题三项随之全部收口（`docs/design/1.8.7-team-collaboration.md`）。
+
 ## [1.8.7] - 2026-09-29
 
 > **团队协作**（设计定稿见 `docs/design/1.8.7-team-collaboration.md`）：一个团队大脑（服务器上唯一的 sidecar）+ 远端客户端（应用 / CLI）。研究线双线制（共享线与私有线都要）、环境全部在服务器上。dsh 插件（dsh-zhishi-tools）弃用、不在本周期范围。

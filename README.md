@@ -7,7 +7,7 @@
   </picture>
 </p>
 
-**v1.8.7 · 安全研究领域的 agent harness：环境融合、原生工具、原生代码、研究档案。**
+**v1.8.8 · 安全研究领域的 agent harness：环境融合、原生工具、原生代码、研究档案。**
 
 [![Version](https://img.shields.io/github/v/tag/LielingAi/ZhiShi)](https://github.com/LielingAi/ZhiShi/tags)
 [![License](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](LICENSE)
@@ -107,6 +107,18 @@ ZhiShi 是给安全研究员的工作台：二进制利用、渗透测试、白�
 - 越界动作模态（写宿主等四类，逐次问人，无「永远允许」）
 - 后台长驻进程状态栏可见（`⛁ fuzz · 跑着`）+ 退出插行
 - 桌面图标/托盘/二次实例 → 聚焦 GUI 主窗口（自启静默不弹窗）
+
+### 团队协作：团队大脑（1.8.7）
+
+一个团队大脑（服务器上唯一的 sidecar）+ 远端客户端（应用 / CLI）——研究线、档案、claims、知识、蒸馏、环境全部集中在服务器上；成员机器上只保留宿主 shell 与自己的文件。
+
+- **客户端远端模式**：CLI `zhishi --server http://host:port --token …`（或 `ZHISHI_SERVER`/`ZHISHI_TOKEN`）；GUI 设置 → 连接（本机 / 团队大脑，地址 + token）。远端模式下本机 sidecar 不会拉起。
+- **大脑**：`--host <内网地址>` 起 sidecar + `zhishi auth add/enable` 发 token（只存 SHA-256 哈希）；非回环地址未启用鉴权**拒绝启动**；角色三档（只读 / 操作员 / 审定人），100+ 路由逐条分类。
+- **研究线双线制**：私有线默认（owner 读写），共享线显式开（`zhishi line share/unshare <id>`）；两条线可同时跑 turn 互不阻塞（多引擎，空闲回收不丢历史）；SSE 按线分流。
+- **身份贯穿**：档案纠正 / 专家审定 / claims / 研究留痕 / boundary 应答全部署名到具体的人（`zhishi auth` 的连接身份，表单字段不能冒签）。
+- **文件传输**：`zhishi env put-file / get-file`——成员笔记本 ↔ 服务器环境端到端（sha256 校验）。
+- **模式角标（1.8.8）**：状态栏常驻「本机 / 团队大脑 · host / 连接失败」——当前操作落在哪个大脑上一眼可见，点击直达连接设置。
+- **传输约束（实证）**：成员 GUI **不能直接填 `http://<服务器IP>`**——Chrome 混合内容拦截（webview 的 `*.localhost` 是安全上下文，非回环 http 会被挡）。可用路径：**SSH 隧道** `ssh -L 7411:127.0.0.1:7411 user@server`（成员连 `http://127.0.0.1:7411`）/ HTTPS（后续）/ 本机回环；CLI 不受此限。
 
 ### 引擎：自研 loop（harness 本体）
 
