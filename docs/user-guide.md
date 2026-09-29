@@ -16,7 +16,8 @@
 7. [情报检索](#7-情报检索)
 8. [研究留痕与记忆](#8-研究留痕与记忆)
 9. [MCP 服务器](#9-mcp-服务器)
-10. [常见问题](#10-常见问题)
+10. [团队协作：团队大脑与角色权限](#10-团队协作团队大脑与角色权限)
+11. [常见问题](#11-常见问题)
 
 ---
 
@@ -308,7 +309,86 @@ MCP 工具在会话里以 `mcp__<server>__<tool>` 命名，与内置工具同受
 
 ---
 
-## 10. 常见问题
+## 10. 团队协作：团队大脑与角色权限
+
+> 1.8.7 起。拓扑：一个团队大脑（服务器上唯一的 sidecar）+ 远端客户端（应用 / CLI）。研究线、档案、claims、知识、蒸馏、环境全部集中在服务器上；成员机器上只保留宿主 shell 与自己的文件。**单机用户不需要这一章**——不配 `--host`、不开 auth，一切与旧版一致。
+
+### 起大脑
+
+```bash
+# ① 回环模式发 token（secret 只打印一次，立刻保存）
+zhishi auth add --name wren --role reviewer     # 给把关的人
+zhishi auth add --name alice --role operator    # 给干活的成员
+zhishi auth add --name guest --role readonly    # 给只看的人
+# ② 启用鉴权
+zhishi auth enable
+# ③ 以 --host <内网地址> 起 sidecar（未启用鉴权就绑非回环会被拒绝启动）
+# 源码：npm run server -- --host 192.168.x.x --port 7411 --agent-dir <数据目录>
+# 安装版：node "<安装目录>/resources/server-dist.js" --host 192.168.x.x --port 7411 --agent-dir <数据目录>
+```
+
+注意：`auth enable` 之后，**大脑所在机器上原有的 GUI/CLI 也要带 token**（GUI 设置 → 连接里填，CLI 用 `--token` / `ZHISHI_TOKEN`）。
+
+### 角色与权限（严格递增：readonly < operator < reviewer）
+
+**只读（readonly）——只能看，不能改**
+
+| 面 | 内容 |
+|---|---|
+| 会话/研究线 | 看线状态、消息、队列；订阅 SSE 直播 |
+| 清单与状态 | 环境/配方/引擎/实例的全部 list、show、status、search、ps、discover |
+| 知识层 | 读专家库、情报库、记忆、研究留痕与蒸馏产物 |
+| 配置 | `config/get`（`providerApiKeys`/`auth` 子树一律脱敏） |
+| 其他 | `/refs/:id` 取文件字节、workspace 文件列表、auto-run/campaign 清单、任务只读视图 |
+
+**操作员（operator）——只读 + 干活**
+
+| 面 | 内容 |
+|---|---|
+| 会话 | 发消息、停止、重置、纠偏、rewind、fork、切线、排队管理；**在自己私有线上答 boundary/决策询问** |
+| 环境 | 全生命周期：up/down/新建/执行/传文件（push/extract/put-file/get-file）/重建/快照回滚/登记 ssh/adopt VM/选定现场/打开终端 |
+| 研究 | 留痕、推进实体（archive/resolve）、认领（claim）、触发蒸馏、情报同步、任务写操作 |
+| 团队 | `line/list`、`line share/unshare`（把自己的私有线转团队线）、auto-run/campaign 操作、agent 启停配置、`config/set`（**不能**碰 `providerApiKeys`/`auth`） |
+
+**审定人（reviewer）——操作员 + 权威动作**
+
+| 面 | 内容 |
+|---|---|
+| 审批 | **答任何线上的 boundary/决策询问**（越界批准、系统级变更批准） |
+| 档案裁决 | `archive/correct`（纠正，终身生效）/ `abandon`（搁置）/ 档案通用写 |
+| 专家知识 | 审定入库（expert add/update/rm/review）——人审定才进库由这档执行 |
+| 模型 | 加/删供应商、设 key、设默认模型 |
+| 信任 | trust 账本的 resolve/reset/import |
+| **鉴权本身** | `auth add/revoke/enable/disable`——发 token、撤 token、开关整个鉴权 |
+
+叠在上面的两条线级规则：**私有线** = owner 读写，非 owner 的 operator 连读都不行；**共享线** = operator+ 可写、全员可读，但审批询问仍只有 reviewer 能答（owner 豁免只在自己的私有线上）。未登记进分类表的路由一律按 reviewer 档处理（宁可误拦不漏放）。完整的路由→角色表在 `src/server/auth/roles.ts`。
+
+### 成员怎么连
+
+- **GUI**：设置 → 连接 → 团队大脑 → 地址 + token。状态栏的**模式角标**常驻显示「本机 / 团队大脑 · host / 连接失败」，点它直达连接设置。
+- **CLI**：`zhishi --server http://host:port --token <secret> <命令>`（或 `ZHISHI_SERVER` / `ZHISHI_TOKEN` 环境变量）。
+
+### 传输：为什么成员要 SSH 隧道
+
+**成员 GUI 不能直接填 `http://<服务器IP>`**——Chrome 混合内容拦截（webview 的 `*.localhost` 是安全上下文，非回环 http 会被挡在请求发出前；回环豁免，所以本机 `127.0.0.1` 没事）。可用路径：
+
+```bash
+ssh -L 7411:127.0.0.1:7411 wren@192.168.x.x    # 成员各起一条隧道
+# 然后 GUI / CLI 连 http://127.0.0.1:7411 + token
+```
+
+CLI 不受此限（无浏览器层，`zhishi --server http://<IP>` 直接通）。HTTPS 列为后续选项。
+
+### 研究线：私有线与共享线
+
+- **私有线**（默认）：自己开自己用，`zhishi line list` 查看。
+- **共享线**：`zhishi line share <id>` 把一条已存在的私有线转成团队线（成员可读、operator+ 可写、SSE 直播全员可见）；`zhishi line unshare <id>` 收回。
+- 两条线可同时跑 turn 互不阻塞（多引擎）；空闲 30 分钟的引擎自动回收（transcript 在盘上，不丢历史），下次访问惰性重建。
+- 文件传输：`zhishi env put-file <envId> <本地路径> <环境内路径>` / `get-file <envId> <环境内路径> <本地路径>`——成员笔记本 ↔ 服务器环境端到端（sha256 校验）。
+
+---
+
+## 11. 常见问题
 
 **环境连不上 / 认证失败**
 - VM：确认 guest 里 sshd 在跑、端口 22 可达；公钥不通时 `zhishi env adopt` 会提示现场输入 guest 密码（不落盘）。
