@@ -1108,8 +1108,34 @@ mod path_safety_crosscheck_tests {
 
 /// 1.3.0(GUI): return the current sidecar port for the webview frontend.
 /// None = sidecar not started yet (frontend should poll and show booting).
+///
+/// 1.8.7 P0.5 团队大脑：契约扩为 `get_sidecar_port(remote_url?)`——前端
+/// 连接模式（model/connection.ts，localStorage 持久化）经此唯一 IPC 传给
+/// Rust：Some(url) = 远端模式（本机 sidecar spawn 关死，已在跑的全局
+/// sidecar 停掉，落 remote-mode marker 让下次启动在 spawn 前短路）；
+/// None = 本机模式（本机前端 500ms 轮询 = 持续断言本机态；从远端切回时
+/// 后台线程重启全局 sidecar——start_global_sidecar 内含 reqwest::blocking，
+/// 绝不能跑在同步 command 的主线程上）。返回值语义不变（本机端口；
+/// 远端模式下前端自带 URL，不消费返回值）。
 #[tauri::command]
-pub fn get_sidecar_port() -> Option<u16> {
+pub fn get_sidecar_port(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::sidecar::ManagedSidecarManager>,
+    remote_url: Option<String>,
+) -> Option<u16> {
+    match crate::sidecar::apply_remote_mode_transition(state.inner(), remote_url.as_deref()) {
+        crate::sidecar::RemoteModeTransition::ExitedRemote => {
+            ulog_info!("[sidecar] Remote mode disabled — restarting local global sidecar");
+            let mgr = state.inner().clone();
+            std::thread::spawn(move || {
+                if let Err(e) = crate::sidecar::start_global_sidecar(&app, &mgr) {
+                    ulog_warn!("[sidecar] Global sidecar restart after remote→local failed: {}", e);
+                }
+            });
+        }
+        crate::sidecar::RemoteModeTransition::EnteredRemote
+        | crate::sidecar::RemoteModeTransition::Unchanged => {}
+    }
     let dir = crate::app_dirs::zhishi_data_dir()?;
     let port_file = dir.join(crate::sidecar::PORT_FILE_NAME);
     let raw = std::fs::read_to_string(&port_file).ok()?;

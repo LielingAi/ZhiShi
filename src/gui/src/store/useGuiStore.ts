@@ -146,6 +146,7 @@ import type {
 } from '../client/api';
 import { resolvePort } from '../client/port';
 import { GuiHttpError, GuiSidecarClient, type SseInput } from '../client/sse-client';
+import { loadConnection, normalizeServerUrl } from '../model/connection';
 
 // ---------------------------------------------------------------------------
 // 常量（v19 SLASH 清单，12 条）
@@ -665,6 +666,56 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     void (async () => {
       const { invoke } = tauriInvoke();
       const search = typeof window !== 'undefined' ? window.location.search : '';
+
+      // ── 1.8.7 P0.5 团队大脑（远端模式）──────────────────────────────
+      // 连接设置持久化在 localStorage（model/connection.ts）。远端分支：
+      // base = 归一化后的 server URL，所有请求挂 Bearer token；通过
+      // get_sidecar_port(remote_url) 告知 Rust 不要 spawn 本机 sidecar；
+      // 远端不可达 = 明确失败态（带 URL），绝不静默回落本机 sidecar——
+      // 「以为连着团队大脑、实际在操作本机空 sidecar」比报错更糟。
+      const conn = loadConnection(browserStorage());
+      if (conn.mode === 'remote') {
+        let base: string;
+        try {
+          base = normalizeServerUrl(conn.serverUrl);
+        } catch {
+          connecting = false;
+          set({
+            connectionState: 'failed',
+            connectError: `团队大脑地址非法：${conn.serverUrl || '（空）'}（设置 → 连接 修改，例：http://10.0.0.8:7411）`,
+          });
+          return;
+        }
+        // spawn 抑制信号（best-effort：浏览器 dev 无 Tauri；失败不阻断——
+        // 远端连不上会在下面 probeHealth 明确报错）。
+        if (invoke) {
+          try {
+            await invoke('get_sidecar_port', { remoteUrl: base });
+          } catch {
+            // IPC 不可达（窗口关闭竞态等）——继续，HTTP 层会给出明确结果。
+          }
+        }
+        if (gen !== lifecycleGen) return; // dispose / re-init 竞态
+        set({ connectionState: 'connecting', connectError: null });
+        client = new GuiSidecarClient({ base, token: conn.token.trim() ? conn.token.trim() : undefined });
+        const probe = await client.probeHealth();
+        if (gen !== lifecycleGen) return;
+        if (!probe.ok) {
+          connecting = false;
+          client = null;
+          set({
+            connectionState: 'failed',
+            connectError: `无法连接团队大脑（${base}）：${probe.error}`,
+          });
+          return;
+        }
+        void get().refreshSidebar();
+        void loadModels(get, set);
+        get().reconnect();
+        return;
+      }
+
+      // ── 本机模式（默认，零变更路径）────────────────────────────────
       const port = await resolvePort({
         invoke,
         storage: browserStorage(),
@@ -2640,15 +2691,15 @@ useGuiStore.subscribe((state, prev) => {
 // 辅助（模块级，不暴露为 action）
 // ---------------------------------------------------------------------------
 
-function tauriInvoke(): { invoke?: (cmd: string) => Promise<unknown> } {
+function tauriInvoke(): { invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } {
   const w =
     typeof window !== 'undefined'
       ? (window as unknown as {
-          __TAURI__?: { core?: { invoke?: (cmd: string) => Promise<unknown> } };
+          __TAURI__?: { core?: { invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } };
         })
       : undefined;
   const invoke = w?.__TAURI__?.core?.invoke;
-  return invoke ? { invoke: (cmd: string) => invoke(cmd) } : {};
+  return invoke ? { invoke: (cmd, args) => invoke(cmd, args) } : {};
 }
 
 function stopBootPolling(): void {

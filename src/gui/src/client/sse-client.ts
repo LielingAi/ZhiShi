@@ -75,6 +75,13 @@ export interface GuiSidecarClientOptions {
   /** 根 base URL，如 `http://127.0.0.1:${port}`（不含 /api/admin）。 */
   base: string;
   fetchImpl?: GuiFetch;
+  /**
+   * 1.8.7 P0.5 团队大脑：远端鉴权 Bearer token（可选）。设置后所有请求
+   * （含 SSE——openSse 本就是 fetch-based reader，不是 EventSource，可以
+   * 带自定义头）挂 `Authorization: Bearer <token>`。token 只进请求头，
+   * 不打日志。本机模式不传——请求一字节不变。
+   */
+  token?: string;
 }
 
 export interface OpenSseOptions {
@@ -86,6 +93,7 @@ export interface OpenSseOptions {
 export class GuiSidecarClient {
   readonly base: string;
   private readonly fetchImpl: GuiFetch;
+  private readonly token?: string;
 
   constructor(opts: GuiSidecarClientOptions) {
     this.base = opts.base.replace(/\/+$/, '');
@@ -93,16 +101,42 @@ export class GuiSidecarClient {
     // 直接抛 TypeError: Illegal invocation（Node 不受影响，单测全绿没暴露）。
     // 必须显式绑定（globalThis = window/Node 两用）。
     this.fetchImpl = opts.fetchImpl ?? (fetch.bind(globalThis) as unknown as GuiFetch);
+    this.token = opts.token?.trim() ? opts.token : undefined;
   }
 
   private url(path: string): string {
     return `${this.base}${path.startsWith('/') ? path : `/${path}`}`;
   }
 
+  /** 合并 Authorization 头（仅远端模式配了 token 时；缺省原样返回）。 */
+  private withAuth(headers?: Record<string, string>): Record<string, string> | undefined {
+    if (!this.token) return headers;
+    return { ...headers, Authorization: `Bearer ${this.token}` };
+  }
+
+  /**
+   * 1.8.7 P0.5：远端模式连接前探活（GET /health，与 CLI probeRemoteHealth
+   * 同口径——只看 2xx，不解析 body；带 token 时同样挂 Bearer 头，P1 鉴权
+   * 上线后 /health 可能也要过闸）。不可达返回 {ok:false,error}，调用方进
+   * 连接失败态——绝不静默回落本机。
+   */
+  async probeHealth(timeoutMs = 2_000): Promise<{ ok: true } | { ok: false; error: string }> {
+    try {
+      const res = await this.fetchImpl(this.url('/health'), {
+        method: 'GET',
+        headers: this.withAuth(),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      return res.ok ? { ok: true } : { ok: false, error: `GET /health 返回 HTTP ${res.status}` };
+    } catch (err) {
+      return { ok: false, error: `GET /health 失败：${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
   async getJson<T = Record<string, unknown>>(path: string): Promise<T> {
     let res: GuiFetchResponse;
     try {
-      res = await this.fetchImpl(this.url(path), { method: 'GET' });
+      res = await this.fetchImpl(this.url(path), { method: 'GET', headers: this.withAuth() });
     } catch (err) {
       throw this.normalizeTransport(err);
     }
@@ -114,7 +148,7 @@ export class GuiSidecarClient {
     try {
       res = await this.fetchImpl(this.url(path), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: this.withAuth({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body ?? {}),
       });
     } catch (err) {
@@ -129,7 +163,7 @@ export class GuiSidecarClient {
     try {
       res = await this.fetchImpl(this.url(path), {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: this.withAuth({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body ?? {}),
       });
     } catch (err) {
@@ -142,7 +176,7 @@ export class GuiSidecarClient {
   async deleteJson<T = Record<string, unknown>>(path: string): Promise<T> {
     let res: GuiFetchResponse;
     try {
-      res = await this.fetchImpl(this.url(path), { method: 'DELETE' });
+      res = await this.fetchImpl(this.url(path), { method: 'DELETE', headers: this.withAuth() });
     } catch (err) {
       throw this.normalizeTransport(err);
     }
@@ -164,7 +198,7 @@ export class GuiSidecarClient {
   async getRefText(id: string): Promise<string> {
     let res: GuiFetchResponse;
     try {
-      res = await this.fetchImpl(this.url(`/refs/${encodeURIComponent(id)}`), { method: 'GET' });
+      res = await this.fetchImpl(this.url(`/refs/${encodeURIComponent(id)}`), { method: 'GET', headers: this.withAuth() });
     } catch (err) {
       throw this.normalizeTransport(err);
     }
@@ -207,7 +241,7 @@ export class GuiSidecarClient {
       try {
         const res = await this.fetchImpl(this.url(path), {
           method: 'GET',
-          headers: { Accept: 'text/event-stream' },
+          headers: this.withAuth({ Accept: 'text/event-stream' }),
           signal,
         });
         if (!res.ok) {

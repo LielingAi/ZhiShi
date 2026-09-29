@@ -174,6 +174,123 @@ fn remove_global_port_file() {
     }
 }
 
+// ===== Remote mode (1.8.7 P0.5 团队大脑) =====
+//
+// GUI 「团队大脑」连接模式：Rust 侧完全不起本机 sidecar（lib.rs 启动直调
+// 与 monitor 自动重启都汇聚在 start_global_sidecar，一处闸全盖住）。
+//
+// 信号通道：前端唯一的相关 IPC 是 `get_sidecar_port`，契约扩为
+// `get_sidecar_port(remote_url?)`——Some(url) = 远端模式，None = 本机模式
+// （本机模式下前端每 500ms 轮询一次，等于持续断言本机态）。
+//
+// marker 文件：webview 加载晚于 lib.rs setup 的启动 spawn，仅靠内存态会让
+// 「稳态远端」每次开机都先起一个没人用的本机 sidecar（设计文档 R5 明令
+// 关死）。因此进入远端时落 `<data-dir>/remote-mode`（内容 = server URL，
+// 仅供排查），下次启动在 spawn 前即可短路。localStorage 是 UI 层事实源，
+// marker 是 Rust 侧的派生态，二者经 IPC 信号收敛。
+
+/// Marker file for remote mode — presence = 本机 sidecar spawn 关死。
+pub const REMOTE_MODE_FILE_NAME: &str = "remote-mode";
+
+/// Process-wide remote-mode memory. `None` = 本次运行尚未收到 IPC 信号，
+/// 回落 marker 文件判定（覆盖 webview 加载前的启动窗口）。
+static REMOTE_MODE: Mutex<Option<bool>> = Mutex::new(None);
+
+/// Remote-mode transition result of a `set_remote_mode*` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteModeTransition {
+    /// 有效态未变（含「稳态远端」的重复断言——不重复杀/写）。
+    Unchanged,
+    /// 本机 → 远端。
+    EnteredRemote,
+    /// 远端 → 本机。
+    ExitedRemote,
+}
+
+fn remote_mode_marker_exists_in(dir: &std::path::Path) -> bool {
+    dir.join(REMOTE_MODE_FILE_NAME).is_file()
+}
+
+fn remote_mode_transition_of(prev: bool, remote_url: Option<&str>) -> RemoteModeTransition {
+    let next = remote_url.map(|u| !u.trim().is_empty()).unwrap_or(false);
+    if prev == next {
+        RemoteModeTransition::Unchanged
+    } else if next {
+        RemoteModeTransition::EnteredRemote
+    } else {
+        RemoteModeTransition::ExitedRemote
+    }
+}
+
+/// Core transition logic, test-friendly (memory + data dir injected).
+/// 只在真实跃迁时触碰 marker 文件——本机模式的 500ms 轮询不会变成磁盘 IO。
+fn set_remote_mode_in(
+    mem: &Mutex<Option<bool>>,
+    dir: Option<&std::path::Path>,
+    remote_url: Option<&str>,
+) -> RemoteModeTransition {
+    let mut guard = mem.lock().unwrap_or_else(|e| e.into_inner());
+    let prev = guard.unwrap_or_else(|| dir.map(remote_mode_marker_exists_in).unwrap_or(false));
+    let transition = remote_mode_transition_of(prev, remote_url);
+    guard.replace(remote_url.map(|u| !u.trim().is_empty()).unwrap_or(false));
+    match transition {
+        RemoteModeTransition::EnteredRemote => {
+            if let (Some(dir), Some(url)) = (dir, remote_url) {
+                if let Err(e) = std::fs::write(dir.join(REMOTE_MODE_FILE_NAME), url.trim()) {
+                    ulog_warn!("[sidecar] Failed to write remote-mode marker: {}", e);
+                }
+            }
+        }
+        RemoteModeTransition::ExitedRemote => {
+            if let Some(dir) = dir {
+                let _ = std::fs::remove_file(dir.join(REMOTE_MODE_FILE_NAME));
+            }
+        }
+        RemoteModeTransition::Unchanged => {}
+    }
+    transition
+}
+
+/// Record the frontend's connection-mode signal (from `get_sidecar_port`).
+pub fn set_remote_mode(remote_url: Option<&str>) -> RemoteModeTransition {
+    let dir = crate::app_dirs::zhishi_data_dir();
+    set_remote_mode_in(&REMOTE_MODE, dir.as_deref(), remote_url)
+}
+
+/// Is remote mode active? Memory first; before the first IPC signal, fall
+/// back to the marker file so the startup spawn path is already gated.
+pub fn remote_mode_active() -> bool {
+    if let Some(v) = *REMOTE_MODE.lock().unwrap_or_else(|e| e.into_inner()) {
+        return v;
+    }
+    crate::app_dirs::zhishi_data_dir()
+        .map(|d| remote_mode_marker_exists_in(&d))
+        .unwrap_or(false)
+}
+
+/// Apply the frontend's connection-mode signal. On EnteredRemote, stop and
+/// evict the local Global Sidecar (SidecarInstance::drop kills the process)
+/// and remove the CLI port file — remote mode must not leave a local sidecar
+/// running that nobody talks to (设计文档 R5)。On ExitedRemote the caller
+/// restarts the global sidecar (needs AppHandle, off the main thread).
+pub fn apply_remote_mode_transition(
+    manager: &ManagedSidecarManager,
+    remote_url: Option<&str>,
+) -> RemoteModeTransition {
+    let transition = set_remote_mode(remote_url);
+    if transition == RemoteModeTransition::EnteredRemote {
+        ulog_info!(
+            "[sidecar] Remote mode (团队大脑) enabled: {} — stopping local global sidecar",
+            remote_url.unwrap_or("").trim()
+        );
+        if let Ok(mut guard) = manager.lock() {
+            guard.remove_instance(GLOBAL_SIDECAR_ID);
+        }
+        remove_global_port_file();
+    }
+    transition
+}
+
 // ===== Proxy Configuration =====
 // Default values (must match TypeScript PROXY_DEFAULTS in types.ts)
 // Proxy configuration is now managed by the shared proxy_config module
@@ -440,8 +557,76 @@ mod session_activation_tab_uniqueness_tests {
 }
 
 #[cfg(test)]
-mod stderr_classifier_tests {
+mod remote_mode_tests {
     use super::*;
+
+    fn fresh_mem() -> Mutex<Option<bool>> {
+        Mutex::new(None)
+    }
+
+    #[test]
+    fn transition_matrix() {
+        assert_eq!(remote_mode_transition_of(false, None), RemoteModeTransition::Unchanged);
+        assert_eq!(remote_mode_transition_of(false, Some("  ")), RemoteModeTransition::Unchanged);
+        assert_eq!(remote_mode_transition_of(false, Some("http://10.0.0.8:7411")), RemoteModeTransition::EnteredRemote);
+        assert_eq!(remote_mode_transition_of(true, Some("http://10.0.0.8:7411")), RemoteModeTransition::Unchanged);
+        assert_eq!(remote_mode_transition_of(true, None), RemoteModeTransition::ExitedRemote);
+        assert_eq!(remote_mode_transition_of(true, Some("")), RemoteModeTransition::ExitedRemote);
+    }
+
+    #[test]
+    fn marker_written_only_on_transitions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mem = fresh_mem();
+        let marker = dir.path().join(REMOTE_MODE_FILE_NAME);
+
+        // 稳态本机：首次信号（内存 None → 无 marker）不算跃迁，不写不删。
+        assert_eq!(set_remote_mode_in(&mem, Some(dir.path()), None), RemoteModeTransition::Unchanged);
+        assert!(!marker.exists());
+        // 本机轮询重复断言：仍 Unchanged。
+        assert_eq!(set_remote_mode_in(&mem, Some(dir.path()), None), RemoteModeTransition::Unchanged);
+
+        // 本机 → 远端：跃迁 + 落 marker（内容 = URL）。
+        assert_eq!(
+            set_remote_mode_in(&mem, Some(dir.path()), Some("http://10.0.0.8:7411")),
+            RemoteModeTransition::EnteredRemote
+        );
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "http://10.0.0.8:7411");
+        // 远端重复断言：Unchanged，marker 保持。
+        assert_eq!(
+            set_remote_mode_in(&mem, Some(dir.path()), Some("http://10.0.0.8:7411")),
+            RemoteModeTransition::Unchanged
+        );
+        assert!(marker.exists());
+
+        // 远端 → 本机：跃迁 + 摘 marker。
+        assert_eq!(set_remote_mode_in(&mem, Some(dir.path()), None), RemoteModeTransition::ExitedRemote);
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn fresh_memory_reads_marker_file_as_previous_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join(REMOTE_MODE_FILE_NAME), "http://brain:7411").unwrap();
+        let mem = fresh_mem(); // None = 尚未收到 IPC 信号（模拟 app 重启）
+
+        // 稳态远端：marker 存在 → prev = true → 重复远端断言是 Unchanged
+        // （不会重复 kill/写；启动 spawn 已由 remote_mode_active 的 marker
+        // 回落短路）。
+        assert_eq!(
+            set_remote_mode_in(&mem, Some(dir.path()), Some("http://brain:7411")),
+            RemoteModeTransition::Unchanged
+        );
+        // 内存 None 时 None 信号 → 与 marker 比 → ExitedRemote（用户在本机
+        // 模式下启动了 GUI，marker 是上一次远端的残留）。
+        let mem2 = fresh_mem();
+        assert_eq!(set_remote_mode_in(&mem2, Some(dir.path()), None), RemoteModeTransition::ExitedRemote);
+        assert!(!dir.path().join(REMOTE_MODE_FILE_NAME).exists());
+    }
+}
+
+#[cfg(test)]
+mod stderr_classifier_tests {    use super::*;
 
     #[test]
     fn anchored_prefixes_demote_only_when_at_line_start() {
@@ -2632,6 +2817,13 @@ pub fn start_global_sidecar<R: Runtime>(
     app_handle: &AppHandle<R>,
     manager: &ManagedSidecarManager,
 ) -> Result<u16, String> {
+    // 1.8.7 P0.5 团队大脑：远端模式下本机 sidecar spawn 路径整体关死——
+    // lib.rs 启动直调与 monitor 自动重启都汇聚在这里，一处闸全盖住。
+    if remote_mode_active() {
+        return Err(
+            "[sidecar] remote mode (团队大脑) active — local sidecar spawn bypassed".to_string(),
+        );
+    }
     let port = start_tab_sidecar(app_handle, manager, GLOBAL_SIDECAR_ID, None)?;
     // Write port file so the CLI can discover the running sidecar
     write_global_port_file(port);
@@ -2856,6 +3048,13 @@ pub async fn monitor_global_sidecar(
         if shutdown.load(Relaxed) {
             logger::info(&app_handle, "[sidecar] Global sidecar monitor stopping (app shutdown)".to_string());
             break;
+        }
+
+        // 1.8.7 P0.5 团队大脑：远端模式下本机没有 global sidecar 可监视
+        // （实例已被 apply_remote_mode_transition 移除；重启路径也已被
+        // start_global_sidecar 的闸关死——这里提前跳过，避免空转日志）。
+        if remote_mode_active() {
+            continue;
         }
 
         // Check process status (cheap, no HTTP)

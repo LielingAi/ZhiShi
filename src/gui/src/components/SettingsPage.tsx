@@ -1,5 +1,8 @@
 /**
  * 设置页（1.3.1 ⑥）：页签接真——
+ *   连接     本机 / 团队大脑（1.8.7 P0.5：localStorage 持久化；保存后
+ *            dispose+init 重连，Rust 侧经 get_sidecar_port(remote_url) 抑制
+ *            本机 sidecar spawn）
  *   模型     model/list + model/set-key（隐藏输入模态）+ set-default + verify
  *   情报     intel/status + intel/update（mode 选择）+
  *            intel/config-update（1.3.2：配置部分更新，只改传入字段）
@@ -33,8 +36,15 @@ import {
   type IntelResolvedConfig,
 } from '../model/intel-config';
 import { StateHint } from './StateHint';
+import {
+  loadConnection,
+  normalizeServerUrl,
+  saveConnection,
+  type ConnectionSettings,
+} from '../model/connection';
 
 const NAV = [
+  { id: 'connection', icon: '⇄', label: '连接', disabled: false },
   { id: 'model', icon: '◇', label: '模型', disabled: false },
   { id: 'intel', icon: '◈', label: '情报', disabled: false },
   { id: 'expert', icon: '◇', label: '专家知识', disabled: false },
@@ -42,6 +52,120 @@ const NAV = [
   { id: 'appearance', icon: '◐', label: '外观', disabled: false },
   { id: 'about', icon: 'ⓘ', label: '关于', disabled: false },
 ] as const;
+
+// ── 连接页签（1.8.7 P0.5：本机 / 团队大脑）──────────────────────────────
+
+function ConnectionTab(): React.JSX.Element {
+  const showToast = useGuiStore((s) => s.showToast);
+  const connectionState = useGuiStore((s) => s.connectionState);
+  const connectError = useGuiStore((s) => s.connectError);
+  const [form, setForm] = useState<ConnectionSettings>(() =>
+    loadConnection(typeof localStorage !== 'undefined' ? localStorage : undefined),
+  );
+  const [saving, setSaving] = useState(false);
+
+  const save = (): void => {
+    const next: ConnectionSettings = {
+      mode: form.mode,
+      serverUrl: form.serverUrl.trim(),
+      token: form.token.trim(),
+    };
+    if (next.mode === 'remote') {
+      try {
+        normalizeServerUrl(next.serverUrl);
+      } catch {
+        showToast('团队大脑地址非法（例：http://10.0.0.8:7411 或 10.0.0.8:7411）');
+        return;
+      }
+    }
+    setSaving(true);
+    saveConnection(typeof localStorage !== 'undefined' ? localStorage : undefined, next);
+    showToast('✓ 连接设置已保存，正在重连…');
+    // 重走完整连接流程（dispose 复位后 init 重读连接设置；远端不可达会
+    // 进 failed 态并显示地址——不会静默回落本机）。
+    const s = useGuiStore.getState();
+    s.dispose();
+    s.init();
+    setSaving(false);
+  };
+
+  return (
+    <>
+      <div className="set-group">
+        <div className="sg-title">连接模式</div>
+        <div className="set-row">
+          <div>
+            <div className="sr-label">本机</div>
+            <div className="sr-desc">默认 · 应用拉起本机 sidecar，一切照旧</div>
+          </div>
+          <div className="sr-control">
+            <button className={`btn small ${form.mode === 'local' ? 'mode-on' : ''}`} onClick={() => setForm((f) => ({ ...f, mode: 'local' }))}>
+              {form.mode === 'local' ? '✓ 当前' : '本机'}
+            </button>
+          </div>
+        </div>
+        <div className="set-row">
+          <div>
+            <div className="sr-label">团队大脑</div>
+            <div className="sr-desc">连接服务器上的共享 sidecar（本机不再拉起 sidecar）</div>
+          </div>
+          <div className="sr-control">
+            <button className={`btn small ${form.mode === 'remote' ? 'mode-on' : ''}`} onClick={() => setForm((f) => ({ ...f, mode: 'remote' }))}>
+              {form.mode === 'remote' ? '✓ 当前' : '团队大脑'}
+            </button>
+          </div>
+        </div>
+      </div>
+      {form.mode === 'remote' && (
+        <div className="set-group">
+          <div className="sg-title">团队大脑</div>
+          <div className="set-row">
+            <div><div className="sr-label">服务器地址</div></div>
+            <div className="sr-control">
+              <input
+                className="f-input cf-input"
+                placeholder="http://10.0.0.8:7411 或 10.0.0.8:7411"
+                value={form.serverUrl}
+                onChange={(e) => setForm((f) => ({ ...f, serverUrl: e.target.value }))}
+              />
+            </div>
+          </div>
+          <div className="set-row">
+            <div><div className="sr-label">Token（可选）</div></div>
+            <div className="sr-control">
+              <input
+                className="f-input cf-input"
+                type="password"
+                placeholder="（可选）Bearer 鉴权 token"
+                value={form.token}
+                onChange={(e) => setForm((f) => ({ ...f, token: e.target.value }))}
+              />
+            </div>
+          </div>
+          <div className="sr-desc" style={{ padding: '4px 2px' }}>
+            token 只进请求头（Authorization: Bearer），不打印不落日志；传输加密交给 SSH 隧道 / 内网。
+          </div>
+        </div>
+      )}
+      <div className="set-group">
+        <div className="set-row">
+          <div>
+            <div className="sr-label">当前状态</div>
+            {connectError && <div className="sr-desc">{connectError}</div>}
+          </div>
+          <div className="sr-control">
+            <span className={`sr-status ${connectionState === 'live' ? 'ok' : ''}`}>
+              {connectionState === 'live' ? '✓ 已连接' : connectionState === 'failed' ? '✕ 连接失败' : '… 连接中'}
+            </span>
+            <button className="btn small primary" disabled={saving} onClick={save}>
+              {saving ? '保存中…' : '保存并重连'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
 
 // ── 模型页签 ──────────────────────────────────────────────────────────
 
@@ -1149,6 +1273,7 @@ export function SettingsPage(): React.JSX.Element {
           ))}
         </div>
         <div className="set-content">
+          {pg === 'connection' && <ConnectionTab />}
           {pg === 'model' && <ModelTab />}
           {pg === 'intel' && <IntelTab />}
           {pg === 'expert' && <ExpertTab />}

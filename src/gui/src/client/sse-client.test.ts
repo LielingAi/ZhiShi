@@ -126,7 +126,6 @@ describe('GuiSidecarClient.openSse', () => {
 });
 
 // ── 1.6.3 refs 大值外溢取回（debt #2 消费端） ──
-
 describe('GuiSidecarClient.getRefText', () => {
   it('200 → 返回原文（GET base + /refs/<id>，根路径非 /api/admin）', async () => {
     let seenUrl = '';
@@ -165,5 +164,124 @@ describe('GuiSidecarClient.getRefText', () => {
     );
     expect(err).toBeInstanceOf(GuiHttpError);
     expect((err as GuiHttpError).status).toBe(404);
+  });
+});
+
+// ── 1.8.7 P0.5 团队大脑：Bearer token 头 + probeHealth ──
+
+describe('GuiSidecarClient token 头（1.8.7 P0.5）', () => {
+  function captureFetch(seen: { url?: string; headers?: Record<string, string> }): GuiFetch {
+    return async (url, init) => {
+      seen.url = url;
+      seen.headers = init?.headers;
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: () => 'application/json' },
+        json: async () => ({ success: true }),
+        text: async () => '',
+        body: null,
+      };
+    };
+  }
+
+  it('配了 token → GET/POST 均挂 Authorization: Bearer', async () => {
+    const seen: { url?: string; headers?: Record<string, string> } = {};
+    const client = new GuiSidecarClient({
+      base: 'http://10.0.0.8:7411',
+      token: 'test-token-xyz',
+      fetchImpl: captureFetch(seen),
+    });
+    await client.getJson('/sessions');
+    expect(seen.headers?.Authorization).toBe('Bearer test-token-xyz');
+    await client.postJson('/chat/send', { text: 'hi' });
+    expect(seen.headers?.Authorization).toBe('Bearer test-token-xyz');
+    // Content-Type 不被 token 合并冲掉
+    expect(seen.headers?.['Content-Type']).toBe('application/json');
+  });
+
+  it('本机模式回归：不配 token → 不带 Authorization 头（行为一字节不变）', async () => {
+    const seen: { url?: string; headers?: Record<string, string> } = {};
+    const client = new GuiSidecarClient({ base: 'http://127.0.0.1:3199', fetchImpl: captureFetch(seen) });
+    await client.getJson('/sessions');
+    expect(seen.headers?.Authorization).toBeUndefined();
+    await client.postJson('/chat/send', {});
+    expect(seen.headers).toEqual({ 'Content-Type': 'application/json' });
+  });
+
+  it('空白 token 视同未配置', async () => {
+    const seen: { url?: string; headers?: Record<string, string> } = {};
+    const client = new GuiSidecarClient({ base: 'http://x', token: '   ', fetchImpl: captureFetch(seen) });
+    await client.getJson('/sessions');
+    expect(seen.headers?.Authorization).toBeUndefined();
+  });
+
+  it('openSse 的 SSE 请求同样挂 Bearer 头（fetch-based reader，可带自定义头）', async () => {
+    const seen: { headers?: Record<string, string> } = {};
+    const fetchImpl: GuiFetch = async (_url, init) => {
+      seen.headers = init?.headers;
+      return chunkResponse('');
+    };
+    const client = new GuiSidecarClient({ base: 'http://x', token: 'sse-token', fetchImpl });
+    const ac = new AbortController();
+    const gen = client.openSse('/chat/stream', {
+      signal: ac.signal,
+      retryDelayMs: 1,
+      onReconnect: () => ac.abort(),
+    });
+    for await (const _ of gen) void _;
+    expect(seen.headers?.Authorization).toBe('Bearer sse-token');
+    expect(seen.headers?.Accept).toBe('text/event-stream');
+  });
+});
+
+describe('GuiSidecarClient.probeHealth（1.8.7 P0.5 远端探活）', () => {
+  it('2xx → ok，且带 token 时挂 Bearer 头', async () => {
+    const seen: { url?: string; headers?: Record<string, string> } = {};
+    const fetchImpl: GuiFetch = async (url, init) => {
+      seen.url = url;
+      seen.headers = init?.headers;
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: () => null },
+        json: async () => ({}),
+        text: async () => '',
+        body: null,
+      };
+    };
+    const client = new GuiSidecarClient({ base: 'http://10.0.0.8:7411', token: 't', fetchImpl });
+    const r = await client.probeHealth();
+    expect(r).toEqual({ ok: true });
+    expect(seen.url).toBe('http://10.0.0.8:7411/health');
+    expect(seen.headers?.Authorization).toBe('Bearer t');
+  });
+
+  it('非 2xx → {ok:false}（不抛）', async () => {
+    const fetchImpl: GuiFetch = async () => ({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      headers: { get: () => null },
+      json: async () => ({}),
+      text: async () => '',
+      body: null,
+    });
+    const client = new GuiSidecarClient({ base: 'http://x', fetchImpl });
+    const r = await client.probeHealth();
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('503');
+  });
+
+  it('传输层失败（远端不可达）→ {ok:false,error}，绝不静默回落', async () => {
+    const fetchImpl: GuiFetch = async () => {
+      throw new Error('fetch failed: ECONNREFUSED');
+    };
+    const client = new GuiSidecarClient({ base: 'http://10.0.0.8:7411', fetchImpl });
+    const r = await client.probeHealth();
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('ECONNREFUSED');
   });
 });
