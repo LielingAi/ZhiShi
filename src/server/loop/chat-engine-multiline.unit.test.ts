@@ -53,6 +53,7 @@ vi.mock('zhishi-loop-core/session', async (importOriginal) => {
     newLoopSessionId: () => `ls-${++seq}`,
     loadLoopSession: (...args: unknown[]) => loadLoopSessionMock(...args),
     appendLoopMessages: (...args: unknown[]) => appendLoopMessagesMock(...args),
+    appendLoopSystemPrompt: vi.fn(async () => true),
     truncateLoopSession: vi.fn(async () => {}),
     forkLoopSession: vi.fn(async () => 'fork-ls-1'),
     markLoopSessionCompacted: vi.fn(async () => {}),
@@ -256,7 +257,10 @@ describe('P3b 多引擎并发(放掉一台上限)', () => {
     expect(r1).toMatchObject({ isInFlight: true });
     expect(r2).toMatchObject({ isInFlight: true });
     // THE PROOF:两台引擎各自 busy,两个 runLoop 同时在飞——线 A 的 busy 没挡线 B。
-    expect(runLoopMock).toHaveBeenCalledTimes(2);
+    // (turn 起跑管线含系统提示落盘等若干 await,等两个 runLoop 都到闸口再断言。)
+    await vi.waitFor(() => {
+      expect(runLoopMock).toHaveBeenCalledTimes(2);
+    }, { timeout: 3000, interval: 10 });
     expect(getLiveEngineState('ls-alice')?.sessionState).toBe('running');
     expect(getLiveEngineState('ls-bob')?.sessionState).toBe('running');
 
@@ -287,7 +291,10 @@ describe('P3b 多引擎并发(放掉一台上限)', () => {
     const s3 = await asActor('bob', 'operator', () => sendPiChatMessage({ text: 'B1' }));
     expect(s3).toMatchObject({ isInFlight: true });
     expect(s3.steering).toBeUndefined();
-    expect(runLoopMock).toHaveBeenCalledTimes(2);
+    // 等两个 runLoop 都到闸口(起跑管线含系统提示落盘的 await)
+    await vi.waitFor(() => {
+      expect(runLoopMock).toHaveBeenCalledTimes(2);
+    }, { timeout: 3000, interval: 10 });
 
     releaseAll();
     await waitLineIdle('ls-alice');
@@ -316,6 +323,10 @@ describe('P3b 多引擎并发(放掉一台上限)', () => {
     envSessionsData.set('E:/ws::bob::host', { loopSessionId: 'ls-bob', updatedAt: '' });
     const releaseAll = gateFirstTurns(1);
     await asActor('alice', 'operator', () => sendPiChatMessage({ text: 'A1' })); // gated → busy
+    // 等 turn 到闸口(起跑管线含系统提示落盘的 await),否则 releaseAll 放空闸
+    await vi.waitFor(() => {
+      expect(runLoopMock).toHaveBeenCalledTimes(1);
+    }, { timeout: 3000, interval: 10 });
     expect(hasLiveEngine('ls-alice')).toBe(true);
 
     // busy 永不回收

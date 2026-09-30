@@ -4,6 +4,9 @@
  * 存储:`~/.zhishi/loop-sessions/<sessionId>.jsonl`,一行一条 JSON:
  *   - 首行元数据:{ kind:'meta', model?, providerId?, createdAt, updatedAt }
  *   - 其余每行一条 pi AgentMessage(user/assistant/toolResult)
+ *   - 或一条文件级记录:{ kind:'system-prompt', hash, content, at }
+ *     (轨迹完整性:模型当轮实际看到的系统提示,hash 去重;不是消息,
+ *     不进 messages——runLoop 永远看不到,老读者按未知行容错跳过)
  *
  * 持久化前归一化({@link normalizeMessagesForPersist}):pi 的自定义消息
  * 类型(如 BashExecutionMessage)不落盘——与 M1 convertToLlm 的过滤同
@@ -16,7 +19,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
@@ -51,9 +54,29 @@ export interface LoopSessionMeta {
   claimsCursor?: number;
 }
 
+/**
+ * 系统提示记录（轨迹完整性）：`{"kind":"system-prompt",hash,content,at}`。
+ * 组装的系统提示按 sha256 去重落盘——轨迹要能回答「模型当轮实际看到了
+ * 什么」（提示是动态的：环境/mission/注入记忆/域逐 turn 变）。kind 记录
+ * 不是消息：不进 messages（runLoop 永远看不到），老读者按未知行容错跳过。
+ */
+export interface LoopSessionSystemPromptRecord {
+  /** sha256(content)——变化检测键。 */
+  hash: string;
+  /** 当轮组装的完整系统提示原文。 */
+  content: string;
+  /** 落盘时间 ISO。 */
+  at: string;
+  /** 文件内位置：排在它之前的 message 条数（记录与消息的事件序据此还原；
+   *  turn 起跑写入时 pos = 当轮 user 消息之前——记录先于本批消息）。 */
+  pos: number;
+}
+
 export interface LoopSession {
   messages: AgentMessage[];
   meta: LoopSessionMeta | null;
+  /** 系统提示记录（文件序；无记录的旧轨迹 = []）。 */
+  systemPrompts: LoopSessionSystemPromptRecord[];
 }
 
 export interface LoopSessionStoreOptions {
@@ -62,7 +85,14 @@ export interface LoopSessionStoreOptions {
 }
 
 const META_KIND = 'meta';
+/** 系统提示记录 kind（文件级记录,不是消息——绕开 VALID_ROLES 过滤）。 */
+export const SYSTEM_PROMPT_RECORD_KIND = 'system-prompt';
 const VALID_ROLES = new Set(['user', 'assistant', 'toolResult']);
+
+/** 系统提示内容的变化检测键（sha256;引擎快路径与落盘去重同一口径）。 */
+export function loopSystemPromptHash(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex');
+}
 
 // ---------------------------------------------------------------------------
 // Pure — id / line codec / normalization
@@ -126,8 +156,12 @@ function stripTruncationMarkers(message: AgentMessage): AgentMessage {
   return changed ? ({ ...message, content: blocks } as AgentMessage) : message;
 }
 
-/** 解析一行为 meta 或 message;坏行/非法 role → null(容错跳过)。 */
-export function parseLoopSessionLine(line: string): { kind: 'meta'; meta: LoopSessionMeta } | { kind: 'msg'; message: AgentMessage } | null {
+/** 解析一行为 meta / message / 系统提示记录;坏行/非法 role/未知 kind → null(容错跳过)。 */
+export function parseLoopSessionLine(line: string):
+  | { kind: 'meta'; meta: LoopSessionMeta }
+  | { kind: 'msg'; message: AgentMessage }
+  | { kind: 'system-prompt'; record: Omit<LoopSessionSystemPromptRecord, 'pos'> }
+  | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
   let parsed: unknown;
@@ -152,32 +186,62 @@ export function parseLoopSessionLine(line: string): { kind: 'meta'; meta: LoopSe
       },
     };
   }
+  // 系统提示记录:additive——老读者走到这里按未知行返回 null 跳过(容错不变)。
+  if (rec.kind === SYSTEM_PROMPT_RECORD_KIND) {
+    if (typeof rec.hash !== 'string' || typeof rec.content !== 'string') return null;
+    return {
+      kind: 'system-prompt',
+      record: {
+        hash: rec.hash,
+        content: rec.content,
+        at: typeof rec.at === 'string' ? rec.at : '',
+      },
+    };
+  }
   if (VALID_ROLES.has(rec.role as string)) {
     return { kind: 'msg', message: parsed as AgentMessage };
   }
   return null;
 }
 
-/** 序列化:meta 首行 + 每消息一行。 */
-export function serializeLoopSession(meta: LoopSessionMeta, messages: AgentMessage[]): string {
+/** 序列化:meta 首行 + 消息/系统提示记录按 pos 交错(记录排在其 pos
+ *  计数的消息之前;无记录时与旧版逐字节一致)。 */
+export function serializeLoopSession(
+  meta: LoopSessionMeta,
+  messages: AgentMessage[],
+  systemPrompts: LoopSessionSystemPromptRecord[] = [],
+): string {
   const lines = [JSON.stringify({ kind: META_KIND, ...meta })];
-  for (const m of normalizeMessagesForPersist(messages)) {
-    lines.push(JSON.stringify(m));
+  const normalized = normalizeMessagesForPersist(messages);
+  const byPos = new Map<number, LoopSessionSystemPromptRecord[]>();
+  for (const r of systemPrompts) {
+    const pos = Math.max(0, Math.min(r.pos, normalized.length));
+    const bucket = byPos.get(pos) ?? [];
+    bucket.push(r);
+    byPos.set(pos, bucket);
+  }
+  for (let i = 0; i <= normalized.length; i++) {
+    for (const r of byPos.get(i) ?? []) {
+      lines.push(JSON.stringify({ kind: SYSTEM_PROMPT_RECORD_KIND, hash: r.hash, content: r.content, at: r.at }));
+    }
+    if (i < normalized.length) lines.push(JSON.stringify(normalized[i]));
   }
   return lines.join('\n') + '\n';
 }
 
-/** 反序列化整文件(坏行跳过)。 */
+/** 反序列化整文件(坏行/未知行跳过;记录的 pos = 它之前已读出的消息条数)。 */
 export function parseLoopSession(content: string): LoopSession {
   const messages: AgentMessage[] = [];
+  const systemPrompts: LoopSessionSystemPromptRecord[] = [];
   let meta: LoopSessionMeta | null = null;
   for (const line of content.split('\n')) {
     const parsed = parseLoopSessionLine(line);
     if (!parsed) continue;
     if (parsed.kind === 'meta') meta = parsed.meta;
+    else if (parsed.kind === 'system-prompt') systemPrompts.push({ ...parsed.record, pos: messages.length });
     else messages.push(parsed.message);
   }
-  return { messages, meta };
+  return { messages, meta, systemPrompts };
 }
 
 // ---------------------------------------------------------------------------
@@ -198,15 +262,15 @@ function storeDir(options?: LoopSessionStoreOptions): string {
  *  (含模型复现到正文中间的),不剥会在下次注入时继续喂雪崩语料。 */
 export function loadLoopSession(id: string, options?: LoopSessionStoreOptions): LoopSession {
   const file = loopSessionFile(id, storeDir(options));
-  if (!existsSync(file)) return { messages: [], meta: null };
+  if (!existsSync(file)) return { messages: [], meta: null, systemPrompts: [] };
   let content: string;
   try {
     content = readFileSync(file, 'utf-8');
   } catch {
-    return { messages: [], meta: null };
+    return { messages: [], meta: null, systemPrompts: [] };
   }
   const parsed = parseLoopSession(content);
-  return { messages: parsed.messages.map(stripTruncationMarkers), meta: parsed.meta };
+  return { messages: parsed.messages.map(stripTruncationMarkers), meta: parsed.meta, systemPrompts: parsed.systemPrompts };
 }
 
 /**
@@ -235,7 +299,52 @@ export async function appendLoopMessages(
       tokenCalibration: meta?.tokenCalibration ?? existing.meta?.tokenCalibration,
     };
     const merged = [...existing.messages, ...normalizeMessagesForPersist(messages)];
-    writeFileAtomic(file, serializeLoopSession(nextMeta, merged));
+    // 系统提示记录随读-改-写全程保留(本函数只加消息,不动记录)。
+    writeFileAtomic(file, serializeLoopSession(nextMeta, merged, existing.systemPrompts));
+  });
+}
+
+/**
+ * 系统提示记录落盘(轨迹完整性):组装的系统提示按内容 hash 与文件末条
+ * 记录去重——不变不写(完成轮 jsonl 与旧版逐字节一致,只多记录行),变了/
+ * 新线才写。与 appendLoopMessages 同一锁 + tmp+rename 纪律;kind 记录不
+ * 是消息,绕开 role 过滤,也不进 messages(runLoop 永远看不到)。
+ * pos:记录的事件序位置(排在 pos 条消息之前);调用方(引擎)传「当轮
+ * user 消息之前」的下标,缺省 = 当前文件末尾。返回 true = 写了新记录。
+ */
+export async function appendLoopSystemPrompt(
+  id: string,
+  content: string,
+  options?: LoopSessionStoreOptions & { pos?: number },
+): Promise<boolean> {
+  const hash = loopSystemPromptHash(content);
+  const dir = storeDir(options);
+  mkdirSync(dir, { recursive: true });
+  const file = loopSessionFile(id, dir);
+
+  return withFileLock({ lockPath: `${file}.lock` }, async () => {
+    const existing = loadLoopSession(id, options);
+    // 文件是真相:锁内对末条记录再核一遍(并发写者/别的进程兜底)。
+    const last = existing.systemPrompts[existing.systemPrompts.length - 1];
+    if (last?.hash === hash) return false;
+    const now = new Date().toISOString();
+    const nextMeta: LoopSessionMeta = {
+      model: existing.meta?.model,
+      providerId: existing.meta?.providerId,
+      createdAt: existing.meta?.createdAt || now,
+      updatedAt: now,
+      compactedAt: existing.meta?.compactedAt,
+      tokenCalibration: existing.meta?.tokenCalibration,
+      claimsCursor: existing.meta?.claimsCursor,
+    };
+    const record: LoopSessionSystemPromptRecord = {
+      hash,
+      content,
+      at: now,
+      pos: options?.pos ?? existing.messages.length,
+    };
+    writeFileAtomic(file, serializeLoopSession(nextMeta, existing.messages, [...existing.systemPrompts, record]));
+    return true;
   });
 }
 
@@ -267,7 +376,10 @@ export async function forkLoopSession(
       tokenCalibration: existing.meta?.tokenCalibration,
     };
     const kept = existing.messages.slice(0, Math.max(0, keepCount));
-    writeFileAtomic(dstFile, serializeLoopSession(meta, kept));
+    // 系统提示记录:截点前的随副本保留(pos ≤ keepCount 的记录排在保留
+    // 消息区间内;截点后的属于被裁掉的轮次,不带进分叉)。
+    const keptRecords = existing.systemPrompts.filter((r) => r.pos <= kept.length);
+    writeFileAtomic(dstFile, serializeLoopSession(meta, kept, keptRecords));
   });
   return newId;
 }
@@ -298,7 +410,8 @@ export async function truncateLoopSession(
       tokenCalibration: existing.meta?.tokenCalibration,
     };
     const kept = existing.messages.slice(0, Math.max(0, keepCount));
-    writeFileAtomic(file, serializeLoopSession(nextMeta, kept));
+    const keptRecords = existing.systemPrompts.filter((r) => r.pos <= kept.length);
+    writeFileAtomic(file, serializeLoopSession(nextMeta, kept, keptRecords));
   });
 }
 
@@ -326,7 +439,7 @@ export async function markLoopSessionCompacted(
       tokenCalibration: existing.meta?.tokenCalibration,
       claimsCursor: existing.meta?.claimsCursor,
     };
-    writeFileAtomic(file, serializeLoopSession(nextMeta, existing.messages));
+    writeFileAtomic(file, serializeLoopSession(nextMeta, existing.messages, existing.systemPrompts));
   });
 }
 
@@ -355,6 +468,6 @@ export async function markLoopSessionClaimsCursor(
       tokenCalibration: existing.meta?.tokenCalibration,
       claimsCursor: Math.max(existing.meta?.claimsCursor ?? 0, cursor),
     };
-    writeFileAtomic(file, serializeLoopSession(nextMeta, existing.messages));
+    writeFileAtomic(file, serializeLoopSession(nextMeta, existing.messages, existing.systemPrompts));
   });
 }

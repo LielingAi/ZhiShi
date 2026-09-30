@@ -16,14 +16,18 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
 import {
   appendLoopMessages,
+  appendLoopSystemPrompt,
+  forkLoopSession,
   loadLoopSession,
   loopSessionFile,
+  loopSystemPromptHash,
   markLoopSessionCompacted,
   newLoopSessionId,
   normalizeMessagesForPersist,
   parseLoopSession,
   parseLoopSessionLine,
   serializeLoopSession,
+  truncateLoopSession,
 } from './session';
 
 const DIR = mkdtempSync(join(tmpdir(), 'zhishi-loop-session-test-'));
@@ -123,7 +127,7 @@ describe('normalizeMessagesForPersist', () => {
 describe('append / load(真临时目录)', () => {
   it('不存在 → 空会话', () => {
     const s = loadLoopSession('nope', { dir: DIR });
-    expect(s).toEqual({ messages: [], meta: null });
+    expect(s).toEqual({ messages: [], meta: null, systemPrompts: [] });
   });
 
   it('写读往返;meta 自动创建', async () => {
@@ -229,5 +233,89 @@ describe('append / load(真临时目录)', () => {
     expect(split.messages).toEqual(batch.messages);
     expect(split.meta?.model).toBe(batch.meta?.model);
     expect(split.meta?.providerId).toBe(batch.meta?.providerId);
+  });
+});
+
+describe('系统提示记录(轨迹完整性:轨迹要能回答「模型当轮看到了什么」)', () => {
+  it('落盘 → load 暴露记录;不进 messages(LLM 永不可见);pos = 写入时消息数', async () => {
+    const id = newLoopSessionId();
+    await appendLoopMessages(id, [user('q1'), assistant('a1')], undefined, { dir: DIR });
+    expect(await appendLoopSystemPrompt(id, '系统提示V1', { dir: DIR })).toBe(true);
+    const s = loadLoopSession(id, { dir: DIR });
+    expect(s.messages).toHaveLength(2); // 记录不是消息
+    expect(s.systemPrompts).toHaveLength(1);
+    expect(s.systemPrompts[0].content).toBe('系统提示V1');
+    expect(s.systemPrompts[0].hash).toBe(loopSystemPromptHash('系统提示V1'));
+    expect(s.systemPrompts[0].pos).toBe(2);
+  });
+
+  it('hash 去重:内容不变 → 不重写;变了 → 追加新记录(与末条比,不全局去重)', async () => {
+    const id = newLoopSessionId();
+    await appendLoopSystemPrompt(id, '提示A', { dir: DIR });
+    expect(await appendLoopSystemPrompt(id, '提示A', { dir: DIR })).toBe(false); // 不变不写
+    expect(await appendLoopSystemPrompt(id, '提示B', { dir: DIR })).toBe(true); // 变了写
+    expect(await appendLoopSystemPrompt(id, '提示A', { dir: DIR })).toBe(true); // 与末条不同即写
+    const s = loadLoopSession(id, { dir: DIR });
+    expect(s.systemPrompts.map((r) => r.content)).toEqual(['提示A', '提示B', '提示A']);
+    // 文件行数侧面验证「不重写」:meta + 3 记录,无消息
+    const raw = readFileSync(loopSessionFile(id, DIR), 'utf-8').trim().split('\n');
+    expect(raw).toHaveLength(4);
+  });
+
+  it('记录先于本批消息:raw 行序 = meta, 记录, user, assistant(pos 交错)', async () => {
+    const id = newLoopSessionId();
+    // 引擎传 pos = 当轮 user 之前的下标(空历史 → 0),随后 turn 批次追加
+    await appendLoopSystemPrompt(id, '提示X', { dir: DIR, pos: 0 });
+    await appendLoopMessages(id, [user('q'), assistant('a')], undefined, { dir: DIR });
+    const raw = readFileSync(loopSessionFile(id, DIR), 'utf-8').trim().split('\n');
+    expect(JSON.parse(raw[0]).kind).toBe('meta');
+    expect(JSON.parse(raw[1])).toMatchObject({ kind: 'system-prompt', content: '提示X' });
+    expect(JSON.parse(raw[2]).role).toBe('user');
+    expect(JSON.parse(raw[3]).role).toBe('assistant');
+  });
+
+  it('旧轨迹(无记录行)load 正常(systemPrompts=[]),续写后记录随读-改-写保留', async () => {
+    const id = newLoopSessionId();
+    writeFileSync(
+      loopSessionFile(id, DIR),
+      JSON.stringify({ kind: 'meta', createdAt: 'c', updatedAt: 'u' }) + '\n' + JSON.stringify(user('old')) + '\n',
+    );
+    const s = loadLoopSession(id, { dir: DIR });
+    expect(s.systemPrompts).toEqual([]);
+    expect(s.messages).toHaveLength(1);
+    // 追加记录(默认 pos=当前消息数 1)后再追加消息——全量重写不丢记录、位置不变
+    await appendLoopSystemPrompt(id, '提示Y', { dir: DIR });
+    await appendLoopMessages(id, [assistant('new')], undefined, { dir: DIR });
+    const s2 = loadLoopSession(id, { dir: DIR });
+    expect(s2.systemPrompts.map((r) => r.content)).toEqual(['提示Y']);
+    expect(s2.messages).toHaveLength(2);
+    const raw = readFileSync(loopSessionFile(id, DIR), 'utf-8').trim().split('\n');
+    expect(JSON.parse(raw[1]).role).toBe('user');
+    expect(JSON.parse(raw[2]).kind).toBe('system-prompt');
+    expect(JSON.parse(raw[3]).role).toBe('assistant');
+  });
+
+  it('truncate/fork:追加日志截断语义——截点前的记录保留,截点后的丢掉', async () => {
+    const id = newLoopSessionId();
+    await appendLoopMessages(id, [user('q1'), assistant('a1')], undefined, { dir: DIR });
+    await appendLoopSystemPrompt(id, '提示P1', { dir: DIR }); // pos=2(q2 轮的提示)
+    await appendLoopMessages(id, [user('q2'), assistant('a2')], undefined, { dir: DIR });
+    await appendLoopSystemPrompt(id, '提示P2', { dir: DIR }); // pos=4
+    const forkId = await forkLoopSession(id, 2, { dir: DIR });
+    const forked = loadLoopSession(forkId, { dir: DIR });
+    expect(forked.messages).toHaveLength(2);
+    expect(forked.systemPrompts.map((r) => r.content)).toEqual(['提示P1']); // pos=2 ≤ 截点;P2 丢
+    await truncateLoopSession(id, 2, { dir: DIR });
+    const truncated = loadLoopSession(id, { dir: DIR });
+    expect(truncated.messages).toHaveLength(2);
+    expect(truncated.systemPrompts.map((r) => r.content)).toEqual(['提示P1']);
+  });
+
+  it('记录与截断标记剥除器不碰撞:内容含标记的系统提示原样保留', async () => {
+    const id = newLoopSessionId();
+    const content = '提示含标记\n⟦系统注记：以下内容已省略，勿复现⟧原样保留';
+    await appendLoopSystemPrompt(id, content, { dir: DIR });
+    const s = loadLoopSession(id, { dir: DIR });
+    expect(s.systemPrompts[0].content).toBe(content); // 记录不是消息,不过 normalize/剥标记
   });
 });

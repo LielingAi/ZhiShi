@@ -128,13 +128,16 @@ import { firePostTurnTitleHook } from '../turn-hooks';
 import { resolveLoopModel, resolveLoopModelFromEnv, type LoopModelResolution } from './pi-provider';
 import {
   appendLoopMessages,
+  appendLoopSystemPrompt,
   defaultLoopSessionDir,
   loadLoopSession,
   loopSessionFile,
+  loopSystemPromptHash,
   markLoopSessionCompacted,
   newLoopSessionId,
   truncateLoopSession,
   forkLoopSession,
+  type LoopSessionSystemPromptRecord,
 } from 'zhishi-loop-core/session';
 import { mapLoopEventToSse, toolResultText, type SseOut } from 'zhishi-loop-core/sse-adapter';
 import { createDelegateTaskTool, DELEGATE_TASK_TOOL_NAME } from './subagent';
@@ -287,6 +290,37 @@ async function persistTrajectory(
   }
   const errText = lastErr instanceof Error ? lastErr.message : String(lastErr);
   sendLog('warn', `[pi-engine] 轨迹持久化失败(${label},重试一次后仍失败) line=${sessionId}: ${errText}`);
+  return false;
+}
+
+/**
+ * 系统提示落盘(轨迹完整性):记录模型当轮实际看到的完整系统提示,先于
+ * 本批消息写入(pos = 当轮 user 消息之前的下标)。hash 与当轮起跑装载的
+ * 文件快照末条记录相同 → 不变不写(快路径;appendLoopSystemPrompt 锁内
+ * 还会对文件真相再核一遍,并发写者/别的进程兜底)。写纪律与
+ * persistTrajectory 同:一次短退避重试,仍败 sendLog warn 不静默。
+ */
+async function persistSystemPromptRecord(
+  sessionId: string,
+  content: string,
+  knownRecords: LoopSessionSystemPromptRecord[] | undefined,
+  pos: number,
+): Promise<boolean> {
+  const hash = loopSystemPromptHash(content);
+  const lastKnown = knownRecords?.[knownRecords.length - 1];
+  if (lastKnown?.hash === hash) return false;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await appendLoopSystemPrompt(sessionId, content, { pos });
+      return true;
+    } catch (err) {
+      lastErr = err;
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+  const errText = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  sendLog('warn', `[pi-engine] 系统提示落盘失败(重试一次后仍失败) line=${sessionId}: ${errText}`);
   return false;
 }
 
@@ -1530,6 +1564,10 @@ class ChatEngine {
       const checkpoint = buildArchiveCheckpointLine(userCount, nearEvict);
       if (checkpoint) systemPrompt += `\n\n${checkpoint}`;
     }
+    // 系统提示落盘(轨迹完整性):记录模型当轮实际看到的完整系统提示(含
+    // 档案检查点行),先于本批消息、先于 LLM 调用——被杀的轮也能还原
+    // 「模型当时看到了什么」。hash 去重:不变不写。
+    await persistSystemPromptRecord(turnSessionId, systemPrompt, stored.systemPrompts, history.length);
     // 1.5.3:校准系数从会话 meta 读（真实 API ÷ 启发式,上轮学习落盘）;
     // 本轮是否触发过压缩由 onCompact 闭包打标——压缩过的轮次不学习
     // (锚被污染:压缩轮 usage 是裁后体量,学进去系数会塌)。
@@ -1935,6 +1973,9 @@ class ChatEngine {
       { caps, domain },
       loopSessionId,
     );
+    // 系统提示落盘(轨迹完整性,与交互 turn 同规):先于本批消息、先于
+    // LLM 调用;hash 去重,不变不写。
+    await persistSystemPromptRecord(loopSessionId, systemPrompt, storedInvoke.systemPrompts, history.length);
     const contextWindow = resolution.model.contextWindow || 200_000;
     // 1.5.3:与交互 turn 同一接线——meta 校准系数 + 收割 options;压缩
     // 轮次由 onCompactMark 打标,不学习(锚被污染)。

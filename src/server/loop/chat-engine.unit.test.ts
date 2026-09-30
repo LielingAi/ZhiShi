@@ -52,6 +52,9 @@ vi.mock('./pi-provider', () => ({
 
 const loadLoopSessionMock = vi.fn();
 const appendLoopMessagesMock = vi.fn(async (..._args: unknown[]) => {});
+// 系统提示落盘 mock(轨迹完整性):默认「写了新记录」,快路径由
+// loadLoopSessionMock 的 systemPrompts 快照控制。
+const appendLoopSystemPromptMock = vi.fn(async (..._args: unknown[]) => true);
 const truncateLoopSessionMock = vi.fn(async (..._args: unknown[]) => {});
 const forkLoopSessionMock = vi.fn(async (..._args: unknown[]) => 'fork-ls-1');
 vi.mock('zhishi-loop-core/session', async (importOriginal) => {
@@ -62,6 +65,7 @@ vi.mock('zhishi-loop-core/session', async (importOriginal) => {
     newLoopSessionId: () => `ls-${++seq}`,
     loadLoopSession: () => loadLoopSessionMock(),
     appendLoopMessages: (...args: unknown[]) => appendLoopMessagesMock(...args),
+    appendLoopSystemPrompt: (...args: unknown[]) => appendLoopSystemPromptMock(...args),
     truncateLoopSession: (...args: unknown[]) => truncateLoopSessionMock(...args),
     forkLoopSession: (...args: unknown[]) => forkLoopSessionMock(...args),
     markLoopSessionCompacted: vi.fn(async () => {}),
@@ -252,6 +256,8 @@ import {
 import { setPostTurnTitleHook } from '../turn-hooks';
 // A2-1(1.5.4)回归:用真实估算函数算校准期望值(与实现同一口径)。
 import { estimateMessagesTokens } from 'zhishi-loop-core/context-manager';
+// 系统提示落盘去重测试:真实 hash(session mock 是 importOriginal 透传)。
+import { loopSystemPromptHash } from 'zhishi-loop-core/session';
 // B10(1.2.6)回归:配置面会话标识的真实读取口(chat-engine 不经 mock 写它)。
 import { getSessionId } from '../agent-session';
 // P2(1.8.7)回归:turn 起跑人登记面——send/invoke 起跑时按线登记请求 actor。
@@ -2060,5 +2066,76 @@ describe('轨迹完整性(起跑即落盘 + 收尾去重 + 中断注记 + 写失
     await initPiChatEngine('E:/ws');
     expect(getPiMessages().map((m) => m.content)).toEqual(['q', 'a']);
     expect(appendLoopMessagesMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('系统提示落盘(轨迹完整性:记录模型当轮实际看到的提示)', () => {
+  it('交互 turn:装配后、LLM 调用前落盘;内容 = runLoop 实收的 systemPrompt;pos = 当轮 user 之前', async () => {
+    await sendPiChatMessage({ text: 'q' });
+    await waitTurnSettled();
+    expect(appendLoopSystemPromptMock).toHaveBeenCalledTimes(1);
+    const [line, content, opts] = appendLoopSystemPromptMock.mock.calls[0] as [string, string, { pos: number }];
+    const loopOpts = runLoopMock.mock.calls[0][0] as { systemPrompt: string };
+    expect(content).toBe(loopOpts.systemPrompt); // 记录的就是模型实际看到的(含档案检查点行)
+    expect(line).toBe(getPiSessionId());
+    expect(opts.pos).toBe(0); // 空历史 → 当轮 user 之前 = 0(记录先于本批消息)
+    // 先于 LLM 调用
+    expect(appendLoopSystemPromptMock.mock.invocationCallOrder[0])
+      .toBeLessThan(runLoopMock.mock.invocationCallOrder[0]);
+  });
+
+  it('hash 去重:提示不变的第二轮不重写(快路径比对文件快照末条记录)', async () => {
+    await sendPiChatMessage({ text: 'q1' });
+    await waitTurnSettled();
+    const content = appendLoopSystemPromptMock.mock.calls[0][1] as string;
+    appendLoopSystemPromptMock.mockClear();
+    // 第二轮起跑装载的文件快照带末条记录(hash 相同)——文件是真相
+    loadLoopSessionMock.mockReturnValue({
+      messages: [userMsg('q1'), assistantMsg('a1')],
+      meta: null,
+      systemPrompts: [{ hash: loopSystemPromptHash(content), content, at: 'x', pos: 0 }],
+    });
+    await sendPiChatMessage({ text: 'q2' });
+    await waitTurnSettled();
+    expect(appendLoopSystemPromptMock).not.toHaveBeenCalled();
+  });
+
+  it('提示变了(mission 注入)→ 第二轮写新记录,pos 随历史推进', async () => {
+    await sendPiChatMessage({ text: 'q1' });
+    await waitTurnSettled();
+    const content1 = appendLoopSystemPromptMock.mock.calls[0][1] as string;
+    appendLoopSystemPromptMock.mockClear();
+    loadLoopSessionMock.mockReturnValue({
+      messages: [userMsg('q1'), assistantMsg('a1')],
+      meta: null,
+      systemPrompts: [{ hash: loopSystemPromptHash(content1), content: content1, at: 'x', pos: 0 }],
+    });
+    setPiLineMission('discover'); // 系统提示变 → hash 变
+    await sendPiChatMessage({ text: 'q2' });
+    await waitTurnSettled();
+    expect(appendLoopSystemPromptMock).toHaveBeenCalledTimes(1);
+    const content2 = appendLoopSystemPromptMock.mock.calls[0][1] as string;
+    expect(content2).not.toBe(content1);
+    expect(content2).toContain('<zhishi-mission>');
+    expect((appendLoopSystemPromptMock.mock.calls[0][2] as { pos: number }).pos).toBe(2); // 两条历史消息之后
+  });
+
+  it('invoke 通道(headless)同规:装配后落盘,内容 = invoke 实收 systemPrompt', async () => {
+    const r = await invokePiSession({ text: 'cron 任务' }, { loopSessionId: 'ls-inv-sp' });
+    expect(r.error).toBeUndefined();
+    expect(appendLoopSystemPromptMock).toHaveBeenCalledTimes(1);
+    expect(appendLoopSystemPromptMock.mock.calls[0][0]).toBe('ls-inv-sp');
+    const loopOpts = runLoopMock.mock.calls[0][0] as { systemPrompt: string };
+    expect(appendLoopSystemPromptMock.mock.calls[0][1]).toBe(loopOpts.systemPrompt);
+  });
+
+  it('落盘失败(重试仍败)→ sendLog warn 可见,turn 照常跑完', async () => {
+    appendLoopSystemPromptMock.mockRejectedValue(new Error('readonly fs'));
+    await sendPiChatMessage({ text: 'q' });
+    await waitTurnSettled();
+    await vi.waitFor(() => { expect(sendLogMock).toHaveBeenCalled(); });
+    const warn = sendLogMock.mock.calls.find((c) => String(c[1]).includes('系统提示落盘失败'));
+    expect(String(warn![1])).toContain('readonly fs');
+    expect(broadcastMock.mock.calls.some((c) => c[0] === 'chat:message-complete')).toBe(true);
   });
 });
