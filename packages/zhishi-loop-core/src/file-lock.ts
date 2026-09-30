@@ -13,8 +13,11 @@
  */
 
 import {
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -22,7 +25,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { execSync } from 'child_process';
-import { resolve } from 'path';
+import { dirname, resolve } from 'path';
 
 export interface FileLockOptions {
   /** Absolute path to the lock directory (e.g. `<file>.lock`). */
@@ -375,9 +378,30 @@ export async function withFileLock<T>(
  * 原子写 helper（1.4.7 工程卫生收口）：tmp+rename 替换——写一半崩了不留
  * 半成品文件。session/archive/auto-run 的持久化此前各写一份内联实现，
  * 收编统一（withFileLock 是锁纪律，本函数是锁内的写纪律）。
+ *
+ * 掉电耐久（轨迹完整性收口）：rename 本身不刷盘——文件数据与目录项都
+ * 可能还躺在页缓存里,断电后「新名字到了、内容是 0 字节」。所以先 fsync
+ * tmp 文件再 rename,rename 后 fsync 所在目录（目录 fsync 在个别平台
+ * 不支持,尽力而为——文件数据已落盘,目录项交 OS 兜底）。
  */
 export function writeFileAtomic(file: string, content: string): void {
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, content, 'utf-8');
+  const fd = openSync(tmp, 'w');
+  try {
+    writeFileSync(fd, content, 'utf-8');
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
   renameSync(tmp, file);
+  try {
+    const dirFd = openSync(dirname(file), 'r');
+    try {
+      fsyncSync(dirFd);
+    } finally {
+      closeSync(dirFd);
+    }
+  } catch {
+    // 目录 fsync 不支持的平台（部分 Windows/文件系统）——best-effort。
+  }
 }

@@ -115,6 +115,14 @@ vi.mock('../SessionStore', () => ({
   updateSessionMetadata: (...args: unknown[]) => updateSessionMetadataMock(...args),
 }));
 
+// 轨迹完整性:写失败告警面 mock(sendLog = GUI 日志面板/log history 的入口),
+// 断言「失败可见」用;其余导出走真实实现。
+const sendLogMock = vi.fn();
+vi.mock('../logger', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../logger')>();
+  return { ...orig, sendLog: (...args: unknown[]) => sendLogMock(...args) };
+});
+
 vi.mock('./boundary', () => ({ makeBoundaryHook: () => async () => undefined }));
 vi.mock('zhishi-loop-core/output-guard', () => ({ makeOutputGuardHook: () => async () => undefined }));
 vi.mock('./window-transform', () => ({ makeWindowTransform: () => async (m: unknown) => m, WINDOW_OVERFLOW_RETRY_RATIO: 0.15, WORKING_MEMORY_TARGET_RATIO: 0.25 }));
@@ -223,6 +231,7 @@ import {
   getPiSystemInitInfo,
   initPiChatEngine,
   injectPiDecision,
+  INTERRUPTED_TURN_NOTE,
   invokePiSession,
   isPiEngine,
   noteBgFinishedForTests,
@@ -541,12 +550,13 @@ describe('会话跨重启(1.1.6 #4 env-aware:按当前环境分线映射续接)'
     selectionMock.mockReturnValue({ kind: 'env', id: 'pwn-vm' });
     configEnvironments.mockReturnValue([VM_ENTRY]);
     getSessionsByAgentDirMock.mockReturnValue([{ id: 'meta-env', loopSessionId: 'ls-env' }]);
-    loadLoopSessionMock.mockReturnValue({ messages: [userMsg('环境里的旧问题')], meta: null });
+    // 完整轮次收尾的线(user+assistant)——尾部孤立 user 会触发中断注记(新语义)
+    loadLoopSessionMock.mockReturnValue({ messages: [userMsg('环境里的旧问题'), assistantMsg('旧回答')], meta: null });
     resetPiChat();
     envSessionsData.set('E:/ws::host', { loopSessionId: 'ls-host', updatedAt: '' });
     envSessionsData.set('E:/ws::env:pwn-vm', { loopSessionId: 'ls-env', updatedAt: '' });
     await initPiChatEngine('E:/ws');
-    expect(getPiMessages().map((m) => m.content)).toEqual(['环境里的旧问题']);
+    expect(getPiMessages().map((m) => m.content)).toEqual(['环境里的旧问题', '旧回答']);
   });
 });
 
@@ -586,10 +596,10 @@ describe('环境分线切换(1.1.6 #4:switchEnvSession/envSwitchBlocker)', () =>
     expect(wire[0].content).toBe('环境里的旧问题');
     // 旧线(host)回填仍指向原 sessionId,不丢线
     expect(envSessionsData.get('E:/ws::host')?.loopSessionId).toBe(hostSessionId);
-    // 续跑写目标线
+    // 续跑写目标线(起跑即落盘 + 收尾续存,末次调用必是目标线)
     await sendPiChatMessage({ text: '继续' });
     await waitTurnSettled();
-    expect(appendLoopMessagesMock.mock.calls[1][0]).toBe('ls-env');
+    expect(appendLoopMessagesMock.mock.calls.at(-1)![0]).toBe('ls-env');
   });
 
   it('闲时切线:无映射 → 开新线(清回放;首条消息绑定后才回填映射)', async () => {
@@ -602,7 +612,7 @@ describe('环境分线切换(1.1.6 #4:switchEnvSession/envSwitchBlocker)', () =>
     expect(envSessionsData.has('E:/ws::env:fresh-vm')).toBe(false);
     await sendPiChatMessage({ text: '新线首条' });
     await waitTurnSettled();
-    const newSessionId = appendLoopMessagesMock.mock.calls[1][0] as string;
+    const newSessionId = appendLoopMessagesMock.mock.calls.at(-1)![0] as string;
     expect(envSessionsData.get('E:/ws::env:fresh-vm')?.loopSessionId).toBe(newSessionId);
   });
 
@@ -1018,7 +1028,8 @@ describe('1.2.6 批次A 回归(B1 cron new_session / B3 串线 / B10 配置面�
     // switchPiSession busy 强停:不等待旧 turn 收尾即换线(abort 后 loop
     // 解开窗口里到达的 done.messages 属于起跑时那条线)。
     getSessionMetadataMock.mockReturnValue({ id: 'meta-other', loopSessionId: 'ls-other' });
-    loadLoopSessionMock.mockReturnValue({ messages: [userMsg('别的线的历史')], meta: null });
+    // 完整轮次收尾的线——尾部孤立 user 会触发中断注记落盘(新语义),干扰串线断言
+    loadLoopSessionMock.mockReturnValue({ messages: [userMsg('别的线的历史'), assistantMsg('别的线的回答')], meta: null });
     expect(await switchPiSession('meta-other')).toBe(true);
     release();
     await waitTurnSettled();
@@ -1090,8 +1101,11 @@ describe('1.2.6 批次B 回归(B2 cron invoke 通道 / B4 force 单起点 / B5 s
       expect(getPiMessages().length).toBe(wireBefore);
       expect(getPiAgentState().sessionState).toBe('running');
       expect(broadcastMock.mock.calls.some((c) => c[0] === 'chat:steering-added')).toBe(false);
-      // 续存只写目标线,引擎线零写入
-      expect(appendLoopMessagesMock.mock.calls.map((c) => c[0])).toEqual(['ls-cron']);
+      // 续存只写目标线:invoke 的起跑即落盘 + 收尾续存都落 ls-cron;引擎线
+      // 只有它自己 turn 的起跑落盘(turn 仍挂着,无收尾写——invoke 不碰引擎线)。
+      const appendedLines = appendLoopMessagesMock.mock.calls.map((c) => c[0]);
+      expect(appendedLines.filter((l) => l === 'ls-cron')).toEqual(['ls-cron', 'ls-cron']);
+      expect(appendedLines.filter((l) => l !== 'ls-cron')).toEqual([engineLine]);
       // cron 场景显式传入(不吃全局 scenario 时序):系统提示含 cron 段 + 自退标记
       const invokeOpts = runLoopMock.mock.calls[1][0] as { systemPrompt: string; prompt?: string };
       expect(invokeOpts.systemPrompt).toContain('zhishi-cron-task-instructions');
@@ -1237,9 +1251,15 @@ describe('1.2.6 批次B 回归(B2 cron invoke 通道 / B4 force 单起点 / B5 s
       expect(broadcastMock.mock.calls.some(
         (c) => c[0] === 'chat:steering-cancelled' && (c[1] as { queueId?: string }).queueId === steer.queueId,
       )).toBe(true);
-      // 持久化(done.messages)含注入消息,顺序一致——重启回放不再冒幽灵消息
-      const appended = appendLoopMessagesMock.mock.calls[0][1] as AgentMessage[];
-      expect(appended.filter((m) => m.role === 'user').map((m) => m.content)).toEqual(['one', '改方向']);
+      // 持久化(起跑即落盘 + 收尾续存去重)含注入消息,顺序一致——重启回放不再冒幽灵消息。
+      // 起跑批次 = 当轮 user('one');收尾批次里 'one' 已去重,只剩注入消息 + assistant。
+      const startBatch = appendLoopMessagesMock.mock.calls[0][1] as AgentMessage[];
+      expect(startBatch.map((m) => (m as { content?: unknown }).content)).toEqual(['one']);
+      const endBatch = appendLoopMessagesMock.mock.calls[1][1] as AgentMessage[];
+      expect(endBatch.filter((m) => m.role === 'user').map((m) => (m as { content?: unknown }).content)).toEqual(['改方向']);
+      // 两批拼接 = 旧版单批次 [one, 改方向, assistant]——完成轮内容不变
+      expect([...startBatch, ...endBatch].filter((m) => m.role === 'user').map((m) => (m as { content?: unknown }).content))
+        .toEqual(['one', '改方向']);
       expect(getPiQueueStatus()).toEqual([]);
     });
 
@@ -1294,9 +1314,12 @@ describe('1.2.7 溢出兜底(§四:isContextOverflow → 强制压缩重试,限 
     expect(runLoopMock).toHaveBeenCalledTimes(2);
     expect(broadcastMock.mock.calls.some((c) => c[0] === 'chat:message-error')).toBe(false);
     expect(broadcastMock.mock.calls.filter((c) => c[0] === 'chat:message-complete')).toHaveLength(1);
+    // 只续存成功 attempt:起跑写(user 'q')+ 收尾写(去重后无 user 无 error)
     const appended = appendLoopMessagesMock.mock.calls.map((c) => c[1] as AgentMessage[]);
-    expect(appended).toHaveLength(1);
-    expect(appended[0].some((m) => (m as { stopReason?: string }).stopReason === 'error')).toBe(false);
+    expect(appended).toHaveLength(2);
+    expect(appended[0]).toHaveLength(1);
+    expect((appended[0][0] as { content?: unknown }).content).toBe('q');
+    expect(appended.flat().some((m) => (m as { stopReason?: string }).stopReason === 'error')).toBe(false);
     // 终态文本来自重试 attempt
     expect(getPiMessages().find((m) => m.role === 'assistant')?.content).toBe('recovered');
   });
@@ -1586,7 +1609,8 @@ describe('1.5.4 回归(A1-2 档案锚 / A2-1 校准口径 / A2-2 注入锚)', ()
     const withDone = Math.min(6, Math.max(0.8, real / estimateMessagesTokens([...history, ...doneMessages], sysChars)));
     const withoutDone = Math.min(6, Math.max(0.8, real / estimateMessagesTokens(history, sysChars)));
     expect(withDone).not.toBe(withoutDone); // 场景可分辨(不撞钳位同值)
-    const meta = appendLoopMessagesMock.mock.calls[0][2] as { tokenCalibration?: number };
+    // 校准系数随收尾批次落盘(起跑批次只有 user 消息,不带学习值)——取末次调用
+    const meta = appendLoopMessagesMock.mock.calls.at(-1)![2] as { tokenCalibration?: number };
     expect(meta.tokenCalibration).toBeCloseTo(withDone, 6);
   });
 
@@ -1911,5 +1935,130 @@ describe('1.8.7 P3a：引擎注册表 + 按线寻址（行为保持重构）', (
     expect((cancelled![1] as { sessionId?: string }).sessionId).toBe(line);
     release();
     await waitTurnSettled();
+  });
+});
+
+describe('轨迹完整性(起跑即落盘 + 收尾去重 + 中断注记 + 写失败可见)', () => {
+  it('完成轮:起跑写恰一条 user(=prompt),收尾写已去重——两批拼接 = 旧版单批次', async () => {
+    await sendPiChatMessage({ text: 'q' }); // 默认 mock:doneMessages=[userMsg('q'), assistant]
+    await waitTurnSettled();
+    const calls = appendLoopMessagesMock.mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0][0]).toBe(calls[1][0]); // 同一条线
+    const startBatch = calls[0][1] as AgentMessage[];
+    expect(startBatch).toHaveLength(1);
+    expect(startBatch[0]).toMatchObject({ role: 'user', content: 'q' });
+    const endBatch = calls[1][1] as AgentMessage[];
+    expect(endBatch.map((m) => m.role)).toEqual(['assistant']); // user 已去重
+    // 不变量:完成轮拼接产物 = 旧版单批次 [user, assistant]
+    expect([...startBatch, ...endBatch].map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('去重只认 role+content 全等:doneMessages[0] 不是本轮 user → 收尾全量照写(不丢消息)', async () => {
+    await sendPiChatMessage({ text: '别的问题' }); // mock 的 doneMessages[0] content='q' ≠ prompt
+    await waitTurnSettled();
+    const endBatch = appendLoopMessagesMock.mock.calls[1][1] as AgentMessage[];
+    expect(endBatch.map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('FIFO promote(steering 孤儿转队首)的 turn 同样起跑即落盘', async () => {
+    let call = 0;
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((r) => { releaseFirst = r; });
+    runLoopMock.mockImplementation(async function* (opts: { prompt?: string }) {
+      call++;
+      if (call === 1) await gate;
+      for (const e of doneEvents(`answer-of-${opts.prompt}`)) yield e;
+    });
+    await sendPiChatMessage({ text: 'one' });
+    await sendPiChatMessage({ text: '迟到的纠偏' }); // busy → steering → turn 末转 FIFO promote
+    releaseFirst();
+    await waitTurnSettled();
+    expect(runLoopMock).toHaveBeenCalledTimes(2);
+    // 两个 turn 各有起跑落盘(恰一条 user 的批次),按执行序——轨迹反映执行顺序
+    const startBatches = appendLoopMessagesMock.mock.calls
+      .map((c) => c[1] as AgentMessage[])
+      .filter((b) => b.length === 1 && b[0].role === 'user');
+    expect(startBatches.map((b) => (b[0] as { content?: unknown }).content)).toEqual(['one', '迟到的纠偏']);
+  });
+
+  it('invoke 通道(headless)同规:起跑即落盘 + 收尾去重', async () => {
+    runLoopMock.mockImplementation(async function* () {
+      yield { type: 'done', messages: [userMsg('cron 任务'), assistantMsg('答')] } as never;
+    });
+    const r = await invokePiSession({ text: 'cron 任务' }, { loopSessionId: 'ls-inv' });
+    expect(r.error).toBeUndefined();
+    const calls = appendLoopMessagesMock.mock.calls.filter((c) => c[0] === 'ls-inv');
+    expect(calls).toHaveLength(2);
+    expect((calls[0][1] as AgentMessage[])[0]).toMatchObject({ role: 'user', content: 'cron 任务' });
+    expect((calls[1][1] as AgentMessage[]).map((m) => m.role)).toEqual(['assistant']); // user 已去重
+  });
+
+  it('起跑写失败(重试仍败)→ 告警可见 + 收尾不去重(宁重复一条 user,不丢用户消息)', async () => {
+    appendLoopMessagesMock
+      .mockRejectedValueOnce(new Error('disk full')) // 起跑 attempt 1
+      .mockRejectedValueOnce(new Error('disk full')); // 起跑 attempt 2(retry)
+    await sendPiChatMessage({ text: 'q' });
+    await waitTurnSettled();
+    await vi.waitFor(() => { expect(sendLogMock).toHaveBeenCalled(); });
+    const warn = sendLogMock.mock.calls.find((c) => String(c[1]).includes('轨迹持久化失败'));
+    expect(String(warn![1])).toContain('disk full');
+    // 收尾批次:起跑写没成功 → user 保留在批次里全量照写
+    const endBatch = appendLoopMessagesMock.mock.calls.at(-1)![1] as AgentMessage[];
+    expect(endBatch.map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('收尾写重试后仍失败 → sendLog warn 带线 id + 错误(不再静默吞)', async () => {
+    appendLoopMessagesMock
+      .mockResolvedValueOnce(undefined)                  // 起跑成功
+      .mockRejectedValueOnce(new Error('EACCES'))        // 收尾 attempt 1
+      .mockRejectedValueOnce(new Error('EACCES'));       // 收尾 attempt 2(retry)
+    await sendPiChatMessage({ text: 'q' });
+    await waitTurnSettled();
+    await vi.waitFor(() => { expect(sendLogMock).toHaveBeenCalled(); });
+    const warn = sendLogMock.mock.calls.find((c) => String(c[1]).includes('turn 收尾'));
+    expect(String(warn![1])).toContain(getPiSessionId());
+    expect(String(warn![1])).toContain('EACCES');
+  });
+
+  it('中断注记:恢复装载尾部孤立 user → 补系统注记(落盘 + 进回放),幂等不重复', async () => {
+    getSessionsByAgentDirMock.mockReturnValue([{ id: 'meta-old', loopSessionId: 'ls-crash' }]);
+    loadLoopSessionMock.mockReturnValue({
+      messages: [userMsg('做完的事'), assistantMsg('好的'), userMsg('被杀的那轮')],
+      meta: null,
+    });
+    resetPiChat();
+    envSessionsData.set('E:/ws::host', { loopSessionId: 'ls-crash', updatedAt: '' });
+    await initPiChatEngine('E:/ws');
+    // 回放尾部带注记(诚实不伪装,与「[系统] …」合成消息同惯例)
+    expect(getPiMessages().map((m) => m.content)).toEqual(['做完的事', '好的', '被杀的那轮', INTERRUPTED_TURN_NOTE]);
+    // 注记落盘(fire-and-forget,等它发生)
+    await vi.waitFor(() => {
+      expect(appendLoopMessagesMock.mock.calls.some((c) =>
+        c[0] === 'ls-crash'
+        && (c[1] as AgentMessage[]).some((m) => (m as { content?: unknown }).content === INTERRUPTED_TURN_NOTE),
+      )).toBe(true);
+    });
+    // 幂等:尾部已是注记 → 不再追加、回放原样
+    appendLoopMessagesMock.mockClear();
+    loadLoopSessionMock.mockReturnValue({
+      messages: [userMsg('被杀的那轮'), { role: 'user', content: INTERRUPTED_TURN_NOTE, timestamp: 9 } as AgentMessage],
+      meta: null,
+    });
+    resetPiChat();
+    envSessionsData.set('E:/ws::host', { loopSessionId: 'ls-crash', updatedAt: '' });
+    await initPiChatEngine('E:/ws');
+    expect(appendLoopMessagesMock).not.toHaveBeenCalled();
+    expect(getPiMessages().map((m) => m.content)).toEqual(['被杀的那轮', INTERRUPTED_TURN_NOTE]);
+  });
+
+  it('正常收尾的线(尾部 assistant)→ 无注记、零额外落盘', async () => {
+    getSessionsByAgentDirMock.mockReturnValue([{ id: 'meta-old', loopSessionId: 'ls-ok' }]);
+    loadLoopSessionMock.mockReturnValue({ messages: [userMsg('q'), assistantMsg('a')], meta: null });
+    resetPiChat();
+    envSessionsData.set('E:/ws::host', { loopSessionId: 'ls-ok', updatedAt: '' });
+    await initPiChatEngine('E:/ws');
+    expect(getPiMessages().map((m) => m.content)).toEqual(['q', 'a']);
+    expect(appendLoopMessagesMock).not.toHaveBeenCalled();
   });
 });

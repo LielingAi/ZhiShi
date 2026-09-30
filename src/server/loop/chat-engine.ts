@@ -77,6 +77,7 @@ import type { EnvironmentEntry } from '../../shared/config-types';
 import type { ImagePayload } from '../../shared/types/image';
 import type { SystemInitInfo } from '../../shared/types/system';
 import { broadcast, __setLineLiveProbe } from '../sse';
+import { sendLog } from '../logger';
 import { envTagForEntry, findEnvironmentEntry, listEnvironmentsWithBuiltin } from '../environment/registry';
 import { execInEnvironment } from './env-exec';
 import { maybeStartCampaign, type CampaignRuntimeDeps } from './campaign-runtime';
@@ -234,6 +235,59 @@ export const PI_NO_PROVIDER_ERROR = '无可用的 provider/model(pi 引擎):缺 
  */
 export function chatSendErrorStatus(error: string): number {
   return error === PI_NO_PROVIDER_ERROR ? 400 : 429;
+}
+
+// ---------------------------------------------------------------------------
+// 轨迹完整性(单机/团队同规):起跑即落盘 + 中断注记 + 写失败可见
+// ---------------------------------------------------------------------------
+
+/**
+ * 中断轮次的系统注记(⟦⟧ 与 session.ts 的截断注记同一惯例)。恢复/重放
+ * 装载时,若最后一条持久化消息是没有 assistant 跟随的 user 消息(进程
+ * 被杀/掉电——起跑即落盘的 user 在,模型响应没来得及写),追加本条注记,
+ * 让模型与人都看得到「这轮断过」;user role 落盘(持久化只收标准 role,
+ * 与空产出续跑的「[系统] …」合成消息同——诚实不伪装)。
+ */
+export const INTERRUPTED_TURN_NOTE =
+  '⟦系统注记：上一轮中断——进程停止或会话被杀，上一条用户消息的模型响应未写入⟧';
+
+/** 判注记本身(幂等依据:尾部已是注记 → 不再追加)。 */
+function isInterruptedTurnNote(m: AgentMessage): boolean {
+  const content = (m as { content?: unknown }).content;
+  return m.role === 'user' && typeof content === 'string' && content.startsWith('⟦系统注记：上一轮中断');
+}
+
+/** 消息内容相等(string 直比;块数组如图片块 JSON 比)——起跑落盘与收尾去重共用。 */
+function sameMessageContent(a: unknown, b: unknown): boolean {
+  if (typeof a === 'string' || typeof b === 'string') return a === b;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * 轨迹持久化(带一次短退避重试):写失败不再静默吞——重试仍败则 sendLog
+ * warn(GUI 日志面板/log history/统一日志文件三路可见,带线 id 与错误)。
+ * 返回是否最终成功(调用方据此决定收尾去重:起跑写失败则不去重——宁可
+ * 文件里重复一条 user,也不丢用户消息)。
+ */
+async function persistTrajectory(
+  sessionId: string,
+  messages: AgentMessage[],
+  meta: { model?: string; providerId?: string; tokenCalibration?: number } | undefined,
+  label: string,
+): Promise<boolean> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await appendLoopMessages(sessionId, messages, meta);
+      return true;
+    } catch (err) {
+      lastErr = err;
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+  const errText = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  sendLog('warn', `[pi-engine] 轨迹持久化失败(${label},重试一次后仍失败) line=${sessionId}: ${errText}`);
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -489,6 +543,10 @@ class ChatEngine {
   private pendingEmptyContinuation = false;
   /** SessionStore 里绑定的会话元数据 id(其 loopSessionId 字段 === sessionId)。 */
   private boundSessionMetaId: string | null = null;
+  /** 轨迹完整性:当轮起跑即落盘的 user 消息记录——turn 收尾续存时按
+   *  role+content 去重(doneMessages[0] 相同则丢弃,文件里 user 恰好一次;
+   *  完成轮与旧版逐字节同序同内容)。同线的 turn 被 busy 闸串行,单槽足够。 */
+  private turnStartPersisted: { sessionId: string; content: unknown; promise: Promise<boolean> } | null = null;
   /** 1.1.6 #4 — 引擎当前所在的环境分线键(随 restore/switchEnvSession 更新;
    *  不逐次重读磁盘——select 落盘→切线的窗口内磁盘已超前于引擎)。 */
   private currentEnvKey: string = envKeyForSelection(HOST_SELECTION);
@@ -579,7 +637,7 @@ class ChatEngine {
     const envKey = findEnvKeyForLoopSession(loadEnvSessionsMap(), dir, loopSessionId);
     if (envKey) this.currentEnvKey = envKey;
     const stored = loadLoopSession(loopSessionId);
-    this.messages = this.loopMessagesToWire(stored.messages);
+    this.messages = this.loopMessagesToWire(this.withInterruptedTurnNote(loopSessionId, stored.messages));
     console.log(`[pi-engine] 惰性起引擎 loop=${loopSessionId}(${stored.messages.length} 条消息,meta=${this.boundSessionMetaId ?? '无'})`);
   }
 
@@ -639,6 +697,26 @@ class ChatEngine {
     return meta?.id ?? null;
   }
 
+  /**
+   * 中断轮次标记(轨迹完整性):恢复/重放装载的消息尾部若是孤立 user
+   * 消息(无 assistant 跟随 = 上轮写到一半进程没了),追加一条系统注记
+   * 并落盘。幂等:尾部已是注记则不重复追加。只在恢复/切线装载路径调用
+   * (此刻该线无存活 turn)——turn 执行中的历史装载不调:起跑即落盘的
+   * 当轮 user 会被误判成中断。
+   */
+  private withInterruptedTurnNote(sessionId: string, messages: AgentMessage[]): AgentMessage[] {
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== 'user' || isInterruptedTurnNote(last)) return messages;
+    // 团队模式防误标:该线有别的 live 引擎正在跑 turn 时,尾部孤立 user
+    // 多半是人家「起跑即落盘」的当轮消息,不是中断残骸——不补注记。
+    const live = engines.get(sessionId);
+    if (live && live !== this && live.isEngineBusy()) return messages;
+    const note = { role: 'user', content: INTERRUPTED_TURN_NOTE, timestamp: Date.now() } as AgentMessage;
+    console.warn(`[pi-engine] 检出中断轮次 loop=${sessionId}(尾部 user 消息无模型响应),补系统注记`);
+    void persistTrajectory(sessionId, [note], undefined, '中断注记');
+    return [...messages, note];
+  }
+
   /** P3b 双线制：本线的 env-sessions 归属段——共享线挂 'shared' 键,
    *  私有线挂 owner 键(归属未登记 = 当前 actor;本机模式恒 'local')。 */
   private lineSegment(): string {
@@ -687,7 +765,7 @@ class ChatEngine {
     // B10(1.2.6):启动恢复出绑定后同步配置面会话标识——cron/sessions 路由
     // 经 getSessionId() 读它,不更新则恒为 initializeAgent 的随机 UUID(僵尸值)。
     if (this.boundSessionMetaId) setActiveSessionId(this.boundSessionMetaId);
-    this.messages = this.loopMessagesToWire(stored.messages);
+    this.messages = this.loopMessagesToWire(this.withInterruptedTurnNote(line.loopSessionId, stored.messages));
     console.log(`[pi-engine] 续接环境分线 ${envKey}(loop=${this.sessionId},${stored.messages.length} 条消息,meta=${this.boundSessionMetaId ?? '无'})`);
   }
 
@@ -934,6 +1012,40 @@ class ChatEngine {
     if (originator) setTurnOriginator(turnSessionId, originator);
     // W1 — 状态行数据源:turn 开始(running)。
     this.broadcastChatStatus();
+
+    // 轨迹完整性:turn 起跑即把 user 消息落盘(此前只在 turn 完成时随
+    // doneMessages 落盘——中途进程被杀/掉电,连用户自己的消息都丢)。内容
+    // 与 runPiTurn 构造的 prompt 消息同形(grounding 前置/decision marker/
+    // 图片块三分支),收尾续存按 role+content 去重(见 runPiTurn)——完成轮
+    // 的文件与旧版同序同内容,被杀的轮至少留住 user 消息。
+    const startPromptText = effectiveGrounding ? `${effectiveGrounding}\n\n${text}` : text;
+    const startUserMessage: AgentMessage = (() => {
+      const timestamp = Date.now();
+      if (input.decision && !input.images?.length) {
+        return { role: 'user', content: startPromptText, timestamp, decision: input.decision } as AgentMessage;
+      }
+      if (input.images?.length) {
+        return {
+          role: 'user',
+          content: [
+            { type: 'text', text: startPromptText },
+            ...input.images.map((img): ImageContent => ({ type: 'image', data: img.data, mimeType: img.mimeType })),
+          ],
+          timestamp,
+        } as AgentMessage;
+      }
+      return { role: 'user', content: startPromptText, timestamp } as AgentMessage;
+    })();
+    this.turnStartPersisted = {
+      sessionId: turnSessionId,
+      content: (startUserMessage as { content: unknown }).content,
+      promise: persistTrajectory(
+        turnSessionId,
+        [startUserMessage],
+        { model: resolution.modelId, providerId: resolution.providerId },
+        'turn 起跑',
+      ),
+    };
 
     // 用户气泡:与 SDK 路径同形的 live replay echo(含图片附件形状)。
     const userMessage: MessageWire = {
@@ -1374,7 +1486,17 @@ class ChatEngine {
     const text = input.text.trim();
     const promptText = grounding ? `${grounding}\n\n${text}` : text;
     const stored = loadLoopSession(turnSessionId);
-    const history = stored.messages;
+    // 轨迹完整性配套:起跑即落盘的当轮 user 可能已在文件尾部——历史里要
+    // 摘掉(否则它在 LLM context 里出现两次:history 尾部 + 本轮 prompt)。
+    // 按 role+content 与起跑记录比对;异步落盘尚未完成时文件里还没有,原样。
+    const startRec = this.turnStartPersisted;
+    let history = stored.messages;
+    if (startRec && startRec.sessionId === turnSessionId && history.length > 0) {
+      const lastMsg = history[history.length - 1] as { role?: string; content?: unknown };
+      if (lastMsg.role === 'user' && sameMessageContent(lastMsg.content, startRec.content)) {
+        history = history.slice(0, -1);
+      }
+    }
 
     // 1.2.7(域补丁):域判定一次算出,系统提示(skills/caps/研究记忆)与
     // 执行栈(子代理清单按域收窄)共用同一 domain——同一 turn 内域只有
@@ -1563,11 +1685,28 @@ class ChatEngine {
       }
     }
     if (doneMessages.length > 0) {
-      await appendLoopMessages(
-        turnSessionId,
-        doneMessages,
-        { model: resolution.modelId, providerId: resolution.providerId, tokenCalibration: learnedCalibration },
-      ).catch((err) => console.warn('[pi-engine] 会话续存失败:', err));
+      // 轨迹完整性去重:doneMessages[0] 与起跑即落盘的 user 相同(role+
+      // content)→ 丢弃,文件里 user 恰好一次(完成轮与旧版同序同内容)。
+      // 起跑写失败(promise=false)或 doneMessages[0] 不是该 user(防呆:
+      // pi 契约外形态)则全量照写——宁可重复一条 user,也不丢用户消息。
+      let batch = doneMessages;
+      const rec = this.turnStartPersisted;
+      if (rec && rec.sessionId === turnSessionId) {
+        this.turnStartPersisted = null;
+        const startOk = await rec.promise;
+        const first = batch[0] as { role?: string; content?: unknown };
+        if (startOk && first?.role === 'user' && sameMessageContent(first.content, rec.content)) {
+          batch = batch.slice(1);
+        }
+      }
+      if (batch.length > 0) {
+        await persistTrajectory(
+          turnSessionId,
+          batch,
+          { model: resolution.modelId, providerId: resolution.providerId, tokenCalibration: learnedCalibration },
+          'turn 收尾',
+        );
+      }
     }
 
     // context-usage(与 SDK 路径同一事件、同一 computeContextUsage 归一化)。
@@ -1761,7 +1900,25 @@ class ChatEngine {
       RECALL_TOOL_NAME,
     ];
     const storedInvoke = loadLoopSession(loopSessionId);
-    const history = storedInvoke.messages;
+    // 轨迹完整性:invoke turn 起跑即落盘 user 消息(与交互 turn 同规——
+    // headless 线被杀同样不能连驱动消息都丢)。历史装载摘掉它(防 context
+    // 重复),收尾续存按 role+content 去重(防文件重复)。
+    const invokeStartUser: AgentMessage = input.decision
+      ? { role: 'user', content: input.text.trim(), timestamp: Date.now(), decision: input.decision } as AgentMessage
+      : { role: 'user', content: input.text.trim(), timestamp: Date.now() } as AgentMessage;
+    const invokeStartWrite = persistTrajectory(
+      loopSessionId,
+      [invokeStartUser],
+      { model: resolution.modelId, providerId: resolution.providerId },
+      'invoke 起跑',
+    );
+    let history = storedInvoke.messages;
+    {
+      const lastMsg = history[history.length - 1] as { role?: string; content?: unknown } | undefined;
+      if (lastMsg?.role === 'user' && sameMessageContent(lastMsg.content, (invokeStartUser as { content: unknown }).content)) {
+        history = history.slice(0, -1);
+      }
+    }
     const caps = scenario.type === 'security' || scenario.type === 'auto-run'
       ? await collectSecurityCapabilities(this.agentDir)
       : undefined;
@@ -1848,11 +2005,22 @@ class ChatEngine {
         }
       }
       if (doneMessages.length > 0) {
-        await appendLoopMessages(
-          loopSessionId,
-          doneMessages,
-          { model: resolution.modelId, providerId: resolution.providerId, tokenCalibration: learnedCalibration },
-        ).catch((err) => console.warn('[pi-engine] invoke 续存失败:', err));
+        // 轨迹完整性去重(与交互 turn 同口径):起跑即落盘的 user 只留一次;
+        // 起跑写失败/首条非同 content user → 全量照写,宁重复不丢。
+        let batch = doneMessages;
+        const startOk = await invokeStartWrite;
+        const first = batch[0] as { role?: string; content?: unknown };
+        if (startOk && first?.role === 'user' && sameMessageContent(first.content, (invokeStartUser as { content: unknown }).content)) {
+          batch = batch.slice(1);
+        }
+        if (batch.length > 0) {
+          await persistTrajectory(
+            loopSessionId,
+            batch,
+            { model: resolution.modelId, providerId: resolution.providerId, tokenCalibration: learnedCalibration },
+            'invoke 收尾',
+          );
+        }
       }
       // 与单例 turn 收尾同款的挂点(缺口埋点/bg 回收),目标都是本条线。
       // 标题钩子对 invoke 线跳过(headless 线无 SessionStore 元数据可标,
@@ -1931,7 +2099,7 @@ class ChatEngine {
     // execute-sync 回报/skip-switch、sessions 路由 in-memory 合并——都读它)。
     setActiveSessionId(metaId);
     this.messageSeq = 0;
-    this.messages = this.loopMessagesToWire(stored.messages);
+    this.messages = this.loopMessagesToWire(this.withInterruptedTurnNote(loopId, stored.messages));
     this.streamingAssistantId = null;
     this.systemInitInfo = null;
     console.log(`[pi-engine] 切换会话 → ${metaId}(loop=${this.sessionId},${stored.messages.length} 条)`);
@@ -1979,7 +2147,7 @@ class ChatEngine {
     if (line && stored && stored.messages.length > 0) {
       this.sessionId = line.loopSessionId;
       this.boundSessionMetaId = this.findBoundMetaId(line.loopSessionId);
-      this.messages = this.loopMessagesToWire(stored.messages);
+      this.messages = this.loopMessagesToWire(this.withInterruptedTurnNote(line.loopSessionId, stored.messages));
       console.log(`[pi-engine] 环境分线 → 接线 ${envKey}(loop=${this.sessionId},${stored.messages.length} 条)`);
     } else {
       this.sessionId = newLoopSessionId();

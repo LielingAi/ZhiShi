@@ -266,6 +266,9 @@ function openDb(baseDir: string): SqliteDatabase {
   const db = Database(dbPath);
   db.exec(`
     PRAGMA journal_mode = WAL;
+    -- 跨进程并发写（两个 sidecar 同数据目录）:写者等待 5s 而不是当场
+    -- SQLITE_BUSY 抛错——从「丢一条 research 事件」降级为「写慢一点」。
+    PRAGMA busy_timeout = 5000;
     CREATE TABLE IF NOT EXISTS memories (
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,

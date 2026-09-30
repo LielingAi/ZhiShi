@@ -214,4 +214,20 @@ describe('append / load(真临时目录)', () => {
     expect(JSON.stringify(s.messages)).not.toContain('已截断');
     expect(s.messages).toHaveLength(2);
   });
+
+  it('轨迹完整性:分段追加(起跑 user + 收尾其余)与一次全量追加同序同内容', async () => {
+    // 引擎新语义:turn 起跑先落 [user],收尾再落 [assistant/toolResult...]
+    // (doneMessages[0] 去重后)——完成轮的产物必须与旧版单批次逐条一致。
+    const msgs = [user('本轮问题'), assistant('本轮回答')];
+    const splitId = newLoopSessionId();
+    await appendLoopMessages(splitId, [msgs[0]], { model: 'k3', providerId: 'moonshot-coding' }, { dir: DIR });
+    await appendLoopMessages(splitId, msgs.slice(1), { model: 'k3', providerId: 'moonshot-coding' }, { dir: DIR });
+    const batchId = newLoopSessionId();
+    await appendLoopMessages(batchId, msgs, { model: 'k3', providerId: 'moonshot-coding' }, { dir: DIR });
+    const split = loadLoopSession(splitId, { dir: DIR });
+    const batch = loadLoopSession(batchId, { dir: DIR });
+    expect(split.messages).toEqual(batch.messages);
+    expect(split.meta?.model).toBe(batch.meta?.model);
+    expect(split.meta?.providerId).toBe(batch.meta?.providerId);
+  });
 });
