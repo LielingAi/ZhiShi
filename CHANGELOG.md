@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-09-30
+
+> **轨迹补全系统提示正文**——「模型被告诉了什么」从此有据可查（WREN 在真实轨迹上发现的完整性缺口：用户消息引用了系统提示的 `<zhishi-mission>` 段，而 jsonl 里只有引用没有正文）。
+
+- **轨迹新增文件级记录** `{"kind":"system-prompt","hash","content","at"}`：系统提示不再「现组现喂、从不落盘」。记录不是消息（不过角色过滤器），与 meta 同级。
+- **变更才写**：文件锁内对盘上最后一条记录做 sha256 比对——提示词未变的线零写盘、逐字节不动；引擎侧用 turn 起跑快照做快速路径，跨重启/跨进程正确性由锁内复核保证。
+- **位置确定性**：按 `pos` 交错序列化，记录落在「上一轮消息之后、本轮 user 之前」——「模型在那一刻看到了什么」在文件里可复现（raw 行序：meta → system-prompt → user → assistant）。
+- **两个写盘点**：交互 turn 与 headless invoke，都在组装后、喂模型前落盘；失败重试一次 + 报警（与轨迹完整性同纪律，不静默）。
+- **读出**：`LoopSession` 暴露 `systemPrompts`（带回放位置），GUI/回看可展示；记录永不进 `messages`（LLM 可见列表不变）。
+- 既有读-改-写路径（append/fork/truncate/压缩与治理游标标记）全部携带记录；fork/truncate 保留截断点之前的记录。
+
 ## [1.9.0] - 2026-09-30
 
 > **轨迹完整性保障**（WREN 的硬要求：不管单机、不管团队模式，始终保证轨迹完整性）。完成轮的 jsonl 与旧行为逐字节一致；被中断的轮次从此盘上有据可查。
