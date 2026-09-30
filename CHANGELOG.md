@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-09-30
+
+> **轨迹完整性保障**（WREN 的硬要求：不管单机、不管团队模式，始终保证轨迹完整性）。完成轮的 jsonl 与旧行为逐字节一致；被中断的轮次从此盘上有据可查。
+
+- **用户消息起跑即落盘**：turn 起跑时（含 FIFO/steering promote 那一刻）先把 user 消息写进 `loop-sessions/<线>.jsonl`——以前只在 turn 完成时落盘，turn 中途崩（杀进程/掉电/watchdog）整条轮次连用户消息一起消失。排队消息只在真正起跑时进轨迹（轨迹反映执行序不是到达序）；turn 收尾按 role+content 去重（三项全成立才摘首条，宁可重复不可盲丢）；历史装载同步摘掉尾部起跑消息，LLM context 不出双份。
+- **中断轮次补系统注记**：四个恢复/重放路径检出「尾部孤立 user（无模型响应）」时补 `⟦系统注记：上一轮中断…⟧`（幂等——注记本身落盘，再装载不重复）；**团队模式防误标**——该线有别的 live 引擎正跑 turn 时跳过（那多半是人家起跑即落盘的当轮消息，不是中断残骸）。
+- **`memory.db` 加 `PRAGMA busy_timeout = 5000`**：跨进程并发写撞 SQLITE_BUSY 从「直接抛、丢留痕」降级为「等 5 秒、慢一拍但不丢」。
+- **`writeFileAtomic` 补 fsync**：tmp 文件 fsync 后再 rename、rename 后再 fsync 目录——掉电时已写轮次真的在盘上。
+- **写失败不静默**：落盘失败重试一次（200ms），仍败则进 GUI 日志面板 + 统一日志文件（带线 id 与错误）。
+- **真机崩溃注入实证**：真 sidecar + 真模型，turn 中途强杀——盘上留下被中断轮次的 user 消息（旧行为=整条消失）；重启后自动补系统注记；完成轮不误标。
+
 ## [1.8.10] - 2026-09-29
 
 > **模型切换校验修复**：discovered 目录（set-key 自动拉取的实时模型）可切可选 + 内置收录 `deepseek-flash`（DeepSeek V4.1 Flash）。
