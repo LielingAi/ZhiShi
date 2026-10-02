@@ -49,9 +49,11 @@ function manifest(kind: string, recipes: string[]): DomainManifest {
 }
 
 const RECIPES = [
-  recipe('pwn', ['gdb', 'pwntools', 'ROPgadget']),
+  // python3 同时被 binary 域（pwn）与 pentest 域（pentest）声明——1.9.3 起
+  // 「跨域共用工具」不构成任何域的证据（真实世界：python3 被 9 个配方声明）。
+  recipe('pwn', ['gdb', 'pwntools', 'ROPgadget', 'python3']),
   recipe('fuzz', ['afl-fuzz', 'gdb']),
-  recipe('pentest', ['nmap', 'hydra']),
+  recipe('pentest', ['nmap', 'hydra', 'python3']),
   recipe('code-audit', ['opengrep', 'rg']),
   recipe('dev', ['clang', 'gdb']), // dev 不属于任何域——工具在探测面但不落域
   recipe('broken', ['ghost-tool'], false), // invalid 配方不进反推表/探测面
@@ -78,14 +80,21 @@ describe('buildRecipeDomainMap / buildToolDomainIndex（工具→域反推）', 
     expect(map.get('dev')).toBeUndefined();
   });
 
-  it('tool → 域：经配方反查；跨配方共享工具落多个域', () => {
+  it('tool → 域：只收独占证据（同域多配方声明仍算；跨域共用不入表）', () => {
     const index = buildToolDomainIndex(RECIPES, MANIFESTS);
-    expect(index.get('gdb')).toEqual(['binary']); // pwn/fuzz 都属 binary，去重
+    expect(index.get('gdb')).toEqual(['binary']); // pwn/fuzz 都属 binary → 仍算 binary 的独占证据
     expect(index.get('nmap')).toEqual(['pentest']);
     expect(index.get('opengrep')).toEqual(['whitebox']);
     // invalid 配方与无域配方的工具不进表
     expect(index.get('ghost-tool')).toBeUndefined();
     expect(index.get('clang')).toBeUndefined();
+  });
+
+  it('1.9.3：跨域共用工具不构成任何域的证据（python3 被 binary 与 pentest 共同声明）', () => {
+    // 「这台机器装了 python3」只能说明它是个 Linux 环境，不能说明它有渗透能力——
+    // 共用工具进表会让任何容器都被反推出三四个域，能力清单段跟着虚报工具。
+    const index = buildToolDomainIndex(RECIPES, MANIFESTS);
+    expect(index.get('python3')).toBeUndefined();
   });
 });
 
@@ -180,8 +189,12 @@ describe('mergeCapabilityDomains（合并规则：绑定域在前 = 基线语义
 
 describe('1.4.9 — 集合内工具口径（capabilityScopeTools / capabilityMissingInScope）', () => {
   it('capabilityScopeTools：集合内域 → 配方 → valid 工具并集（去重排序）', () => {
+    // 口径是「配方声明了什么」而不是「什么算域证据」——共用工具照样算进
+    // 集合内工具（python3 由 binary 域的 pwn 声明）。
     const tools = capabilityScopeTools(['binary', 'whitebox'], RECIPES, MANIFESTS);
-    expect(new Set(tools)).toEqual(new Set(['gdb', 'pwntools', 'ROPgadget', 'afl-fuzz', 'opengrep', 'rg']));
+    expect(new Set(tools)).toEqual(
+      new Set(['gdb', 'pwntools', 'ROPgadget', 'python3', 'afl-fuzz', 'opengrep', 'rg']),
+    );
     expect(tools).not.toContain('clang'); // dev 配方不在集合内
     expect([...tools].sort((a, b) => a.localeCompare(b))).toEqual(tools); // 输出稳定
   });
@@ -193,7 +206,7 @@ describe('1.4.9 — 集合内工具口径（capabilityScopeTools / capabilityMis
       toolCheck: { ok: false, missing: ['pwntools'], checkedAt: 't' },
     };
     const r = capabilityMissingInScope(entry, RECIPES, MANIFESTS);
-    expect(r?.total).toBe(4); // binary 集合：gdb/pwntools/ROPgadget/afl-fuzz（pwn+fuzz 并集去重）
+    expect(r?.total).toBe(5); // binary 集合：gdb/pwntools/ROPgadget/python3/afl-fuzz（pwn+fuzz 并集去重）
     expect(new Set(r?.missing)).toEqual(new Set(['afl-fuzz', 'pwntools']));
     expect(capabilityMissingInScope({ capabilityDomains: [] }, RECIPES, MANIFESTS)).toBeUndefined();
   });
@@ -210,13 +223,37 @@ describe('probeEnvironmentCapabilities（注入 exec，不真连）', () => {
       exec: okExec('OK:gdb\nOK:nmap\nMISS:hydra\n'),
       now: fixedNow,
     });
-    // 绑定 pwn→binary 恒在（首位）；探测 nmap→pentest 追加。
+    // 绑定 pwn→binary 恒在（首位）；探测 nmap→pentest 追加（nmap 是 pentest 独占证据）。
     expect(r?.capabilityDomains).toEqual(['binary', 'pentest']);
     expect(r?.capabilityDerivedAt).toBe('2026-08-25T12:00:00.000Z');
-    // 1.4.9：MISS 清单 = 探测面 − 在场（afl-fuzz/clang/hydra/opengrep/pwntools/rg/ROPgadget）。
+    // 1.4.9：MISS 清单 = 探测面 − 在场。
     expect(new Set(r?.capabilityMissing)).toEqual(
-      new Set(['afl-fuzz', 'clang', 'hydra', 'opengrep', 'pwntools', 'rg', 'ROPgadget']),
+      new Set(['afl-fuzz', 'clang', 'hydra', 'opengrep', 'python3', 'pwntools', 'rg', 'ROPgadget']),
     );
+  });
+
+  it('1.9.3：共用工具不再把别的域拉进能力集合（pwn 容器装着一堆共用工具也只算 binary）', async () => {
+    // 1.9.2 之前那台 pwn 环境的「能力（推导）」行是 binary · whitebox · ai-security ·
+    // pentest：其中 whitebox 来自 sg 撞名（1.9.2 修），ai-security / pentest 来自
+    // python3 / nc / socat 这类**跨域共用工具**（本版修）。修复后只剩 binary。
+    const recipes = [
+      recipe('pwn', ['gdb', 'python3']),
+      recipe('ai-security', ['garak', 'python3']),
+      recipe('pentest', ['nmap', 'python3']),
+    ];
+    const manifests = [
+      manifest('binary', ['pwn']),
+      manifest('ai-security', ['ai-security']),
+      manifest('pentest', ['pentest']),
+    ];
+    const r = await probeEnvironmentCapabilities(ENTRY, {
+      recipes,
+      manifests,
+      exec: okExec('OK:gdb\nOK:python3\n'),
+      now: fixedNow,
+    });
+    // gdb → pwn → binary（独占证据）；python3 横跨三个域 → 不构成任何域的证据。
+    expect(r?.capabilityDomains).toEqual(['binary']);
   });
 
   it('探测零缺失 → capabilityMissing 空数组（与「未探测」的 undefined 区分）', async () => {

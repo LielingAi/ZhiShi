@@ -10,8 +10,10 @@
  *     绑定是构建来源，恒在集合，不需要探测证据。
  *   - 工具探测域：探测面 = 全部 valid 配方 tools 的并集（去重），对环境跑
  *     一条批量探测命令（复用 recipes.ts 的 buildToolCheckScript 探测协议：
- *     每行 OK:<工具> / MISS:<工具>），命中的工具经「工具 → 域」反推表
- *     （全部配方 tools[] × domain.json recipes）归并出域集合。
+ *     每行 OK:<工具> / MISS:<工具>），命中的工具经「工具 → 域」反推表归并出
+ *     域集合。反推表**只收独占证据**（1.9.3）：一个工具被不同域的配方共同
+ *     声明时不算任何域的证据——共用工具（python3/nc/socat）在几乎所有容器里
+ *     都在场，否则任何环境都会被反推出三四个域，能力清单段跟着虚报工具。
  *
  * 落盘：EnvironmentEntry.capabilityDomains / capabilityDerivedAt（服务端派生，
  * 非用户编辑）。探测失败（ssh 不通 / docker 死了 / 通道报错）→ 返回 undefined，
@@ -125,29 +127,41 @@ export function buildRecipeDomainMap(
 }
 
 /**
- * 工具 → 域反推表：tool → 域 kind 列表（按 manifests 顺序，去重）。
+ * 工具 → 域反推表（**只收域证据**）：tool → 它独占的那个域 kind。
+ *
+ * 1.9.3 域证据规则：工具被**不同域**的配方共同声明时，它不构成任何域的证据——
+ * 「这台机器装了 python3」只能说明它是个 Linux 环境，不能说明它有渗透能力或
+ * AI 安全能力（真实配方里 python3 被 9 个配方声明、横跨 3 个域；nc/socat 横跨 2 个）。
+ * 共用工具进表会让任何容器都被反推出三四个域，能力清单段跟着把该环境根本没有的
+ * 工具写进提示词（模型照着用，白烧轮次）。同域内多配方声明仍算独占：gdb 被
+ * pwn/fuzz/fuzz-vm/rev 声明，但都在 binary。
+ *
  * 只收 valid 配方（invalid 配方的工具声明未经验证，同 aggregateRecipeTools 纪律）。
+ * 1.5.7：firstRunTools 一并入表——首跑装完就是真实在场的工具，同样算证据。
  */
 export function buildToolDomainIndex(
   recipes: readonly EnvironmentRecipe[],
   manifests: readonly DomainManifest[],
 ): Map<string, string[]> {
   const recipeDomains = buildRecipeDomainMap(manifests);
-  const index = new Map<string, string[]>();
+  const declared = new Map<string, string[]>();
   for (const recipe of recipes) {
     if (!recipe.valid) continue;
     const domains = recipeDomains.get(recipe.id);
     if (!domains) continue;
-    // 1.5.7：firstRunTools 一并入表——首跑安装完成后探测命中，应同样贡献
-    // 域证据（装完就是真实在场的工具）。
     for (const tool of [...recipe.tools, ...(recipe.firstRunTools ?? [])]) {
-      const list = index.get(tool);
+      const list = declared.get(tool);
       if (list) {
         for (const d of domains) if (!list.includes(d)) list.push(d);
       } else {
-        index.set(tool, [...domains]);
+        declared.set(tool, [...domains]);
       }
     }
+  }
+  // 独占证据：只被单一域的配方声明过（同域多配方在此前去重成一项）。
+  const index = new Map<string, string[]>();
+  for (const [tool, domains] of declared) {
+    if (domains.length === 1) index.set(tool, domains);
   }
   return index;
 }
