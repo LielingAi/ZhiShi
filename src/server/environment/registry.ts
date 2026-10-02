@@ -12,6 +12,7 @@
  */
 
 import type { EnvironmentEntry, EnvironmentKind } from '../../shared/config-types';
+import { boundRecipeIdsForEntry } from './capability-derive';
 import { osFamilyOf } from './os-family';
 
 export type { EnvironmentEntry, EnvironmentKind };
@@ -198,6 +199,25 @@ export function findEnvironmentEntry(
   id: string,
 ): EnvironmentEntry | undefined {
   return (list ?? []).find((e) => e.id === id);
+}
+
+/**
+ * domain/check 的工具自检目标：给一个配方找「用哪个现场环境验证」。
+ * 精确匹配——容器名恰好等于配方名（手工 docker run --name），或条目的
+ * 绑定配方集合含该配方（见 boundRecipeIdsForEntry）。
+ *
+ * 1.9.2：此前是 `e.container === recipeId || e.name?.includes(recipeId)`，
+ * 子串匹配让给 pwn 配方的自检挑中名为「pwn-vm（pwn-vm）」或
+ * zhishi-pwn-0fe18f31 的条目——探测照跑，漂移结论挂到别的环境上（结论错、
+ * 现场错，且不报错）。精确相等保留，子串去掉：名字是自由文本，不是配方名。
+ */
+export function findProbeTargetForRecipe(
+  list: readonly EnvironmentEntry[] | undefined,
+  recipeId: string,
+): EnvironmentEntry | undefined {
+  return (list ?? []).find(
+    (e) => e.container === recipeId || boundRecipeIdsForEntry(e).includes(recipeId),
+  );
 }
 
 /** Append with id-uniqueness enforcement. Does not mutate the input list. */

@@ -14,6 +14,7 @@ import type { EnvironmentEntry } from '../../shared/config-types';
 import type { EnvironmentRecipe } from './recipes';
 import {
   boundDomainsForEntry,
+  boundRecipeIdsForEntry,
   buildLocalToolchainProbeScript,
   buildRecipeDomainMap,
   buildToolDomainIndex,
@@ -114,9 +115,16 @@ describe('boundDomainsForEntry（配方绑定域反查）', () => {
     expect(boundDomainsForEntry(ENTRY, MANIFESTS)).toEqual(['binary']);
   });
 
-  it('回落 id/vmName 同名配方（老条目无 recipeId）', () => {
+  it('回落 vmName 同名配方（老条目无 recipeId）', () => {
     const legacy: EnvironmentEntry = { id: 'pentest-box', kind: 'vm', vmName: 'pentest', createdAt: '' };
     expect(boundDomainsForEntry(legacy, MANIFESTS)).toEqual(['pentest']);
+  });
+
+  it('1.9.2：环境 id 不作配方候选——起名不换域', () => {
+    // 环境 id 是系统生成（zhishi-<recipe>-<hash>）或人工自由文本，与配方名
+    // 撞上纯属巧合：曾让「把环境叫 pentest」（无任何配方绑定）判成 pentest 域。
+    const named: EnvironmentEntry = { id: 'pentest', kind: 'ssh', host: 'h', createdAt: '' };
+    expect(boundDomainsForEntry(named, MANIFESTS)).toEqual([]);
   });
 
   it('无绑定 → []', () => {
@@ -134,6 +142,24 @@ describe('boundDomainsForEntry（配方绑定域反查）', () => {
     };
     // pwn→binary、code-audit→whitebox 都在集合；manifests 顺序（binary 先于 whitebox）。
     expect(boundDomainsForEntry(multi, MANIFESTS)).toEqual(['binary', 'whitebox']);
+  });
+});
+
+describe('boundRecipeIdsForEntry（绑定配方候选唯一口径，1.9.2）', () => {
+  it('recipeId / recipeIds / vmName 三源合并去重，空值滤掉', () => {
+    expect(boundRecipeIdsForEntry({ recipeId: 'pwn' })).toEqual(['pwn']);
+    expect(boundRecipeIdsForEntry({ recipeIds: ['pwn', 'code-audit'], recipeId: 'pwn' })).toEqual([
+      'pwn',
+      'code-audit',
+    ]);
+    // vmName 回落（老 VM 条目无 recipeId；实例名常就是配方名）
+    expect(boundRecipeIdsForEntry({ vmName: 'pwn-vm' })).toEqual(['pwn-vm']);
+    expect(boundRecipeIdsForEntry({ recipeId: '', vmName: '' })).toEqual([]);
+  });
+
+  it('环境 id 不作候选——id 与配方名撞上不是绑定证据', () => {
+    const named: EnvironmentEntry = { id: 'fuzz', kind: 'ssh', host: 'h', createdAt: '' };
+    expect(boundRecipeIdsForEntry(named)).toEqual([]);
   });
 });
 

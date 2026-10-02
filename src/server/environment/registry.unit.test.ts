@@ -15,6 +15,7 @@ import {
   builtinLocalEntry,
   envTagForEntry,
   findEnvironmentEntry,
+  findProbeTargetForRecipe,
   hasLocalEnvironment,
   listEnvironments,
   listEnvironmentsWithBuiltin,
@@ -23,6 +24,42 @@ import {
   resolveEnvOpenCommand,
   validateEnvironmentEntry,
 } from './registry';
+
+// ===== domain/check 的配方探针目标（1.9.2） =====
+
+describe('findProbeTargetForRecipe（domain/check 工具自检的现场选择）', () => {
+  const base = { createdAt: '2026-10-02T00:00:00.000Z' };
+
+  it('精确绑定匹配：recipeId / recipeIds 命中即目标', () => {
+    const bound: EnvironmentEntry = {
+      ...base, id: 'zhishi-pwn-a3f2', kind: 'docker', container: 'zhishi-pwn-a3f2', recipeId: 'pwn',
+    };
+    expect(findProbeTargetForRecipe([bound], 'pwn')?.id).toBe('zhishi-pwn-a3f2');
+    const multi: EnvironmentEntry = {
+      ...base, id: 'multi', kind: 'vm', vmName: 'box', address: '10.0.0.9', recipeIds: ['pwn', 'code-audit'],
+    };
+    expect(findProbeTargetForRecipe([multi], 'code-audit')?.id).toBe('multi');
+  });
+
+  it('1.9.2：名字子串不再命中（pwn 不挑中名为「pwn-vm（pwn-vm）」的环境）', () => {
+    // 旧实现 e.name?.includes(recipeId) —— 给 pwn 配方挑中了 VM 条目，
+    // 漂移结论挂到别的环境上。
+    const vmNamed: EnvironmentEntry = {
+      ...base, id: 'vm-1', kind: 'vm', vmName: 'pwn-vm', address: '10.0.0.9', name: 'pwn-vm（pwn-vm）',
+    };
+    expect(findProbeTargetForRecipe([vmNamed], 'pwn')).toBeUndefined();
+  });
+
+  it('容器名恰好等于配方名（手工 docker run --name）仍认——精确相等不是子串', () => {
+    const handmade: EnvironmentEntry = { ...base, id: 'handmade', kind: 'docker', container: 'pwn' };
+    expect(findProbeTargetForRecipe([handmade], 'pwn')?.id).toBe('handmade');
+  });
+
+  it('无匹配 → undefined（调用方跳过该配方的现场自检，不猜）', () => {
+    const ssh: EnvironmentEntry = { ...base, id: 'range-1', kind: 'ssh', host: '10.0.0.5' };
+    expect(findProbeTargetForRecipe([ssh], 'pwn')).toBeUndefined();
+  });
+});
 
 function sshEntry(overrides: Partial<EnvironmentEntry> = {}): EnvironmentEntry {
   return {

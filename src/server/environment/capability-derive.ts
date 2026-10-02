@@ -5,9 +5,9 @@
  *
  *   能力集合 = 配方绑定域 ∪ 工具探测域
  *
- *   - 配方绑定域：条目 recipeId（回落 id/vmName 同名配方，与能力清单段同一
- *     规则）→ domain.json recipes 反查。绑定是构建来源，恒在集合，不需要
- *     探测证据。
+ *   - 配方绑定域：条目绑定配方候选（recipeIds/recipeId ∪ vmName 同名回落，
+ *     见 boundRecipeIdsForEntry——全产品唯一口径）→ domain.json recipes 反查。
+ *     绑定是构建来源，恒在集合，不需要探测证据。
  *   - 工具探测域：探测面 = 全部 valid 配方 tools 的并集（去重），对环境跑
  *     一条批量探测命令（复用 recipes.ts 的 buildToolCheckScript 探测协议：
  *     每行 OK:<工具> / MISS:<工具>），命中的工具经「工具 → 域」反推表
@@ -180,19 +180,38 @@ export function parseProbePresentTools(stdout: string): Set<string> {
 }
 
 /**
- * 配方绑定域（恒在集合）：条目 recipeIds ∪ recipeId（回落 id/vmName 同名
- * 配方，与 buildSecurityCapabilitiesSection / resolveSessionResearchDomain
- * 同一绑定规则）→ domain.json recipes 反查。按 manifests 顺序，去重。
- * 1.4.9：候选补上 recipeIds（多配方）——1.3.8 加多配方绑定时这里漏改，
+ * 条目的绑定配方候选（**唯一口径**：域推导 / 能力清单段的环境过滤与绑定展示 /
+ * resolveSessionResearchDomain / environment/setup 的补齐目标全部经本函数）：
+ * recipeIds ∪ recipeId ∪ vmName 同名回落（VM 实例名常就是配方名——老条目无
+ * recipeId 时的回落），去重且滤空。
+ *
+ * 1.9.2：去掉 id 候选——环境 id 是系统生成（zhishi-<recipe>-<hash>）或人工
+ * 自由文本，与配方名撞上纯属巧合；「改个名字就换域 / 换绑定」是错位。此前
+ * 候选链抄了四份，改一份漏三份（1.4.9 的 recipeIds 就是这么漏的），故收本函数。
+ */
+export function boundRecipeIdsForEntry(
+  entry: Pick<EnvironmentEntry, 'recipeId' | 'recipeIds' | 'vmName'>,
+): string[] {
+  return [
+    ...new Set(
+      [...(entry.recipeIds ?? []), entry.recipeId, entry.vmName].filter(
+        (c): c is string => typeof c === 'string' && c.length > 0,
+      ),
+    ),
+  ];
+}
+
+/**
+ * 配方绑定域（恒在集合）：绑定配方候选（见 boundRecipeIdsForEntry）→
+ * domain.json recipes 反查。按 manifests 顺序，去重。
+ * 1.4.9：候选口径补上 recipeIds（多配方）——1.3.8 加多配方绑定时这里漏改，
  * 辅配方对能力集合曾零贡献（pwn-vm 的 whitebox 靠探测命中撑着）。
  */
 export function boundDomainsForEntry(
-  entry: Pick<EnvironmentEntry, 'id' | 'recipeId' | 'recipeIds' | 'vmName'>,
+  entry: Pick<EnvironmentEntry, 'recipeId' | 'recipeIds' | 'vmName'>,
   manifests: readonly DomainManifest[],
 ): string[] {
-  const candidates = [...(entry.recipeIds ?? []), entry.recipeId, entry.id, entry.vmName].filter(
-    (c): c is string => typeof c === 'string' && c.length > 0,
-  );
+  const candidates = boundRecipeIdsForEntry(entry);
   const out: string[] = [];
   for (const m of manifests) {
     if (m.recipes.some((r) => candidates.includes(r)) && !out.includes(m.kind)) {

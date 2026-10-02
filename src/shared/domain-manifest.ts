@@ -36,7 +36,8 @@ export interface DomainSignalRule {
 }
 
 export interface DomainManifest {
-  /** research kind(binary/pentest/ai-security/redteam/malware/intel/ctf)。 */
+  /** research kind —— RESEARCH_TASK_KINDS 闭集（shared/research-kinds；本注释
+   *  刻意不列成员：1.9.2 前这里的手抄本漏了 whitebox，抄一处即误导一处）。 */
   kind: string;
   name: string;
   /** 引用 bundled-environments 的配方 id。 */
@@ -107,7 +108,12 @@ export function loadDomainManifests(root?: string | null): DomainManifest[] {
   try {
     names = readdirSync(dir, { withFileTypes: true })
       .filter((d) => d.isDirectory())
-      .map((d) => d.name);
+      .map((d) => d.name)
+      // 1.9.2：排序——顺序不是装饰，是语义。能力集合（capabilityDomains）
+      // 按本清单顺序排列，而会话域基线取「集合首个 research 域」；不排序时
+      // 未绑配方的环境（adopt 的容器）拿到哪个域取决于文件系统 readdir 顺序，
+      // 不可复现（同一个 pwn 容器在两台机器上可能判成不同域）。
+      .sort();
   } catch {
     return [];
   }
