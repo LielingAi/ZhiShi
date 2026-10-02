@@ -375,6 +375,25 @@ node scripts/setup-tsx-runtime.mjs
 - 由 `npm version` 钩子自动调用
 - 通常不需要手动执行
 
+### `scripts/zhishi-trajectory-export.mts`
+
+**用途**：把 ZhiShi 的 loop-session 轨迹（`~/.zhishi/loop-sessions/<id>.jsonl`）导出成训练流水线要的 Claude Code raw session log 形态（与样板 `trajectory.raw.jsonl` 同构），并在切分点写 `system/compact_boundary` + `isCompactSummary` 两条记录，便于逐行比对。
+
+**定位**：外部数据准备工具——离线、用 `tsx` 直跑，不进 `tsconfig` include（`scripts/` 不在其中）、不 import 任何 `src/` 运行时模块；对 `~/.zhishi/` 只读，只写 `--out` / `--report` 两个路径，永不打印密钥。
+
+**用法**：
+
+```bash
+npx tsx scripts/zhishi-trajectory-export.mts              # 用脚本内默认输入/输出
+npx tsx scripts/zhishi-trajectory-export.mts --dry-run    # 不调 LLM，用机械兜底摘要
+npx tsx scripts/zhishi-trajectory-export.mts --input <会话 jsonl> --out <产物路径> \
+    --window 200000 --ratio 0.85 --model deepseek-flash
+```
+
+**产物**：`--out`（默认 `E:/trajectory.from-zhishi.jsonl`）+ `--report`（默认 `E:/trajectory.from-zhishi.report.md`，含与模板的比对结论与摘要来源计数）。
+
+**注意**：脚本里的默认路径是开发者本机路径（含默认会话 id），换机器/换会话必须用 `--input` / `--out` 指定。
+
 ---
 
 ## 典型工作流
