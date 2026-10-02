@@ -551,6 +551,10 @@ describe('runAutoRunLoop(预算耗尽 → stopped)', () => {
 });
 
 describe('runAutoRunLoop(空转话术注入,K=3)', () => {
+  /** 注入出现的轮次下标（invokeTexts 顺序 = 轮次顺序；首轮无基线不判）。 */
+  const injectionAt = (texts: string[]): number[] =>
+    texts.flatMap((t, i) => (t.includes('【系统注入·空转推进话术】') ? [i] : []));
+
   it('连续 K 轮空转 → 下轮注入内置通用话术(标注系统注入);每次检测注入一次', async () => {
     const record = makeRecord();
     const fake = makeFakeDeps({ stallTurns: 3 });
@@ -558,9 +562,17 @@ describe('runAutoRunLoop(空转话术注入,K=3)', () => {
     const loop = runAutoRunLoop(record, ctl, fake.deps);
     const done = ctl.waitUntilDone();
     // 首轮无基线不判;第 2/3/4 轮连空转 → 第 4 轮末判定 → 第 5 轮文本注入。
-    await waitFor(() => fake.invokeTexts.length >= 6);
+    await waitFor(() => injectionAt(fake.invokeTexts).length >= 1);
+    const idx = injectionAt(fake.invokeTexts);
+    expect(idx[0]).toBe(4);
+    // 「每次检测注入一次并清计数」的确定性表述：相邻两次注入之间至少隔 stallTurns 轮。
+    // 2026-10-02 修：此前这里断言注入总数**恰好 1**——而 waitFor 每 10ms 才轮询一次、
+    // fake 的 invoke 是立即 resolve 的，观察到的轮次数不确定（实测同一次跑里 6~9 轮都
+    // 出现过），K=3 设计下第 9 轮本就该有第二次注入 → 上界断言本身是竞态，会偶发红。
+    for (let i = 1; i < idx.length; i++) {
+      expect(idx[i] - idx[i - 1]).toBeGreaterThanOrEqual(3);
+    }
     const injected = fake.invokeTexts.filter((t) => t.includes('【系统注入·空转推进话术】'));
-    expect(injected).toHaveLength(1);
     expect(injected[0]).toContain(DEFAULT_STALL_PROMPT);
     expect(injected[0]).toContain('「墙」');
     expect(record.status).toBe('running');
@@ -575,9 +587,10 @@ describe('runAutoRunLoop(空转话术注入,K=3)', () => {
     const ctl = createAutoRunController(record);
     const loop = runAutoRunLoop(record, ctl, fake.deps);
     const done = ctl.waitUntilDone();
-    await waitFor(() => fake.invokeTexts.length >= 6);
+    // 同样只等「第一次注入出现」，不断言总数（上界的竞态见上一例注释）。
+    await waitFor(() => injectionAt(fake.invokeTexts).length >= 1);
+    expect(injectionAt(fake.invokeTexts)[0]).toBe(4);
     const injected = fake.invokeTexts.filter((t) => t.includes('【系统注入·空转推进话术】'));
-    expect(injected).toHaveLength(1);
     expect(injected[0]).toContain('换个思路再试');
     ctl.requestStop();
     await done;
