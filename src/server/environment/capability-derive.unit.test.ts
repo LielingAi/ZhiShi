@@ -427,6 +427,16 @@ describe('1.7.8 — 本机工具链探测面（kind=local）', () => {
     ]);
   });
 
+  it('1.9.4：宿主 WinDbg 探测覆盖 Store 版（WinDbgX）', () => {
+    // win-kernel 的 SKILL.md 自己教的安装方式是 `winget install Microsoft.WinDbg`
+    // ——winget 装的是 **Store 版**，可执行名 `WinDbgX.exe`（%LOCALAPPDATA%\
+    // Microsoft\WindowsApps\ 应用执行别名），`where windbg` 与经典 SDK 路径
+    // 都找不到它 → 按自家文档装的用户会永远看到「缺 WinDbg」，而那是本机
+    // 工具链面里唯一给出安装引导的项。
+    const windbg = LOCAL_TOOLCHAIN_PROBE.find((t) => t.key === 'windbg');
+    expect(windbg?.probe).toContain('WinDbgX');
+  });
+
   it('buildLocalToolchainProbeScript：cmd 语义 + OK:/MISS: 协议行（vswhere/WSL/符号路径可见）', () => {
     const script = buildLocalToolchainProbeScript();
     expect(script).toContain('vswhere.exe');

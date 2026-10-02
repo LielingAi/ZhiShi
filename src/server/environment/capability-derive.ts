@@ -70,7 +70,12 @@ export const LOCAL_TOOLCHAIN_PROBE: ReadonlyArray<{ key: string; label: string; 
   {
     key: 'windbg',
     label: 'WinDbg',
-    probe: 'where windbg || dir /b "%ProgramFiles(x86)%\\Windows Kits\\10\\Debuggers\\x64\\windbg.exe" >NUL',
+    // 1.9.4：补 Store 版——`winget install Microsoft.WinDbg`（win-kernel SKILL.md
+    // 教的装法）装的是 Store 版，可执行名 `WinDbgX.exe`（WindowsApps 里的应用
+    // 执行别名）；只认经典 SDK 路径会让按自家文档装的用户永远报「缺 WinDbg」。
+    probe:
+      'where windbg || where WinDbgX || dir /b "%ProgramFiles(x86)%\\Windows Kits\\10\\Debuggers\\x64\\windbg.exe" >NUL'
+      + ' || dir /b "%LOCALAPPDATA%\\Microsoft\\WindowsApps\\WinDbgX.exe" >NUL',
   },
   { key: 'python', label: 'python', probe: 'where python' },
   { key: 'git', label: 'git', probe: 'where git' },

@@ -74,8 +74,11 @@ describe('bundled environment recipes（出厂配方守卫）', () => {
   it('win-kernel（1.8.0）：debug 段解析——pipe 管道名进 EnvironmentRecipe', () => {
     const winKernel = recipes.find((r) => r.id === 'win-kernel');
     expect(winKernel?.debug).toEqual({ transport: 'pipe', pipe: 'kd_win-kernel' });
-    // tools[] 与探测映射一致（verifier/wdk 等映射词在 TOOL_PROBE_COMMANDS 有词）
-    expect(winKernel?.tools).toEqual(['wdk', 'windbg', 'osr-loader', 'verifier']);
+    // 1.9.4：guest 工具面**不声明宿主侧工具**——WinDbg 是双机调试的 client，
+    // 跑在宿主（本机条目），guest 里永远没有它；声明它会换来一条必然的
+    // 「声明了但环境里没有：windbg」，把模型导向去 guest 里装 WinDbg。
+    // 宿主侧可用性由本机工具链面（LOCAL_TOOLCHAIN_PROBE）负责。
+    expect(winKernel?.tools).toEqual(['wdk', 'osr-loader', 'verifier']);
     expect(winKernel?.firstRunTools).toEqual(['wdk']);
   });
 

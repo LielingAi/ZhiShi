@@ -7,7 +7,9 @@ vm_user: researcher
 vm_snapshot: zhishi-clean
 tools:
   - wdk
-  - windbg
+  # 1.9.4：windbg 不在 guest 工具面里——它是双机调试的 client，跑在宿主（本机
+  # 条目，由 LOCAL_TOOLCHAIN_PROBE 探测），guest 里永远没有它。声明它只会换来
+  # 一条必然的「声明了但环境里没有：windbg」，把模型导向去 guest 里装 WinDbg。
   - osr-loader
   - verifier
 firstRunTools:
