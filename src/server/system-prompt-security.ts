@@ -59,6 +59,7 @@ import {
 import { isResearchTaskKind, keyedDistilledEntryJudgedWrong, type MemoryKind, type ResearchTaskKind } from './memory/store';
 import { RESEARCH_TASK_KINDS } from '../shared/research-kinds';
 import { loadDomainManifests, type DomainManifest } from './domains/manifest';
+import { boundRecipeIdsForEntry } from './environment/capability-derive';
 import { getZhiShiDataDir } from './utils/app-dirs';
 import { loadConfig } from './utils/admin-config';
 
@@ -218,15 +219,13 @@ function describeSelection(data: SecurityCapabilitiesData): string {
 }
 
 /**
- * 能力清单的域收窄入参（1.2.7 域边界，全部可选——不传 = 现状逐字节一致）。
+ * 能力清单段的组装入参（全部可选——不传 = 现状逐字节一致）。
+ *
+ * 1.9.2：删掉 domain 参数。1.4.3 归位后本段只按「环境推导的能力集合」
+ * （capabilityDomains）收窄，研究域不再参与；参数留着会让调用方以为
+ * 「传域能收窄」，而函数体从不读它——死参数。
  */
-export interface SecurityCapabilitiesDomainOptions {
-  /**
-   * 当前会话研究域（调用方经 resolveSessionDomain 推导）。命中 domain.json
-   * 清单时只列该域 recipes ∪ 绑定了这些配方的具名环境；undefined 或域未被
-   * 任何清单覆盖 → 全量（域过滤是预算优化，不是正确性闸门，宁多勿缺）。
-   */
-  domain?: string;
+export interface SecurityCapabilitiesSectionOptions {
   /** 测试注入：域清单（缺省进程内缓存的 loadDomainManifests()）。 */
   manifests?: DomainManifest[];
 }
@@ -238,7 +237,7 @@ export interface SecurityCapabilitiesDomainOptions {
  */
 export function buildSecurityCapabilitiesSection(
   data: SecurityCapabilitiesData | undefined,
-  options: SecurityCapabilitiesDomainOptions = {},
+  options: SecurityCapabilitiesSectionOptions = {},
 ): string {
   if (!data) return '';
 
@@ -259,12 +258,12 @@ export function buildSecurityCapabilitiesSection(
       const allowedRecipes = new Set(matched.flatMap((m) => m.recipes));
       validRecipes = validRecipes.filter((r) => allowedRecipes.has(r.id));
       // 1.3.8 多配方：具名环境命中任一绑定配方（recipeIds ∪ recipeId ∪
-      // id/vmName 同名回落）即保留。
+      // vmName 同名回落；1.9.2 去 id——与 boundDomainsForEntry 同一绑定口径）
+      // 即保留。
       environments = environments.filter((e) => {
         const bound = new Set<string>([
           ...(e.recipeIds ?? []),
           ...(e.recipeId ? [e.recipeId] : []),
-          e.id,
           ...(e.vmName ? [e.vmName] : []),
         ]);
         return validRecipes.some((r) => bound.has(r.id));
@@ -373,14 +372,10 @@ export function buildSecurityCapabilitiesSection(
       const label = entry.name && entry.name !== entry.id && !entry.name.startsWith(entry.id)
         ? `${entry.id}（${entry.name}）`
         : entry.id;
-      // 配方绑定：recipeIds（1.3.8 多配方集合）∪ recipeId 优先，回落
-      // id/vmName 同名配方（老条目）。绑定=展示/构建来源，工具并集。
-      const boundRecipeIds = new Set<string>([
-        ...(entry.recipeIds ?? []),
-        ...(entry.recipeId ? [entry.recipeId] : []),
-        entry.id,
-        ...(entry.vmName ? [entry.vmName] : []),
-      ]);
+      // 配方绑定：唯一口径见 boundRecipeIdsForEntry（recipeIds ∪ recipeId ∪
+      // vmName 同名回落；1.9.2 去 id——环境 id 不是配方名）。
+      // 绑定 = 展示/构建来源，工具并集。
+      const boundRecipeIds = new Set<string>(boundRecipeIdsForEntry(entry));
       const boundRecipes = validRecipes.filter((r) => boundRecipeIds.has(r.id));
       const binding = boundRecipes.length > 0
         ? `（类型 ${boundRecipes.map((r) => r.id).join('+')}：${[
@@ -612,8 +607,8 @@ ${parts.join('\n\n')}
 let domainManifestsCache: DomainManifest[] | null = null;
 /**
  * 从能力清单数据推导当前会话的研究域（research task_kind）。信号链：
- * 现场选择（T4）→ 具名环境的配方绑定（recipeId，回落 id/vmName 同名配方，
- * 与 buildSecurityCapabilitiesSection 同一规则）→ bundled-domains/domain.json
+ * 现场选择（T4）→ 具名环境的配方绑定（recipeId/recipeIds，回落 vmName 同名
+ * 配方；1.9.2 去 id——环境 id 不是域证据）→ bundled-domains/domain.json
  * 的 recipes 列表反查域（域清单的 kind 即 research task_kind）。
  *
  * 1.3.7 场景 3 基线优先：选中环境的条目带现场推导能力集合
@@ -642,10 +637,9 @@ export function resolveSessionResearchDomain(
     // 能力集合基线（1.3.7）：条目带 capabilityDomains → 集合首个 research 域。
     const capBaseline = entry.capabilityDomains?.find((d) => isResearchTaskKind(d));
     if (capBaseline) return capBaseline;
-    // 配方绑定：recipeId 优先，回落 id/vmName 同名配方（同 capabilities 段）。
-    for (const c of [entry.recipeId, entry.id, entry.vmName]) {
-      if (c) candidates.push(c);
-    }
+    // 配方绑定：唯一口径见 boundRecipeIdsForEntry（recipeIds ∪ recipeId ∪
+    // vmName 同名回落；1.9.2 去 id——环境 id 不是域证据）。
+    candidates.push(...boundRecipeIdsForEntry(entry));
   } else {
     return undefined; // host 现场：无环境即无域信号
   }

@@ -692,8 +692,9 @@ describe('buildSecurityCapabilitiesSection — 能力清单段（1.4.3 归位：
     environments: [PWN_ENV, PENTEST_ENV, MANUAL_ENV],
   });
 
-  it('1.4.3：传研究域不再收窄能力清单（研究域只管 skills/子代理/记忆注入，工具面按环境）', () => {
-    const section = buildSecurityCapabilitiesSection(fullData(), { domain: 'binary', manifests: CAPS_MANIFESTS });
+  it('1.9.2：能力清单段不再有域入参（只按环境推导的能力集合收窄）', () => {
+    // 1.4.3 起本段不读研究域；1.9.2 把死参数删掉——传 manifests 也应保全部。
+    const section = buildSecurityCapabilitiesSection(fullData(), { manifests: CAPS_MANIFESTS });
     // 全部配方与具名环境保留（与全量一致——工具面不因研究域收窄）
     expect(section).toContain('- pwn（docker）：pwndbg');
     expect(section).toContain('- fuzz（docker）：afl++');
@@ -714,10 +715,32 @@ describe('buildSecurityCapabilitiesSection — 能力清单段（1.4.3 归位：
     expect(legacy).toContain('- manual-box →');
   });
 
-  it('域未被任何清单覆盖 → 全量（宁多勿缺）', () => {
-    const section = buildSecurityCapabilitiesSection(fullData(), { domain: 'malware', manifests: CAPS_MANIFESTS });
-    expect(section).toContain('- pentest（docker）：nmap');
-    expect(section).toContain('- manual-box →');
+  it('1.9.2：环境 id 不作配方绑定用（id 同名配方不并入能力集合的环境清单）', () => {
+    // 能力集合 = [binary] 时，具名环境清单按「绑定配方 ∈ 集合内配方」过滤。
+    // 过滤曾把 e.id 也算作绑定候选 → 一个叫 pwn 的环境（无任何绑定）被当成
+    // 归属 binary 的现场列进去。
+    const bound: EnvironmentEntry = { ...PWN_ENV, capabilityDomains: ['binary'] };
+    const idNamed: EnvironmentEntry = { id: 'pwn', kind: 'ssh', host: '10.10.0.11', user: 'root', createdAt: '' };
+    const section = buildSecurityCapabilitiesSection(data({
+      engines: enginesReport(['ssh']),
+      recipes: [recipe('pwn', ['pwndbg'])],
+      environments: [bound, idNamed],
+      selection: { kind: 'env', id: PWN_ENV.id },
+    }), { manifests: CAPS_MANIFESTS });
+    expect(section).toContain('- pwn-box →'); // 真绑定条目保留
+    expect(section).not.toContain('- pwn →'); // id 同名不构成绑定
+  });
+
+  it('1.9.2：具名环境行的「类型绑定」同样不认 id（id 同名配方显示无类型绑定）', () => {
+    const idNamed: EnvironmentEntry = { id: 'pwn', kind: 'ssh', host: '10.10.0.11', user: 'root', createdAt: '' };
+    const section = buildSecurityCapabilitiesSection(data({
+      engines: enginesReport(['ssh']),
+      recipes: [recipe('pwn', ['pwndbg'])],
+      environments: [idNamed],
+    }));
+    expect(section).toContain('- pwn →');
+    expect(section).toContain('（无类型绑定——手动接入/旧条目）');
+    expect(section).not.toContain('类型 pwn：');
   });
 });
 
@@ -881,6 +904,13 @@ describe('resolveSessionResearchDomain — 能力集合基线优先（1.3.7 场�
     const r = data({ selection: { kind: 'recipe', name: 'pentest', instanceId: 'ghost-instance' } });
     expect(resolveSessionResearchDomain(r, MANIFESTS)).toBe('pentest');
   });
+
+  it('1.9.2：环境 id 不作配方候选——id 同名配方不产出基线（宁多勿缺）', () => {
+    // 1.9.2 前 id 在候选链里：环境只要叫 pentest 就被判成 pentest 域。
+    const idNamed: EnvironmentEntry = { id: 'pentest', kind: 'ssh', host: '10.10.0.11', createdAt: '' };
+    const d = data({ environments: [idNamed], selection: { kind: 'env', id: 'pentest' } });
+    expect(resolveSessionResearchDomain(d, MANIFESTS)).toBeUndefined();
+  });
 });
 
 describe('resolveSessionDomain — 1.4.3 归位：域只由任务内容判定，移除集合外硬闸', () => {
@@ -1004,8 +1034,8 @@ describe('buildSecurityCapabilitiesSection — 能力集合呈现（1.3.7 场景
     expect(section).toContain('声明了但环境里没有：hydra、pwntools');
   });
 
-  it('能力集合存在时收窄优先于 options.domain（集合 ⊇ 单域，放宽不丢能力）', () => {
-    const section = buildSecurityCapabilitiesSection(capData(), { domain: 'binary', manifests: CAP_MANIFESTS });
+  it('能力集合存在时按集合收窄（集合 ⊇ 单域，放宽不丢能力）', () => {
+    const section = buildSecurityCapabilitiesSection(capData(), { manifests: CAP_MANIFESTS });
     // 单域收窄下 pentest 会被裁掉；能力集合放宽后保留
     expect(section).toContain('- pentest（docker）：nmap、hydra');
   });

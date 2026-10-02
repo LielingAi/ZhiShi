@@ -210,9 +210,11 @@ export interface SystemPromptOptions {
    * 当前会话的研究域（1.2.4 域过滤 + 1.2.7 域边界，仅 security 场景消费）。
    * 调用方经 resolveSessionResearchDomain（配方默认）/ resolveSessionDomain
    * （+ 内容信号动态修正）推导——提供时 <zhishi-research-memory> 只注入该域
-   * 子节 + 跨域通用行，且 <zhishi-capabilities> 只列该域 recipes ∪ 绑定了
-   * 这些配方的具名环境；undefined = 无可靠域信号（host 现场等），降级全量
+   * 子节 + 跨域通用行；undefined = 无可靠域信号（host 现场等），降级全量
    * 注入（宁多勿缺）。
+   * 1.4.3/1.9.2：<zhishi-capabilities> 已不吃这个域——工具面只按环境推导的
+   * 能力集合（capabilityDomains）收窄，研究域只管注入面（记忆 / 子代理 /
+   * 专家注入加权）。
    */
   securityResearchDomain?: ResearchTaskKind;
   /**
@@ -291,7 +293,6 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
     if (kernelSection) parts.push(kernelSection);
     const capabilitiesSection = buildSecurityCapabilitiesSection(
       options?.securityCapabilities,
-      { domain: options?.securityResearchDomain },
     );
     if (capabilitiesSection) parts.push(capabilitiesSection);
     const nativeCodeSection = buildNativeCodeSection();
