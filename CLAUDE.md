@@ -587,7 +587,7 @@ CI（`.github/workflows/test.yml`）在 PR + push 到 `dev/*`/`main` 时自动�
 
 
 
-- 修改 `src/cli/zhishi.ts` 或 `src/cli/zhishi.cmd` → MUST bump `CLI_VERSION`，并同步更新 `bundled-skills/zhishi-cli/SKILL.md`（CLI surface 变化必须在 skill 文档里反映出来）+ bump `SYSTEM_SKILLS_VERSION`
+- 修改 `src/cli/zhishi.ts` 或 `src/cli/zhishi.cmd` → **无需 bump 任何版本号**：CLI 分发没有版本门（旧 `CLI_VERSION` 门已随 W6/1.2.3 移除，本文件此前那条「MUST bump `CLI_VERSION`」是陈旧条款），`cli_launcher::sync_cli_resources`（`src-tauri/src/cli_launcher.rs`）每次启动把 `resources/cli/` 按**内容比对**镜像进 `<data-dir>/bin/`——内容变了才写、未变跳过，所以改动随下一次启动生效。文档面仍 MUST 同步：CLI surface 变化时更新 `bundled-skills/zhishi-cli/SKILL.md`（surface 变化必须在 skill 文档里反映出来）+ bump `SYSTEM_SKILLS_VERSION`（`src-tauri/src/commands.rs`，`src/server/bundled-skills.unit.test.ts` 有守卫测试）
 
 - 修改 `bundled-skills/` 中 system skill（清单见 `SYSTEM_SKILLS`） → MUST bump `SYSTEM_SKILLS_VERSION`
 

@@ -281,7 +281,7 @@ import 文件格式（JSON 或 YAML 自动识别；必填 title/kind/domain/appl
 ```yaml
 - title: 堆喷占位 size 经验
   kind: technique          # idea / technique / sop
-  domain: binary           # binary / pentest / whitebox / ai-security / redteam / malware / intel / ctf
+  domain: binary           # binary / pentest / ai-security / redteam / malware / whitebox / intel / fuzz / ctf
   applicability: glibc 2.3x 堆题，有页面对齐约束时
   content: 做法正文……
   criteria: 什么时候这套做法成立/失效的判定

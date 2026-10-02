@@ -45,6 +45,7 @@ import {
 } from '../model/env-wizard';
 import { forkTargets, rewindTargets, SLASH_ROUTES } from '../model/slash-routes';
 import type { Recipe } from '../client/api';
+import { RESEARCH_TASK_KINDS } from '../../../shared/research-kinds';
 
 const BOOT_STEPS = '①②③④⑤⑥⑦⑧';
 
@@ -676,8 +677,9 @@ function NewEnvModal(): React.JSX.Element | null {
 
 // ── 1.3.2 ①：promote（决策块 → expert/add 入专家库，预填小表单） ──────
 
-/** expert/add 的 domain 闭集（src/shared/research-kinds.ts::RESEARCH_TASK_KINDS）。 */
-const EXPERT_DOMAINS = ['binary', 'pentest', 'ai-security', 'redteam', 'malware', 'whitebox', 'intel', 'ctf'];
+/** expert/add 的 domain 闭集——引用事实源，不再手抄一份（1.9.2：抄本漏了
+ *  fuzz，挖掘会话产出的经验在 GUI 里根本选不到自己的域）。 */
+const EXPERT_DOMAINS = RESEARCH_TASK_KINDS;
 /** expert/add 的 kind 闭集（src/shared/expert-validate.ts::EXPERT_ENTRY_KINDS）。 */
 const EXPERT_KINDS = ['idea', 'technique', 'sop'];
 

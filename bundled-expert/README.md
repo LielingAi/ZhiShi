@@ -11,7 +11,7 @@ bundled-expert/<domain>/<slug>.md
 ```
 
 - `<domain>` ∈ RESEARCH_TASK_KINDS 闭集（binary / pentest / ai-security /
-  redteam / malware / whitebox / intel / ctf），取目录名。
+  redteam / malware / whitebox / intel / fuzz / ctf），取目录名。
 - `<slug>` 小写短横线；条目身份跟 `<domain>/<slug>` 走（改标题也能正确覆盖）。
 
 ## 文件格式

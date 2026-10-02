@@ -61,6 +61,7 @@ import {
   mergeCapabilityDomains,
   parseProbePresentTools,
   probedDomainsForTools,
+  boundRecipeIdsForEntry,
   probeEnvironmentCapabilities,
   type CapabilityExecFn,
 } from './environment/capability-derive';
@@ -160,6 +161,7 @@ import {
   addEnvironmentEntry,
   builtinLocalEntry,
   findEnvironmentEntry,
+  findProbeTargetForRecipe,
   listEnvironments,
   listEnvironmentsWithBuiltin,
   removeEnvironmentEntry,
@@ -791,7 +793,7 @@ Commands:
   log     Record one research outcome event (zhishi research log --task-kind ... --outcome ... --summary ...)
   list    List recorded events, latest first
 Options for 'log':
-  --task-kind       binary | pentest | ai-security | redteam | malware | intel | ctf (required)
+  --task-kind       binary | pentest | ai-security | redteam | malware | whitebox | intel | fuzz | ctf (required)
   --outcome         success | fail | stuck (required)
   --summary         One-line outcome / blocker summary (required)
   --bug-class       stack-overflow | heap-overflow | uaf | double-free | oob-read | oob-write |
@@ -836,7 +838,7 @@ Commands:
                                                   （provenance=promoted + sourceEventId 关联）
 格式契约：frontmatter（domain/kind/title/applicability/criteria/reviewer/tags）+ markdown 正文。
   kind 闭集：idea（思路）/ technique（技术知识）/ sop（标准作业流程）
-  domain 闭集：binary / pentest / ai-security / redteam / malware / whitebox / intel / ctf
+  domain 闭集：binary / pentest / ai-security / redteam / malware / whitebox / intel / fuzz / ctf
   reviewer 必填非空——权威性的来源是人审这个动作。
 编辑器：$EDITOR ?? $VISUAL ??（Windows ? notepad : vi），可带参数（如 "code --wait"）。
   文件未动 / 编辑器退出码非零 → 不落库；校验失败列全部错误可重开。`,
@@ -2700,15 +2702,9 @@ export async function handleEnvironmentSetup(payload: {
   if (want && !recipes.some((r) => r.id === want)) {
     return { success: false, error: `未找到配方 "${want}"` };
   }
-  // 绑定集合（与能力清单段同一回落规则：recipeIds ∪ recipeId ∪ id/vmName）。
-  const boundIds = [
-    ...new Set([
-      ...(entry.recipeIds ?? []),
-      ...(entry.recipeId ? [entry.recipeId] : []),
-      entry.id,
-      ...(entry.vmName ? [entry.vmName] : []),
-    ]),
-  ];
+  // 绑定集合（唯一口径见 boundRecipeIdsForEntry——recipeIds ∪ recipeId ∪
+  // vmName 同名回落；1.9.2 去 id：环境 id 不是配方名）。
+  const boundIds = boundRecipeIdsForEntry(entry);
   const targets = (want ? [want] : boundIds)
     .map((rid) => recipes.find((r) => r.id === rid))
     .filter((r): r is EnvironmentRecipe => !!r);
@@ -2966,7 +2962,9 @@ export async function handleDomainCheck(payload: { id?: string }): Promise<Admin
     const recipes = scanRecipes(defaultRecipesRoot());
     for (const recipeId of m.recipes) {
       const recipe = recipes.find((r) => r.id === recipeId);
-      const entry = runnableEntries.find((e) => e.container === recipeId || e.name?.includes(recipeId));
+      // 1.9.2：精确绑定匹配（见 findProbeTargetForRecipe）——子串匹配会给
+      // pwn 挑中 pwn-vm / zhishi-pwn-* 的条目，漂移结论挂错环境。
+      const entry = findProbeTargetForRecipe(runnableEntries, recipeId);
       if (!recipe || !entry || recipe.tools.length === 0) continue;
       // 1.3.7 场景 3：探测全集一次两吃——漂移证据照报，能力集合顺带刷新回写
       // （capability-refresh 的批量形态；探测失败的条目不动旧能力字段）。

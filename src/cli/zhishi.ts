@@ -201,7 +201,7 @@ Examples:
   zhishi research log --task-kind binary --outcome success \
       --bug-class uaf --summary "hacknote fastbin dup 拿 flag" [--trajectory-ref traj/hacknote.md]
     # 记录一条研究成败信号（安全蒸馏闭环原料）。枚举：--task-kind binary/pentest/
-    # ai-security/redteam/malware/intel/ctf；--outcome success/fail/stuck。
+    # ai-security/redteam/malware/whitebox/intel/fuzz/ctf；--outcome success/fail/stuck。
   zhishi research list [--task-kind binary] [--outcome stuck] [--limit N]
   zhishi intel update [--mode minimal|window|full] [--nuclei-file <本地 cves.json 路径>]
 # 更新本地情报索引（NVD 全量/增量 + exploit-db 整体替换）。

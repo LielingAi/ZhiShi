@@ -63,7 +63,7 @@ zhishi expert import <文件.json|.yaml|.yml> [--reviewer <审定人>] [--json]
 |---|---|---|---|
 | `title` | ✓ | 非空 | 一句话说清是什么知识，带场景（「堆喷前先确认分配器路径」优于「堆喷经验」） |
 | `kind` | ✓ | `idea` / `technique` / `sop` | idea=思路判断，technique=具体技术，sop=步骤流程 |
-| `domain` | ✓ | `binary` / `pentest` / `whitebox` / `ai-security` / `redteam` / `malware` / `intel` / `ctf` | 域是检索与反喂的分组键，选错域会被过滤掉 |
+| `domain` | ✓ | `binary` / `pentest` / `ai-security` / `redteam` / `malware` / `whitebox` / `intel` / `fuzz` / `ctf` | 域是检索与反喂的分组键，选错域会被过滤掉 |
 | `applicability` | ✓ | 非空 | 什么时候适用——越具体越好（环境/版本/前置条件） |
 | `content` | ✓ | 非空 | 知识正文，多行用 YAML `|` 块标量 |
 | `criteria` | ✓ | 非空 | 成立与失效的判定标准——这是「专家知识」和「随笔」的分界线 |
