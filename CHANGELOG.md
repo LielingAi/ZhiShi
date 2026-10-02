@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-10-02
+
+> **域 / 绑定 / 能力推导的错位收口**——移除「起个名字就换域」「名字撞车假在场」「死参数」这类**语义错位**（不做叠加补丁），不改轨迹格式、不改留痕 schema。
+
+- **`sg` 撞名改判别式探测**：code-audit 声明的 `sg`（ast-grep）与 util-linux 的 setgid 执行器同名——`command -v sg` 在任何 ubuntu 镜像都成立 → 探测假 OK「ast-grep 在场」→ 工具→域反推把 **whitebox** 并进无关环境的能力集合，提示词里因此出现该环境根本没有的工具。现按 `sg --version` 输出判别（ast-grep 打 `ast-grep x.y.z`，util-linux 打 `sg from util-linux`）。**探测层是唯一随包生效的修复点**：配方是 seed-if-missing（`ENVIRONMENT_RECIPES_VERSION` 只补缺失目录，已落盘配方永不覆盖），改配方声明对既有安装无效。
+- **绑定证据去 `id`**：环境 id（系统生成 `zhishi-<recipe>-<hash>` 或人工自由文本）不再当配方名用——「环境叫 pentest 就判成 pentest 域」「叫 pwn 就并进 binary 的能力清单」是错位。候选口径 `recipeIds ∪ recipeId ∪ vmName` 收敛为单一函数 `boundRecipeIdsForEntry`，四处调用共用（域推导 / 能力清单的环境过滤与绑定展示 / 会话域基线 / `env setup` 补齐目标）——本 bug 正是候选链抄了四份、改三份才漏的。
+- **域清单加载排序**：`loadDomainManifests` 输出按目录名排序。顺序不是装饰：能力集合按清单序排列，而会话域基线取「集合首个 research 域」——此前押在文件系统 readdir 顺序上，同一个容器在两台机器上可能判成不同域。
+- **`domain/check` 精确匹配**：工具自检的现场选择不再用 `name.includes(recipeId)` 子串匹配（给 `pwn` 配方挑中名为 `pwn-vm（pwn-vm）` 或 `zhishi-pwn-*` 的条目，探测照跑、漂移结论挂错环境且不报错），改用 `findProbeTargetForRecipe`（容器名精确相等 ∪ 绑定配方命中）。
+- **死参数删除**：`SecurityCapabilitiesDomainOptions.domain` 自 1.4.3 起函数体不再读它，调用方却还在传（按注释理解会以为「传域能收窄能力清单」）。删参数、改调用方、订正测试与陈旧注释。
+- **陈旧枚举抄本 8 处**：GUI promote 弹窗的域闭集（抄本缺 `fuzz`——挖掘会话产出的经验在 GUI 里根本选不到自己的域）、CLI 帮助、admin API 帮助 ×2、`bundled-expert/README`、`docs/user-guide.md`、`docs/expert-import-guide.md`、`domain-manifest` 字段注释（抄本缺 `whitebox`）、design 文档「七类」计数。GUI 改为直接引用 `RESEARCH_TASK_KINDS`。
+- **回归护栏**：以上各处均先写能复现的红测试再修（含「配方声明词不得与系统同名程序撞车」的守卫测试与能力集合顺序确定性测试）。
+- **新增外部工具** `scripts/zhishi-trajectory-export.mts`（loop-session 轨迹 → 训练流水线 raw session log，离线数据准备；不进 tsconfig include、不 import 运行时模块）+ `scripts/README` 条目。
+
 ## [1.9.1] - 2026-09-30
 
 > **轨迹补全系统提示正文**——「模型被告诉了什么」从此有据可查（WREN 在真实轨迹上发现的完整性缺口：用户消息引用了系统提示的 `<zhishi-mission>` 段，而 jsonl 里只有引用没有正文）。
