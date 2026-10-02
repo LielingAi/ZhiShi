@@ -501,6 +501,9 @@ describe('声明词 → 探测命令映射（1.2.5「配」；1.6.4 双族；1.8
       'universal-ctags': { posix: 'command -v ctags', windows: 'where ctags' },
       ghidra: { posix: 'command -v analyzeHeadless', windows: 'where analyzeHeadless' },
       binutils: { posix: 'command -v objdump', windows: 'where objdump' },
+      // 1.9.2：与 util-linux 的 sg 撞名（`command -v sg` 恒成立），
+      // 按 --version 输出判别是不是 ast-grep。
+      sg: { posix: 'sg --version 2>&1 | grep -qi "ast-grep"', windows: 'where sg' },
       nodejs: { posix: 'command -v node', windows: 'where node' },
       // qemu-user-static 包不提供同名二进制（装的是 qemu-arm/qemu-mips 等），按任一架构二进制在场判定。
       'qemu-user-static': {
@@ -525,6 +528,16 @@ describe('声明词 → 探测命令映射（1.2.5「配」；1.6.4 双族；1.8
       'osr-loader': { posix: 'false', windows: 'dir /b "C:\\tools\\osr-loader\\OSRLOADER.exe" >NUL' },
       verifier: { posix: 'false', windows: 'where verifier' },
     });
+  });
+
+  it('1.9.2：与系统同名程序撞车的声明词必须走判别式探测（sg = util-linux 的 setgid 执行器）', () => {
+    // `command -v sg` 在任何 ubuntu 镜像都成立 → 探测假 OK「ast-grep 在场」
+    // → 工具→域反推把 whitebox 并进无关环境的能力集合（roadmap 2026-08-29
+    // 实证：pwn-vm 的 whitebox 标签靠 ctags/rg/sg 命中撑着）。
+    const script = buildToolCheckScript(['sg'], 'linux');
+    expect(script).not.toContain(`'sg'`); // 不走 `command -v` 通用循环
+    expect(script).toContain('ast-grep'); // 判别「这个名字背后是不是 ast-grep」
+    expect(script).toContain('OK:sg'); // 协议里的声明词不变（parse 口径不动）
   });
 
   it('1.8.0 新词 → buildToolCheckScript(windows) 用映射命令探测（` & ` 协议）', () => {

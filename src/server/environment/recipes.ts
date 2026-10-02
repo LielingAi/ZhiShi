@@ -462,6 +462,11 @@ export function buildToolCheckCommand(tools: string[]): string {
  * 1.8.0：Windows 研究配方族（office-lab/browser-lab/win-kernel）声明词。
  * 这些能力只有 Windows 形态——posix 分支给 `false`（sh 内建，恒非零退出），
  * 保证 linux 环境探测恒 MISS，不误挂 binary 域。
+ * 1.9.2：第三类——**声明词与系统同名程序撞车**（如 `sg` 既是 ast-grep 的入口，
+ * 也是 util-linux 的 setgid 执行器）。这类词必须进表做判别式探测：通用
+ * `command -v <名字>` 在任何镜像都成立，假 OK 会让工具→域反推把别的域并进
+ * 能力集合，进而把不存在的工具名写进提示词（模型照着用，白烧轮次）。
+ * 判据：退出码 0 **且**输出能证明是目标工具本身。
  */
 export const TOOL_PROBE_COMMANDS: Readonly<Record<string, { posix: string; windows: string }>> = {
   pwntools: { posix: 'python3 -c "import pwn"', windows: 'python -c "import pwn"' },
@@ -470,6 +475,10 @@ export const TOOL_PROBE_COMMANDS: Readonly<Record<string, { posix: string; windo
   'universal-ctags': { posix: 'command -v ctags', windows: 'where ctags' },
   ghidra: { posix: 'command -v analyzeHeadless', windows: 'where analyzeHeadless' },
   binutils: { posix: 'command -v objdump', windows: 'where objdump' },
+  // 1.9.2：ast-grep 的入口之一是 `sg`，与 util-linux 的 setgid 执行器同名——
+  // `command -v sg` 在任何 ubuntu 镜像都成立（util-linux 是基本盘）。按
+  // --version 输出判别：ast-grep 打「ast-grep x.y.z」，util-linux 打「sg from …」。
+  sg: { posix: 'sg --version 2>&1 | grep -qi "ast-grep"', windows: 'where sg' },
   nodejs: { posix: 'command -v node', windows: 'where node' },
   // qemu-user-static 包不提供同名二进制（装的是 qemu-arm/qemu-mips 等），
   // 默认 where/命令名探测会误 MISS——按任一架构二进制在场判定。
