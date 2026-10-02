@@ -78,7 +78,7 @@
 两个由用户构成反推回来的设计校正：
 
 1. **恶意软件研究员让「隔离执行」从可选项升格**：原方案按「靶场在远程」把本地沙箱降级为可选，但恶意样本分析是六类用户里唯一**必须**保证不裸跑宿主机的场景——P2 前就位。**原生环境能力（§1.3）落地后有了具体载体**：VM 快照-传入-detonate-回滚工作流 + env≠host 硬闸，不需要自建沙箱。
-2. **研究员分域 = 安全蒸馏弧的分域依据（2026-08-17 校准：七域 + ctf 补充 + intel 横切）**：`research_events.task_kind` 的枚举与蒸馏成弧按域划分（§1.4、§3.3），经验不跨域混压——二进制的 fuzz 经验和白盒的审计经验分开沉淀。
+2. **研究员分域 = 安全蒸馏弧的分域依据（2026-08-17 校准；1.9.4 订正口径）**：`research_events.task_kind` 是**桶**（9 值闭集：binary / pentest / ai-security / redteam / malware / whitebox / intel / fuzz / ctf），蒸馏按桶分组、经验不跨桶混压（二进制的 fuzz 经验与白盒的审计经验分开沉淀）；**域包**只有当前活跃的 4 个（binary / pentest / whitebox / ai-security，各自一份 `bundled-domains/<kind>/domain.json` 声明 recipes / signals / subagents / acceptance）——redteam 与 malware 拍板暂缓，intel 是横切标签（D29），ctf 是补充场景（D30），fuzz 是 1.6.7 加的挖掘分桶。桶 → 域的两个投影（报告骨架 / 蒸馏注入归属）自 1.9.3 起以 `src/server/domains/task-kind-projection.ts` 为唯一事实源。
 
 ---
 
