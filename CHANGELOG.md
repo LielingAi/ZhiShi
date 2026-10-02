@@ -18,6 +18,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.3] - 2026-10-02
+
+> **能力真相 + 安装链止损**。两件事：域证据不再被共用工具虚报（系统提示里不再出现该环境根本没有的工具）；pentest 系的安装链从「一条命令装五个包」改成逐包容错，并接上上游真实分发通道——PyPI 上**根本没有** `netexec` / `enum4linux-ng`，`graphql-cop` 被 quarantine，原先那条命令在解析阶段整体失败，把这五个包（含能装的）一起拖没了。
+
+### 能力推导（域 = 真相源）
+
+- **域证据改「独占工具才算」**：一个工具被**不同域**的配方共同声明时，它不构成任何域的证据（真实配方里 `python3` 被 9 个配方声明、横跨 binary/pentest/ai-security；`nc`/`socat` 横跨两个）。此前任何容器都会被自己的基础镜像反推出三四个域，`<zhishi-capabilities>` 段跟着把该环境根本没有的 `nmap`/`sqlmap`/`opengrep` 写进系统提示当「可用工具」，模型照着用、白烧轮次。同域内多配方声明仍算独占（`gdb` 被 pwn/fuzz/fuzz-vm/rev 声明，都在 binary）。
+- **fuzz 桶的蒸馏经验回流**：新增 `domains/task-kind-projection.ts`，把「报告骨架投影」与「蒸馏注入放行」收进同一张表（两列，因为两者本就不同）。此前注入侧只硬编码放行 `ctf`——而 9 个桶里除它以外全部永远进不来，包括 1.6.7 R5 为挖掘任务加的 `fuzz`（mission=discover 的会话按教学强制落它）：挖掘主线的经验攒了、蒸馏了，回流断在最后一步。归属：`fuzz`/`malware`→binary、`redteam`→pentest、`ai-security` 自成域、`ctf`(D30)/`intel`(D29) 跨域，表外桶按跨域放行（宁多勿缺）。
+
+### 探测与配方
+
+- **撞名判别式探测**：`sg`（ast-grep 与 util-linux 的 setgid 执行器同名——任何 ubuntu 镜像恒命中，凭空给环境加上 whitebox 域）、`python`（Windows 应用执行别名存根，`where python` 恒命中却 import 不了任何东西，判据改为真跑一次）、`httpx`（pip 的 httpx wheel 无条件声明同名 console script，会覆盖 ProjectDiscovery 那只）三处加判别式探测，并把「撞名名单」立成守卫测试。
+- **安装链逐包容错 + 上游通道**：pentest / pentest-vm / pwn-vm 的 pip 链改为按来源分包、各自回落、各自 WARN。`netexec` 走上游官方 `pipx install git+…/NetExec`（gh-proxy 回落，命令名仍是 `nxc`）；`enum4linux-ng` / `graphql-cop` 无可用 PyPI 分发 → git clone + 依赖 + 包装脚本（不软链 `*.py`：不依赖上游脚本的 shebang 与可执行位）。修掉 pentest-vm 那条「链尾无兜底 + `set -e`」的中止点——它会让其后的 SecLists / nuclei / katana / subfinder / httpx / arjun / ZAP / playwright 浏览器**全部不执行**（pwn-vm 有同类缺陷，一并补）。
+- **安装纪律守卫**（bundled-recipes 单测三条，先在旧脚本上验红）：pip 链必须有 `|| echo`/`|| true` 兜底 / 无 PyPI 分发的包名不得当 PyPI 包名装 / 必须走上游通道。
+
+### 两个操作注意
+
+- **配方是 seed-if-missing**（`commands.rs`：已落盘配方永不覆盖）——安装链修复只触达**新建环境**与缺失自愈。存量环境要生效：删掉 `~/.zhishi/environments/<配方>/` 让它重播，或按 SKILL.md 在环境内手工补装。
+- **能力集合的清理**走 GUI 侧栏「⟳ 重推能力集合」（等价命令 `zhishi domain check <域>`）：本版只改推导规则，已落盘的旧集合要重推一次才收回。
+
 ## [1.9.2] - 2026-10-02
 
 > **域 / 绑定 / 能力推导的错位收口**——移除「起个名字就换域」「名字撞车假在场」「死参数」这类**语义错位**（不做叠加补丁），不改轨迹格式、不改留痕 schema。
