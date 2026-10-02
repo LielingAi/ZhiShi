@@ -18,6 +18,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.4] - 2026-10-02
+
+> **让界面与探测都说真话**。三件小事：环境详情把「能力（推导）」与「配方绑定」两类数据在措辞上分开（起因：配方里只有 `pwn`，能力里却有四个域）；宿主 WinDbg 探测补上 Store 版；`win-kernel` 不再在 guest 面声明宿主侧工具。
+
+### 展示（GUI）
+
+- **能力（推导）行加悬停说明**：它是**探测推导**（= 绑定配方所属域 ∪ 环境里实际探到的「独占」工具所属域；1.9.3 起跨域共用工具不算证据、撞名按判别式探测），带本次探测时间与重推入口，并明确「与配方绑定是两回事」。
+- **配方绑定区**：每个配方 chip 显示 `pwn · binary`（无域归属显示「无域」，如 `dev`）；追加绑定的下拉也带域；分节标题补上「括号内 = 该配方归属的研究域」。
+- **侧栏配方徽标**的悬停说明同步补归属域，并点明「配方是构建来源、域是研究域，两者都不是能力」。
+
+### 探测
+
+- **宿主 WinDbg 探测覆盖 Store 版**：`winget install Microsoft.WinDbg`（`win-kernel` SKILL.md 自己教的装法）装的是 **Store 版**，可执行名 `WinDbgX.exe`；原先只认 `where windbg` 与经典 SDK 路径，按自家文档装的用户会永远看到「缺 WinDbg」——而这是本机工具链面里唯一带安装引导的项。
+- **`win-kernel` 的 `tools[]` 去掉 `windbg`**：它是双机调试的 client，跑在宿主（由本机条目探测），guest 里永远没有它；声明留在 guest 面只会换来一条必然的「声明了但环境里没有：windbg」。注：配方是 seed-if-missing，本条只触达新建环境。
+- **审计提的另两条经核实不成立、不动**（避免按猜测乱改）：`llvm-symbolizer`（fuzz 的自检是 fatal 项——缺了镜像根本构建不过）、`analyzeHeadless`（rev 的 `setup.sh` 已把它软链进 `/usr/local/bin`）。
+
+### 文档
+
+- `docs/spec/security_researcher_agent_tech_plan.md` 的域口径订正：不是「七域」，而是 9 个**桶** + 4 个活跃**域包**（redteam/malware 暂缓、intel 横切 D29、ctf 补充 D30、fuzz 1.6.7 分桶），并指向 `src/server/domains/task-kind-projection.ts` 这个唯一事实源。
+
 ## [1.9.3] - 2026-10-02
 
 > **能力真相 + 安装链止损**。两件事：域证据不再被共用工具虚报（系统提示里不再出现该环境根本没有的工具）；pentest 系的安装链从「一条命令装五个包」改成逐包容错，并接上上游真实分发通道——PyPI 上**根本没有** `netexec` / `enum4linux-ng`，`graphql-cop` 被 quarantine，原先那条命令在解析阶段整体失败，把这五个包（含能装的）一起拖没了。
