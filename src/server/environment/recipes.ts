@@ -484,6 +484,10 @@ export const TOOL_PROBE_COMMANDS: Readonly<Record<string, { posix: string; windo
   // 判据是「跑得起来」而不是「找得到」。posix 侧 python 不是标准名（Ubuntu 只有
   // python3），通用 command -v 不会假命中，照旧。
   python: { posix: 'command -v python', windows: 'python -c "import sys"' },
+  // 1.9.3：pip 的 httpx wheel **无条件**声明 httpx console script——系统级 pip 装到
+  // /usr/local/bin/httpx 会覆盖 ProjectDiscovery 那只（当前依赖链没人拉它，属埋雷）。
+  // 按输出判别：PD 版打 projectdiscovery.io，pip 版只打 usage。
+  httpx: { posix: 'httpx -version 2>&1 | grep -qi projectdiscovery', windows: 'where httpx' },
   nodejs: { posix: 'command -v node', windows: 'where node' },
   // qemu-user-static 包不提供同名二进制（装的是 qemu-arm/qemu-mips 等），
   // 默认 where/命令名探测会误 MISS——按任一架构二进制在场判定。

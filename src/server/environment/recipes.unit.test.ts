@@ -506,6 +506,8 @@ describe('声明词 → 探测命令映射（1.2.5「配」；1.6.4 双族；1.8
       sg: { posix: 'sg --version 2>&1 | grep -qi "ast-grep"', windows: 'where sg' },
       // 1.9.3：Windows 应用执行别名存根 —— 跑起来才算数（见 recipes.ts 注释）。
       python: { posix: 'command -v python', windows: 'python -c "import sys"' },
+      // 1.9.3：pip 的 httpx 会覆盖 ProjectDiscovery 那只（埋雷），按输出判别。
+      httpx: { posix: 'httpx -version 2>&1 | grep -qi projectdiscovery', windows: 'where httpx' },
       nodejs: { posix: 'command -v node', windows: 'where node' },
       // qemu-user-static 包不提供同名二进制（装的是 qemu-arm/qemu-mips 等），按任一架构二进制在场判定。
       'qemu-user-static': {
@@ -532,12 +534,14 @@ describe('声明词 → 探测命令映射（1.2.5「配」；1.6.4 双族；1.8
     });
   });
 
-  it('1.9.3：撞名名单里的声明词必须进表做判别式探测（sg / python）', () => {
+  it('1.9.3：撞名名单里的声明词必须进表做判别式探测（sg / python / httpx）', () => {
     // 名单 = 已知与系统同名程序撞车的声明词：任何镜像里 command -v / where
     // 都会命中「另一个东西」，而通用路径假设「名字唯一」。发现新的就加进来。
     //   sg     —— util-linux 的 setgid 执行器（ubuntu 基础镜像自带 /usr/bin/sg）
     //   python —— Windows 应用执行别名存根 %LOCALAPPDATA%\WindowsApps\python.exe
-    const SYSTEM_COLLISION_NAMES = ['sg', 'python'];
+    //   httpx  —— pip 的 httpx wheel 无条件装同名 console script，会覆盖
+    //             ProjectDiscovery 那只（当前依赖链没人拉它，属埋雷）
+    const SYSTEM_COLLISION_NAMES = ['sg', 'python', 'httpx'];
     for (const name of SYSTEM_COLLISION_NAMES) {
       expect(TOOL_PROBE_COMMANDS[name], `${name} 与系统同名程序撞车，必须进 TOOL_PROBE_COMMANDS`).toBeTruthy();
     }
@@ -545,6 +549,8 @@ describe('声明词 → 探测命令映射（1.2.5「配」；1.6.4 双族；1.8
     // `where python` 恒命中却 import 不了任何东西（bundled-skills/agent-browser
     // 早写过同一教训：Probe by RUNNING the CLI）。
     expect(TOOL_PROBE_COMMANDS.python?.windows).toContain('import sys');
+    // httpx 按输出判别是不是 ProjectDiscovery 那只（pip 那只只打 usage）。
+    expect(TOOL_PROBE_COMMANDS.httpx?.posix).toContain('projectdiscovery');
   });
 
   it('1.9.2：与系统同名程序撞车的声明词必须走判别式探测（sg = util-linux 的 setgid 执行器）', () => {
