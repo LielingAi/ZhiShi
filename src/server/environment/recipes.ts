@@ -479,6 +479,11 @@ export const TOOL_PROBE_COMMANDS: Readonly<Record<string, { posix: string; windo
   // `command -v sg` 在任何 ubuntu 镜像都成立（util-linux 是基本盘）。按
   // --version 输出判别：ast-grep 打「ast-grep x.y.z」，util-linux 打「sg from …」。
   sg: { posix: 'sg --version 2>&1 | grep -qi "ast-grep"', windows: 'where sg' },
+  // 1.9.3：Windows 的「应用执行别名」存根（%LOCALAPPDATA%\WindowsApps\python.exe）
+  // 默认在用户 PATH 里 —— `where python` 恒命中，可它 import 不了任何东西。
+  // 判据是「跑得起来」而不是「找得到」。posix 侧 python 不是标准名（Ubuntu 只有
+  // python3），通用 command -v 不会假命中，照旧。
+  python: { posix: 'command -v python', windows: 'python -c "import sys"' },
   nodejs: { posix: 'command -v node', windows: 'where node' },
   // qemu-user-static 包不提供同名二进制（装的是 qemu-arm/qemu-mips 等），
   // 默认 where/命令名探测会误 MISS——按任一架构二进制在场判定。
