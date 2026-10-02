@@ -59,6 +59,7 @@ import {
 import { isResearchTaskKind, keyedDistilledEntryJudgedWrong, type MemoryKind, type ResearchTaskKind } from './memory/store';
 import { RESEARCH_TASK_KINDS } from '../shared/research-kinds';
 import { loadDomainManifests, type DomainManifest } from './domains/manifest';
+import { injectionOwnerOf } from './domains/task-kind-projection';
 import { boundRecipeIdsForEntry } from './environment/capability-derive';
 import { getZhiShiDataDir } from './utils/app-dirs';
 import { loadConfig } from './utils/admin-config';
@@ -536,10 +537,15 @@ export function buildSubagentCatalogSection(
 // ===== 段 5：<zhishi-research-memory>（动态，D4 研究记忆反喂） =====
 
 /**
- * 分节体按域过滤（1.2.4）：保留「### 域：<task_kind>」中匹配当前会话域的
- * 子节，以及没有任何域标题的跨域通用行（ preamble ）；其余域的子节整块
- * 去掉（做 binary 任务时 pentest 经验不进 prompt 挤预算）。
+ * 分节体按域过滤（1.2.4）：保留「### 域：<桶>」中**注入归属等于当前会话域**的子节，
+ * 以及归属为跨域补充的桶（ctf = D30 补充场景、intel = D29 横切标签）与没有任何域标题
+ * 的跨域通用行；其余桶的子节整块去掉（做 binary 任务时 pentest 经验不进 prompt 挤预算）。
  * 过滤后只剩空白 → 返回 ''（调用方按零注入处理该分节）。
+ *
+ * 1.9.3：判据改为查 domains/task-kind-projection.ts 的归属表（与报告投影同一事实源）。
+ * 此前这里硬编码只放行 ctf —— 桶比域多出的那些（fuzz 1.6.7 R5、malware、redteam、
+ * intel、ctf）里，除 ctf 外全部永远进不了 prompt：蒸馏按 9 值分桶输出，而放行判据
+ * 只认会话域（恒为 4 值之一）。挖掘主线的经验因此攒了却用不上。
  */
 function filterSectionByDomain(body: string, domain: string): string {
   const kept: string[] = [];
@@ -547,11 +553,9 @@ function filterSectionByDomain(body: string, domain: string): string {
   for (const line of body.split('\n')) {
     const m = /^###\s*域：(.+?)\s*$/.exec(line);
     if (m) {
-      // ctf 子节视同跨域通用：kernel 的产品定位是「CTF 是所有域的补充场景，
-      // 任何环境按需适配」，ctf 经验对任何当前域都有参考价值（也保住既有
-      // 行为：binary 会话里 ctf-only 的研究记忆照常注入）。
-      keep = m[1] === domain || m[1] === 'ctf';
-      if (keep) kept.push(line); // 命中的域标题保留（结构可辨）
+      const owner = injectionOwnerOf(m[1]);
+      keep = owner === 'cross' || owner === domain;
+      if (keep) kept.push(line); // 命中的桶标题保留（结构可辨，分桶信息不丢）
       continue;
     }
     if (keep) kept.push(line);

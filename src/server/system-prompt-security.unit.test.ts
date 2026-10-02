@@ -424,9 +424,47 @@ describe('buildResearchMemorySection — 按会话域过滤（1.2.4）', () => {
   });
 
   it('过滤后三分节全空 → 整段零注入', () => {
-    // 只有 malware 内容，binary 会话（ctf 除外）无任何可注入子节。
-    const only = memory({ failureRoots: '### 域：malware\n- 样本反调试死路' });
+    // 只有 whitebox 内容（归属 whitebox，非跨域），binary 会话无任何可注入子节。
+    // 注：1.9.3 起 malware 归 binary 域，不能再拿它测「全空」。
+    const only = memory({ failureRoots: '### 域：whitebox\n- 死路：只静态读代码不跑 PoC' });
     expect(buildResearchMemorySection(only, { domain: 'binary' })).toBe('');
+  });
+
+  it('1.9.3 桶归属：fuzz/malware 归 binary、redteam 归 pentest、ai-security 自成域', () => {
+    const body = [
+      '### 域：binary', '- 基座：AFL++ 字典 + persist',
+      '### 域：fuzz', '- 挖掘：破冰回路（读源码 → 定向构造 → 回灌语料）出独有崩溃',
+      '### 域：malware', '- 载体：样本有完整性自校验，别先 patch 反调试',
+      '### 域：redteam', '- 红队：唯动作红线三禁（破坏/DoS/删除）',
+      '### 域：ai-security', '- 提示注入面：先枚举工具调用边界',
+      '### 域：intel', '- 横切：CVE 关联先查本地索引再回源',
+      '### 域：ctf', '- 补充：拿到 flag 即收',
+    ].join('\n');
+    const binary = buildResearchMemorySection(memory({ successPaths: body }), { domain: 'binary' });
+    // 1.9.3 之前只有 binary 与 ctf 进得来 —— fuzz 桶（挖掘主线，mission=discover 的
+    // 会话按教学强制落 task_kind=fuzz）的蒸馏经验永远进不了任何 prompt：回流断在最后一步。
+    expect(binary).toContain('### 域：fuzz');
+    expect(binary).toContain('破冰回路');
+    expect(binary).toContain('### 域：malware');
+    expect(binary).toContain('### 域：ctf'); // D30 跨域补充
+    expect(binary).toContain('### 域：intel'); // D29 横切标签
+    expect(binary).not.toContain('### 域：redteam');
+    expect(binary).not.toContain('### 域：ai-security');
+    const pentest = buildResearchMemorySection(memory({ successPaths: body }), { domain: 'pentest' });
+    expect(pentest).toContain('### 域：redteam');
+    expect(pentest).not.toContain('### 域：fuzz');
+    expect(pentest).not.toContain('### 域：binary');
+    const ai = buildResearchMemorySection(memory({ successPaths: body }), { domain: 'ai-security' });
+    expect(ai).toContain('### 域：ai-security');
+    expect(ai).not.toContain('### 域：fuzz');
+  });
+
+  it('1.9.3：表外桶按跨域放行（宁多勿缺——域过滤是预算优化不是正确性闸门）', () => {
+    const section = buildResearchMemorySection(
+      memory({ successPaths: '### 域：web3\n- 未知桶的经验' }),
+      { domain: 'binary' },
+    );
+    expect(section).toContain('### 域：web3');
   });
 
   it('无域信号（不传 domain）→ 全量注入（降级语义不变）', () => {

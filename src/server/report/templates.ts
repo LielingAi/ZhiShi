@@ -12,8 +12,9 @@
  */
 
 import type { ResearchEvent, ResearchTaskKind } from '../memory/store';
+import { TASK_KIND_PROJECTION, type ReportTemplateDomain } from '../domains/task-kind-projection';
 
-export type ReportDomain = 'pentest' | 'whitebox' | 'binary' | 'generic';
+export type ReportDomain = ReportTemplateDomain;
 
 export interface ReportSectionSpec {
   key: string;
@@ -74,21 +75,13 @@ export const GENERIC_TEMPLATE: DomainTemplate = {
   ],
 };
 
-/** task_kind → 报告域。redteam/ctf 的形态与 pentest 同构；malware 归 binary。 */
+/**
+ * task_kind（桶）→ 报告域。映射事实源 = domains/task-kind-projection.ts（1.9.3：
+ * 与注入放行判据共用同一份表——此前两处各写一遍，注入那处因此漏了 fuzz 桶）。
+ * 表外值 → 通用骨架（存量脏数据不炸）。
+ */
 export function domainForTaskKind(taskKind: ResearchTaskKind): ReportDomain {
-  switch (taskKind) {
-    case 'pentest':
-    case 'redteam':
-    case 'ctf':
-      return 'pentest';
-    case 'whitebox':
-      return 'whitebox';
-    case 'binary':
-    case 'malware':
-      return 'binary';
-    default:
-      return 'generic';
-  }
+  return TASK_KIND_PROJECTION[taskKind]?.report ?? 'generic';
 }
 
 export const DOMAIN_TEMPLATES: Record<ReportDomain, DomainTemplate> = {
