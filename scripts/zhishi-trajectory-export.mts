@@ -30,7 +30,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,12 +42,38 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
 
-const DEFAULT_INPUT = join(homedir(), '.zhishi', 'loop-sessions', 'munmye6v-70a398b7150c.jsonl');
+/**
+ * 数据目录解析：**只认两个来源**——`--data-dir <path>` 与 `$ZHISHI_DATA_DIR`，
+ * 都没有才回落 `~/.zhishi`。
+ *
+ * 刻意不复制产品侧的三级链（`src/shared/app-dirs.ts`：`ZHISHI_DATA_DIR` →
+ * `ZHISHI_CONFIG_DIR`(legacy) → `~/.zhishi`）：抄一份就会漂，而 legacy 那一级
+ * 对「数据准备工具」没有意义。口径要变时，这里是一处显式改动，不是第 N 份抄本。
+ *
+ * 为什么要这个开关：团队大脑跑在 `ZHISHI_DATA_DIR=~/.zhishi-brain` 这类目录下，
+ * 硬编码 `~/.zhishi` 会在脑机上一条线都找不到。
+ */
+function resolveDataDir(argv: string[]): string {
+  const i = argv.indexOf('--data-dir');
+  const explicit = i >= 0 ? argv[i + 1] : undefined;
+  if (explicit) return resolve(explicit);
+  const envDir = process.env.ZHISHI_DATA_DIR;
+  if (envDir) return resolve(envDir);
+  return join(homedir(), '.zhishi');
+}
+
 const DEFAULT_OUT = 'E:/trajectory.from-zhishi.jsonl';
 const DEFAULT_REPORT = 'E:/trajectory.from-zhishi.report.md';
 const DEFAULT_TEMPLATE = 'E:/trajectory.raw.jsonl';
-const DEFAULT_CONFIG = join(homedir(), '.zhishi', 'config.json');
-const DEFAULT_ENV_SESSIONS = join(homedir(), '.zhishi', 'env-sessions.json');
+
+/** 「哪些文件是线」的契约（与产品持久化层同口径）：
+ *  - 线 = `loop-sessions/<sessionId>.jsonl`（packages/zhishi-loop-core 的会话持久化）；
+ *  - 同目录并存的 `<id>.archive.json`（`src/server/loop/archive.ts:131-138` 的
+ *    `archiveFile()`）与 tmp+rename 的中间文件都不是线——按 `.jsonl` 后缀筛即可
+ *    排除，另有「缺 meta 行即不是线」的兜底（进 manifest 的 skipped）。 */
+function isLineFile(name: string): boolean {
+  return name.toLowerCase().endsWith('.jsonl');
+}
 
 const ENTRYPOINT = 'zhishi';
 const USER_TYPE = 'external';
@@ -84,9 +110,12 @@ const FALLBACK_MARK = '[MECHANICAL FALLBACK — 本摘要未经 LLM 生成，为
 // ---------------------------------------------------------------------------
 
 interface Options {
+  /** 数据目录（`--data-dir` / `$ZHISHI_DATA_DIR` / `~/.zhishi`）——单线缺省与 config/env-sessions 都按它算。 */
+  dataDir: string;
   input: string;
   out: string;
   report: string;
+  manifest: string;
   template: string;
   config: string;
   envSessions: string;
@@ -101,16 +130,20 @@ interface Options {
   dryRun: boolean;
   gitBranch: string;
   summaries: string;
+  /** 批量模式上限（只导出前 N 条线；缺省不限）。 */
+  limit?: number;
 }
 
-function parseArgs(argv: string[]): Options {
+function parseArgs(argv: string[], dataDir: string): Options {
   const o: Options = {
-    input: DEFAULT_INPUT,
+    dataDir,
+    input: join(dataDir, 'loop-sessions', 'munmye6v-70a398b7150c.jsonl'),
     out: DEFAULT_OUT,
     report: DEFAULT_REPORT,
+    manifest: '',
     template: DEFAULT_TEMPLATE,
-    config: DEFAULT_CONFIG,
-    envSessions: DEFAULT_ENV_SESSIONS,
+    config: join(dataDir, 'config.json'),
+    envSessions: join(dataDir, 'env-sessions.json'),
     window: 256_000,
     ratio: 0.85,
     model: 'deepseek-flash',
@@ -135,6 +168,10 @@ function parseArgs(argv: string[]): Options {
       case '--input': o.input = next(); break;
       case '--out': o.out = next(); break;
       case '--report': o.report = next(); break;
+      case '--manifest': o.manifest = next(); break;
+      // 已在 resolveDataDir 生效（缺省值都按它算）——这里只为「参数认识它」并吞掉值。
+      case '--data-dir': next(); break;
+      case '--limit': o.limit = Number(next()); break;
       case '--template': o.template = next(); break;
       case '--config': o.config = next(); break;
       case '--env-sessions': o.envSessions = next(); break;
@@ -162,9 +199,15 @@ function printHelp(): void {
     [
       'zhishi-trajectory-export — ZhiShi loop-session 轨迹 → Claude Code raw session log',
       '',
-      '  --input <path>            源 ZhiShi jsonl（默认 ~/.zhishi/loop-sessions/munmye6v-70a398b7150c.jsonl）',
-      '  --out <path>              输出 jsonl（默认 E:/trajectory.from-zhishi.jsonl）',
-      '  --report <path>           比对报告 md（默认 E:/trajectory.from-zhishi.report.md）',
+      '  --data-dir <path>         数据目录（默认 $ZHISHI_DATA_DIR，再回落 ~/.zhishi）——',
+      '                            团队大脑跑在别的目录时用它（如 ~/.zhishi-brain）',
+      '  --input <path>            源 jsonl（单线）**或目录**（批量：目录下所有 *.jsonl）',
+      '                            默认 <data-dir>/loop-sessions/munmye6v-70a398b7150c.jsonl',
+      '  --out <path>              单线：输出 jsonl；批量：输出目录（每线一个 <id>.raw.jsonl）',
+      '                            默认 E:/trajectory.from-zhishi.jsonl',
+      '  --report <path>           比对报告 md（单线用；批量模式写 manifest）',
+      '  --manifest <path>         批量清单 JSON（默认 <out 目录>/manifest.json）',
+      '  --limit <n>               批量上限（只导前 n 条线，按文件名字典序）——先小样本试跑用',
       '  --template <path>         比对模板（默认 E:/trajectory.raw.jsonl）',
       '  --window <n>              上下文窗口 token 数（默认 256000）',
       '  --ratio <r>               压缩触发比例（默认 0.85）',
@@ -1217,11 +1260,40 @@ function buildReport(
 // main
 // ---------------------------------------------------------------------------
 
-async function main(): Promise<void> {
-  const opts = parseArgs(process.argv.slice(2));
+interface BatchRow {
+  sessionId: string;
+  input: string;
+  out: string;
+  cwd: string;
+  sourceLines: number;
+  messages: number;
+  roles: Record<string, number>;
+  systemPromptRecords: number;
+  tokenCalibration: number | null;
+  outLines: number;
+  typeCounts: Record<string, number>;
+  boundaries: Array<{ preTokens: number; postTokens: number; source: string }>;
+  chainErrors: number;
+  /** 单线模式才有：模板对账摘要行（批量模式不打印模板行，避免 N 次读大文件）。 */
+  templateLine?: string;
+  /** 非空 = 这条线跳过（不是线 / 缺 meta / 读坏），原因留痕。 */
+  error?: string;
+}
 
-  if (!existsSync(opts.input)) throw new Error(`源文件不存在: ${opts.input}`);
-  const raw = readJsonl<ZhishiLine>(opts.input);
+/**
+ * 单线导出：读一条线 → 写 out（+ 可选 report）→ 回一行 manifest 数据。
+ * 批量模式对目录里每条线调用它；单线模式调一次（那时 report 非 null）。
+ */
+async function runOne(
+  opts: Options,
+  input: string,
+  out: string,
+  report: string | null,
+  llm: LlmConfig | null,
+  summaryCache: Map<string, SummaryResult>,
+  reuseSummaries: boolean,
+): Promise<BatchRow> {
+  const raw = readJsonl<ZhishiLine>(input);
   let metaLine: ZhishiMeta | null = null;
   const messages: ZhishiMessage[] = [];
   const roles: Record<string, number> = {};
@@ -1239,9 +1311,9 @@ async function main(): Promise<void> {
   }
   if (!metaLine) throw new Error('源文件缺少 meta 行');
 
-  const sessionId = fileBaseName(opts.input);
+  const sessionId = fileBaseName(input);
   const workspace = resolveWorkspace(opts.envSessions, sessionId);
-  const cwd = workspace ?? dirname(resolve(opts.input));
+  const cwd = workspace ?? dirname(resolve(input));
   const meta: SessionMeta = {
     sessionId,
     cwd,
@@ -1251,18 +1323,56 @@ async function main(): Promise<void> {
     model: metaLine.model ?? opts.model,
   };
 
-  process.stdout.write(`源：${opts.input}\n`);
-  process.stdout.write(`  messages=${messages.length} ${JSON.stringify(roles)} system-prompt records=${systemPromptRecords}\n`);
-  process.stdout.write(`  sessionId=${sessionId} cwd=${cwd} version=${meta.version} slug=${meta.slug}\n`);
-  process.stdout.write(`  tokenCalibration=${metaLine.tokenCalibration ?? '(none → 1.0)'} heuristic=${opts.heuristic}\n`);
+  const result = await build(messages, meta, opts, llm, summaryCache, reuseSummaries);
+  writeFileSync(out, `${result.lines.join('\n')}\n`, 'utf8');
 
+  let templateLine: string | undefined;
+  if (report !== null) {
+    const tpl = templateStats(opts.template);
+    const md = buildReport(opts, meta, result, tpl, {
+      totalLines: raw.length,
+      metaLines: raw.length - messages.length,
+      totalMessages: messages.length,
+      roles,
+      meta: metaLine,
+    });
+    writeFileSync(report, md, 'utf8');
+    templateLine = tpl.present ? `模板 ${tpl.path}：${tpl.total} 行 ${JSON.stringify(tpl.typeCounts)}` : undefined;
+  }
+
+  return {
+    sessionId,
+    input,
+    out,
+    cwd,
+    sourceLines: raw.length,
+    messages: messages.length,
+    roles,
+    systemPromptRecords,
+    tokenCalibration: metaLine.tokenCalibration ?? null,
+    outLines: result.lines.length,
+    typeCounts: result.typeCounts,
+    boundaries: result.boundaries.map((b) => ({ preTokens: b.preTokens, postTokens: b.postTokens, source: b.source })),
+    chainErrors: result.chainErrors.length,
+    ...(templateLine ? { templateLine } : {}),
+  };
+}
+
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  const dataDir = resolveDataDir(argv);
+  const opts = parseArgs(argv, dataDir);
+  process.stdout.write(`数据目录：${opts.dataDir}\n`);
+
+  // LLM 与摘要缓存：一次加载、全批共用（config 只读一次；缓存按摘要输入哈希索引，
+  // 批量 + 非 dry-run 时能显著省调用——也可先 --dry-run 出机械摘要）。
   let llm: LlmConfig | null = null;
   if (!opts.dryRun) {
     llm = loadDeepseekConfig(opts.config, 'deepseek');
     llm.baseUrl = opts.baseUrl;
-    process.stdout.write(`  LLM: ${opts.model} @ ${opts.baseUrl}（key 已加载，不打印）\n`);
+    process.stdout.write(`LLM：${opts.model} @ ${opts.baseUrl}（key 已加载，不打印）\n`);
   } else {
-    process.stdout.write('  LLM: --dry-run，全部使用机械兜底摘要\n');
+    process.stdout.write('LLM：--dry-run，全部使用机械兜底摘要\n');
   }
 
   const summaryCache = new Map<string, SummaryResult>();
@@ -1274,45 +1384,109 @@ async function main(): Promise<void> {
         summaryCache.set(k, { ...v, tokens: estimateText(v.text, opts.heuristic) });
       }
       reuseSummaries = true;
-      process.stdout.write(`  摘要缓存：命中 ${summaryCache.size} 条（${opts.summaries}）\n`);
+      process.stdout.write(`摘要缓存：命中 ${summaryCache.size} 条（${opts.summaries}）\n`);
     } catch (err) {
       process.stderr.write(`[warn] 摘要缓存读取失败，忽略：${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
-
-  const result = await build(messages, meta, opts, llm, summaryCache, reuseSummaries);
-
-  writeFileSync(opts.out, `${result.lines.join('\n')}\n`, 'utf8');
-
-  if (opts.summaries && summaryCache.size > 0) {
+  const persistSummaries = (): void => {
+    if (!opts.summaries || summaryCache.size === 0) return;
     const plain: Record<string, CachedSummary> = {};
     for (const [k, v] of summaryCache) plain[k] = { text: v.text, durationMs: v.durationMs, source: v.source, note: v.note };
     writeFileSync(opts.summaries, `${JSON.stringify(plain, null, 2)}\n`, 'utf8');
+  };
+
+  if (!existsSync(opts.input)) throw new Error(`源不存在: ${opts.input}`);
+
+  // ── 单线模式（--input <file>）──────────────────────────────────────
+  if (!statSync(opts.input).isDirectory()) {
+    const row = await runOne(opts, opts.input, opts.out, opts.report, llm, summaryCache, reuseSummaries);
+    persistSummaries();
+    process.stdout.write(`源：${row.input}\n`);
+    process.stdout.write(`  messages=${row.messages} ${JSON.stringify(row.roles)} system-prompt records=${row.systemPromptRecords}\n`);
+    process.stdout.write(`  sessionId=${row.sessionId} cwd=${row.cwd} heuristic=${opts.heuristic}\n`);
+    process.stdout.write(`  tokenCalibration=${row.tokenCalibration ?? '(none → 1.0)'}\n`);
+    process.stdout.write(`\n写出 ${row.out}（${row.outLines} 行）\n`);
+    process.stdout.write(`行类型分布：${JSON.stringify(row.typeCounts)}\n`);
+    process.stdout.write(
+      `压缩边界：${row.boundaries.map((b) => `pre=${b.preTokens} post=${b.postTokens} ${b.source}`).join(' | ') || '（无）'}\n`,
+    );
+    process.stdout.write(`链完整性：${row.chainErrors === 0 ? 'OK（0 异常）' : `${row.chainErrors} 处异常`}\n`);
+    if (row.templateLine) process.stdout.write(`${row.templateLine}\n`);
+    process.stdout.write(`报告：${opts.report}\n`);
+    if (row.chainErrors > 0) process.exitCode = 2;
+    return;
   }
 
-  const tpl = templateStats(opts.template);
-  const report = buildReport(opts, meta, result, tpl, {
-    totalLines: raw.length,
-    metaLines: raw.length - messages.length,
-    totalMessages: messages.length,
-    roles,
-    meta: metaLine,
-  });
-  writeFileSync(opts.report, report, 'utf8');
-
-  // 控制台对账
-  process.stdout.write(`\n写出 ${opts.out}（${result.lines.length} 行）\n`);
-  process.stdout.write(`行类型分布：${JSON.stringify(result.typeCounts)}\n`);
+  // ── 批量模式（--input <目录>）──────────────────────────────────────
+  const names = readdirSync(opts.input).filter(isLineFile).sort();
+  const picked = opts.limit && opts.limit > 0 ? names.slice(0, opts.limit) : names;
+  const outDir = resolve(opts.out);
+  mkdirSync(outDir, { recursive: true });
   process.stdout.write(
-    `压缩边界：${result.boundaries.map((b) => `pre=${b.preTokens} post=${b.postTokens} ${b.durationMs}ms ${b.source}`).join(' | ') || '（无）'}\n`,
+    `批量：${opts.input} → ${outDir}`
+    + `（候选 ${names.length} 条线${opts.limit ? `，--limit 取前 ${picked.length}` : ''}）\n`,
   );
-  process.stdout.write(`链完整性：${result.chainErrors.length === 0 ? 'OK（0 异常）' : `${result.chainErrors.length} 处异常`}\n`);
-  if (tpl.present) {
-    process.stdout.write(`模板 ${tpl.path}：${tpl.total} 行 ${JSON.stringify(tpl.typeCounts)}\n`);
-  }
-  process.stdout.write(`报告：${opts.report}\n`);
 
-  if (result.chainErrors.length > 0) process.exitCode = 2;
+  const rows: BatchRow[] = [];
+  let i = 0;
+  for (const name of picked) {
+    i++;
+    const input = join(opts.input, name);
+    const id = fileBaseName(input);
+    const out = join(outDir, `${id}.raw.jsonl`);
+    try {
+      const row = await runOne(opts, input, out, null, llm, summaryCache, reuseSummaries);
+      rows.push(row);
+      process.stdout.write(
+        `[${i}/${picked.length}] ${id} → ${row.outLines} 行`
+        + `（messages=${row.messages}，边界=${row.boundaries.length}，链错=${row.chainErrors}）\n`,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      rows.push({
+        sessionId: id, input, out, cwd: '', sourceLines: 0, messages: 0, roles: {}, systemPromptRecords: 0,
+        tokenCalibration: null, outLines: 0, typeCounts: {}, boundaries: [], chainErrors: 0, error: message,
+      });
+      process.stdout.write(`[${i}/${picked.length}] ${id} → 跳过：${message}\n`);
+    }
+  }
+  persistSummaries();
+
+  const ok = rows.filter((r) => !r.error);
+  const sum = (f: (r: BatchRow) => number): number => ok.reduce((s, r) => s + f(r), 0);
+  const manifest = {
+    tool: 'zhishi-trajectory-export',
+    generatedAt: new Date().toISOString(),
+    dataDir: opts.dataDir,
+    inputDir: resolve(opts.input),
+    outDir,
+    dryRun: opts.dryRun,
+    model: opts.model,
+    window: opts.window,
+    ratio: opts.ratio,
+    heuristic: opts.heuristic,
+    totals: {
+      lines: rows.length,
+      ok: ok.length,
+      failed: rows.length - ok.length,
+      outLines: sum((r) => r.outLines),
+      chainErrors: sum((r) => r.chainErrors),
+      compactBoundaries: sum((r) => r.boundaries.length),
+      boundaryPreTokens: sum((r) => r.boundaries.reduce((t, b) => t + b.preTokens, 0)),
+      boundaryPostTokens: sum((r) => r.boundaries.reduce((t, b) => t + b.postTokens, 0)),
+    },
+    rows,
+  };
+  const manifestPath = opts.manifest ? resolve(opts.manifest) : join(outDir, 'manifest.json');
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+
+  process.stdout.write(
+    `\n批量完成：成功 ${manifest.totals.ok} / 共 ${manifest.totals.lines}；`
+    + `产物 ${manifest.totals.outLines} 行；压缩边界 ${manifest.totals.compactBoundaries} 处；链错 ${manifest.totals.chainErrors} 处\n`,
+  );
+  process.stdout.write(`清单：${manifestPath}\n`);
+  if (manifest.totals.failed > 0 || manifest.totals.chainErrors > 0) process.exitCode = 2;
 }
 
 function fileBaseName(p: string): string {

@@ -377,22 +377,34 @@ node scripts/setup-tsx-runtime.mjs
 
 ### `scripts/zhishi-trajectory-export.mts`
 
-**用途**：把 ZhiShi 的 loop-session 轨迹（`~/.zhishi/loop-sessions/<id>.jsonl`）导出成训练流水线要的 Claude Code raw session log 形态（与样板 `trajectory.raw.jsonl` 同构），并在切分点写 `system/compact_boundary` + `isCompactSummary` 两条记录，便于逐行比对。
+**用途**：把 ZhiShi 的 loop-session 轨迹（`<数据目录>/loop-sessions/<id>.jsonl`）导出成训练流水线要的 Claude Code raw session log 形态（与样板 `trajectory.raw.jsonl` 同构），并在切分点写 `system/compact_boundary` + `isCompactSummary` 两条记录。**单线**出一份产物 + 比对报告；**批量**（`--input <目录>`）一次出该数据目录下的所有线 + 一份清单。
 
-**定位**：外部数据准备工具——离线、用 `tsx` 直跑，不进 `tsconfig` include（`scripts/` 不在其中）、不 import 任何 `src/` 运行时模块；对 `~/.zhishi/` 只读，只写 `--out` / `--report` 两个路径，永不打印密钥。
+**定位**：外部数据准备工具——离线、用 `tsx` 直跑，不进 `tsconfig` include（`scripts/` 不在其中）、不 import 任何 `src/` 运行时模块；对数据目录只读，只写 `--out` / `--report` / `--manifest` 指定的路径，永不打印密钥。
+
+**数据目录**：`--data-dir <path>` → `$ZHISHI_DATA_DIR` → `~/.zhishi`（**只认这两个来源**，不复制产品侧三级链——团队大脑常跑在 `~/.zhishi-brain` 这类目录，硬编码 `~/.zhishi` 会在脑机上一条线都找不到）。
 
 **用法**：
 
 ```bash
-npx tsx scripts/zhishi-trajectory-export.mts              # 用脚本内默认输入/输出
-npx tsx scripts/zhishi-trajectory-export.mts --dry-run    # 不调 LLM，用机械兜底摘要
-npx tsx scripts/zhishi-trajectory-export.mts --input <会话 jsonl> --out <产物路径> \
-    --window 200000 --ratio 0.85 --model deepseek-flash
+# 单线（开发者便利的默认输入指向一条样本线）
+npx tsx scripts/zhishi-trajectory-export.mts --input <会话 jsonl> --out <产物> --report <报告 md>
+
+# 批量：一次出某数据目录下的所有线（团队大脑数据目录通常要显式给）
+npx tsx scripts/zhishi-trajectory-export.mts --data-dir ~/.zhishi-brain \
+    --input ~/.zhishi-brain/loop-sessions --out ~/traj-batch --dry-run --limit 3
+
+# 不调 LLM（机械兜底摘要）；批量 + 非 dry-run 时每线可能多次 LLM 调用，建议 --summaries 缓存
+npx tsx scripts/zhishi-trajectory-export.mts --dry-run
 ```
 
-**产物**：`--out`（默认 `E:/trajectory.from-zhishi.jsonl`）+ `--report`（默认 `E:/trajectory.from-zhishi.report.md`，含与模板的比对结论与摘要来源计数）。
+**产物**：
 
-**注意**：脚本里的默认路径是开发者本机路径（含默认会话 id），换机器/换会话必须用 `--input` / `--out` 指定。
+- 单线：`--out`（raw jsonl）+ `--report`（比对报告 md，含模板对账与摘要来源计数）。
+- 批量：`--out` 作为**目录**，每线一个 `<sessionId>.raw.jsonl`；`--manifest`（默认 `<out 目录>/manifest.json`）记每线的 `sessionId / input / out / cwd / messages / roles / system-prompt 记录数 / 产物行数 / 行类型分布 / 压缩边界与前后 token / 链错数`，以及批次合计——训练团队拿到的是**可核对的批次**，不是一堆文件。**缺 meta 行或读坏的文件进 `rows[].error` 并跳过**（不中断整批），退出码 2。
+
+**「哪些文件是线」的契约**：线 = `loop-sessions/<sessionId>.jsonl`；同目录并存的 `<id>.archive.json` 与 tmp+rename 中间文件都不是线（按 `.jsonl` 后缀筛即可排除，另有「缺 meta 行即不是线」的兜底）。口径来源见脚本内注释（指向 `src/server/loop/archive.ts` 与 loop 持久化层）。
+
+**注意**：默认输出路径（`E:/trajectory.from-zhishi.*`）是开发者本机路径；换机器/换会话用 `--input` / `--out` 指定。批量模式的自动化验收靠实跑（本工具刻意不进单测池：`scripts/` 不在 `tsconfig`/`vitest` 覆盖范围）。
 
 ---
 
