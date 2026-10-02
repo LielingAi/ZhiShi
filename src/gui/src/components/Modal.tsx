@@ -36,6 +36,7 @@ import { envRebuildPlan, envResetPlan } from '../model/env-rebuild';
 import { addRecipeBinding, boundRecipeIds, removeRecipeBinding } from '../model/env-recipes';
 import { AutoRunModal } from './AutoRunModals';
 import {
+  domainForRecipe,
   recipeLifecycleNote,
   recipesForSource,
   wizardDiscoveredItems,
@@ -1011,6 +1012,7 @@ function CampaignStopModal(): React.JSX.Element | null {
 function EnvDetailModal(): React.JSX.Element | null {
   const modal = useGuiStore((s) => s.modal);
   const recipes = useGuiStore((s) => s.recipes);
+  const domains = useGuiStore((s) => s.domains);
   const closeModal = useGuiStore((s) => s.closeModal);
   const applyEnvBindings = useGuiStore((s) => s.applyEnvBindings);
   const entry = modal?.envDetail;
@@ -1067,7 +1069,16 @@ function EnvDetailModal(): React.JSX.Element | null {
             </div>
           )}
           {entry.capabilityDomains && entry.capabilityDomains.length > 0 && (
-            <div className="wiz-confirm-row">
+            <div
+              className="wiz-confirm-row"
+              title={
+                '探测推导，不是声明：= ① 该环境绑定的配方所属域 ∪ ② 环境里实际探到的「独占」工具所属域'
+                + '（1.9.3 起跨域共用工具如 python3 / nc / socat 不算证据，sg 这类撞名也按判别式探测）。'
+                + '它决定能力清单段怎么写、会话域基线取哪个——与下面的「配方绑定」是两回事。'
+                + (entry.capabilityDerivedAt ? `；本次探测于 ${entry.capabilityDerivedAt}` : '')
+                + '。重推：侧栏该环境的「⟳ 重推能力集合」。'
+              }
+            >
               <span className="wiz-k">能力（推导）</span>
               <span className="wiz-v">{entry.capabilityDomains.join(' · ')}</span>
             </div>
@@ -1098,13 +1109,21 @@ function EnvDetailModal(): React.JSX.Element | null {
             </>
           ) : (
             <>
-              <div className="f-label" style={{ marginTop: 12 }}>配方绑定（绑定 = 展示/构建来源，不改变能力判定）</div>
+              <div className="f-label" style={{ marginTop: 12 }}>
+                配方绑定（你选的构建来源；括号内 = 该配方归属的研究域。绑定不改能力判定）
+              </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {pending.map((rid) => {
                   const isPrimary = rid === primary;
+                  const dom = domainForRecipe(rid, domains);
                   return (
-                    <span key={rid} className={isPrimary ? 'cap' : 'cap reg'}>
+                    <span
+                      key={rid}
+                      className={isPrimary ? 'cap' : 'cap reg'}
+                      title={`配方 ${rid} → ${dom ? `归属域 ${dom.kind}（${dom.name}）` : '无域归属（dev 这类通用环境）'}`}
+                    >
                       {rid}
+                      <span className="chip-dom"> · {dom ? dom.kind : '无域'}</span>
                       {isPrimary ? ' ⓟ' : ''}
                       {!isPrimary && (
                         <button
@@ -1137,9 +1156,14 @@ function EnvDetailModal(): React.JSX.Element | null {
                   }}
                 >
                   <option value="">＋ 追加绑定配方…</option>
-                  {addable.map((r) => (
-                    <option key={r.id} value={r.id}>{r.id}</option>
-                  ))}
+                  {addable.map((r) => {
+                    const dom = domainForRecipe(r.id, domains);
+                    return (
+                      <option key={r.id} value={r.id}>
+                        {r.id}（{dom ? dom.kind : '无域'}）
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
             </>

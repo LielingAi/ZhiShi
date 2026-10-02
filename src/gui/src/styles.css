@@ -566,6 +566,9 @@ mark.h-search { background: rgba(232,163,61,.3); color: var(--text); border-radi
 /* 1.3.8 多配方：绑定 chip 的移除钮 */
 .chip-x { background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 11px; }
 .chip-x:hover { color: var(--red); }
+/* 1.9.4：配方 chip 里的归属域——次级信息（配方是你选的构建来源，域是它归属的
+   研究域；两者都不是「能力」，能力是探测推导出来的）。 */
+.chip-dom { opacity: .72; }
 /* 1.3.7 实机修复 A：本机已有行的「已登记为 X」徽章（muted，区别于能力徽章的青） */
 .eb-item .cap.reg { color: var(--muted); }
 .eb-item.gated { color: var(--muted); }

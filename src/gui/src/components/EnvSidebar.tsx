@@ -26,6 +26,7 @@ import type React from 'react';
 
 import { useGuiStore } from '../store/useGuiStore';
 import { capabilityBadgeText, capabilityTooltip, groupSidebar, middleEllipsis } from '../model/envs';
+import { domainForRecipe } from '../model/env-wizard';
 import { accessGate, gateToast } from '../model/access-gate';
 import { canStopEnv } from '../model/env-down';
 import { canRebuildEnv, canResetEnv } from '../model/env-rebuild';
@@ -36,6 +37,7 @@ export function EnvSidebar(): React.JSX.Element {
   const discoveredVm = useGuiStore((s) => s.discoveredVm);
   // 1.5.10：镜像发现条目（zhishi-env-*，本机已有组的镜像行数据源）。
   const discoveredImages = useGuiStore((s) => s.discoveredImages);
+  const domains = useGuiStore((s) => s.domains);
   const currentEnvKey = useGuiStore((s) => s.currentEnvKey);
   const switchEnv = useGuiStore((s) => s.switchEnv);
   const startEnv = useGuiStore((s) => s.startEnv);
@@ -239,7 +241,12 @@ export function EnvSidebar(): React.JSX.Element {
                   <span className="cap" title={it.detail}>镜像</span>
                 )}
                 {it.kind === 'docker-image' && it.recipeId && (
-                  <span className="cap" title={`配方 ${it.recipeId}`}>{it.recipeId}</span>
+                  <span
+                    className="cap"
+                    title={`配方 ${it.recipeId} → ${domainForRecipe(it.recipeId, domains)?.kind ?? '无域归属'}（配方是你选的构建来源；域是它归属的研究域。两者都不是「能力」——能力是探测推导出来的，见环境详情）`}
+                  >
+                    {it.recipeId}
+                  </span>
                 )}
                 {it.group === 'run' && <span className="snap">◆</span>}
                 {it.warn && <span className="warn">⚠</span>}
