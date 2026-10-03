@@ -1324,6 +1324,8 @@ async function runOne(
   };
 
   const result = await build(messages, meta, opts, llm, summaryCache, reuseSummaries);
+  // 输出目录不存在就建（批量模式同纪律）——否则用户给一个还不存在的 --out 目录会直接报错。
+  mkdirSync(dirname(resolve(out)), { recursive: true });
   writeFileSync(out, `${result.lines.join('\n')}\n`, 'utf8');
 
   let templateLine: string | undefined;
@@ -1336,6 +1338,7 @@ async function runOne(
       roles,
       meta: metaLine,
     });
+    mkdirSync(dirname(resolve(report)), { recursive: true });
     writeFileSync(report, md, 'utf8');
     templateLine = tpl.present ? `模板 ${tpl.path}：${tpl.total} 行 ${JSON.stringify(tpl.typeCounts)}` : undefined;
   }
@@ -1393,6 +1396,7 @@ async function main(): Promise<void> {
     if (!opts.summaries || summaryCache.size === 0) return;
     const plain: Record<string, CachedSummary> = {};
     for (const [k, v] of summaryCache) plain[k] = { text: v.text, durationMs: v.durationMs, source: v.source, note: v.note };
+    mkdirSync(dirname(resolve(opts.summaries)), { recursive: true });
     writeFileSync(opts.summaries, `${JSON.stringify(plain, null, 2)}\n`, 'utf8');
   };
 
@@ -1479,6 +1483,7 @@ async function main(): Promise<void> {
     rows,
   };
   const manifestPath = opts.manifest ? resolve(opts.manifest) : join(outDir, 'manifest.json');
+  mkdirSync(dirname(manifestPath), { recursive: true });
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 
   process.stdout.write(
