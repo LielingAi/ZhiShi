@@ -602,7 +602,7 @@ function buildSummaryInput(
   messages: ZhishiMessage[],
   budget: number,
   heuristic: 'cjk' | 'pi',
-): { text: string; tokens: number; truncated: boolean } {
+): { text: string; tokens: number; truncated: boolean; truncatedNote?: string } {
   let trunc = 1500;
   let text = '';
   for (;;) {
@@ -615,14 +615,25 @@ function buildSummaryInput(
   }
   let tokens = estimateText(text, heuristic);
   let truncated = trunc < 1500;
+  const ways: string[] = [];
+  if (truncated) ways.push(`逐条截断到 ${trunc} 字符`);
   if (tokens > budget) {
     const head = Math.floor(text.length * 0.55);
     const tail = text.length - head;
     text = `${text.slice(0, head)}\n\n…[middle of the window omitted to fit the summarizer context]…\n\n${text.slice(text.length - tail)}`;
     tokens = estimateText(text, heuristic);
     truncated = true;
+    ways.push('省略窗口中段');
   }
-  return { text, tokens, truncated };
+  return {
+    text,
+    tokens,
+    truncated,
+    // 1.9.5 文案修正：`tokens` 是**压缩后**的估算，所以不能再拿它去说「超出上限」——
+    // 那是自相矛盾（常见日志形如「估算 83874 tok，超出 --summary-max-tokens=90000」）。
+    // 如实说明压缩方式，并点明后果（窗口内早期内容可能未进摘要）。
+    ...(truncated ? { truncatedNote: `${ways.join(' + ')}（压缩后估算 ${tokens} tok）` } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -680,7 +691,11 @@ async function generateSummary(
   opts: Options,
   llm: LlmConfig,
 ): Promise<SummaryResult> {
-  const { text: transcript, tokens: inputTokens, truncated } = buildSummaryInput(
+  const {
+    text: transcript,
+    truncated,
+    truncatedNote,
+  } = buildSummaryInput(
     messages,
     opts.summaryMaxTokens,
     opts.heuristic,
@@ -715,7 +730,12 @@ async function generateSummary(
     const text = COMPACT_PREAMBLE + normalizeSections(body) + COMPACT_TRAILER;
     const missing = missingSections(text);
     const notes: string[] = [];
-    if (truncated) notes.push(`摘要输入已压缩（估算 ${inputTokens} tok，超出 --summary-max-tokens=${opts.summaryMaxTokens}）`);
+    if (truncated) {
+      notes.push(
+        `摘要输入已压缩：${truncatedNote ?? '(方式未记录)'}，上限 --summary-max-tokens=${opts.summaryMaxTokens}`
+        + '——该窗口最早/最细的部分可能未进入摘要',
+      );
+    }
     if (outputTruncated) notes.push('LLM 输出受 max_tokens 截断（已重试一次仍被截断）');
     if (missing.length > 0) notes.push(`摘要结构不完整，缺少 ${missing.join('、')}`);
     if (notes.length > 0) {
