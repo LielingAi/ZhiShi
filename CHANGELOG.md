@@ -18,6 +18,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.5] - 2026-10-04
+
+> **轨迹出料补齐**（团队模式的数据准备）。导出工具从「一条线一次、路径硬编码」变成「一个目录一次 + 清单 + 可指数据目录」。**本版不含产品侧改动**——动的是仓库里的外部工具 `scripts/zhishi-trajectory-export.mts`（不进 `tsconfig`、不进安装包），所以安装包与 1.9.4 同源；本版的记录价值在「工具能力与口径可追溯」。
+
+### 批量出料
+
+- **`--input <目录>` = 批量**：一次导出该目录下所有线（`--out` 作目录，每线一个 `<sessionId>.raw.jsonl`）。「哪些文件是线」按产品持久化层同口径筛（`*.jsonl`；同目录并存的 `<id>.archive.json` 与 tmp+rename 中间文件自然排除），另有「缺 meta 行即不是线」的兜底——这类文件进 manifest 的 `rows[].error` 并**跳过，不中断整批**（退出码 2）。
+- **`--manifest`（默认 `<out 目录>/manifest.json`）**：每线的 `sessionId / input / out / cwd / messages / roles / system-prompt 记录数 / 产物行数 / 行类型分布 / 压缩边界与前后 token / 链错数` + 批次合计——训练侧拿到的是**可核对的批次**，不是一堆散文件。
+- **`--data-dir <path>`**：数据目录只认 `--data-dir` / `$ZHISHI_DATA_DIR` / `~/.zhishi` 三个来源，**刻意不复制产品侧三级链**（`ZHISHI_DATA_DIR → ZHISHI_CONFIG_DIR(legacy) → ~/.zhishi`）——抄一份就会漂，legacy 那级对数据准备工具也没有意义。团队大脑跑在 `~/.zhishi-brain` 这类目录时，硬编码 `~/.zhishi` 会一条线都找不到。
+- **`--limit <n>`**：小样本试跑（先 `--limit 3 --dry-run` 看一眼再全量）。
+- 主流程拆成 `runOne`（单线 → 一行 manifest 数据）+ `main`（单线/批量分派）；LLM 与摘要缓存改成整批加载一次（config 只读一次、缓存跨线复用省调用）。单线模式行为与 1.9.4 逐项一致（含模板对账打印、`--report`）。
+
+### 顺手两处修复
+
+- **单线模式先建输出目录**：out / report / manifest / summaries 四处写盘点统一改成「先 mkdir 父目录再写」（批量模式本来就会建）——以前给一个还不存在的 `--out` 目录会直接 ENOENT 失败。
+- **摘要压缩告警文案订正**：`truncated` 覆盖「逐条截断」与「省略窗口中段」两种情形，而打印的 token 数是**压缩后**的估算，于是日志出现自相矛盾的形状（「估算 83874 tok，超出 --summary-max-tokens=90000」）。改为如实说明压缩方式与后果（该窗口最早/最细的部分可能未进入摘要）。
+
+### 实测（真实数据，非夹具）
+
+- 两条训练用真线：`muqgoj8x-…`（5002→5034 行源 → **7964 行产物 / 17 个切分点**）与 `mut8fgrr-…`（601 行源 → **1088 行产物 / 3 个切分点**）；**全部 LLM 摘要、0 机械兜底、结构完整、链完整性 0 异常**；一次摘要输出撞上限被自动重试兜住。
+- 工具仍不进单测池（`scripts/` 不在 `tsconfig`/`vitest` 覆盖范围），验收靠实跑，`scripts/README.md` 已写明。
+
 ## [1.9.4] - 2026-10-02
 
 > **让界面与探测都说真话**。三件小事：环境详情把「能力（推导）」与「配方绑定」两类数据在措辞上分开（起因：配方里只有 `pwn`，能力里却有四个域）；宿主 WinDbg 探测补上 Store 版；`win-kernel` 不再在 guest 面声明宿主侧工具。
