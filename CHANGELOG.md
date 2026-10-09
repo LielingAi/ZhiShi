@@ -18,6 +18,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.6] - 2026-10-09
+
+> **恒思考模型"假死"修复 + pi 底座跨大版本**。deepseek V4.1 flash 这类思考恒开的模型，任务跑到后半程长推理会把输出预算整段烧光（`stopReason=length`、零正文零工具调用），用户被迫反复手敲「继续」才能推着走。根因：注册表的 `maxOutputTokens`（deepseek 384K、claude 64K/128K……）从来没接进引擎，非 kimi 供应商一律落 8192 缺省。本版接上；顺手修正空产出护栏的计数语义。底座 pi 0.84.2 → 1.1.0（跨 1.0 semver 稳定线），适配其 system 消息协议。
+
+### Fixed
+
+- **输出预算按厂商真实上限下发**：`resolveLoopModel` 把 preset/注册表的 `maxOutputTokens` 接进 `buildLoopModel`——此前只传了参数字段名 `maxOutputTokensParamName`、值整体漏接，全部模型落 8192 缺省；恒思考模型 thinking 烧穿 8192 → `stopReason=length` 零产出假死（轨迹实证：连续空回合、用户反复喂「继续」，deepseek anthropic 端点 `max_tokens` 官方 Fully Supported，按定价页 384K 上限下发）。
+- **空产出护栏计数复位**：连续空回合 streak 原先只在「有产出的回合」清零——停车后用户每敲一次「继续」，模型再烧一轮预算依旧零产出、计数继续累加（报错「连续 2→3→4…」语义失真）。真实用户消息到达即复位：每次最多 1 次自动续跑 + 1 次报错，token 燃烧有界。
+
+### Changed
+
+- **pi 底座 0.84.2 → 1.1.0**：跨 1.0 大版本（TS7 构建、agent-core 大清洗、OAuth 重写；我们消费的全部接口面存续，唯一硬 breaking 是 `AgentContext.systemPrompt` 删除）。适配：自建头部 system 消息承载系统提示 + `toolsAdded` 工具声明放 `context.messages`（不占 prompts → 轨迹零污染，`declareToolChanges` 不再合成插入，`convertToLlm` 白名单补 `system`——与 pi 自家 Agent 播种同形）。1.1.0 另修「provider 忙/错误结束 turn 不重试」「上下文上限按 3.5 字符/token 估算」等与我们实机症状同族的问题。
+- **升级门禁 smoke 修复时代漂移**（开发侧）：m1–m3 import 指向引擎核抽包后已删的转发壳、m3 引用已退役的段级压缩（第 3 节改写为窗口置换语义）、环境选择改 vm 优先/ssh 兜底/探活可达（fuzz VM 关机时代可跑）、硬编码 `hostname=fuzz` 断言改 tool result 实测值提取、m3 补子代理名册（缺名册时模型带 `agent` 参数调用被「未知子代理」拒绝，表象像引擎吞 details）。门禁恢复有效。
+
+### 实测
+
+- `typecheck` 干净；unit 快池 2693 通过（与升级前同水位）；smoke m1→m4b 全过（真端点 + 真研究环境：env_exec 回路 / 会话持久化与恢复续跑 / 边界规则与输出净化 / 窗口置换与关键消息存活 / delegate_task 子代理 / steering 队列 / thinking 事件序列 / stop 中断广播）。
+
 ## [1.9.5] - 2026-10-04
 
 > **轨迹出料补齐**（团队模式的数据准备）。导出工具从「一条线一次、路径硬编码」变成「一个目录一次 + 清单 + 可指数据目录」。**本版不含产品侧改动**——动的是仓库里的外部工具 `scripts/zhishi-trajectory-export.mts`（不进 `tsconfig`、不进安装包），所以安装包与 1.9.4 同源；本版的记录价值在「工具能力与口径可追溯」。
