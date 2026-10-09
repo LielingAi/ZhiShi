@@ -20,7 +20,7 @@ import {
   resolveKimiApiKey,
   type AdminAppConfig,
 } from '../utils/admin-config';
-import { lookupModelContextLength } from '../utils/model-capabilities';
+import { lookupModelCapability } from '../utils/model-capabilities';
 import { isProviderEnabled } from '../../shared/config-types';
 import {
   buildLoopModel,
@@ -79,6 +79,13 @@ export function resolveLoopModel(config?: AdminAppConfig): LoopModelResolution |
     ?? (provider?.primaryModel as string | undefined);
   if (!modelId) return null;
 
+  // 1.9.6：窗口/输出预算同口径接 preset/注册表真实值（如 deepseek 1M 窗口、
+  // 384K 输出）——此前 maxOutputTokens 漏接（只传了 maxOutputTokensParamName
+  // 字段名），非 kimi provider 一律落 buildLoopModel 的 8192 缺省，deepseek-flash
+  // 这类恒思考模型 thinking 烧穿 8192 → stopReason=length 零产出假死（轨迹实证：
+  // 连续空回合、用户被迫反复手敲「继续」）。查不到才走 buildLoopModel 内部的
+  // 200K/8192 兜底。
+  const cap = lookupModelCapability(modelId);
   return buildLoopModel({
     providerId,
     baseUrl: providerConfig.baseUrl,
@@ -88,9 +95,8 @@ export function resolveLoopModel(config?: AdminAppConfig): LoopModelResolution |
     upstreamFormat: provider?.upstreamFormat as LoopProviderEnv['upstreamFormat'],
     maxOutputTokensParamName: provider?.maxOutputTokensParamName as LoopProviderEnv['maxOutputTokensParamName'],
     modelId,
-    // 1.2.7：窗口口径接 preset/注册表真实值（如 deepseek 1M），
-    // 查不到才走 buildLoopModel 内部的 200K 兜底。
-    contextWindow: lookupModelContextLength(modelId),
+    contextWindow: cap?.contextLength,
+    maxOutputTokens: cap?.maxOutputTokens,
   });
 }
 
@@ -105,5 +111,13 @@ export function resolveLoopModelFromEnv(
 ): LoopModelResolution | null {
   if (!env?.apiKey || !env.apiKey.trim()) return null;
   // 1.2.7：env 不携带窗口——同样接注册表，保持与 resolveLoopModel 同口径。
-  return buildLoopModel({ ...env, modelId, providerId, contextWindow: lookupModelContextLength(modelId) });
+  // 1.9.6：maxOutputTokens 同口径（env 显式值优先，注册表兜底）。
+  const cap = lookupModelCapability(modelId);
+  return buildLoopModel({
+    ...env,
+    modelId,
+    providerId,
+    contextWindow: cap?.contextLength,
+    maxOutputTokens: env.maxOutputTokens ?? cap?.maxOutputTokens,
+  });
 }

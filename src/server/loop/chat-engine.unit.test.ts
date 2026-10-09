@@ -1751,6 +1751,20 @@ describe('1.6.9 #1：turn 空产出检测与自动续跑（thinking 烧穿假死
     await waitTurnSettled();
     expect(runLoopMock.mock.calls.length).toBe(1);
   });
+
+  it('1.9.6：停车后真实用户消息复位计数——再空获满续跑配额，不再无限累加', async () => {
+    runLoopMock.mockImplementation(async function* () {
+      yield { type: 'done', messages: [userMsg('q'), assistantMsg('')] } as never;
+    });
+    await sendPiChatMessage({ text: '干活' });
+    await waitTurnSettled();
+    expect(runLoopMock.mock.calls.length).toBe(2); // 原始 + 1 续跑 → 停车报错
+    await sendPiChatMessage({ text: '继续' });
+    await waitTurnSettled();
+    // 计数已复位：新消息的空 turn 重新获得 1 次续跑（2+2=4）；不复位则
+    // 第 3 次空 turn 直接停车，总数停在 3——10-08 实机「连续 2→3→4」失语义。
+    expect(runLoopMock.mock.calls.length).toBe(4);
+  });
 });
 
 describe('1.6.11：mission 线态（首条消息前可设——战役入口语义）', () => {

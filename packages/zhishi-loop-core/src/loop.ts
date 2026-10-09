@@ -28,6 +28,9 @@ import {
   type StreamFn,
 } from '@earendil-works/pi-agent-core';
 import type { Api, Model, Models, ThinkingLevel } from '@earendil-works/pi-ai';
+// pi 1.1.0：系统提示 + 工具声明改由会话头部的 system 消息承载（adapters 经
+// getCurrentTools 从 transcript 提取 tools；AgentContext.systemPrompt 字段已删）。
+import { createInitialSystemMessage, toToolDeclaration } from '@earendil-works/pi-ai/utils/transcript';
 
 // ---------------------------------------------------------------------------
 // Normalized event stream
@@ -188,20 +191,35 @@ export async function* runLoop(options: RunLoopOptions): AsyncIterable<LoopEvent
     return;
   }
 
+  // pi 1.1.0 适配：自建头部 system 消息（系统提示 + 全量工具声明一次性写入，
+  // 与 pi 自家 Agent 的 initialState 播种同形态）。放 context.messages 而非
+  // prompts——prompts 会进 newMessages（轨迹污染 + 每 turn 重放），context
+  // 侧零外溢；declareToolChanges 见状（toolsAdded 已全量声明）不再合成插入
+  // 消息。window-transform 的 segmentContext 把首个 user 前的消息并入段 0
+  // （anchor 恒保留）——system 消息自然永不参与置换。
+  const systemMessage = createInitialSystemMessage(
+    options.systemPrompt,
+    options.tools?.map((t) => toToolDeclaration(t)),
+  );
+  const contextMessages: AgentMessage[] = systemMessage
+    ? [systemMessage as unknown as AgentMessage, ...(options.history ?? [])]
+    : [...(options.history ?? [])];
+
   const stream = agentLoop(
     prompts,
     {
-      systemPrompt: options.systemPrompt ?? '',
-      messages: options.history ?? [],
+      messages: contextMessages,
       tools: options.tools,
     },
     {
       model: options.model,
       // 白名单过滤（只放行标准 LLM 消息；pi 的自定义消息类型——如
       // BashExecutionMessage——在此过滤，契约见 AgentLoopConfig.convertToLlm）。
+      // pi 1.1.0 起 system 也走消息带（系统提示+toolsAdded 声明），不过滤会
+      // 把整条系统提示丢掉。
       convertToLlm: (messages) => messages.filter(
-        (m): m is Extract<AgentMessage, { role: 'user' | 'assistant' | 'toolResult' }> =>
-          m.role === 'user' || m.role === 'assistant' || m.role === 'toolResult',
+        (m): m is Extract<AgentMessage, { role: 'user' | 'assistant' | 'toolResult' | 'system' }> =>
+          m.role === 'user' || m.role === 'assistant' || m.role === 'toolResult' || m.role === 'system',
       ),
       getApiKey: options.getApiKey,
       beforeToolCall: options.beforeToolCall,

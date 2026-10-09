@@ -875,6 +875,12 @@ class ChatEngine {
     const hasImages = !!input.images && input.images.length > 0;
     if (!text && !hasImages) return { error: 'Message must have text or images.' };
 
+    // 1.9.6：真实用户消息复位空产出计数——streak 原先只在「有产出的回合」清零，
+    // 用户停车后反复手敲「继续」时计数无限累加（2→3→4…），报错语义失真；
+    // 用户已发新指令，模型下一回合再空应算作新 streak 的第 1 次。合成续跑消息
+    // 走 startResolvedTurn 直通（不过本方法），不受影响。
+    this.emptyTurnStreak = 0;
+
     const grounding = await this.resolveInputGrounding(input);
 
     // B5(1.2.6):queueId 恒分配(直接开 turn 的也带)——steering/FIFO 排队

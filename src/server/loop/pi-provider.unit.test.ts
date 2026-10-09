@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { AdminAppConfig } from '../utils/admin-config';
+import { lookupModelCapability } from '../utils/model-capabilities';
 import {
   buildLoopModel,
   isKimiCodingProvider,
@@ -152,6 +153,22 @@ describe('resolveLoopModel（config 自解析）', () => {
     }));
     expect(r?.model.baseUrl).toBe('https://api.deepseek.com/anthropic');
     expect(r?.model.api).toBe('anthropic-messages');
+  });
+
+  it('1.9.6：注册表 maxOutputTokens 进入 model.maxTokens；未知模型回落 8192 缺省', () => {
+    const r = resolveLoopModel(config({
+      defaultProviderId: 'deepseek',
+      defaultModelId: 'deepseek-flash',
+      providerApiKeys: { deepseek: 'fake-key' },
+    }));
+    // 输出预算与注册表同口径（preset deepseek-flash = 384K）。不接则落 8192
+    // 缺省，恒思考模型 thinking 烧穿即 stopReason=length 零产出假死
+    //（10-08 轨迹实证：连续空回合、用户被迫反复手敲「继续」）。
+    expect(r?.model.maxTokens).toBe(lookupModelCapability('deepseek-flash')?.maxOutputTokens);
+    expect(r?.model.maxTokens).toBeGreaterThan(8192);
+
+    const unknown = resolveLoopModelFromEnv({ apiKey: 'k' }, 'totally-unknown-model-xyz');
+    expect(unknown?.model.maxTokens).toBe(8192);
   });
 
   it('缺 key / 空白 key → null', () => {
