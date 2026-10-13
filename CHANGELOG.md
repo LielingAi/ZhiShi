@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.8] - 2026-10-13
+
+> **auto-run 观察面补齐**：无人值守循环此前只有 list 一行状态，现在能看清单条 run 的全部细节并实时盯梢。
+
+### Added
+
+- **`zhishi auto-run show <id>`**：单条 run 详情——goal / criteria / budget 消耗进度 / stall 话术 / declaration（声明 + 证据引用）/ 终态原因 / 时间线。
+- **`zhishi auto-run watch <id>`**：实时观察 run 状态（轮询刷新，终态自动退出）。
+- **`auto-run/list` 列表带预算消耗进度**。
+- 服务端配套：新路由 `auto-run/show`（readonly 角色，内存活动记录优先、回落盘上；`getAutoRun` 访问器）。
+
 ## [1.9.7] - 2026-10-11
 
 > **子代理名册扩三席 + 一批硬化修复 + TSecBench 跑分工程件**。binary/pentest/whitebox 三域各补一个专家子代理；硬化面覆盖认证侧信道、进程退出 WAL 归并、长会话去重性能、文件锁热路径、便携模式路径等。新增 `bench/`（赛事工程件，不进安装包分发通道）。
