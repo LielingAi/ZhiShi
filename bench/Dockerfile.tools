@@ -1,0 +1,10 @@
+# bench 题线工具镜像（最小 Linux 执行环境；T2 联调 + T4 冒烟用）
+# 生产 Hosted 镜像会在此之上叠引擎层与知识层（见 docs/design/bench-run-design.md §3.6）
+FROM alpine:3.20
+
+# 国内构建走阿里镜像（官方 CDN 在本机网络下超时）
+RUN sed -i 's#dl-cdn.alpinelinux.org#mirrors.aliyun.com#g' /etc/apk/repositories \
+ && apk add --no-cache bash curl jq nmap nmap-scripts python3 ca-certificates
+
+WORKDIR /workspace
+CMD ["sleep", "infinity"]
