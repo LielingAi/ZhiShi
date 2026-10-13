@@ -260,10 +260,37 @@ function isInterruptedTurnNote(m: AgentMessage): boolean {
   return m.role === 'user' && typeof content === 'string' && content.startsWith('⟦系统注记：上一轮中断');
 }
 
-/** 消息内容相等(string 直比;块数组如图片块 JSON 比)——起跑落盘与收尾去重共用。 */
+/**
+ * 消息内容相等（起跑落盘与收尾去重共用）。
+ *
+ * 结构化浅比较，避免对含图片块或大文本块的消息做两次 `JSON.stringify`
+ * （长跑会话每条 user 消息去重都是 O(n) 序列化，累积开销不可忽视）。
+ *   - string 直比；
+ *   - 数组逐块比对：先 length，再 type，再 text / (data+mimeType)。
+ * 形状异常（非 string 非数组）时回退 `JSON.stringify`，保证语义不变。
+ */
 function sameMessageContent(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
   if (typeof a === 'string' || typeof b === 'string') return a === b;
-  return JSON.stringify(a) === JSON.stringify(b);
+  if (!Array.isArray(a) || !Array.isArray(b)) {
+    // 非预期形状：回退序列化比较，保证不丢语义。
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i] as { type?: string; text?: string; data?: string; mimeType?: string };
+    const y = b[i] as { type?: string; text?: string; data?: string; mimeType?: string };
+    if (!x || !y || x.type !== y.type) return false;
+    if (x.type === 'text') {
+      if (x.text !== y.text) return false;
+    } else if (x.type === 'image') {
+      if (x.data !== y.data || x.mimeType !== y.mimeType) return false;
+    } else {
+      // 未知块类型：回退序列化比较该块。
+      if (JSON.stringify(x) !== JSON.stringify(y)) return false;
+    }
+  }
+  return true;
 }
 
 /**

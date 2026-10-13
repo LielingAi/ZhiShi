@@ -414,6 +414,29 @@ export function resetMemoryStoreForTest(): void {
   dbCache.clear();
 }
 
+/**
+ * Production shutdown: close all cached SQLite handles so WAL files are
+ * checkpointed and file locks released. Called from the sidecar's process
+ * exit hook. Safe to call multiple times; subsequent calls are no-ops.
+ */
+export function closeAllMemoryDbs(): void {
+  for (const db of dbCache.values()) {
+    try {
+      db.close();
+    } catch { /* ignore */ }
+  }
+  dbCache.clear();
+}
+
+// Best-effort cleanup on process exit: close DBs so WAL files are merged
+// back into the main database. We hook `exit` (not just `beforeExit`)
+// because the sidecar's signal handlers call process.exit(), which fires
+// `exit` but not `beforeExit`. better-sqlite3's close() is synchronous,
+// so it's safe inside the `exit` event (no async work allowed there).
+process.once('exit', () => {
+  closeAllMemoryDbs();
+});
+
 // ===== Row mapping =====
 
 interface Row {

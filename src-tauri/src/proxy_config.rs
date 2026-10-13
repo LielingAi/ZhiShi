@@ -70,12 +70,18 @@ struct PartialAppConfig {
     proxy_settings: Option<ProxySettings>,
 }
 
-/// Read proxy settings from ~/.zhishi/config.json
-/// Returns Some(ProxySettings) if proxy is enabled, None otherwise
-/// Logs errors for invalid configuration to help users debug
+/// Read proxy settings from the ZhiShi data dir's `config.json`.
+///
+/// Resolves via [`crate::app_dirs::zhishi_data_dir`] so portable mode (USB /
+/// ZIP distributions where the data dir sits next to the executable) and
+/// `ZHISHI_DATA_DIR` overrides work correctly. Reading from a hardcoded
+/// `~/.zhishi` would silently miss the user's proxy config in portable mode.
+///
+/// Returns Some(ProxySettings) if proxy is enabled, None otherwise.
+/// Logs errors for invalid configuration to help users debug.
 pub fn read_proxy_settings() -> Option<ProxySettings> {
-    let home = dirs::home_dir()?;
-    let config_path = home.join(".zhishi").join("config.json");
+    let data_dir = crate::app_dirs::zhishi_data_dir()?;
+    let config_path = data_dir.join("config.json");
 
     // Read config file
     let content = match fs::read_to_string(&config_path) {

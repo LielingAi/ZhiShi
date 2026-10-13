@@ -69,10 +69,13 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/task/run", post(task_run_handler))
         .route("/api/task/rerun", post(task_rerun_handler))
         .route("/api/task/read-doc", get(task_read_doc_handler))
-        .route("/api/task/write-doc", post(task_write_doc_handler))
+        .route(
+            "/api/task/write-doc",
+            post(task_write_doc_handler).route_layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
+        );
         // Task docs can be sizable markdown; default axum 2MB limit is too
-        // small — raise to 50MB for this API.
-        .layer(DefaultBodyLimit::max(50 * 1024 * 1024));
+        // small — raise to 50MB **only** for write-doc. All other routes keep
+        // axum's 2MB default to bound memory pressure from loopback clients.
 
     tauri::async_runtime::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {

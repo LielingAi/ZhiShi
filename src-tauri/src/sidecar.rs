@@ -155,14 +155,27 @@ fn maybe_mark_crashed_node(status: &std::process::ExitStatus, node_path: &std::p
 /// Write the Global Sidecar port to `<data-dir>/sidecar.port` so the CLI can discover it.
 /// Uses `zhishi_data_dir()` (not a hardcoded home path) so portable mode keeps
 /// writer and readers (cli.rs, trust.rs) on the same file.
+///
+/// Atomic via tmp+rename (same as `panel_api::write_port_file`) so a CLI
+/// reader mid-write never sees a partial/truncated port string. A bare
+/// `fs::write` is not guaranteed atomic across platforms — readers could
+/// observe a zero-byte file and `parse::<u16>()` would fail, making the
+/// sidecar appear down.
 fn write_global_port_file(port: u16) {
     if let Some(dir) = crate::app_dirs::zhishi_data_dir() {
-        let port_file = dir.join(PORT_FILE_NAME);
-        if let Err(e) = std::fs::write(&port_file, port.to_string()) {
-            ulog_warn!("[sidecar] Failed to write port file {:?}: {}", port_file, e);
-        } else {
-            ulog_info!("[sidecar] Wrote CLI port file: {:?} = {}", port_file, port);
+        let tmp = dir.join(format!("{}.tmp", PORT_FILE_NAME));
+        let dst = dir.join(PORT_FILE_NAME);
+        if let Err(e) = std::fs::write(&tmp, port.to_string()) {
+            ulog_warn!("[sidecar] Failed to write port file {:?}: {}", tmp, e);
+            return;
         }
+        if let Err(e) = std::fs::rename(&tmp, &dst) {
+            ulog_warn!("[sidecar] Failed to rename port file to {:?}: {}", dst, e);
+            // Best-effort cleanup of the leftover tmp file.
+            let _ = std::fs::remove_file(&tmp);
+            return;
+        }
+        ulog_info!("[sidecar] Wrote CLI port file: {:?} = {}", dst, port);
     }
 }
 

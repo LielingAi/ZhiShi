@@ -103,10 +103,15 @@ export function newLoopSessionId(): string {
   return `${Date.now().toString(36)}-${randomBytes(6).toString('hex')}`;
 }
 
-/** 会话文件名(防路径穿越:id 只留字母数字/下划线/连字符)。 */
+/** 会话文件名(防路径穿越:id 只留字母数字/下划线/连字符)。
+ *
+ *  若清洗后为空（id 全由非允许字符构成），回退到 `orphan-<Date.now()>`，
+ *  避免生成 `.jsonl` 幽灵文件（无 basename）。newLoopSessionId() 产出的
+ *  id 必含字母数字，正常路径不会触发。 */
 export function loopSessionFile(id: string, dir: string): string {
   const safe = id.replace(/[^A-Za-z0-9_-]/g, '');
-  return join(dir, `${safe}.jsonl`);
+  const base = safe || `orphan-${Date.now().toString(36)}`;
+  return join(dir, `${base}.jsonl`);
 }
 
 /**

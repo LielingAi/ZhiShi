@@ -85,27 +85,28 @@ function delay(ms: number): Promise<void> {
  *     路径调用，常态获取锁不经过——spawn 成本 ~百 ms 可接受；失败回 null 走
  *     保守拒绝破锁）。
  */
-/** Linux clock-tick frequency (CLK_TCK). Read once via `getconf` and cached
- *  for the process lifetime. Falls back to 100 (the default on every Linux
- *  distribution we ship to) if `getconf` isn't on PATH or the value is
- *  unparseable. Without this lookup, an HZ=250 / HZ=1000 kernel would skew
- *  our derived start-time enough to falsely break a long-running live
- *  config-write holder under the 60s age fallback. */
-let cachedLinuxClkTck: number | null = null;
-function getLinuxClkTck(): number {
-  if (cachedLinuxClkTck !== null) return cachedLinuxClkTck;
+/** Linux clock-tick frequency (CLK_TCK).
+ *
+ *  Eagerly resolved at module load (not lazily on first lock acquisition) so
+ *  the `getconf` subprocess cost is paid once at startup, never on the lock
+ *  hot path. Falls back to 100 (the default on every Linux distribution we
+ *  ship to) if `getconf` isn't on PATH or the value is unparseable. Without
+ *  this lookup, an HZ=250 / HZ=1000 kernel would skew our derived start-time
+ *  enough to falsely break a long-running live config-write holder under the
+ *  60s age fallback. */
+const cachedLinuxClkTck: number = (() => {
+  if (process.platform !== 'linux') return 100;
   try {
     const out = execSync('getconf CLK_TCK', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
     const n = Number(out);
-    if (Number.isFinite(n) && n > 0 && n <= 10_000) {
-      cachedLinuxClkTck = n;
-      return n;
-    }
+    if (Number.isFinite(n) && n > 0 && n <= 10_000) return n;
   } catch {
     /* fall through */
   }
-  cachedLinuxClkTck = 100;
   return 100;
+})();
+function getLinuxClkTck(): number {
+  return cachedLinuxClkTck;
 }
 
 function getPidStartTimeMs(pid: number): number | null {

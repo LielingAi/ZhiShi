@@ -71,13 +71,24 @@ export function hashTokenSecret(secret: string): string {
   return createHash('sha256').update(secret, 'utf8').digest('hex');
 }
 
-/** 按 secret 找 token（timing-safe 比较，防时序侧信道逐字节猜 hash）。 */
+/**
+ * 按 secret 找 token（timing-safe 比较，防时序侧信道逐字节猜 hash）。
+ *
+ * 全程遍历所有 token 后才返回——`Array.find` 会在首个匹配处短路，使总耗
+ * 时取决于匹配位置（第 1 个 vs 第 N 个 token 命中耗时不同）。这里用
+ * `|=` 累积命中标志，循环始终跑完，消除"匹配位置"这条侧信道。
+ * 每个比较本身用 `timingSafeEqual` 保证常数时间（长度恒定，所有 token
+ * hash 经 normalizeAuthConfig 校验为 64 hex 字符）。
+ */
 export function findTokenBySecret(auth: AuthConfig, secret: string): AuthTokenEntry | undefined {
   const hash = Buffer.from(hashTokenSecret(secret), 'hex');
-  return auth.tokens.find((t) => {
-    const h = Buffer.from(t.secretHash, 'hex');
-    return h.length === hash.length && timingSafeEqual(h, hash);
-  });
+  let matchIdx = -1;
+  for (let i = 0; i < auth.tokens.length; i++) {
+    const h = Buffer.from(auth.tokens[i].secretHash, 'hex');
+    const eq = h.length === hash.length && timingSafeEqual(h, hash);
+    if (eq && matchIdx === -1) matchIdx = i;
+  }
+  return matchIdx >= 0 ? auth.tokens[matchIdx] : undefined;
 }
 
 // ---------------------------------------------------------------------------
