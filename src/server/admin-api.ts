@@ -74,6 +74,7 @@ import {
   listAutoRuns,
   startAutoRun,
   stopAutoRun,
+  getAutoRun,
   type AutoRunStatus,
 } from './loop/auto-run';
 import { listCampaignRecords } from './loop/campaign';
@@ -806,7 +807,9 @@ Options for 'list':
 'auto-run': `zhishi auto-run — Auto loop agent (无人值守研究循环，1.7.7)
 Commands:
   start      Launch a run (三输入 + 可选空转话术，全程自主)
-  list       List run records (time desc; optional --workspace filter)
+  list       List run records (time desc; optional --workspace filter; 含预算消耗进度)
+  show <id>  单条 run 详情（goal/criteria/budget/declaration）
+  watch <id> 实时观察 run 状态（轮询，终态自动退出）
   stop <id>  Esc 语义终止
   clear [--id <id>] [--workspace <路径>]  清终态记录（活跃拒绝）
 Options for 'start':
@@ -3410,6 +3413,14 @@ export function handleSessionMission(payload: { mission?: unknown }): AdminRespo
   }
   setPiLineMission(raw === null ? undefined : raw);
   return { success: true, data: { mission: raw } };
+}
+/** `auto-run/show` — 单条记录详情（含 goal/criteria/budget/declaration）。 */
+export function handleAutoRunShow(payload: { id?: unknown }): AdminResponse {
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!id) return { success: false, error: 'Missing required argument: <id>' };
+  const record = getAutoRun(id);
+  if (!record) return { success: false, error: `auto run "${id}" 不存在（auto-run/list 查看记录）` };
+  return { success: true, data: { record } };
 }
 /** `auto-run/list` — 记录列表（时间倒序；可选 workspace 过滤）。 */
 export async function handleAutoRunList(payload: { workspace?: unknown }): Promise<AdminResponse> {

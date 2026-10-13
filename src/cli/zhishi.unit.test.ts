@@ -168,6 +168,25 @@ beforeAll(async () => {
             vm: [{ driver: 'vmware', id: '/vms/pwn.vmx', name: 'pwn.vmx', vmx: '/vms/pwn.vmx', state: 'unknown', osFamily: 'linux' }],
           },
         }));
+      } else if (req.url === '/api/admin/auto-run/show') {
+        // auto-run show/watch：返回一条 completed 记录，watch 首次轮询即终态退出。
+        res.end(JSON.stringify({
+          success: true,
+          data: {
+            record: {
+              id: body.id ?? 'run-mock',
+              name: 'CVE 复现',
+              status: 'completed',
+              envKey: 'pwn-vm',
+              turns: 12,
+              budget: { kind: 'turns', limit: 30, spent: 12 },
+              goal: '复现 CVE 并拿 flag',
+              criteria: ['输出 flag'],
+              createdAt: '2026-10-13T00:00:00.000Z',
+              updatedAt: '2026-10-13T00:05:00.000Z',
+            },
+          },
+        }));
       } else {
         res.end(JSON.stringify({ success: true, data: {} }));
       }
@@ -520,6 +539,40 @@ describe('1.7.7：auto-run CLI 命令组（三输入 + 可选空转话术）', (
     const req = captured.find((c) => c.url === '/api/admin/auto-run/list');
     expect(req).toBeDefined();
     expect(req!.body).toEqual({ workspace: '/ws' });
+  }, 30_000);
+
+  it('show <id> → /api/admin/auto-run/show { id }', async () => {
+    captured = [];
+    const r = await runCli(['auto-run', 'show', 'run-abc']);
+    expect(r.code).toBe(0);
+    const req = captured.find((c) => c.url === '/api/admin/auto-run/show');
+    expect(req).toBeDefined();
+    expect(req!.body).toEqual({ id: 'run-abc' });
+    // 渲染关键字段
+    expect(r.stdout).toContain('id:');
+    expect(r.stdout).toContain('run-abc');
+    expect(r.stdout).toContain('budget:');
+    expect(r.stdout).toContain('goal:');
+  }, 30_000);
+
+  it('watch <id> → 轮询 auto-run/show，终态退出', async () => {
+    captured = [];
+    const r = await runCli(['auto-run', 'watch', 'run-abc']);
+    expect(r.code).toBe(0);
+    // watch 发往 auto-run/show（不是 auto-run/watch）
+    const reqs = captured.filter((c) => c.url === '/api/admin/auto-run/show');
+    expect(reqs.length).toBeGreaterThanOrEqual(1);
+    expect(reqs[0].body).toEqual({ id: 'run-abc' });
+    // 终态输出包含 completed
+    expect(r.stdout).toContain('completed');
+  }, 30_000);
+
+  it('watch 缺 id → CLI 侧拒绝，不发请求', async () => {
+    captured = [];
+    const r = await runCli(['auto-run', 'watch']);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('usage: zhishi auto-run watch <id>');
+    expect(captured.find((c) => c.url.startsWith('/api/admin/auto-run'))).toBeUndefined();
   }, 30_000);
 });
 

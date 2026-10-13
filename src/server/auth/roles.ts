@@ -103,6 +103,7 @@ export const ADMIN_ROUTE_ROLE: Record<string, AuthRole> = {
   // ── auto-run / 战役 ──
   'auto-run/start': 'operator',
   'auto-run/stop': 'operator',
+  'auto-run/show': 'readonly',
   'auto-run/list': 'readonly',
   'auto-run/clear': 'operator',
   'campaign/list': 'readonly',

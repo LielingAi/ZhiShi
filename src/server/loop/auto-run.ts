@@ -928,6 +928,13 @@ export function stopAutoRun(id: string): AutoRunApiResult<{ id: string }> {
   return { success: true, data: { id } };
 }
 
+/** 单条记录(内存活动记录优先,回落盘上)。 */
+export function getAutoRun(id: string): AutoRunRecord | null {
+  const active = activeRuns.get(id);
+  if (active) return active.record;
+  return loadAutoRunRecord(id);
+}
+
 /** 记录列表(时间倒序;含盘上历史,可按 workspace 过滤)。 */
 export async function listAutoRuns(workspace?: string): Promise<AutoRunRecord[]> {
   await ensureOrphanRecovery(workspace ?? engineWorkspace());

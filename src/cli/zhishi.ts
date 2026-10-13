@@ -232,13 +232,15 @@ zhishi term open --cwd /path/to/proj --rows 40 --cols 120 [--cmd "<命令>"] [--
   zhishi term write <terminalId> 'ls -la'   # 批量/换行输入用 --data-file <path>
   zhishi term read <terminalId> [--cursor N]
   zhishi term close <terminalId>
-zhishi auto-run start --name <任务名> --goal "目标" --env-key <已登记环境> \
+zhishi auto-run start [--name <任务名>] --goal "目标" --env-key <已登记环境> \
       --criteria "验收条件1" --criteria "验收条件2" \
       --budget-kind turns --budget-limit 30 [--stall-prompt "…|off"] [--workspace <路径>]
     # 无人值守研究循环:每轮自动继续;任一验收条件达成(declare 附证据,系统预检)
     # → completed;预算耗尽/超时 → stopped;provider 连击 5 次 → exited。
     # --stall-prompt 空转推进话术(缺省=内置通用话术;off=关闭,纯继续)。
-  zhishi auto-run list [--workspace <路径>]     # run 记录
+  zhishi auto-run list [--workspace <路径>]     # run 记录（含预算消耗进度）
+  zhishi auto-run show <id>                     # 单条 run 详情（goal/criteria/budget/declaration）
+  zhishi auto-run watch <id>                    # 实时观察 run 状态（轮询，终态自动退出）
   zhishi auto-run stop <id>                    # Esc 语义终止
   zhishi auto-run clear [--id <id>] [--workspace <路径>]   # 清终态记录（活跃拒绝）
 zhishi claim list <sessionId>       # 会话记忆快照（治理提取的 fact/decision/dead-end/todo）
@@ -683,8 +685,55 @@ if (!result.success) {
       }
       for (const r of records) {
         const reason = typeof r.pauseReason === 'string' && r.pauseReason ? `  原因: ${r.pauseReason}` : '';
-        console.log(`- ${String(r.status)}  ${String(r.id)}  「${String(r.name)}」  env=${String(r.envKey)}  turns=${String(r.turns ?? 0)}${reason}`);
+        const budget = (r.budget ?? {}) as { kind?: string; limit?: number; spent?: number };
+        const spent = typeof budget.spent === 'number' ? budget.spent : 0;
+        const limit = typeof budget.limit === 'number' ? budget.limit : 0;
+        const budgetStr = limit > 0 ? `  budget=${spent.toFixed(0)}/${limit} ${budget.kind}` : '';
+        console.log(`- ${String(r.status)}  ${String(r.id)}  「${String(r.name)}」  env=${String(r.envKey)}  turns=${String(r.turns ?? 0)}${budgetStr}${reason}`);
       }
+      return;
+    }
+    if (action === 'show') {
+      const r = (data.record ?? {}) as Record<string, unknown>;
+      if (Object.keys(r).length === 0) {
+        console.log('（无记录）');
+        return;
+      }
+      console.log(`id:       ${String(r.id ?? '')}`);
+      console.log(`name:     ${String(r.name ?? '')}`);
+      console.log(`status:   ${String(r.status ?? '')}`);
+      console.log(`env:      ${String(r.envKey ?? '')}`);
+      console.log(`turns:    ${String(r.turns ?? 0)}`);
+      const budget = (r.budget ?? {}) as { kind?: string; limit?: number; spent?: number };
+      if (budget.kind) {
+        const spent = typeof budget.spent === 'number' ? budget.spent : 0;
+        const limit = typeof budget.limit === 'number' ? budget.limit : 0;
+        console.log(`budget:   ${spent.toFixed(0)} / ${limit} ${budget.kind}`);
+      }
+      console.log(`goal:     ${String(r.goal ?? '')}`);
+      const criteria = Array.isArray(r.criteria) ? (r.criteria as unknown[]) : [];
+      if (criteria.length > 0) {
+        console.log(`criteria:`);
+        for (const [i, c] of criteria.entries()) console.log(`  ${i + 1}. ${String(c)}`);
+      }
+      if (typeof r.stallPrompt === 'string' && r.stallPrompt) {
+        console.log(`stall:    ${r.stallPrompt === 'off' ? '关闭' : r.stallPrompt}`);
+      }
+      const decl = (r.declaration ?? {}) as { statement?: string; criteria?: string[]; evidenceRefs?: Array<number | string> };
+      if (decl.statement) {
+        console.log(`declaration: ${decl.statement}`);
+        if (Array.isArray(decl.criteria) && decl.criteria.length > 0) {
+          console.log(`  criteria: ${decl.criteria.join(' | ')}`);
+        }
+        if (Array.isArray(decl.evidenceRefs) && decl.evidenceRefs.length > 0) {
+          console.log(`  evidence: ${decl.evidenceRefs.join(', ')}`);
+        }
+      }
+      if (typeof r.pauseReason === 'string' && r.pauseReason) {
+        console.log(`reason:   ${r.pauseReason}`);
+      }
+      console.log(`created:  ${String(r.createdAt ?? '')}`);
+      console.log(`updated:  ${String(r.updatedAt ?? '')}`);
       return;
     }
     if (action === 'clear') {
@@ -1883,6 +1932,61 @@ const group = positional[0];
     // 实时刷一行进度（⏳ 情报更新中…）；update 响应回来（成功/失败）打断
     // 轮询并清掉进度行，随后 printResult 打印最终结果。json 模式不轮询
     // （stdout 要留纯 JSON）。
+// `auto-run watch <id>` — 轮询 auto-run/show 观察 run 状态变化，终态退出。
+    // 轮询间隔 2s（auto-run 单轮含 LLM 调用，2s 足够实时）。
+    // 注意：AutoRunRecord 不持久化 phase（phase 只在 SSE auto-run:phase-changed
+    // 中广播），所以 watch 只显示 status/turns/budget/reason，不显示 phase。
+    // --json 模式退化为单次 show 输出 JSON（脚本可自行轮询）。
+    if (group === 'auto-run' && action === 'watch') {
+      const watchId = (body as Record<string, unknown> | undefined)?.id as string | undefined;
+      if (!watchId) {
+        console.error('usage: zhishi auto-run watch <id>');
+        process.exit(1);
+      }
+      if (jsonMode) {
+        // JSON 模式：单次查询输出纯 JSON，方便脚本自行轮询
+        const r = await callApi('auto-run/show', { id: watchId });
+        console.log(JSON.stringify(r, null, 2));
+        process.exit(r.success ? 0 : 1);
+      }
+      let lastTurns = -1;
+      let lastStatus = '';
+      let printedHeader = false;
+      const cleanup = () => { process.stdout.write('\n'); };
+      process.once('SIGINT', () => { cleanup(); process.exit(130); });
+      while (true) {
+        const r = await callApi('auto-run/show', { id: watchId });
+        if (!r.success) {
+          console.error(`\n${String(r.error ?? 'unknown error')}`);
+          process.exit(1);
+        }
+        const rec = ((r.data as Record<string, unknown> | undefined)?.record ?? {}) as Record<string, unknown>;
+        const status = String(rec.status ?? '');
+        const turns = typeof rec.turns === 'number' ? rec.turns : 0;
+        const budget = (rec.budget ?? {}) as { kind?: string; limit?: number; spent?: number };
+        const spent = typeof budget.spent === 'number' ? budget.spent : 0;
+        const limit = typeof budget.limit === 'number' ? budget.limit : 0;
+        const reason = typeof rec.pauseReason === 'string' ? rec.pauseReason : '';
+        const budgetStr = limit > 0 ? `  budget=${spent.toFixed(0)}/${limit} ${budget.kind}` : '';
+        const reasonStr = reason ? `  reason=${reason}` : '';
+        if (status !== lastStatus || turns !== lastTurns) {
+          // 首次状态变化行前缀 name，方便同时 watch 多个 run 时区分
+          const namePrefix = !printedHeader ? `「${String(rec.name ?? '')}」 ` : '';
+          process.stdout.write(`\r[${new Date().toLocaleTimeString()}] ${namePrefix}${status}  turns=${turns}${budgetStr}${reasonStr}\x1b[K\n`);
+          lastStatus = status;
+          lastTurns = turns;
+          printedHeader = true;
+        } else {
+          process.stdout.write(`\r[${new Date().toLocaleTimeString()}] ${status}  turns=${turns}${budgetStr}${reasonStr}\x1b[K`);
+        }
+        if (status === 'completed' || status === 'stopped' || status === 'exited') {
+          process.stdout.write('\n');
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+      return; // 已输出终态，不进 printResult
+    }
     if (group === 'intel' && action === 'update' && !jsonMode) {
       const updatePromise = callApi(route, body);
       const poller = startIntelProgressPolling({
@@ -2584,6 +2688,8 @@ function buildRequestBody(
       };
     }
     if (action === 'stop') return { id: rest[0] ?? flags.id };
+    if (action === 'show') return { id: rest[0] ?? flags.id };
+    if (action === 'watch') return { id: rest[0] ?? flags.id };
     if (action === 'list' || action === 'clear') {
       return { workspace: flags.workspace, id: flags.id };
     }
