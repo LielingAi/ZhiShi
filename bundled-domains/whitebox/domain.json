@@ -5,6 +5,7 @@
     "code-audit"
   ],
   "subagents": [
+    "finding-triager",
     "vuln-hunter",
     "hypothesis-tester",
     "critic"

@@ -15,6 +15,7 @@
   "subagents": [
     "fuzz-runner",
     "crash-triager",
+    "gadget-analyzer",
     "vuln-hunter",
     "hypothesis-tester",
     "critic"

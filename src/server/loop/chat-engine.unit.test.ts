@@ -1437,8 +1437,9 @@ describe('1.2.7 域补丁:子代理继承会话域(delegate_task 按域收窄)',
     });
     const delegate = await delegateTool();
     await expect(delegate.execute('tc', { task: 't', agent: 'fuzz-runner' }))
-      .rejects.toThrow(/未知子代理 "fuzz-runner"\(可用:critic\/hypothesis-tester\/vuln-hunter\)/);
-    // whitebox 清单内(vuln-hunter/hypothesis-tester/critic)仍可派发
+      // 1.9.7：finding-triager 加入 whitebox 域清单（新增子代理），可用清单随域定义更新
+      .rejects.toThrow(/未知子代理 "fuzz-runner"\(可用:critic\/finding-triager\/hypothesis-tester\/vuln-hunter\)/);
+    // whitebox 清单内(vuln-hunter/hypothesis-tester/critic/finding-triager)仍可派发
     await expect(delegate.execute('tc2', { task: 't', agent: 'critic' })).resolves.toBeDefined();
   });
 });
