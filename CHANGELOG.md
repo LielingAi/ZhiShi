@@ -18,6 +18,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.7] - 2026-10-11
+
+> **子代理名册扩三席 + 一批硬化修复 + TSecBench 跑分工程件**。binary/pentest/whitebox 三域各补一个专家子代理；硬化面覆盖认证侧信道、进程退出 WAL 归并、长会话去重性能、文件锁热路径、便携模式路径等。新增 `bench/`（赛事工程件，不进安装包分发通道）。
+
+### Added
+
+- **三个新内置子代理**（域名册接线同步）：`finding-triager`（whitebox——SAST 海量告警的分诊/去重/排序，告警是线索不是结论）、`gadget-analyzer`（binary——利用原语枚举筛选，gadget/one_gadget/seccomp 摘要回主 loop）、`lateral-movement`（pentest——后渗透横向移动：内网侦察、凭据转储、AD 路径分析、横向推进）。
+- **`bench/` 跑分工程件**（TSecBench，赛后归档）：`fake-platform.py`（openapi/v1 契约桩：限频/并发上限/duplicate 幂等/hint 折减/invalid_state 全口径）+ `bench-runner.py`（调度器——选题/并发闸/stale/时间盒/完成判定，控制回路移植自 CVE 研判流水线生产骨架）+ `SKILL.md`（提交纪律）+ `targets/lfi-target.py`（真 LFI 靶机）+ 设计稿 `docs/design/bench-run-design.md`。实测：假平台 4 题全自主通关 800/800（含真 LFI 利用），零人工介入。
+
+### Fixed
+
+- **token 认证的匹配位置侧信道**：`findTokenBySecret` 从 `Array.find` 短路改为全遍历累积——`find` 的早退让耗时取决于命中位置，逐字节猜 hash 有了时间 oracle（auth/token-store.ts）。
+- **进程退出时 WAL 未归并**：memory-core 增加 `closeAllMemoryDbs()` + `process.once('exit')` 钩子——sidecar 信号退出走 `exit`（不触发 `beforeExit`），better-sqlite3 的同步 close 在该事件里安全。
+- **长会话起跑/收尾去重的序列化开销**：`sameMessageContent` 从两次 `JSON.stringify` 全量比较改为结构化浅比较（逐块 type/text/data 比对），长跑会话每条 user 消息的 O(n) 序列化税消除。
+- **文件锁热路径的 spawn 税**：Linux CLK_TCK 从首次取锁时惰性解析改为模块加载即解析（一次性 `getconf`），锁热路径不再付子进程成本。
+- **`loopSessionFile` 空 id 幽灵文件**：清洗后为空时回退 `orphan-<时间戳>`，不再产出无 basename 的 `.jsonl`。
+- **管理面 write-doc 的 50MB body 上限收窄到该路由**（原全局面放开），其余路由回到 axum 默认 2MB——收敛回环客户端的内存压力面。
+- **代理配置在便携模式读错目录**：`proxy_config` 改走 `zhishi_data_dir()`（USB/ZIP 形态数据目录在可执行文件旁），不再硬编码 `~/.zhishi`。
+- **sidecar port 文件原子写**（tmp+rename）——CLI 读者不再可能读到半截端口串误判 sidecar 掉线。
+
 ## [1.9.6] - 2026-10-09
 
 > **恒思考模型"假死"修复 + pi 底座跨大版本**。deepseek V4.1 flash 这类思考恒开的模型，任务跑到后半程长推理会把输出预算整段烧光（`stopReason=length`、零正文零工具调用），用户被迫反复手敲「继续」才能推着走。根因：注册表的 `maxOutputTokens`（deepseek 384K、claude 64K/128K……）从来没接进引擎，非 kimi 供应商一律落 8192 缺省。本版接上；顺手修正空产出护栏的计数语义。底座 pi 0.84.2 → 1.1.0（跨 1.0 semver 稳定线），适配其 system 消息协议。
