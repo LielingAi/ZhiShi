@@ -35,6 +35,12 @@ import { createRecallTool, RECALL_TOOL_NAME } from './recall';
 
 export const DELEGATE_TASK_TOOL_NAME = 'delegate_task';
 
+/** 子 loop 缺省白名单 = 缺省注册集(env_exec + recall)——工具注册与授权
+ *  白名单同源(审查 #10:delegate 入口曾缺省 [env_exec],覆盖了子 loop
+ *  的 [env_exec, recall] 注册,boundary 据此必拦 recall,取回契约断裂)。
+ *  createDelegateTaskTool 与 spawnSubLoop 共用本常量,缺省不许再漂移。 */
+export const DEFAULT_SUB_LOOP_ALLOWED_TOOLS: string[] = [ENV_EXEC_TOOL_NAME, RECALL_TOOL_NAME];
+
 export interface SpawnSubLoopOptions {
   prompt: string;
   /** 子任务目标环境(必须来自父 loop 的绑定,v1 单环境)。 */
@@ -44,7 +50,7 @@ export interface SpawnSubLoopOptions {
   systemPrompt?: string;
   /** 父 loop 的工具白名单——收窄断言的基准。 */
   parentAllowedTools: string[];
-  /** 子 loop 白名单(默认 [env_exec];必须 ⊆ parentAllowedTools)。 */
+  /** 子 loop 白名单(默认 {@link DEFAULT_SUB_LOOP_ALLOWED_TOOLS};必须 ⊆ parentAllowedTools)。 */
   allowedTools?: string[];
   /** 额外边界规则(在默认规则之后追加,只能更严)。 */
   extraRules?: BoundaryRule[];
@@ -91,7 +97,7 @@ export async function spawnSubLoop(options: SpawnSubLoopOptions): Promise<SubLoo
   const sessionId = options.sessionId ?? newLoopSessionId();
   // 1.7.2:默认工具集 = env_exec + recall（窗口指针块的取回面——子 loop 与主
   // loop 同目录持久化,取回可寻址;recall 只读,不扩大环境越界面）。
-  const allowedTools = options.allowedTools ?? [ENV_EXEC_TOOL_NAME, RECALL_TOOL_NAME];
+  const allowedTools = options.allowedTools ?? DEFAULT_SUB_LOOP_ALLOWED_TOOLS;
   assertNarrowedWhitelist(options.parentAllowedTools, allowedTools);
 
   const tools = options.tools ?? [
@@ -200,7 +206,8 @@ export interface CreateDelegateTaskToolOptions {
   resolution: LoopModelResolution;
   /** 父 loop 白名单(收窄断言基准;通常含 delegate_task 自身)。 */
   parentAllowedTools: string[];
-  /** 子 loop 白名单(默认 [env_exec],即比父少 delegate_task)。 */
+  /** 子 loop 白名单(默认 {@link DEFAULT_SUB_LOOP_ALLOWED_TOOLS}——与子 loop
+   *  缺省注册集同源;显式传入时必须 ⊆ parentAllowedTools)。 */
   childAllowedTools?: string[];
   systemPrompt?: string;
   /** 可派发的子代理定义(engine 从 bundled-agents 装载);按名取正文。 */
@@ -221,7 +228,7 @@ export interface CreateDelegateTaskToolOptions {
 export function createDelegateTaskTool(
   options: CreateDelegateTaskToolOptions,
 ): AgentTool<typeof delegateTaskParameters, DelegateTaskDetails> {
-  const childAllowedTools = options.childAllowedTools ?? [ENV_EXEC_TOOL_NAME];
+  const childAllowedTools = options.childAllowedTools ?? DEFAULT_SUB_LOOP_ALLOWED_TOOLS;
   // 构造期即断言收窄(失败早炸,不等到模型调用)。
   assertNarrowedWhitelist(options.parentAllowedTools, childAllowedTools);
   const spawn = options.spawn ?? spawnSubLoop;

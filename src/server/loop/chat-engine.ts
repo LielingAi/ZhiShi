@@ -400,6 +400,18 @@ export function resolveSessionEnvKey(dir: string): string {
   return keyFor(alt) ?? envKeyForSelection(HOST_SELECTION);
 }
 
+/** 环境分线键 → 环境条目(执行现场口径)。`env:<id>` 命中清单(含内置
+ *  local)→ 条目;host/recipe 键或条目已删 → null(与 resolveSessionEnv
+ *  同语义:recipe/host 选定本就不注册执行工具)。
+ *  与 resolveSessionEnv 的差异(刻意,审查 #1):不读工作区全局选择——
+ *  选择只用于选线/创线(restore/switchEnvSession 把它变成 currentEnvKey);
+ *  执行期(turn/invoke/refs)一律从线已绑定的键解析,另一条线的 select
+ *  不能覆盖本线的执行现场。 */
+export function envEntryForEnvKey(envKey: string): EnvironmentEntry | null {
+  if (!envKey.startsWith('env:')) return null;
+  return findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), envKey.slice('env:'.length)) ?? null;
+}
+
 /**
  * 当前工作区的环境锚(1.3.2 任务二 #2)——chat:init payload 的 environment
  * 字段数据源,GUI 重连时免 environment/current 绕行。与 resolveSessionEnv
@@ -863,13 +875,15 @@ class ChatEngine {
   /**
    * refs → grounding 段(send 时经 env 通道解析;解析失败告警并降级为空,
    * 不阻塞发送——单项失败已在 refs 模块内注明)。
+   * 审查 #1:env 取本线绑定锚(currentEnvKey),与 turn 执行栈同一现场——
+   * 不读工作区全局选择,否则 refs 解析环境与工具执行环境可能分属两线。
    */
   private async resolveInputGrounding(input: PiSendInput): Promise<string> {
     const parsed = parseChatRefs(input.refs);
     if (parsed.refs.length === 0 && parsed.invalid.length === 0) return '';
     try {
       return await resolveChatRefs(parsed, {
-        env: resolveSessionEnv(this.agentDir),
+        env: envEntryForEnvKey(this.currentEnvKey),
         environments: listEnvironmentsWithBuiltin(loadConfig()),
       });
     } catch (err) {
@@ -1149,7 +1163,10 @@ class ChatEngine {
     });
 
     // system-init(每会话一次,形状对齐 SDK 的 chat:system-init)。
-    const env = resolveSessionEnv(this.agentDir);
+    // 审查 #1:执行现场的环境锚 = 本线绑定的环境键(currentEnvKey,随
+    // restore/switchEnvSession/initForLine 维护),不读工作区全局选择——
+    // 同 workspace 另一条线的 select 不能串到本线的工具栈/占用登记。
+    const env = envEntryForEnvKey(this.currentEnvKey);
     // 1.8.7 P5 环境占用：turn 起跑即登记锚定环境（起跑人 + 本线），turn
     // 收尾（下方 finally，含 Esc 中断）按 token 释放——过期释放摘不掉
     // 别人的新占用。host 选定（env=null）无占用可登记。
@@ -1890,6 +1907,20 @@ class ChatEngine {
   }
 
   /**
+   * invoke 线的环境锚解析(审查 #1):目标线已在 env-sessions 映射里挂过
+   * 环境键 → 按该键解析(映射即线的环境锚,战役介入/cron 跨线 invoke 不
+   * 再吃全局选择);无映射(全新一次性线)→ 回落工作区选择(创线语义)。
+   * 映射命中但条目已删/键为 host → null(线锚如此,不拿全局选择顶替)。
+   */
+  private resolveInvokeLineEnv(loopSessionId?: string): EnvironmentEntry | null {
+    if (loopSessionId) {
+      const lineKey = findEnvKeyForLoopSession(loadEnvSessionsMap(), this.agentDir, loopSessionId);
+      if (lineKey) return envEntryForEnvKey(lineKey);
+    }
+    return resolveSessionEnv(this.agentDir);
+  }
+
+  /**
    * B2(1.2.6)— cron 独立 invoke 通道:对指定 loop 线跑一次完整 agent turn
    * (读该线历史 → runLoop 带全套工具/边界/审计/压缩 → 新增消息续存回同一
    * 条线),全程不碰引擎单例的 sessionId/messages/steering/queue/busy,不广播
@@ -1947,9 +1978,13 @@ class ChatEngine {
     if (!resolution) {
       return { text: '', error: PI_NO_PROVIDER_ERROR, loopSessionId };
     }
+    // 审查 #1:环境锚归属线——显式 envKey(auto-run 1.7.1)优先;否则按目标
+    // 线的 env-sessions 映射反查该线绑定的环境键(战役介入回合/cron 跨线
+    // invoke 的线已绑定环境锚,工作区全局选择不许覆盖);线无映射(全新线,
+    // 尚未写映射)才回落全局选择——选择只用于选线/创线。
     const env = options.envKey
       ? findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), options.envKey) ?? null
-      : resolveSessionEnv(this.agentDir);
+      : this.resolveInvokeLineEnv(options.loopSessionId);
     // 1.8.7 P5 环境占用：headless invoke 线同样登记（起跑人 + 本线），run
     // 完成即释放（含 timeoutMs detach 后后台跑完——占用跟到真实收尾）。
     const invokeOccupancyToken: OccupancyToken | null = env

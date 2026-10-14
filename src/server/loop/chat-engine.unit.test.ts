@@ -97,10 +97,13 @@ vi.mock('../environment/env-sessions', () => ({
     envSessionsData.delete(`${normWs(ws)}::${key}`);
   },
   removeEnvSessionsForEnvId: async () => {},
-  // P3b:三段式行键的归属段字面量 + initForLine 的环境键反查(单测恒未命中)。
+  // P3b:三段式行键的归属段字面量 + initForLine 的环境键反查(缺省恒未命中;
+  // 审查 #1 的 invoke 反查测试经 findEnvKeyMock 注入映射)。
   SHARED_LINE_SEGMENT: 'shared',
-  findEnvKeyForLoopSession: () => null,
+  findEnvKeyForLoopSession: (...args: unknown[]) => findEnvKeyMock(...args),
 }));
+// 环境键反查可注入(默认 null = 无映射)。
+const findEnvKeyMock = vi.fn((..._args: unknown[]): string | null => null);
 
 const configEnvironments = vi.fn(() => [] as unknown[]);
 const configLoopEngine = vi.fn(() => undefined as 'sdk' | 'pi' | undefined);
@@ -323,6 +326,7 @@ beforeEach(async () => {
   envSessionsData.clear();
   lineOwnershipData.clear();
   __resetOccupancyForTests();
+  findEnvKeyMock.mockReturnValue(null);
   resetPiChat();
   resolveLoopModelMock.mockReturnValue(RESOLUTION);
   resolveLoopModelFromEnvMock.mockReturnValue(RESOLUTION);
@@ -409,6 +413,76 @@ describe('resolveSessionEnv(env 锚定)', () => {
     // 两形态都悬空 → null
     selectionMock.mockReturnValue({ kind: 'env', id: 'ghost-vm' });
     expect(resolveSessionEnv('E:\\ws')).toBeNull();
+  });
+});
+
+describe('审查 #1:执行现场环境锚认线绑定,不认工作区全局选择', () => {
+  const OTHER_VM_ENTRY = {
+    id: 'other-vm', kind: 'vm', vmName: 'other-vm',
+    address: '192.168.152.130', user: 'researcher', createdAt: '',
+  };
+
+  it('交互 turn:线绑定 env A 后全局选择改到 B,turn 仍锚 A(占用为证)', async () => {
+    selectionMock.mockReturnValue({ kind: 'env', id: 'pwn-vm' });
+    configEnvironments.mockReturnValue([VM_ENTRY, OTHER_VM_ENTRY]);
+    // Alice 的线经 select 联动绑定 env A。
+    expect((await switchEnvSession('E:/ws', 'env:pwn-vm')).ok).toBe(true);
+    // Bob 改同 workspace 的全局选择(P3b:他走自己线的引擎,本引擎线不动)——
+    // 选择只用于选线/创线,不许覆盖本线已绑定的执行现场。
+    selectionMock.mockReturnValue({ kind: 'env', id: 'other-vm' });
+    let duringA: EnvOccupancy | undefined;
+    let duringB: EnvOccupancy | undefined;
+    runLoopMock.mockImplementation(async function* () {
+      duringA = envOccupancy('pwn-vm');
+      duringB = envOccupancy('other-vm');
+      for (const e of doneEvents('ok')) yield e;
+    });
+    await sendPiChatMessage({ text: '继续 A 线的研究' });
+    await waitTurnSettled();
+    // 修复前:resolveSessionEnv 读全局选择 → 占用登记在 other-vm(串现场)。
+    expect(duringA).toBeDefined();
+    expect(duringA!.line).toBeTruthy();
+    expect(duringB).toBeUndefined();
+  });
+
+  it('invoke 指定 loopSessionId(战役介入/cron 跨线):环境锚按该线的分线映射反查', async () => {
+    // 全局选择已被改走;目标线 ls-campaign 的映射锚在 env A。
+    selectionMock.mockReturnValue({ kind: 'env', id: 'other-vm' });
+    configEnvironments.mockReturnValue([VM_ENTRY, OTHER_VM_ENTRY]);
+    findEnvKeyMock.mockImplementation((...args: unknown[]) =>
+      args[2] === 'ls-campaign' ? 'env:pwn-vm' : null);
+    let duringA: EnvOccupancy | undefined;
+    let duringB: EnvOccupancy | undefined;
+    runLoopMock.mockImplementation(async function* () {
+      duringA = envOccupancy('pwn-vm');
+      duringB = envOccupancy('other-vm');
+      for (const e of doneEvents('ok')) yield e;
+    });
+    const r = await invokePiSession(
+      { text: '战役介入回合', providerEnv: { apiKey: 'k' } },
+      { loopSessionId: 'ls-campaign' },
+    );
+    expect(r.error).toBeUndefined();
+    // 修复前:invoke 回落全局 selection → env_exec 锚在 other-vm。
+    expect(duringA).toBeDefined();
+    expect(duringA!.line).toBe('ls-campaign');
+    expect(duringB).toBeUndefined();
+  });
+
+  it('invoke 目标线无映射(全新线):回落工作区全局选择(选线/创线语义不变)', async () => {
+    selectionMock.mockReturnValue({ kind: 'env', id: 'pwn-vm' });
+    configEnvironments.mockReturnValue([VM_ENTRY]);
+    let duringA: EnvOccupancy | undefined;
+    runLoopMock.mockImplementation(async function* () {
+      duringA = envOccupancy('pwn-vm');
+      for (const e of doneEvents('ok')) yield e;
+    });
+    const r = await invokePiSession(
+      { text: 'cron 任务', providerEnv: { apiKey: 'k' } },
+      { loopSessionId: 'ls-fresh' },
+    );
+    expect(r.error).toBeUndefined();
+    expect(duringA?.line).toBe('ls-fresh');
   });
 });
 
@@ -753,6 +827,9 @@ describe('系统提示组装(buildSystemPromptAppend 接入)', () => {
   it('锚定环境:基座段带 env id/kind/address', async () => {
     selectionMock.mockReturnValue({ kind: 'env', id: 'pwn-vm' });
     configEnvironments.mockReturnValue([VM_ENTRY]);
+    // 审查 #1:执行现场认线锚——选定后必须经 select 联动切线(生产路径
+    // environment/select → switchEnvSession),currentEnvKey 才指向 env 线。
+    expect((await switchEnvSession('E:/ws', 'env:pwn-vm')).ok).toBe(true);
     await sendPiChatMessage({ text: 'hi' });
     await waitTurnSettled();
     const prompt = lastSystemPrompt();
@@ -887,13 +964,15 @@ describe('@ refs 注入(W1,grounding 前置进 prompt)', () => {
 });
 
 describe('delegate_task 接回生产(W1)', () => {
-  function anchorEnv() {
+  async function anchorEnv() {
     selectionMock.mockReturnValue({ kind: 'env', id: 'pwn-vm' });
     configEnvironments.mockReturnValue([VM_ENTRY]);
+    // 审查 #1:select 联动切线后线锚才生效(见「锚定环境」测试注)。
+    expect((await switchEnvSession('E:/ws', 'env:pwn-vm')).ok).toBe(true);
   }
 
   it('锚定环境:tools + system-init 白名单含 delegate_task', async () => {
-    anchorEnv();
+    await anchorEnv();
     await sendPiChatMessage({ text: 'hi' });
     await waitTurnSettled();
     const opts = runLoopMock.mock.calls[0][0] as { tools: Array<{ name: string }> };
@@ -909,7 +988,7 @@ describe('delegate_task 接回生产(W1)', () => {
   });
 
   it('execute:广播 started/tool-use/tool-result/finished(摘要,同 taskId)', async () => {
-    anchorEnv();
+    await anchorEnv();
     await sendPiChatMessage({ text: 'hi' });
     await waitTurnSettled();
     const opts = runLoopMock.mock.calls[0][0] as {
@@ -951,7 +1030,7 @@ describe('delegate_task 接回生产(W1)', () => {
   });
 
   it('finished 摘要截断 200 字(带省略号),不带过程', async () => {
-    anchorEnv();
+    await anchorEnv();
     await sendPiChatMessage({ text: 'hi' });
     await waitTurnSettled();
     const opts = runLoopMock.mock.calls[0][0] as {
@@ -972,7 +1051,7 @@ describe('delegate_task 接回生产(W1)', () => {
   });
 
   it('1.1.10(A′):finished 广播带 loopSessionId(= 子 loop details.sessionId)', async () => {
-    anchorEnv();
+    await anchorEnv();
     await sendPiChatMessage({ text: 'hi' });
     await waitTurnSettled();
     const opts = runLoopMock.mock.calls[0][0] as {
@@ -1407,9 +1486,11 @@ describe('1.2.7 域边界接线(§三:配方默认 + 内容信号动态修正 �
 });
 
 describe('1.2.7 域补丁:子代理继承会话域(delegate_task 按域收窄)', () => {
-  function anchorEnv() {
+  async function anchorEnv() {
     selectionMock.mockReturnValue({ kind: 'env', id: 'pwn-vm' });
     configEnvironments.mockReturnValue([VM_ENTRY]);
+    // 审查 #1:select 联动切线后线锚才生效(见「锚定环境」测试注)。
+    expect((await switchEnvSession('E:/ws', 'env:pwn-vm')).ok).toBe(true);
   }
   type DelegateTool = {
     name: string;
@@ -1423,14 +1504,14 @@ describe('1.2.7 域补丁:子代理继承会话域(delegate_task 按域收窄)',
   }
 
   it('binary 域(配方默认 pwn-vm):清单内子代理可派发', async () => {
-    anchorEnv();
+    await anchorEnv();
     const delegate = await delegateTool();
     // critic 在 binary 域清单内——通过校验进 spawn(runLoop mock 直接 done)。
     await expect(delegate.execute('tc', { task: 't', agent: 'critic' })).resolves.toBeDefined();
   });
 
   it('whitebox 域(配方 code-audit):binary 独有子代理被拒,错误列出可用清单', async () => {
-    anchorEnv();
+    await anchorEnv();
     collectCapsMock.mockResolvedValue({
       engines: { engines: [] }, recipes: [], environments: [],
       selection: { kind: 'recipe', name: 'code-audit', instanceId: 'ca-1' },
@@ -1805,6 +1886,8 @@ describe('1.8.7 P5：环境占用（turn 起跑登记 / 收尾释放）', () => 
   it('交互 turn：env 锚定时占用 {by: local, line}，turn 收尾释放', async () => {
     selectionMock.mockReturnValue({ kind: 'env', id: 'pwn-vm' });
     configEnvironments.mockReturnValue([VM_ENTRY]);
+    // 审查 #1:select 联动切线后线锚才生效(见「锚定环境」测试注)。
+    expect((await switchEnvSession('E:/ws', 'env:pwn-vm')).ok).toBe(true);
     let duringTurn: EnvOccupancy | undefined;
     runLoopMock.mockImplementation(async function* () {
       duringTurn = envOccupancy('pwn-vm');
@@ -1821,6 +1904,8 @@ describe('1.8.7 P5：环境占用（turn 起跑登记 / 收尾释放）', () => 
   it('起跑人署名：ALS actor 进占用 by（团队协作的「谁在用」）', async () => {
     selectionMock.mockReturnValue({ kind: 'env', id: 'pwn-vm' });
     configEnvironments.mockReturnValue([VM_ENTRY]);
+    // 审查 #1:select 联动切线后线锚才生效(见「锚定环境」测试注)。
+    expect((await switchEnvSession('E:/ws', 'env:pwn-vm')).ok).toBe(true);
     let duringTurn: EnvOccupancy | undefined;
     runLoopMock.mockImplementation(async function* () {
       duringTurn = envOccupancy('pwn-vm');

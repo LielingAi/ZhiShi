@@ -6,6 +6,9 @@
  * 假实现/真 spawn+mock 不行——这里用 spawn 注入,绝无网络/ssh。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import type { EnvironmentEntry } from '../../shared/config-types';
 
@@ -23,6 +26,8 @@ import {
   spawnSubLoop,
   type SubLoopResult,
 } from './subagent';
+import { makeBoundaryHook } from './boundary';
+import { createRecallTool, RECALL_TOOL_NAME } from './recall';
 import type { LoopModelResolution } from './pi-provider';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
 
@@ -100,8 +105,9 @@ describe('createDelegateTaskTool', () => {
     const r = await tool.execute('tc1', { task: '查 gcc 版本' });
     expect(calls).toHaveLength(1);
     expect(calls[0].prompt).toBe('查 gcc 版本');
-    // 子白名单默认收窄为 [env_exec](比父少 delegate_task)
-    expect(calls[0].allowedTools).toEqual(['env_exec']);
+    // 子白名单缺省 = [env_exec, recall]——与子 loop 默认注册集同源(审查 #10:
+    // 旧断言钉死 [env_exec] 正是盲区,注册了 recall 却授权拦截)。
+    expect(calls[0].allowedTools).toEqual(['env_exec', 'recall']);
     const text = (r.content[0] as { text: string }).text;
     expect(text).toContain('gcc 15.0.1');
     expect(text).toContain('sub-42');
@@ -279,5 +285,57 @@ describe('B8(1.2.6):子 loop 接 abort + 压缩', () => {
     expect(r.error).toBeUndefined();
     const opts = runLoopMock.mock.calls[0][0] as { signal?: AbortSignal };
     expect(opts.signal).toBeUndefined();
+  });
+});
+
+describe('审查 #10:委派白名单与子 loop 工具注册同源(recall 可取回)', () => {
+  beforeEach(() => {
+    runLoopMock.mockReset();
+  });
+
+  it('缺省委派:下传白名单含 recall,真实 boundary 放行(不再 block)', async () => {
+    const { spawn, calls } = fakeSpawn();
+    const tool = createDelegateTaskTool({ env: VM_ENV, resolution: RESOLUTION, parentAllowedTools: PARENT_TOOLS, spawn });
+    await tool.execute('tc-src', { task: '取回被置换的历史段' });
+    const allowed = calls[0].allowedTools!;
+    // 同源契约:缺省白名单 = 子 loop 默认注册集(env_exec + recall)。
+    expect(allowed).toContain(RECALL_TOOL_NAME);
+    // 交真实 boundary 判定(审查报告的隔离验证口径):recall 不得被结构性
+    // 白名单拦——修复前 allowedTools=['env_exec'],这里返回 { block:true }。
+    const hook = makeBoundaryHook(VM_ENV, { allowedTools: allowed });
+    const verdict = await hook({ toolCall: { name: RECALL_TOOL_NAME }, args: { lines: '2-3' } } as never);
+    expect(verdict).toBeUndefined();
+  });
+
+  it('长子回合原文随子 loop 持久化,recall 按行区间实际取回(不只「允许调用」)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'subagent-recall-'));
+    try {
+      const original = '崩溃样本 0x4141 的栈回溯原文';
+      runLoopMock.mockImplementation(async function* () {
+        yield {
+          type: 'done',
+          messages: [
+            { role: 'user', content: original, timestamp: 1 },
+            { role: 'assistant', content: [{ type: 'text', text: '结论:堆溢出' }], timestamp: 2 },
+          ],
+        };
+      });
+      const r = await spawnSubLoop({
+        prompt: '分析崩溃',
+        env: VM_ENV,
+        resolution: RESOLUTION,
+        parentAllowedTools: PARENT_TOOLS,
+        storeDir: dir,
+      });
+      expect(r.error).toBeUndefined();
+      // 取回闭环:同一 sessionId + 同一 storeDir,recall 读到的必须是原文。
+      const recall = createRecallTool({ getSessionId: () => r.sessionId, dir });
+      const out = await recall.execute('rc-1', { lines: '2-3' });
+      const text = (out.content[0] as { text: string }).text;
+      expect(text).toContain(original);
+      expect(text).toContain('堆溢出');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
