@@ -18,6 +18,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.9] - 2026-10-14
+
+> **关键链路审查修复批**（依据 `docs/design/chain-audit-2026-10-14.md`，11 项跨层缺陷全部落地，每项先红后绿带回归用例）。主线三件事：执行现场按会话线绑定（不再读工作区全局选择）、旧会话接口补齐线归属授权、内部调度调用带受控认证身份。
+
+### Fixed
+
+- **环境锚串线（P1）**：交互 turn / refs 解析 / headless invoke 三处执行现场改按会话线绑定解析（含战役介入回合按目标线映射反查）；工作区全局选择只剩"创线"语义——同工作区两条不同环境的线不再互串执行现场。
+- **旧会话接口遗漏线归属授权（P1）**：sessions 读/改/删/列表统一先由 metadata 解析 loopSessionId 再过 `canReadLine/canWriteLine`；`admin-archive` 五个 handler 同面收口；删除面未扩大（不含主轨迹文件）。
+- **开启鉴权后内部调度被 401（P1）**：Rust 侧 cron execute-sync / session-state 轮询 / trust 上报挂 `ZHISHI_TOKEN` Bearer（与 CLI 同一 documented 通道；未开放 localhost、未动 Node 闸）。
+- **记忆蒸馏消费旧会话文件（P2）**：pi 时代会话只写 `loop-sessions/`，蒸馏/研究弧摘录与土匪回路 judge 证据窗此前全部静默断供——读侧改两源兼容（绑定优先、旧文件兜底），pi 块数组展开 + 数字/ISO 双格式时间戳。**错记忆的罚分与好记忆的加分恢复生效**。
+- **子代理 recall 契约断裂（P2）**：注册面与授权白名单同源（`DEFAULT_SUB_LOOP_ALLOWED_TOOLS`），指针卡提示的 recall 不再被 boundary 必拦；补了"长子回合原文持久化后实际可取回"的端到端断言。
+- **战役崩溃游标不推进（P2）**：派单时点推进并持久化游标，同一批样本不再重复分诊；介入失败不回滚（下一批天然重扫覆盖，理由见代码注释）。
+- **战役停止与在途介入竞态（P2）**：终态不被迟到回调复活；定时器异步拒绝有明确归属。
+- **GUI 终端 WS 未带 token（P2）**：WS URL 拼 `?token=`（与 HTTP/SSE 同源），日志不落凭据。
+- **内置 local 环境终端判不存在（P2）**：终端 resolver 读侧统一含内置条目的注册表。
+- **Actor.source 传播丢失（P2）**：ALS 帧补传 actorSource，本机身份不再被重建为 token 身份误拒私有线。
+- **报告导出按旧映射键读取（P2）**：导出端带 actor 走三段式新键解析 + 被导出线读权限检查。
+
+### 验证
+
+typecheck 0 错；vitest 全池 2735 通过（净增 39 项回归测试，全部先红后绿）；cargo test 175 通过；eslint/depcruise 改动面零违规。审查报告归档 `docs/design/chain-audit-2026-10-14.md`。
+
 ## [1.9.8] - 2026-10-13
 
 > **auto-run 观察面补齐**：无人值守循环此前只有 list 一行状态，现在能看清单条 run 的全部细节并实时盯梢。
