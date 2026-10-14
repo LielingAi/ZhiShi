@@ -155,7 +155,7 @@ function collectRecentSessions(_workspacePath: string, now: number = Date.now())
       lastMessagePreview: s.lastMessagePreview,
       messageCount: s.stats?.messageCount,
       lastActiveAt: s.lastActiveAt,
-      excerpt: sessionExcerpt(s.id),
+      excerpt: sessionExcerpt(s),
       workspaceName: s.agentDir ? (basename(s.agentDir.replace(/[/\\]+$/, '')) || undefined) : undefined,
     }));
 }
@@ -254,22 +254,59 @@ async function runTopicsArc(
 // ===== 一次性 headless LLM 调用（镜像 title-generator 的单发路径） =====
 
 /** 从会话文件（~/.zhishi/sessions/<id>.jsonl）取尾部内容摘录（断点 5 修复）。 */
-function sessionExcerpt(sessionId: string, maxMessages = 6, maxChars = 900): string {
+/** chain-audit #11：transcript 两源兼容读取。
+ *
+ *  pi 时代（D25 起）会话只写 loop-sessions/<loopSessionId>.jsonl，sessions/
+ *  目录零新增（本机实测该目录为空）——旧 reader 只读 sessions/ 导致认知弧/
+ *  研究弧的会话摘录与土匪回路 judge 证据窗全部静默断供。
+ *  解析口径：绑定优先（meta.loopSessionId → loop-sessions），旧 SDK 文件兜底。 */
+function resolveTranscriptFile(meta: { id: string; loopSessionId?: string }): string | null {
+  const dataDir = getZhiShiDataDir();
+  if (meta.loopSessionId) {
+    const p = join(dataDir, 'loop-sessions', `${meta.loopSessionId}.jsonl`);
+    if (existsSync(p)) return p;
+  }
+  const legacy = join(dataDir, 'sessions', `${meta.id}.jsonl`);
+  return existsSync(legacy) ? legacy : null;
+}
+
+/** jsonl 行 → 归一化 { role, text, t }：pi 轨迹的块数组 content 展开
+ * （只拼 text 块，thinking 不进摘录）、数字 ms 与 ISO 字符串时间戳通吃。
+ *  只收 user/assistant（与旧 reader 同口径），meta/system-prompt/toolResult
+ *  行跳过。行坏/时间戳非法 → t=0（时间窗读者滤掉，尾部摘录读者照收）。 */
+function parseTranscriptLine(line: string): { role: 'user' | 'assistant'; text: string; t: number } | null {
   try {
-    const p = join(getZhiShiDataDir(), 'sessions', `${sessionId}.jsonl`);
-    if (!existsSync(p)) return '';
+    const m = JSON.parse(line) as { role?: string; content?: unknown; timestamp?: unknown };
+    if (m.role !== 'user' && m.role !== 'assistant') return null;
+    let text = '';
+    if (typeof m.content === 'string') {
+      text = m.content;
+    } else if (Array.isArray(m.content)) {
+      text = (m.content as Array<{ type?: string; text?: unknown }>)
+        .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text as string)
+        .join(' ');
+    }
+    text = text.replace(/\s+/g, ' ').trim();
+    if (!text || text.startsWith('<system-reminder>')) return null;
+    const rawT = m.timestamp;
+    const t = typeof rawT === 'number' ? rawT : Date.parse(String(rawT ?? ''));
+    return { role: m.role, text, t: Number.isFinite(t) ? t : 0 };
+  } catch {
+    return null;
+  }
+}
+
+/** 测试探针导出（chain-audit #11 回归）；生产调用方是蒸馏弧/研究弧收集器。 */
+export function sessionExcerpt(meta: { id: string; loopSessionId?: string }, maxMessages = 6, maxChars = 900): string {
+  try {
+    const p = resolveTranscriptFile(meta);
+    if (!p) return '';
     const lines = readFileSync(p, 'utf-8').split(/\r?\n/).filter((l) => l.trim().length > 0);
     const messages: string[] = [];
     for (const line of lines.slice(-30)) {
-      try {
-        const m = JSON.parse(line) as { role?: string; content?: string };
-        if ((m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim()) {
-          const text = m.content.replace(/\s+/g, ' ').trim();
-          if (text && !text.startsWith('<system-reminder>')) {
-            messages.push(`${m.role === 'user' ? '用户' : 'AI'}: ${text.slice(0, 160)}`);
-          }
-        }
-      } catch { /* skip bad line */ }
+      const m = parseTranscriptLine(line);
+      if (m) messages.push(`${m.role === 'user' ? '用户' : 'AI'}: ${m.text.slice(0, 160)}`);
     }
     return messages.slice(-maxMessages).join('\n  ').slice(0, maxChars);
   } catch {
@@ -282,29 +319,32 @@ function sessionExcerpt(sessionId: string, maxMessages = 6, maxChars = 900): str
 /** 引用时间窗内的会话证据：扫全部 session 文件，取 [ts-5min, ts+evidenceAfterMs]
  *  的对话。evidenceAfterMs 参数化（默认 +2h）：安全类记忆走 24h 窗（见
  *  RESEARCH_RECALL_CONTEXT_AFTER_MS 的注释）。 */
-function recallContext(ts: number, evidenceAfterMs: number = RECALL_CONTEXT_AFTER_MS): string {
+/** 测试探针导出（chain-audit #11 回归）；生产调用方是 settleRecalls。 */
+export function recallContext(ts: number, evidenceAfterMs: number = RECALL_CONTEXT_AFTER_MS): string {
   try {
-    const dir = join(getZhiShiDataDir(), 'sessions');
-    if (!existsSync(dir)) return '';
+    const dataDir = getZhiShiDataDir();
+    // chain-audit #11：pi 轨迹（loop-sessions）与旧 SDK 会话（sessions/）双源
+    // 都扫——pi 行的时间戳是数字 ms，旧格式是 ISO 字符串（parseTranscriptLine
+    // 双格式兼容）。
+    const dirs = [join(dataDir, 'loop-sessions'), join(dataDir, 'sessions')];
     const from = ts - RECALL_CONTEXT_BEFORE_MS;
     const to = ts + evidenceAfterMs;
     const messages: Array<{ t: number; line: string }> = [];
-    for (const name of readdirSync(dir)) {
-      if (!name.endsWith('.jsonl')) continue;
-      const p = join(dir, name);
-      try {
-        if (statSync(p).mtimeMs < from) continue;
-        for (const line of readFileSync(p, 'utf-8').split(/\r?\n/)) {
-          if (!line.trim()) continue;
-          const m = JSON.parse(line) as { role?: string; content?: string; timestamp?: string };
-          if ((m.role !== 'user' && m.role !== 'assistant') || typeof m.content !== 'string') continue;
-          const t = Date.parse(m.timestamp ?? '');
-          if (!Number.isFinite(t) || t < from || t > to) continue;
-          const text = m.content.replace(/\s+/g, ' ').trim();
-          if (!text || text.startsWith('<system-reminder>')) continue;
-          messages.push({ t, line: `${m.role === 'user' ? '用户' : 'AI'}: ${text.slice(0, 160)}` });
-        }
-      } catch { /* 单文件坏了不拖累整批 */ }
+    for (const dir of dirs) {
+      if (!existsSync(dir)) continue;
+      for (const name of readdirSync(dir)) {
+        if (!name.endsWith('.jsonl')) continue;
+        const p = join(dir, name);
+        try {
+          if (statSync(p).mtimeMs < from) continue;
+          for (const line of readFileSync(p, 'utf-8').split(/\r?\n/)) {
+            if (!line.trim()) continue;
+            const m = parseTranscriptLine(line);
+            if (!m || !m.t || m.t < from || m.t > to) continue;
+            messages.push({ t: m.t, line: `${m.role === 'user' ? '用户' : 'AI'}: ${m.text.slice(0, 160)}` });
+          }
+        } catch { /* 单文件坏了不拖累整批 */ }
+      }
     }
     return messages
       .sort((a, b) => a.t - b.t)
@@ -611,7 +651,7 @@ function collectResearchSessionExcerpts(events: ResearchEvent[]): string[] {
     .filter((s) => s.agentDir && [...workspaces].some((w) => workspacePathsEqual(s.agentDir as string, w)))
     .sort((a, b) => (Date.parse(b.lastActiveAt ?? '') || 0) - (Date.parse(a.lastActiveAt ?? '') || 0))
     .slice(0, RESEARCH_DISTILL_MAX_SESSION_EXCERPTS)
-    .map((s) => sessionExcerpt(s.id))
+    .map((s) => sessionExcerpt(s))
     .filter((x) => x.trim().length > 0);
 }
 
