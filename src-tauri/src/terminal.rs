@@ -127,6 +127,10 @@ impl TerminalManager {
     /// `command` runs a specific command line (via the platform shell)
     /// instead of the default interactive shell; `None` keeps the default.
     /// `env_tag` is the D14 boundary marker (see TerminalSession.env_tag).
+    // clippy too_many_arguments 豁免：9 个参数是 PTY 创建面（/term/open）的真实
+    // 契约——每个参数都独立语义、无聚类成 struct 的真实收益；为 lint 拆签名是
+    // 假重构。（该告警随 clippy 1.91 收紧浮现，存量函数，非本批引入。）
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         self: &Arc<Self>,
         app: &AppHandle,
