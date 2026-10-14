@@ -8,6 +8,10 @@
  * env 缺失/guest 通道/原生模块缺席/spawn 抛错 → error 帧 + close、
  * 非法帧/未知类型静默忽略。
  */
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import type { EnvironmentEntry } from '../../shared/config-types';
@@ -220,6 +224,38 @@ describe('TermSessionManager — 生命周期', () => {
     expect(pty.killed.length).toBeGreaterThan(0);
     expect(ws.closed.length).toBeGreaterThan(0);
     expect(manager.activeCount()).toBe(0);
+  });
+});
+
+describe('TermSessionManager — 默认 env 解析（内置 local 条目，回归 #8）', () => {
+  /**
+   * 不注入 envResolver——走默认 resolver（真 loadConfig，ZHISHI_DATA_DIR 指到
+   * 无 config.json 的临时目录 = 全新配置）。修复前默认 resolver 用只读原始
+   * 条目的 listEnvironments，未物化的内置 local 被判「未找到环境」。
+   */
+  it('全新配置（config 无 environments）attach local → 走内置条目 spawn cmd.exe', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zhishi-term-local-test-'));
+    const prev = process.env.ZHISHI_DATA_DIR;
+    process.env.ZHISHI_DATA_DIR = dir;
+    try {
+      const pty = new FakePty();
+      const spawnCalls: Array<{ file: string; args: string[] }> = [];
+      const manager = new TermSessionManager({
+        ptyLoader: () => ({ spawn: (file, args) => { spawnCalls.push({ file, args }); return pty; } }),
+        resolveHostBinary: (c) => c,
+        log: () => {},
+      });
+      const ws = new FakeWs();
+      manager.attach(ws, 'local');
+      expect(spawnCalls).toHaveLength(1);
+      expect(spawnCalls[0]!.file).toBe('cmd.exe'); // 内置 local = windows 家族宿主 PTY
+      expect(ws.sent.filter((s) => s.includes('"error"'))).toHaveLength(0);
+      manager.closeAll();
+    } finally {
+      if (prev === undefined) delete process.env.ZHISHI_DATA_DIR;
+      else process.env.ZHISHI_DATA_DIR = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

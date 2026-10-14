@@ -204,7 +204,14 @@ export async function startCampaign(
   const record = createCampaignRecord(input);
   const controller = { record, intervening: false } as CampaignController;
   const pollMs = deps.pollMs ?? CAMPAIGN_POLL_MS;
-  controller.timer = setInterval(() => { void tickCampaign(controller, deps); }, pollMs);
+  controller.timer = setInterval(() => {
+    // tick 是 fire-and-forget 的定时任务——拒绝必须有归属：统一在此捕获
+    // 告警，不外溢成未处理 rejection（采样通道异常/停止竞态都可能让 tick
+    // reject，无人接球会拖到进程级异常处理）。
+    tickCampaign(controller, deps).catch((err) => {
+      console.warn(`[campaign] 采样 tick 异常（${controller.record.id}）：${err instanceof Error ? err.message : String(err)}`);
+    });
+  }, pollMs);
   activeCampaigns.set(input.loopSessionId, controller);
   await saveCampaignRecord(controller.record, { dir: deps.storeDir });
   return controller.record;
@@ -277,7 +284,7 @@ async function tickCampaign(controller: CampaignController, deps: CampaignRuntim
     if (fresh > 0 && !controller.intervening && canTransition(record.state, 'triaging')) {
       await fireIntervention(controller, deps, 'triaging', {
         ts: new Date(now).toISOString(), kind: 'fuzz:new-crash', detail: `新增 ${fresh} 个崩溃样本`,
-      }, buildCrashInterventionText(record, fresh));
+      }, buildCrashInterventionText(record, fresh), { crashCursor: crashCount });
       return;
     }
   }
@@ -303,20 +310,41 @@ async function fireIntervention(
   intoState: 'plateau' | 'triaging',
   signal: { ts: string; kind: CampaignRecord['signalLog'][number]['kind']; detail: string },
   text: string,
+  opts: { crashCursor?: number } = {},
 ): Promise<void> {
   controller.intervening = true;
   try {
-    const entered = transitionCampaign(controller.record, intoState, { ts: signal.ts, signal });
+    const entered0 = transitionCampaign(controller.record, intoState, { ts: signal.ts, signal });
+    // 崩溃游标的提交时点 = 派单时点：进入 triaging 即把本批样本计入游标并随
+    // 转移持久化。游标语义是「已派单给介入回合的样本数」，不是「分拣完成数」
+    // （分拣结果账本由 agent 维护在 crashClasses/research_archive）。介入失败
+    // 不回滚：crash-triager 是目录级批处理，下一批新样本触发的介入会重扫整个
+    // crashes 目录覆盖漏单；回滚只会让不可用模型路径每个采样周期重烧一次预算。
+    const entered = opts.crashCursor !== undefined ? { ...entered0, crashCursor: opts.crashCursor } : entered0;
     controller.record = entered;
     await saveCampaignRecord(entered, { dir: deps.storeDir });
-    const r = await deps.invokeRound({ text, loopSessionId: controller.record.loopSessionId });
-    if (r.error) {
-      console.warn(`[campaign] 介入回合失败（${controller.record.id}）：${r.error}`);
+    // invoke 自身的拒绝也归一为回合失败——不让它穿透 finally 逃逸成 tick 的
+    // 未处理 rejection。
+    let roundError: string | undefined;
+    try {
+      const r = await deps.invokeRound({ text, loopSessionId: controller.record.loopSessionId });
+      roundError = r.error;
+    } catch (err) {
+      roundError = err instanceof Error ? err.message : String(err);
     }
-    // 回合结束回 running（崩溃游标推进在 triaging 入口已记信号；分拣产出由
-    // agent 经 research_log 落库——战役不接管内容账本）。
+    if (roundError) {
+      console.warn(`[campaign] 介入回合失败（${controller.record.id}）：${roundError}`);
+    }
+    // 迟到完成守卫：回合在飞期间战役可能已被人终止/判完成——终态不可被
+    // 迟到回调复活（状态机拒绝 stopped/completed → running），安静收尾。
+    if (!canTransition(controller.record.state, 'running')) {
+      console.warn(`[campaign] 介入回合结束时战役已是 ${controller.record.state}（${controller.record.id}）——不复活，回合结果仅留信号史`);
+      return;
+    }
+    // 回合结束回 running（分拣产出由 agent 经 research_log 落库——战役不
+    // 接管内容账本）。
     const back = transitionCampaign(controller.record, 'running', {
-      signal: { ts: new Date().toISOString(), kind: 'intervention', detail: `${intoState} 介入回合结束${r.error ? '（失败：' + r.error + '）' : ''}` },
+      signal: { ts: new Date().toISOString(), kind: 'intervention', detail: `${intoState} 介入回合结束${roundError ? '（失败：' + roundError + '）' : ''}` },
     });
     controller.record = back;
     await saveCampaignRecord(back, { dir: deps.storeDir });

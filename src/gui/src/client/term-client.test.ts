@@ -59,6 +59,17 @@ describe('termUrl（http base → ws 地址）', () => {
     );
     expect(termUrl('https://x/', 'a b')).toBe('wss://x/api/admin/environment/term?env=a%20b');
   });
+
+  it('带 token → ?token= query 兜底（浏览器 WS 不能自定义 Authorization 头），token 编码', () => {
+    expect(termUrl('http://127.0.0.1:4317', 'e1', 'zst_ab/c?=')).toBe(
+      'ws://127.0.0.1:4317/api/admin/environment/term?env=e1&token=zst_ab%2Fc%3F%3D',
+    );
+  });
+
+  it('无 token / 空白 token → 不带 token 参数（本机模式行为一字节不变）', () => {
+    expect(termUrl('http://x', 'e1')).toBe('ws://x/api/admin/environment/term?env=e1');
+    expect(termUrl('http://x', 'e1', '   ')).toBe('ws://x/api/admin/environment/term?env=e1');
+  });
 });
 
 describe('parseServerFrame（服务端帧解析）', () => {

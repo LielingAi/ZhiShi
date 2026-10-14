@@ -108,6 +108,16 @@ export class GuiSidecarClient {
     return `${this.base}${path.startsWith('/') ? path : `/${path}`}`;
   }
 
+  /**
+   * 鉴权 token 只读出口——仅供无法自定义 Authorization 头的通道（浏览器
+   * WebSocket 终端 attach，见 client/term-client.termUrl）拼 `?token=`
+   * query 用。与 withAuth 的 Bearer 同源（构造时已做空白归一）。调用方
+   * 不得打印/落日志携带 token 的完整 URL。
+   */
+  get authToken(): string | undefined {
+    return this.token;
+  }
+
   /** 合并 Authorization 头（仅远端模式配了 token 时；缺省原样返回）。 */
   private withAuth(headers?: Record<string, string>): Record<string, string> | undefined {
     if (!this.token) return headers;

@@ -101,7 +101,9 @@ function TermPane({ envKey }: { envKey: string | null }): React.JSX.Element {
     setExitInfo(null);
     let ws: WebSocket;
     try {
-      ws = new WebSocket(termUrl(client.base, envKey));
+      // 鉴权 token 走 query（浏览器 WS 不能自定义 Authorization 头）；
+      // 与 SSE/HTTP 的 Bearer 同源（client.authToken）。
+      ws = new WebSocket(termUrl(client.base, envKey, client.authToken));
     } catch (err) {
       setStatus('closed');
       setNotice(`WebSocket 建立失败：${err instanceof Error ? err.message : String(err)}`);

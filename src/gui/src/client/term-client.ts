@@ -66,10 +66,17 @@ export interface TermClientOptions {
 // 纯 helper（可单测）
 // ---------------------------------------------------------------------------
 
-/** http base → 终端 ws 地址（协议替换；envKey encodeURIComponent）。 */
-export function termUrl(base: string, envKey: string): string {
+/**
+ * http base → 终端 ws 地址（协议替换；envKey encodeURIComponent）。
+ * 鉴权 token 走 `?token=` query——浏览器 WebSocket 不能自定义 Authorization
+ * 头，服务端 upgrade 闸同口径兜底（见 term-pty.ts installTermUpgradeHandler）。
+ * token 与 HTTP/SSE 的 Bearer 同源（GuiSidecarClient.authToken）；只进 URL，
+ * 调用方不得打印/落日志携带 token 的完整 URL。
+ */
+export function termUrl(base: string, envKey: string, token?: string): string {
   const wsBase = base.replace(/^http/i, 'ws').replace(/\/+$/, '');
-  return `${wsBase}/api/admin/environment/term?env=${encodeURIComponent(envKey)}`;
+  const auth = token?.trim() ? `&token=${encodeURIComponent(token)}` : '';
+  return `${wsBase}/api/admin/environment/term?env=${encodeURIComponent(envKey)}${auth}`;
 }
 
 /** 服务端 JSON 文本帧解析（非法 JSON / 未知类型 → null）。 */

@@ -263,6 +263,118 @@ describe('campaign-runtime（假依赖驱动）', () => {
     await stopCampaign(rec.id, { dir });
   });
 
+  it('tick：同一批崩溃只分诊一次——游标推进到采样计数并持久化（回归 #5）', async () => {
+    const dir = makeDir();
+    const entry = { id: 'e1', kind: 'vm' as const, vmName: 'v', address: '10.0.0.1', createdAt: '' };
+    const statsText = 'saved_items     : 42\nsaved_crashes   : 2\nexecs_per_sec   : 204\n';
+    const deps = makeDeps({
+      storeDir: dir,
+      findEnv: () => entry,
+      envExec: (_e, cmd) => Promise.resolve(
+        cmd.startsWith('cat ') ? { ok: true, stdout: statsText } : { ok: true, stdout: '2' },
+      ),
+      pollMs: 5,
+    });
+    const rec = await startCampaign({ workspace: '/w', envId: 'e1', loopSessionId: 'ls-cursor', goal: 'g' }, deps);
+    await new Promise((r) => setTimeout(r, 150));
+    // crashCount 恒 2：修复前游标不动，每个周期重发一次分诊（重复烧预算）
+    const triageRounds = deps.rounds.filter((t) => t.includes('新崩溃'));
+    expect(triageRounds).toHaveLength(1);
+    expect(activeCampaignForLine('ls-cursor')?.crashCursor).toBe(2);
+    // 游标是持久化状态——落盘副本同样推进
+    expect(loadCampaignRecord(rec.id, { dir })?.crashCursor).toBe(2);
+    await stopCampaign(rec.id, { dir });
+  });
+
+  it('tick：介入回合失败不回滚游标（下一周期不重复烧分诊预算；漏单由目录级批处理覆盖）', async () => {
+    const dir = makeDir();
+    const entry = { id: 'e1', kind: 'vm' as const, vmName: 'v', address: '10.0.0.1', createdAt: '' };
+    const statsText = 'saved_items     : 42\nsaved_crashes   : 2\nexecs_per_sec   : 204\n';
+    const deps = makeDeps({
+      storeDir: dir,
+      findEnv: () => entry,
+      envExec: (_e, cmd) => Promise.resolve(
+        cmd.startsWith('cat ') ? { ok: true, stdout: statsText } : { ok: true, stdout: '2' },
+      ),
+      invokeRound: (input) => { deps.rounds.push(input.text); return Promise.resolve({ error: 'model down' }); },
+      pollMs: 5,
+    });
+    const rec = await startCampaign({ workspace: '/w', envId: 'e1', loopSessionId: 'ls-fail', goal: 'g' }, deps);
+    await new Promise((r) => setTimeout(r, 150));
+    const triageRounds = deps.rounds.filter((t) => t.includes('新崩溃'));
+    expect(triageRounds).toHaveLength(1); // 失败也派过单——游标已提交，不重烧
+    expect(loadCampaignRecord(rec.id, { dir })?.crashCursor).toBe(2);
+    await stopCampaign(rec.id, { dir });
+  });
+
+  it('stop 与在途介入完成的竞态：终态不被迟到回调复活，无未处理 rejection（回归 #6）', async () => {
+    const dir = makeDir();
+    const entry = { id: 'e1', kind: 'vm' as const, vmName: 'v', address: '10.0.0.1', createdAt: '' };
+    const statsText = 'saved_items     : 42\nsaved_crashes   : 2\nexecs_per_sec   : 204\n';
+    const rejections: unknown[] = [];
+    const onRejection = (e: unknown): void => { rejections.push(e); };
+    process.on('unhandledRejection', onRejection);
+    let releaseInvoke: (() => void) | null = null;
+    const invoked: string[] = [];
+    try {
+      const deps = makeDeps({
+        storeDir: dir,
+        findEnv: () => entry,
+        envExec: (_e, cmd) => Promise.resolve(
+          cmd.startsWith('cat ') ? { ok: true, stdout: statsText } : { ok: true, stdout: '2' },
+        ),
+        invokeRound: (input) => {
+          invoked.push(input.text);
+          return new Promise((resolve) => { releaseInvoke = () => resolve({}); });
+        },
+        pollMs: 5,
+      });
+      const rec = await startCampaign({ workspace: '/w', envId: 'e1', loopSessionId: 'ls-race', goal: 'g' }, deps);
+      for (let i = 0; i < 100 && invoked.length === 0; i++) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(invoked.some((t) => t.includes('新崩溃'))).toBe(true); // 介入在飞
+      expect(activeCampaignForLine('ls-race')?.state).toBe('triaging');
+      // 人终止（介入仍在飞），随后回合才返回
+      const stop = await stopCampaign(rec.id, { dir });
+      expect(stop.ok).toBe(true);
+      releaseInvoke!();
+      await new Promise((r) => setTimeout(r, 50));
+      // 终态不被复活；迟到回调安静收尾（修复前：stopped→running 非法转移抛出，
+      // 经被丢弃的 tick Promise 变成未处理 rejection）
+      expect(loadCampaignRecord(rec.id, { dir })?.state).toBe('stopped');
+      await new Promise((r) => setTimeout(r, 50));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+      resetCampaignRegistryForTest();
+    }
+  });
+
+  it('tick：采样通道抛错由定时器兜底告警，不产生未处理 rejection（回归 #6）', async () => {
+    const dir = makeDir();
+    const entry = { id: 'e1', kind: 'vm' as const, vmName: 'v', address: '10.0.0.1', createdAt: '' };
+    const rejections: unknown[] = [];
+    const onRejection = (e: unknown): void => { rejections.push(e); };
+    process.on('unhandledRejection', onRejection);
+    try {
+      const deps = makeDeps({
+        storeDir: dir,
+        findEnv: () => entry,
+        envExec: () => Promise.reject(new Error('ssh down')),
+        pollMs: 5,
+      });
+      const rec = await startCampaign({ workspace: '/w', envId: 'e1', loopSessionId: 'ls-tickerr', goal: 'g' }, deps);
+      await new Promise((r) => setTimeout(r, 60));
+      await stopCampaign(rec.id, { dir });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+      resetCampaignRegistryForTest();
+    }
+  });
+
   it('tick：墙钟耗尽 → paused + 介入通知', async () => {
     const dir = makeDir();
     const deps = makeDeps({ storeDir: dir, pollMs: 5 });

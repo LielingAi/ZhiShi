@@ -285,3 +285,23 @@ describe('GuiSidecarClient.probeHealth（1.8.7 P0.5 远端探活）', () => {
     if (!r.ok) expect(r.error).toContain('ECONNREFUSED');
   });
 });
+
+// ── authToken 只读出口（WS term attach 走 ?token= query，与 HTTP Bearer 同源）──
+
+describe('GuiSidecarClient.authToken（term WS URL 构造用）', () => {
+  const fetchImpl: GuiFetch = async () => ({
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    headers: { get: () => null },
+    json: async () => ({}),
+    text: async () => '',
+    body: null,
+  });
+
+  it('配了 token → 返回原值；未配/空白 → undefined（与本机模式一字节不变同口径）', () => {
+    expect(new GuiSidecarClient({ base: 'http://x', token: 'zst_abc', fetchImpl }).authToken).toBe('zst_abc');
+    expect(new GuiSidecarClient({ base: 'http://x', fetchImpl }).authToken).toBeUndefined();
+    expect(new GuiSidecarClient({ base: 'http://x', token: '   ', fetchImpl }).authToken).toBeUndefined();
+  });
+});

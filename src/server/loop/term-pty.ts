@@ -33,7 +33,7 @@ import { WebSocketServer } from 'ws';
 
 import type { EnvironmentEntry } from '../../shared/config-types';
 import { verifyHttpAuth } from '../auth/gate';
-import { findEnvironmentEntry, listEnvironments } from '../environment/registry';
+import { findEnvironmentEntry, listEnvironmentsWithBuiltin } from '../environment/registry';
 import { loadConfig } from '../utils/admin-config';
 import { augmentedProcessEnv, resolveCommand } from '../utils/env-utils';
 import { getScriptDir } from '../utils/runtime';
@@ -157,11 +157,14 @@ interface ActiveTermSession {
   ws: TermWebSocket;
 }
 
-/** 默认 env 解析:与 environment/exec 同口径的具名环境注册表。
+/** 默认 env 解析:与 environment/exec 同口径的具名环境注册表,读侧用
+ *  listEnvironmentsWithBuiltin——内置本机条目（'local'）平时不落盘,只读
+ *  清单必须补进虚拟条目,否则全新配置下 attach 本机会被判「未找到环境」。
+ *  写回配置仍走原始 listEnvironments（本模块不写配置,无污染面）。
  *  (admin-config/registry 已由 env-exec/chat-engine 静态引入——这里复用,
  *  不新增冷启动成本。) */
 function defaultEnvResolver(envKey: string): EnvironmentEntry | null {
-  return findEnvironmentEntry(listEnvironments(loadConfig()), envKey) ?? null;
+  return findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), envKey) ?? null;
 }
 
 export class TermSessionManager {
