@@ -10,6 +10,11 @@ import { createArchiveTool } from './loop/tools';
 import { broadcast } from './sse';
 // 1.8.7 P2 署名：人纠正的 byUser = 请求 actor（token 命中即真实成员名）。
 import { currentActor } from './auth/actor';
+// P3b 双线制（chain-audit #2）：显式 sessionId 的档案读/写与 sessions 路由
+// 同一授权面——list 走读闸、correct/resolve/abandon/op 走写闸；显式与默认
+// （当前线）同口径。
+import { canReadLine, canWriteLine } from './auth/line-access';
+import { getLineOwnership } from './loop/line-ownership';
 
 /** 与 admin-api.ts 的 AdminResponse 形状一致（提取处保持独立定义,不回头
  *  依赖 admin-api——绞杀纪律:抽出块不回指主文件）。 */
@@ -29,6 +34,7 @@ export function handleArchiveList(payload: { sessionId?: string }): AdminRespons
     ? payload.sessionId.trim()
     : getPiSessionId();
   if (!sessionId) return { success: false, error: 'archive/list: 会话未锚定（先开/接会话）' };
+  if (!canReadLine(currentActor(), getLineOwnership(sessionId))) return { success: false, error: 'forbidden' };
   try {
     return { success: true, data: { archive: loadArchive(sessionId) as unknown as Record<string, unknown> } };
   } catch (err) {
@@ -47,6 +53,7 @@ export async function handleArchiveCorrect(payload: {
     ? payload.sessionId.trim()
     : getPiSessionId();
   if (!sessionId) return { success: false, error: 'archive/correct: 会话未锚定（先开/接会话）' };
+  if (!canWriteLine(currentActor(), getLineOwnership(sessionId))) return { success: false, error: 'forbidden' };
   const id = String(payload?.id ?? '').trim();
   if (!id) return { success: false, error: 'archive/correct: 需要 id（目标实体，如 C#1）' };
   const reason = String(payload?.reason ?? '').trim();
@@ -75,6 +82,7 @@ export async function handleArchiveResolve(payload: {
     ? payload.sessionId.trim()
     : getPiSessionId();
   if (!sessionId) return { success: false, error: 'archive/resolve: 会话未锚定（先开/接会话）' };
+  if (!canWriteLine(currentActor(), getLineOwnership(sessionId))) return { success: false, error: 'forbidden' };
   const id = String(payload?.id ?? '').trim();
   if (!id) return { success: false, error: 'archive/resolve: 需要 id（目标实体，如 H#1/Q#1）' };
   const note = typeof payload?.note === 'string' && payload.note.trim() ? payload.note.trim() : undefined;
@@ -105,6 +113,7 @@ export async function handleArchiveAbandon(payload: {
     ? payload.sessionId.trim()
     : getPiSessionId();
   if (!sessionId) return { success: false, error: 'archive/abandon: 会话未锚定（先开/接会话）' };
+  if (!canWriteLine(currentActor(), getLineOwnership(sessionId))) return { success: false, error: 'forbidden' };
   const id = String(payload?.id ?? '').trim();
   if (!id) return { success: false, error: 'archive/abandon: 需要 id（目标实体，如 H#1/Q#1）' };
   const reason = String(payload?.reason ?? '').trim();
@@ -143,6 +152,7 @@ export async function handleArchiveOp(
     ? payload.sessionId.trim()
     : getPiSessionId();
   if (!sessionId) return { success: false, error: 'archive/op: 会话未锚定（先开/接会话，或显式传 sessionId）' };
+  if (!canWriteLine(currentActor(), getLineOwnership(sessionId))) return { success: false, error: 'forbidden' };
   const tool = createArchiveTool({
     getSessionId: () => sessionId,
     ...(deps.dir ? { dir: deps.dir } : {}),

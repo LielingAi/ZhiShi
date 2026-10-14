@@ -4280,7 +4280,8 @@ fn check_sidecar_session_state(port: u16) -> Option<String> {
         Err(_) => return None,
     };
 
-    match client.get(&url).send() {
+    // chain-audit #3：auth 开启时 session-state 也要 Bearer（readonly 档即可）。
+    match crate::local_http::with_internal_auth_blocking(client.get(&url)).send() {
         Ok(response) if response.status().is_success() => {
             #[derive(Deserialize)]
             #[serde(rename_all = "camelCase")]
@@ -4673,8 +4674,10 @@ pub async fn execute_cron_task<R: Runtime>(
     }));
 
     // Send request to Sidecar
-    let response = client
-        .post(&url)
+    // chain-audit #3：auth.enabled=true 时 /cron/execute-sync 要求 operator——
+    // 挂 ZHISHI_TOKEN 内部身份（local_http::with_internal_auth；未配置则不带头，
+    // 不开放 localhost 豁免）。
+    let response = crate::local_http::with_internal_auth(client.post(&url))
         .json(&payload)
         .send()
         .await;

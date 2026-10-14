@@ -327,7 +327,7 @@ zhishi auth enable
 # 安装版：node "<安装目录>/resources/server-dist.js" --host 192.168.x.x --port 7411 --agent-dir <数据目录>
 ```
 
-注意：`auth enable` 之后，**大脑所在机器上原有的 GUI/CLI 也要带 token**（GUI 设置 → 连接里填，CLI 用 `--token` / `ZHISHI_TOKEN`）。
+注意：`auth enable` 之后，**大脑所在机器上原有的 GUI/CLI 也要带 token**（GUI 设置 → 连接里填，CLI 用 `--token` / `ZHISHI_TOKEN`）。**桌面宿主（Tauri 应用）的内部调度请求**（cron 定时任务、session-state 轮询、trust/event 上报）同样过统一鉴权闸：给宿主进程配置 `ZHISHI_TOKEN` 环境变量（建议 operator 档 token），应用启动时继承即可；未配置则定时任务会被 401 拒绝（日志可见），不静默绕过。
 
 ### 角色与权限（严格递增：readonly < operator < reviewer）
 

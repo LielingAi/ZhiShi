@@ -108,6 +108,8 @@ import { getPiAgentState, envSwitchBlocker, getEnvSessionBinding, getPiLineMissi
 import { isMissionKind, MISSION_KINDS } from '../shared/mission';
 import { loadArchive } from './loop/archive';
 import { envKeyForSelection, getEnvSessionLine, loadEnvSessionsMap, removeEnvSessionsForEnvId } from './environment/env-sessions';
+import { canReadLine } from './auth/line-access';
+import { getLineOwnership } from './loop/line-ownership';
 import { resolveLoopModel } from './loop/pi-provider';
 import { runLoopText } from 'zhishi-loop-core/loop';
 import { buildLoopTranscript } from './loop/transcript';
@@ -3276,6 +3278,15 @@ export async function handleReportExport(payload: {
   const envId = entry?.id ?? envKey.replace(/^(env|recipe):/, '');
   const resolution = resolveLoopModel();
   const modelId = resolution ? `${resolution.providerId ?? 'custom'}/${resolution.modelId}` : null;
+  // P3b 双线制（chain-audit #4）：导出线解析与会话选择同一契约——带
+  // currentActor 走三段式归属键（不带 actor 只查旧两段式键，新会话导出会
+  // 落空/读错线）；被导出线先过读闸——私有线对 owner+reviewer 之外
+  // forbidden（routeAdminApi 映 403），归属未知旧线放行（1.8.6 语义）。
+  const exportActor = currentActor();
+  const exportLine = getEnvSessionLine(loadEnvSessionsMap(), workspace, envKey, { actor: exportActor.name });
+  if (exportLine && !canReadLine(exportActor, getLineOwnership(exportLine.loopSessionId))) {
+    return { success: false, error: 'forbidden' };
+  }
   const result = await exportReport(
     { workspace, sanitize, env: { envId, entry } },
     {
@@ -3283,8 +3294,7 @@ export async function handleReportExport(payload: {
       // workspace 参数）——旧口径「limit 1000 先截断再事后 filter」在长研究里
       // 摸顶，别的工作区事件挤占窗口导致本工作区结果失真。
       listWorkspaceEvents: (ws) => listResearchEvents({ limit: 1000, workspace: ws }),
-      findLoopSessionId: (ws) =>
-        getEnvSessionLine(loadEnvSessionsMap(), ws, envKey)?.loopSessionId,
+      findLoopSessionId: () => exportLine?.loopSessionId,
       loadTranscript: (loopSessionId) => buildLoopTranscript(loopSessionId),
       // 1.4.4 研究档案交付投影（loadArchive 读侧容错：缺失/损坏 → 空档案）。
       loadArchive: (loopSessionId) => loadArchive(loopSessionId),

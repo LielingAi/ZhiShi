@@ -597,7 +597,7 @@ const httpServer = honoServe({
         // 第二套上下文）——请求链上 currentActor() 可取；auth 关闭时 verdict
         // 带 LOCAL_ACTOR，本地模式零行为变化。
         return withLogContext(
-          { actorName: verdict.actor.name, actorRole: verdict.actor.role },
+          { actorName: verdict.actor.name, actorRole: verdict.actor.role, actorSource: verdict.actor.source },
           async () => applyCorsDecision(request.headers.get('origin'), isAuthEnabled(), await handleRequest(request)),
         );
       });

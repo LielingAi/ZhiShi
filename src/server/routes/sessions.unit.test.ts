@@ -39,9 +39,14 @@ const chatEngineMocks = vi.hoisted(() => ({
 }));
 
 // P3b 双线制:线归属元数据 mock(不碰真盘;默认无记录 = 归属未知,权限放行)。
-vi.mock('../loop/line-ownership', () => ({
-  getLineOwnership: vi.fn(() => undefined),
+const lineOwnershipMocks = vi.hoisted(() => ({
+  getLineOwnership: vi.fn((): { owner?: string; shared?: boolean; updatedAt: string } | undefined => undefined),
+  loadLineOwnershipStore: vi.fn(() => ({ version: 1 as const, lines: {} as Record<string, { owner?: string; shared?: boolean; updatedAt: string }> })),
+  getLineOwnershipFromStore: vi.fn(
+    (store: { lines: Record<string, { owner?: string; shared?: boolean; updatedAt: string }> }, id: string) => store.lines[id],
+  ),
 }));
+vi.mock('../loop/line-ownership', () => lineOwnershipMocks);
 
 vi.mock('../SessionStore', () => storeMocks);
 vi.mock('../environment/env-sessions', () => envSessionsMocks);
@@ -56,6 +61,10 @@ import {
   handlePatchSession,
   handleSwitchSession,
 } from './sessions';
+
+import { withLogContext } from '../logger-context';
+
+import type { LogContext } from '../logger-context';
 
 const jsonResponse: JsonResponseFn = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -100,6 +109,8 @@ beforeEach(() => {
   envSessionsMocks.findEnvKeyForLoopSession.mockReturnValue(undefined);
   agentSessionMocks.getSessionId.mockReturnValue('active-session-id');
   chatEngineMocks.getPiMessages.mockReturnValue([]);
+  lineOwnershipMocks.getLineOwnership.mockReturnValue(undefined);
+  lineOwnershipMocks.loadLineOwnershipStore.mockReturnValue({ version: 1, lines: {} });
 });
 
 describe('GET /sessions（handleListSessions）', () => {
@@ -402,5 +413,128 @@ describe('POST /sessions/fork（handleForkSession）', () => {
     const res = await handleForkSession(jsonRequest({ messageId: 'm1' }), jsonResponse);
     expect((await bodyOf(res)).sessionId).toBe('forked');
     expect(chatEngineMocks.forkPiChat).toHaveBeenCalledWith('m1');
+  });
+});
+
+/**
+ * P3b 双线制旧会话接口授权（chain-audit 2026-10-14 #2）：详情/删除/修改/列表
+ * 必须与 switch/fork 走同一 canReadLine/canWriteLine 判定面——先由 metadata
+ * 解析 loopSessionId，再查线归属。Alice 私有线对 Bob（operator）读 403、写 403、
+ * 列表不可见；归属未知（无记录/无 loopSessionId）维持旧行为放行。
+ */
+describe('P3b 线归属闸（旧会话接口，chain-audit #2）', () => {
+  const asActor = <T>(actor: LogContext, fn: () => T): T => withLogContext(actor, fn);
+  const BOB: LogContext = { actorName: 'bob', actorRole: 'operator', actorSource: 'token' };
+  const ALICE: LogContext = { actorName: 'alice', actorRole: 'operator', actorSource: 'token' };
+  const REVIEWER: LogContext = { actorName: 'carol', actorRole: 'reviewer', actorSource: 'token' };
+  const ALICE_PRIVATE = { owner: 'alice', updatedAt: '2026-10-14T00:00:00.000Z' };
+
+  describe('GET /sessions/:id 读闸', () => {
+    beforeEach(() => {
+      storeMocks.getSessionData.mockReturnValue({
+        ...makeMeta('s-priv', { loopSessionId: 'ls-alice' }),
+        messages: [makeMsg('m1')],
+      });
+      lineOwnershipMocks.getLineOwnership.mockReturnValue(ALICE_PRIVATE);
+    });
+
+    it('Bob（operator，非主）读 Alice 私有线 → 403', async () => {
+      const res = await asActor(BOB, () => handleGetSession('/sessions/s-priv', new URL('http://localhost/sessions/s-priv'), jsonResponse));
+      expect(res.status).toBe(403);
+      expect((await bodyOf(res)).error).toBe('forbidden');
+    });
+
+    it('owner 本人 / reviewer 可读；无归属记录（旧线）放行', async () => {
+      const ok1 = await asActor(ALICE, () => handleGetSession('/sessions/s-priv', new URL('http://localhost/sessions/s-priv'), jsonResponse));
+      expect(ok1.status).toBe(200);
+      const ok2 = await asActor(REVIEWER, () => handleGetSession('/sessions/s-priv', new URL('http://localhost/sessions/s-priv'), jsonResponse));
+      expect(ok2.status).toBe(200);
+
+      lineOwnershipMocks.getLineOwnership.mockReturnValue(undefined);
+      const legacy = await asActor(BOB, () => handleGetSession('/sessions/s-priv', new URL('http://localhost/sessions/s-priv'), jsonResponse));
+      expect(legacy.status).toBe(200);
+    });
+
+    it('会话无 loopSessionId 绑定（旧会话）→ 无归属可查，放行', async () => {
+      storeMocks.getSessionData.mockReturnValue({ ...makeMeta('s-old'), messages: [] });
+      const res = await asActor(BOB, () => handleGetSession('/sessions/s-old', new URL('http://localhost/sessions/s-old'), jsonResponse));
+      expect(res.status).toBe(200);
+      expect(lineOwnershipMocks.getLineOwnership).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('DELETE /sessions/:id 写闸', () => {
+    beforeEach(() => {
+      storeMocks.getSessionMetadata.mockReturnValue(makeMeta('s-priv', { loopSessionId: 'ls-alice' }));
+      storeMocks.deleteSession.mockResolvedValue(true);
+      lineOwnershipMocks.getLineOwnership.mockReturnValue(ALICE_PRIVATE);
+    });
+
+    it('Bob 删 Alice 私有线会话 → 403 且不触 store', async () => {
+      const res = await asActor(BOB, () => handleDeleteSession('/sessions/s-priv', jsonResponse));
+      expect(res.status).toBe(403);
+      expect(storeMocks.deleteSession).not.toHaveBeenCalled();
+    });
+
+    it('owner 本人可删（metadata 删除面不变，不扩到 loop-sessions 轨迹）', async () => {
+      const res = await asActor(ALICE, () => handleDeleteSession('/sessions/s-priv', jsonResponse));
+      expect(res.status).toBe(200);
+      expect(storeMocks.deleteSession).toHaveBeenCalledWith('s-priv');
+    });
+  });
+
+  describe('PATCH /sessions/:id 写闸', () => {
+    beforeEach(() => {
+      storeMocks.getSessionMetadata.mockReturnValue(makeMeta('s-priv', { loopSessionId: 'ls-alice' }));
+      storeMocks.updateSessionMetadata.mockResolvedValue(makeMeta('s-priv'));
+      lineOwnershipMocks.getLineOwnership.mockReturnValue(ALICE_PRIVATE);
+    });
+
+    it('Bob 改 Alice 私有线会话标题 → 403 且不触 store', async () => {
+      const res = await asActor(BOB, () =>
+        handlePatchSession('/sessions/s-priv', jsonRequest({ title: 'hijacked' }), jsonResponse));
+      expect(res.status).toBe(403);
+      expect(storeMocks.updateSessionMetadata).not.toHaveBeenCalled();
+    });
+
+    it('owner 本人可改', async () => {
+      const res = await asActor(ALICE, () =>
+        handlePatchSession('/sessions/s-priv', jsonRequest({ title: 'mine' }), jsonResponse));
+      expect(res.status).toBe(200);
+    });
+  });
+
+  describe('GET /sessions 列表按线归属过滤', () => {
+    beforeEach(() => {
+      storeMocks.getAllSessionMetadata.mockReturnValue([
+        makeMeta('s-alice', { loopSessionId: 'ls-alice' }),
+        makeMeta('s-shared', { loopSessionId: 'ls-shared' }),
+        makeMeta('s-legacy', { loopSessionId: 'ls-legacy' }),
+        makeMeta('s-noloop'),
+      ]);
+      lineOwnershipMocks.loadLineOwnershipStore.mockReturnValue({
+        version: 1,
+        lines: {
+          'ls-alice': ALICE_PRIVATE,
+          'ls-shared': { owner: 'alice', shared: true, updatedAt: '2026-10-14T00:00:00.000Z' },
+          // ls-legacy 无记录 = 归属未知旧线
+        },
+      });
+    });
+
+    it('Bob 列表不见 Alice 私有线会话；共享线/归属未知/无绑定行保留', async () => {
+      const res = await asActor(BOB, () => handleListSessions(new URL('http://localhost/sessions'), jsonResponse));
+      const ids = ((await bodyOf(res)).sessions as SessionMetadata[]).map((s) => s.id);
+      expect(ids).toEqual(['s-shared', 's-legacy', 's-noloop']);
+    });
+
+    it('owner 本人与 reviewer 可见全部；本机（无 ALS 帧）恒放行', async () => {
+      const asAlice = await asActor(ALICE, () => handleListSessions(new URL('http://localhost/sessions'), jsonResponse));
+      expect(((await bodyOf(asAlice)).sessions as SessionMetadata[])).toHaveLength(4);
+      const asCarol = await asActor(REVIEWER, () => handleListSessions(new URL('http://localhost/sessions'), jsonResponse));
+      expect(((await bodyOf(asCarol)).sessions as SessionMetadata[])).toHaveLength(4);
+      const local = await handleListSessions(new URL('http://localhost/sessions'), jsonResponse);
+      expect(((await bodyOf(local)).sessions as SessionMetadata[])).toHaveLength(4);
+    });
   });
 });

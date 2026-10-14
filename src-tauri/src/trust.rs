@@ -210,7 +210,8 @@ pub fn record_transition(
             tauri::async_runtime::spawn(async move {
                 let url = format!("http://127.0.0.1:{port}/api/admin/trust/event");
                 let client = local_http::json_client(std::time::Duration::from_secs(10));
-                match client.post(&url).json(&payload).send().await {
+                // chain-audit #3：auth 开启时 trust/event 要求 operator——挂内部 token。
+                match local_http::with_internal_auth(client.post(&url)).json(&payload).send().await {
                     Ok(resp) if resp.status().is_success() => {}
                     other => {
                         ulog_warn!(

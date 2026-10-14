@@ -81,3 +81,110 @@ pub fn blocking_builder() -> reqwest::blocking::ClientBuilder {
     #[allow(clippy::disallowed_methods)]
     reqwest::blocking::Client::builder().no_proxy()
 }
+
+
+// ---------------------------------------------------------------------------
+// 内部调用的受控身份（1.8.7 P1 团队大脑，chain-audit 2026-10-14 #3）
+// ---------------------------------------------------------------------------
+
+/// 内部 Sidecar 调用的 Bearer token 解析。
+///
+/// 复用 CLI 同口径的 `ZHISHI_TOKEN` 环境变量（与 src/cli/remote.ts
+/// resolveRemoteToken 同一通道）——token 由 `zhishi auth add` 发放，只进
+/// Authorization 头，不打印不落盘。auth.enabled=false 时服务端本就不要求
+/// token，不带头则行为与旧版一字节相同；auth 开启而未配置时服务端 401，
+/// 调度方日志可见——**不做 localhost 豁免，不绕过路由鉴权**。
+///
+/// 角色要求：/cron/execute-sync 与 trust/event 需 operator 档，session-state
+/// 轮询 readonly 即可——给宿主进程配的内部 token 建议 operator。
+pub fn internal_token() -> Option<String> {
+    std::env::var("ZHISHI_TOKEN")
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// 给异步请求构建器挂内部身份（有 token 时；无则原样返回）。
+pub fn with_internal_auth(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match internal_token() {
+        Some(token) => req.bearer_auth(token),
+        None => req,
+    }
+}
+
+/// blocking 变体（wake-lock 轮询等同步路径）。
+pub fn with_internal_auth_blocking(
+    req: reqwest::blocking::RequestBuilder,
+) -> reqwest::blocking::RequestBuilder {
+    match internal_token() {
+        Some(token) => req.bearer_auth(token),
+        None => req,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // env 变量是进程级共享状态——串行化本模块测试，防并行用例互相污染。
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn internal_token_unset_or_blank_is_none() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ZHISHI_TOKEN");
+        assert_eq!(internal_token(), None);
+        std::env::set_var("ZHISHI_TOKEN", "   ");
+        assert_eq!(internal_token(), None);
+        std::env::remove_var("ZHISHI_TOKEN");
+    }
+
+    #[test]
+    fn internal_token_trims_value() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("ZHISHI_TOKEN", "  zst_abc  ");
+        assert_eq!(internal_token().as_deref(), Some("zst_abc"));
+        std::env::remove_var("ZHISHI_TOKEN");
+    }
+
+    #[test]
+    fn with_internal_auth_attaches_bearer_header() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("ZHISHI_TOKEN", "zst_test");
+        let client = builder().build().unwrap();
+        let req = with_internal_auth(client.get("http://127.0.0.1:1/api/session-state"))
+            .build()
+            .unwrap();
+        assert_eq!(
+            req.headers().get("authorization").unwrap(),
+            "Bearer zst_test"
+        );
+        std::env::remove_var("ZHISHI_TOKEN");
+    }
+
+    #[test]
+    fn with_internal_auth_without_token_leaves_request_untouched() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("ZHISHI_TOKEN");
+        let client = builder().build().unwrap();
+        let req = with_internal_auth(client.post("http://127.0.0.1:1/cron/execute-sync"))
+            .build()
+            .unwrap();
+        assert!(req.headers().get("authorization").is_none());
+    }
+
+    #[test]
+    fn with_internal_auth_blocking_attaches_bearer_header() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("ZHISHI_TOKEN", "zst_block");
+        let client = blocking_builder().build().unwrap();
+        let req = with_internal_auth_blocking(client.get("http://127.0.0.1:1/api/session-state"))
+            .build()
+            .unwrap();
+        assert_eq!(
+            req.headers().get("authorization").unwrap(),
+            "Bearer zst_block"
+        );
+        std::env::remove_var("ZHISHI_TOKEN");
+    }
+}

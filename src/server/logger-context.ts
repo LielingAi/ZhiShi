@@ -32,6 +32,9 @@ export interface LogContext {
     /** 1.8.7 P2：请求身份（过闸后由 index.ts 并入）——actor.ts currentActor() 的读取面。 */
     actorName?: string;
     actorRole?: string;
+    /** chain-audit #9：身份来源随 name/role 一并传播（'token'|'local'），
+     *  currentActor 不再按「有无 actorName」推断来源。 */
+    actorSource?: string;
 }
 
 /**
@@ -154,6 +157,7 @@ export function getLogContext(): LogContext | undefined {
         runtime: als.runtime ?? ambient.runtime,
         actorName: als.actorName ?? ambient.actorName,
         actorRole: als.actorRole ?? ambient.actorRole,
+        actorSource: als.actorSource ?? ambient.actorSource,
     };
 }
 

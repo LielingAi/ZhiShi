@@ -81,6 +81,32 @@ describe('currentActor（ALS 传播）', () => {
       expect(currentActor().name).toBe('alice');
     });
   });
+
+  // chain-audit 2026-10-14 #9：HTTP 上下文必须连同 source 一并传播——auth
+  // 关闭时 gate 给 LOCAL_ACTOR，经 ALS 重建后不得变成 token 身份（否则本机
+  // 请求会被私有线写闸误拒、并误入「token actor 登记 owner」分支）。
+  it('ALS 帧带 actorSource=local → source 保留 local（不重建为 token）', () => {
+    const seen = withLogContext(
+      { actorName: 'local', actorRole: 'reviewer', actorSource: 'local' },
+      () => currentActor(),
+    );
+    expect(seen).toEqual({ name: 'local', role: 'reviewer', source: 'local' });
+  });
+
+  it('ALS 帧带 actorSource=token → token actor；source 随嵌套帧覆盖/恢复', () => {
+    withLogContext({ actorName: 'local', actorRole: 'reviewer', actorSource: 'local' }, () => {
+      expect(currentActor().source).toBe('local');
+      withLogContext({ actorName: 'bob', actorRole: 'operator', actorSource: 'token' }, () => {
+        expect(currentActor()).toEqual({ name: 'bob', role: 'operator', source: 'token' });
+      });
+      expect(currentActor().source).toBe('local');
+    });
+  });
+
+  it('无 actorSource 的旧帧 → 兜底 token（1.8.7 原语义不变）', () => {
+    const seen = withLogContext({ actorName: 'bob', actorRole: 'operator' }, () => currentActor());
+    expect(seen.source).toBe('token');
+  });
 });
 
 describe('turn 起跑人登记（originatorForSession）', () => {

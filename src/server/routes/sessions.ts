@@ -31,7 +31,7 @@ import { isMissionKind, MISSION_KINDS } from '../../shared/mission';
 // reviewer 读 403;矩阵见 auth/line-access.ts）。
 import { currentActor } from '../auth/actor';
 import { canReadLine, canWriteLine } from '../auth/line-access';
-import { getLineOwnership } from '../loop/line-ownership';
+import { getLineOwnership, getLineOwnershipFromStore, loadLineOwnershipStore } from '../loop/line-ownership';
 
 import type { SessionMetadata } from '../types/session';
 
@@ -149,6 +149,15 @@ export async function handleListSessions(url: URL, jsonResponse: JsonResponseFn)
 
             : getAllSessionMetadata().filter(s => isDesktopSessionSource(s.source));
 
+          // P3b 双线制(chain-audit #2):列表按线归属过滤——私有线对不可读者
+          // (owner/reviewer 之外)整行不可见,与详情/写入口同一判定面;无
+          // loopSessionId 绑定或归属无记录(旧会话/旧线)的行放行(1.8.6 语义)。
+          // store 整表只读一次,不逐行 getLineOwnership(每次都读盘)。
+          const listActor = currentActor();
+          const ownershipStore = loadLineOwnershipStore();
+          const visibleSessions = sessions.filter((s) =>
+            !s.loopSessionId || canReadLine(listActor, getLineOwnershipFromStore(ownershipStore, s.loopSessionId)));
+
           // Zero-trust: strip providerEnvJson before handing to clients.
 
           // Matches PATCH response behavior (see PATCH /sessions/:id).
@@ -158,7 +167,7 @@ export async function handleListSessions(url: URL, jsonResponse: JsonResponseFn)
 
           const envMap = loadEnvSessionsMap();
 
-          const safeSessions = sessions
+          const safeSessions = visibleSessions
 
             .map(normalizeSessionListPreview)
 
@@ -237,6 +246,15 @@ export async function handleGetSession(pathname: string, url: URL, jsonResponse:
           }
 
           return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+
+        }
+
+        // P3b 双线制读闸(chain-audit #2):metadata 绑定 loop 线且为私有线时,
+        // owner + reviewer 之外 403(与 /sessions/switch 同一判定面);无
+        // loopSessionId 绑定(旧会话)无归属可查,放行(1.8.6 语义)。
+        if (session.loopSessionId && !canReadLine(currentActor(), getLineOwnership(session.loopSessionId))) {
+
+          return jsonResponse({ success: false, error: 'forbidden' }, 403);
 
         }
 
@@ -413,6 +431,17 @@ export async function handleDeleteSession(pathname: string, jsonResponse: JsonRe
 
 
 
+        // P3b 双线制写闸(chain-audit #2):先由 metadata 解析 loopSessionId 查
+        // 归属——私有线仅 owner 可删。删除面不变(仅 metadata + 旧格式消息文件),
+        // 不含主 loop-sessions 轨迹文件;metadata 缺席的会话由 deleteSession 落 404。
+        const deleteLoopId = getSessionMetadata(sessionId)?.loopSessionId;
+
+        if (deleteLoopId && !canWriteLine(currentActor(), getLineOwnership(deleteLoopId))) {
+
+          return jsonResponse({ success: false, error: 'forbidden' }, 403);
+
+        }
+
         const deleted = await deleteSession(sessionId);
 
         if (!deleted) {
@@ -434,6 +463,19 @@ export async function handlePatchSession(pathname: string, request: Request, jso
         if (!sessionId) {
 
           return jsonResponse({ success: false, error: 'Session ID required.' }, 400);
+
+        }
+
+
+
+        // P3b 双线制写闸(chain-audit #2):先由 metadata 解析 loopSessionId 查
+        // 归属——私有线仅 owner 可写(与 switch/fork 同一判定面);无绑定/无记录
+        // 的旧会话放行,由 updateSessionMetadata 自行落 404。
+        const patchLoopId = getSessionMetadata(sessionId)?.loopSessionId;
+
+        if (patchLoopId && !canWriteLine(currentActor(), getLineOwnership(patchLoopId))) {
+
+          return jsonResponse({ success: false, error: 'forbidden' }, 403);
 
         }
 

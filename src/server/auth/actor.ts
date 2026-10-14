@@ -8,7 +8,7 @@
  *     模式可观察行为与 1.8.6 一字节相同（只多出 additive 署名字段）。
  *
  * 传播两条路：
- *   1. 请求内：index.ts 把 actorName/actorRole 并入 ALS 日志上下文
+ *   1. 请求内：index.ts 把 actorName/actorRole/actorSource 并入 ALS 日志上下文
  *     （withLogContext——沿用现有上下文系统，不另起第二套），请求处理
  *     链上 currentActor() 可取；
  *   2. turn 内：turn 起跑时（chat/send 起跑、队列 promote、cron/auto-run
@@ -31,7 +31,12 @@ export const LOCAL_ACTOR: Actor = { name: 'local', role: 'reviewer', source: 'lo
 
 /**
  * 当前 ALS 帧里的 actor；无帧或无身份字段 → LOCAL_ACTOR。
- * （请求帧由 index.ts 在过闸后并入 actorName/actorRole。）
+ * （请求帧由 index.ts 在过闸后并入 actorName/actorRole/actorSource。）
+ *
+ * chain-audit 2026-10-14 #9：source 以帧里显式传播的 actorSource 为准——
+ * auth 关闭时 gate 给的是 LOCAL_ACTOR（source=local），HTTP 上下文若只带
+ * name/role，这里把本机身份重建为 token 身份，会被私有线写闸误拒。无
+ * actorSource 的旧帧（历史生成点/测试直填）兜底 'token'，保持 1.8.7 原语义。
  */
 export function currentActor(): Actor {
   const ctx = getLogContext();
@@ -39,7 +44,7 @@ export function currentActor(): Actor {
     return {
       name: ctx.actorName,
       role: ctx.actorRole && isAuthRole(ctx.actorRole) ? ctx.actorRole : LOCAL_ACTOR.role,
-      source: 'token',
+      source: ctx.actorSource === 'local' || ctx.actorSource === 'token' ? ctx.actorSource : 'token',
     };
   }
   return LOCAL_ACTOR;
