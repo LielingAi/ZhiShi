@@ -18,6 +18,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.10] - 2026-10-15
+
+> **新原生工具 `code_query`**（设计稿 `docs/design/code-search-design.md` v2）：研究环境内的 CPG 语义查询——模型用 CPGQL 问数据流/调用结构问题（"memcpy 且 len 来自报文字段"一语句命中），拿回 file:line + 截断上下文段落。立项依据：xerj spike 证"段落级检索 ≫ 文件级阅读"（7.7×），超大项目审计不再靠 grep 撞大运。joern 随 code-audit/pentest 配方分发，本版只做工具化 + 生命周期 + 成本控制。
+
+### Added
+
+- **`code_query` 原生工具**：`ensure_index`（按需后台建 CPG，分钟级大项目）/ `query`（CPGQL → file:line + sed 现取截断段落）/ `status`。CPG 建在 `<目标根>/.zhishi-cpg/` 随环境生灭（D10/D14），指纹（count+size+mtime）判 stale；截断纪律内建（top≤8 · 条≤1200 字符 · 总量≤10KB，Q3 教训）。与 env_exec 同层挂载（`chat-engine.ts` buildTurnStack）。
+
+### Fixed（joern 4.0.656 E2E 实校钉正，单测抓不到、真链路才暴露）
+
+- `-s` 在 joern 4.x 被静默忽略、掉 REPL 空退 0（假"0 命中"）→ `--script`；`importCpg` 返回 Option → `.get`；节点取位统一 `n.location`（无 .path/.line/.method），`lineNumber` 为 Option。
+- joern 脚本 classpath 无 json4s（编译错）→ 手工拼 JSONL。
+- `importCpg` 把 CPG 拷进 cwd `./workspace/`（8.5MB×2）污染目标树指纹引发重建风暴 → 查询 cwd 落 `.zhishi-cpg/` 内（指纹排除 + 随 CPG 清理）。
+- 指纹 awk 的 `\$` 转义在 mawk 语法错（指纹恒空串）→ base64 包装只需一次 bash 解析，单引号内 `$` 原样。
+- `execInEnvironment` 的 ok 只代表通道成功 → code_query 侧折入 exitCode，分得清"CPGQL 编译错"与"0 命中"；失败回注 joern 报错原文给模型自纠。
+- `ensure_index` 改幂等：ready 时 no-op（不再每次 ensure 强推重建阻塞查询窗口）。
+
+### 验证
+
+typecheck 0 错；eslint 0 违规；vitest 全池 2743 通过（新增 8 项回归，先红后绿）；**E2E 实校**（joern 4.0.656 + usrsctp 真树）：§4 三问重放全绿——Q1/Q2 净荷 9.5KB、Q3 2.4KB（≤10KB 判据），时延 8~9s（≤60s），答案人工核对 ✓；坏查询回注编译错原文、指纹跨查询稳定。
+
 ## [1.9.9] - 2026-10-14
 
 > **关键链路审查修复批**（依据 `docs/design/chain-audit-2026-10-14.md`，11 项跨层缺陷全部落地，每项先红后绿带回归用例）。主线三件事：执行现场按会话线绑定（不再读工作区全局选择）、旧会话接口补齐线归属授权、内部调度调用带受控认证身份。

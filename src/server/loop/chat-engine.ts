@@ -142,6 +142,7 @@ import {
 import { mapLoopEventToSse, toolResultText, type SseOut } from 'zhishi-loop-core/sse-adapter';
 import { createDelegateTaskTool, DELEGATE_TASK_TOOL_NAME } from './subagent';
 import { createEnvBgTool, createEnvExecTool, createResearchLogTool, createArchiveTool, ENV_EXEC_TOOL_NAME, RESEARCH_LOG_TOOL_NAME, RESEARCH_ARCHIVE_TOOL_NAME } from './tools';
+import { createCodeQueryTool, CODE_QUERY_TOOL_NAME } from './code-query';
 import { loadArchive, type ArchiveSnapshot } from './archive';
 import { collectExpertInjection, lastUserTextOf } from './expert-inject';
 import { createIntelSearchTool, INTEL_SEARCH_TOOL_NAME } from './intel';
@@ -1194,7 +1195,7 @@ class ChatEngine {
     // (W1)需要环境(子 loop 靠 env_exec 查证),同样只在锚定后注册。
     // env_bg(P2 渗透试点前置)同环境绑定:后台进程与环境同生共死。
     const toolNames = [
-      ...(env ? [ENV_EXEC_TOOL_NAME, ENV_BG_TOOL_NAME, DELEGATE_TASK_TOOL_NAME] : []),
+      ...(env ? [ENV_EXEC_TOOL_NAME, ENV_BG_TOOL_NAME, DELEGATE_TASK_TOOL_NAME, CODE_QUERY_TOOL_NAME] : []),
       RESEARCH_LOG_TOOL_NAME,
       // 1.4.4 研究档案：harness 原生写通道，无条件注册（与 invoke 线一致）。
       RESEARCH_ARCHIVE_TOOL_NAME,
@@ -1415,7 +1416,7 @@ class ChatEngine {
     blockedToolNames: string[];
   } {
     const tools: AgentTool[] = [
-      ...(env ? [createEnvExecTool(env)] : []),
+      ...(env ? [createEnvExecTool(env), createCodeQueryTool(env)] : []),
       createResearchLogTool(workspaceAnchor ?? this.agentDir, { loopSessionId: sessionId }),
       // 1.4.4 研究档案：显式研究状态的写通道（宿主原生，无条件注册——
       // 档案归属本 turn 快照线；来源锚按 turn 上下文取值：交互 turn 取当前轮
@@ -1993,7 +1994,7 @@ class ChatEngine {
     // 1.2.7(域补丁):与交互 turn 同——域判定一次算出,执行栈与系统提示共用。
     const scenario = options.scenario ?? resolvePiScenario();
     const toolNames = [
-      ...(env ? [ENV_EXEC_TOOL_NAME, ENV_BG_TOOL_NAME, DELEGATE_TASK_TOOL_NAME] : []),
+      ...(env ? [ENV_EXEC_TOOL_NAME, ENV_BG_TOOL_NAME, DELEGATE_TASK_TOOL_NAME, CODE_QUERY_TOOL_NAME] : []),
       RESEARCH_LOG_TOOL_NAME,
       RESEARCH_ARCHIVE_TOOL_NAME,
       INTEL_SEARCH_TOOL_NAME,
