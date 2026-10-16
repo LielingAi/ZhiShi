@@ -25,6 +25,8 @@ import { BoundaryModal } from './components/BoundaryModal';
 import { DecisionModal } from './components/DecisionModal';
 import { AutoRunCard } from './components/AutoRunCard';
 import { TasksPanel } from './components/TasksPanel';
+import { LinesPanel } from './components/LinesPanel';
+import { CrashInspector } from './components/CrashInspector';
 import { QueuePanel } from './components/QueuePanel';
 import { SettingsPage } from './components/SettingsPage';
 import { AttachView } from './components/AttachView';
@@ -265,6 +267,8 @@ export function App(): React.JSX.Element {
       </main>
       <Overlay />
       <TasksPanel />
+      <LinesPanel />
+      <CrashInspector />
       <QueuePanel />
       <BoundaryModal />
       <DecisionModal />

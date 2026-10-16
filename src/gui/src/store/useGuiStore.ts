@@ -58,7 +58,7 @@ import {
   type WizardSource,
 } from '../model/env-wizard';
 import { parseSessionRows, autoRunRowsOf, mergeAutoRunRows, applySessionTitleChange, type SessionMetaRow } from '../model/history';
-import { missionLabel } from '../model/mission';
+import { missionLabel, missionPatchValue, MISSION_OPTIONS } from '../model/mission';
 import {
   INPUT_HISTORY_LIMIT,
   loadInputHistory,
@@ -119,13 +119,15 @@ import {
   buildIntelInjectText,
   effectiveQuery,
 } from '../model/slash-research';
-import { acceptsInlineArgs, parseSlashInput, slashNameSegment } from '../model/slash-input';
+import { acceptsInlineArgs, isKnownCommand, parseSlashInput, slashNameSegment } from '../model/slash-input';
+import { slashObjectItems } from '../model/slash-objects';
 import {
   buildCampaignRows,
-  campaignDetailLines,
   parseCampaignRecords,
   type CampaignRecordLike,
 } from '../model/campaign';
+import { buildLineRows, parseLineList, shortLineId, type LineRow } from '../model/lines';
+import { parseCrashEvents, type CrashEvent } from '../model/crash-events';
 import { parseExpertImport } from '../model/expert-import';
 import { pickModelPickerProviders } from '../model/model-picker';
 import { mergeSidebarSnapshot } from '../model/sidebar';
@@ -149,7 +151,7 @@ import { GuiHttpError, GuiSidecarClient, type SseInput } from '../client/sse-cli
 import { loadConnection, normalizeServerUrl } from '../model/connection';
 
 // ---------------------------------------------------------------------------
-// 常量（v19 SLASH 清单，12 条）
+// 常量（v19 SLASH 清单，15 条——v4 增 resume/kill/mission 三动词，带对象补全）
 // ---------------------------------------------------------------------------
 
 export interface SlashCommand {
@@ -172,6 +174,9 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'intel', detail: '查情报库 [CVE/关键字，留空吃上下文]', group: '研究' },
   { name: 'archive', detail: '整理研究档案（近期进展立实体/收尾终态）', group: '研究' },
   { name: 'decide', detail: '给我选项（人拍板）[议题，留空取上下文焦点]', group: '研究' },
+  { name: 'resume', detail: '切线（resume 有成本）<线id>', group: '线' },
+  { name: 'kill', detail: '终止战役 <id>', group: '战役' },
+  { name: 'mission', detail: '改任务形态 <挖掘|利用|复现|ctf|无类型>', group: '形态' },
   { name: 'reset', detail: '重置对话（新会话）', group: '线程' },
   { name: 'model', detail: '选择模型', group: '配置' },
   { name: 'help', detail: '键位与命令帮助', group: '配置' },
@@ -212,6 +217,9 @@ export interface OverlayState {
   /** 1.5.2：slash overlay 的 inline 参数段（/intel CVE-2024-1234 的
    *  CVE-2024-1234——选中执行时随命令直发，不再丢）。 */
   slashArgs?: string;
+  /** v4 对象补全：对象模式下已解析出的命令名（items 的 name 是对象 id 而非
+   *  /命令——pickOverlay 据此恢复 cmd，对象 id 走 slashArgs 参数）。 */
+  slashObjCommand?: string;
 }
 
 export type ModalKind =
@@ -291,6 +299,8 @@ export interface TasksSelected {
   detail: string;
   /** 子代理 transcript（loop-session 结构化消息）或 server task JSON 摘要。 */
   transcript: LoopTranscriptLine[] | null;
+  /** 第三批 v4：战役对象卡指针——选中战役行时面板按 id 自取 record 渲染 CampaignCard。 */
+  campaignId?: string;
 }
 
 /** boot 进度（environment/up 真链路）。 */
@@ -393,6 +403,19 @@ export interface GuiState {
   queueServer: QueueStatusItem[];
   /** 1.6.8 M2：战役观察卡片数据源（campaign/list；/tasks 第四源，开面板刷新）。 */
   campaigns: CampaignRecordLike[];
+
+  // 1.8.7 P3b：研究线面板（line/list；B6/B7 线一等对象视图）
+  linesOpen: boolean;
+  /** 展示行（model/lines::buildLineRows 装配——归属段/live·busy 都在装配期定型）。 */
+  lines: LineRow[];
+  linesLoading: boolean;
+
+  // 第四批 v4：崩溃件检查器（crash 对象 → research/list 的 fuzz 分拣结论）
+  inspectorOpen: boolean;
+  /** 过滤指纹（crashClass；null = 全量）。 */
+  inspectorFilter: string | null;
+  crashEvents: CrashEvent[];
+  crashEventsLoading: boolean;
 
   // 1.3.1 ⑤：boot 进度
   boot: BootState | null;
@@ -523,6 +546,25 @@ export interface GuiState {
   confirmCampaignStop(): Promise<void>;
   /** 1.6.8 M2：战役卡片「续命」（campaign/resume，仅 paused 态；成功重拉 + toast）。 */
   resumeCampaign(id: string): Promise<void>;
+  // 1.8.7 P3b：研究线面板（B6/B7——line/list 一等对象视图）
+  openLinesPanel(): Promise<void>;
+  closeLinesPanel(): void;
+  /** 重拉线清单（不置 open；面板 ⟳ 与 share/unshare 成功后复用同一路径）。 */
+  refreshLines(): Promise<void>;
+  /** 切到指定线（/sessions/switch 同 resumeSession 语义；busy 类错误服务端裁决,
+   *  文案原样 toast——与 resumeSession 的本地闸不同,切线交给服务端排它）。 */
+  switchToLine(loopSessionId: string): Promise<void>;
+  /** 私有线 → 共享线（line/share；无权时服务端 403,toast 原文）。 */
+  shareLine(loopSessionId: string): Promise<void>;
+  /** 共享线 → 私有线（line/unshare,归属改登记为调用方）。 */
+  unshareLine(loopSessionId: string): Promise<void>;
+  // 第四批 v4：崩溃件检查器（research/list fuzz 桶——crash 对象双击进入）
+  /** 打开检查器；filter = crashClass 指纹（缺省 null = 全量）。crashEvents 为空
+   *  且非 loading 时惰性拉一次 researchList——只此一次不造定时器。 */
+  openCrashInspector(filter?: string | null): void;
+  closeCrashInspector(): void;
+  /** 重拉 fuzz 分拣事件（面板 ⟳ 用；失败保持空清单不阻塞——lines 同款静默）。 */
+  refreshCrashEvents(): Promise<void>;
   openQueuePanel(): Promise<void>;
   closeQueuePanel(): void;
   cancelQueueItem(queueId: string): Promise<void>;
@@ -646,6 +688,17 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   tasksSelected: null,
   campaigns: [],  queueOpen: false,
   queueServer: [],
+
+  // 1.8.7 P3b：研究线面板
+  linesOpen: false,
+  lines: [],
+  linesLoading: false,
+
+  // 第四批 v4：崩溃件检查器
+  inspectorOpen: false,
+  inspectorFilter: null,
+  crashEvents: [],
+  crashEventsLoading: false,
 
   boot: null,
 
@@ -1475,6 +1528,28 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       // overlay.slashArgs（选中执行时直发，修复③）。
       const nameSeg = slashNameSegment(`/${query}`);
       const slashArgs = parseSlashInput(`/${query}`)?.args ?? '';
+      // v4 对象补全：命令名已输完（精确命中已知命令）且该命令有对象表 →
+      // items 换成对象过滤结果（/resume muz 直接选线，不再背 id）；中途
+      // （/res）仍走下面的命令名前缀过滤。
+      if (nameSeg && isKnownCommand(nameSeg)) {
+        const objects = slashObjectItems({ name: nameSeg, args: slashArgs }, {
+          lines: s.lines,
+          campaigns: s.campaigns,
+          missions: MISSION_OPTIONS,
+        });
+        if (objects !== null) {
+          // 对象源明显过期（清单为空）时惰性拉一次——openOverlay 随击键重入，
+          // 模块级闸保证不每击键一发 campaign/list（参照 openTasksPanel 拉法）。
+          if (nameSeg === 'resume' && s.lines.length === 0) {
+            ensureSlashObjectsHydrated('lines', () => void get().refreshLines());
+          }
+          if (nameSeg === 'kill' && s.campaigns.length === 0) {
+            ensureSlashObjectsHydrated('campaigns', () => void refreshCampaigns(get, set));
+          }
+          set({ overlay: { kind, title: `命令 /${nameSeg} · 选对象`, items: objects, sel: 0, slashArgs, slashObjCommand: nameSeg } });
+          return;
+        }
+      }
       const items = SLASH_COMMANDS.filter((c) => c.name.startsWith(nameSeg)).map((c) => ({
         name: `/${c.name}`,
         detail: c.detail,
@@ -1548,10 +1623,14 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
 
     switch (ov.kind) {
       case 'slash': {
-        const cmd = item.name.replace(/^\//, '');
         // 1.5.2 实锤修复③：inline 参数随命令直发 + 清空输入框。
+        // v4 对象补全：对象模式 items 的 name 是对象 id（不是 /命令）——cmd
+        // 取 overlay 记住的命令名，对象 id 走 slashArgs 参数；执行出口仍只有
+        // runSlashCommand 这一条（与 doSend 直输同路径）。
+        const cmd = ov.slashObjCommand ?? item.name.replace(/^\//, '');
+        const args = ov.slashObjCommand ? item.name : ov.slashArgs;
         set({ inputFill: { text: '', nonce: (s.inputFill?.nonce ?? 0) + 1 } });
-        void runSlashCommand(get, set, cmd, ov.slashArgs);
+        void runSlashCommand(get, set, cmd, args);
         break;
       }
       case 'at': {
@@ -1930,15 +2009,16 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     if (!c) return;
     const row = selectTaskRows(state).find((r) => r.key === key);
     if (!row) return;
-    // 1.6.8 M2：战役行详情 = 信号史本地装配（campaign/list 已全量下发，
-    // 不走网络；无信号史的行不进详情）。
+    // 第三批 v4：选中行只留对象卡指针——transcript 不再装配信号文本列表
+    // （CampaignCard 按 campaignId 自取 record 自渲染 feed）；记录缺失时
+    // transcript=null，面板回落原 transcript 渲染。
     if (row.campaignId) {
-      const rec = state.campaigns.find((r) => r.id === row.campaignId);
       set({
         tasksSelected: {
           title: row.name,
           detail: row.detail,
-          transcript: rec ? campaignDetailLines(rec) : null,
+          transcript: null,
+          campaignId: row.campaignId,
         },
       });
       return;
@@ -2019,6 +2099,138 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       state.showToast(`✓ 战役已续命（paused → running，预算重置起算）`);
     } catch (err) {
       state.showToast(`续命失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  // ── 1.8.7 P3b：研究线面板（line/list|share|unshare，B6/B7） ───────────
+
+  async openLinesPanel() {
+    // 置 open+loading 即刻可见,拉取与 resumeSession 同语义不阻塞面板。
+    set({ linesOpen: true, linesLoading: true });
+    await get().refreshLines();
+  },
+
+  closeLinesPanel() {
+    set({ linesOpen: false });
+  },
+
+  async refreshLines() {
+    const c = client;
+    if (!c) return;
+    const workspace = get().workspace;
+    if (!workspace) {
+      // chat:init 未至（workspace 未到）——清单置空等下一次拉取。
+      set({ lines: [], linesLoading: false });
+      return;
+    }
+    try {
+      const res = await api.fetchLineList(c, workspace);
+      // 失败保持空清单不阻塞面板（campaign/list 同款静默——权限/连接问题
+      // 在 share/unshare/switch 的动作回执里会显形）。
+      if (!res.success) {
+        set({ lines: [], linesLoading: false });
+        return;
+      }
+      set({
+        lines: buildLineRows(parseLineList(res.data), { actorName: null }),
+        linesLoading: false,
+      });
+    } catch {
+      set({ lines: [], linesLoading: false });
+    }
+  },
+
+  async switchToLine(loopSessionId: string) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.switchSession(c, loopSessionId);
+      if (!res.success) {
+        // busy/越权类错误文案原样展示（服务端裁决,前端不预判——切线无本地闸）。
+        state.showToast(`切线失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      set({ page: 'chat', drawer: null, overlay: null });
+      get().reconnect();
+      void get().refreshSidebar();
+      get().showToast(`✓ 已切到线 ${shortLineId(loopSessionId)}（resume）`);
+    } catch (err) {
+      state.showToast(`切线失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  async shareLine(loopSessionId: string) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.lineShare(c, loopSessionId);
+      if (!res.success) {
+        // 权限细化在服务端（403 forbidden）——文案原样 toast,前端不挡。
+        state.showToast(`共享失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      await get().refreshLines();
+      get().showToast(`✓ 已共享线 ${shortLineId(loopSessionId)}`);
+    } catch (err) {
+      state.showToast(`共享失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  async unshareLine(loopSessionId: string) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.lineUnshare(c, loopSessionId);
+      if (!res.success) {
+        state.showToast(`转私有失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      await get().refreshLines();
+      get().showToast(`✓ 已转私有线 ${shortLineId(loopSessionId)}（归属改为你）`);
+    } catch (err) {
+      state.showToast(`转私有失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  // ── 第四批 v4：崩溃件检查器（research/list 的 fuzz 分拣结论桶） ────────
+
+  openCrashInspector(filter = null) {
+    set({ inspectorOpen: true, inspectorFilter: filter ?? null });
+    // 惰性拉一次：crashEvents 为空且非 loading 才发请求（research/list 无
+    // 轮询义务——数据靠面板 ⟳ 手动刷新;失败保持空,下次打开自然重试）。
+    const s = get();
+    if (s.crashEvents.length === 0 && !s.crashEventsLoading) {
+      void get().refreshCrashEvents();
+    }
+  },
+
+  closeCrashInspector() {
+    set({ inspectorOpen: false });
+  },
+
+  async refreshCrashEvents() {
+    const c = client;
+    if (!c) return;
+    set({ crashEventsLoading: true });
+    try {
+      const rows = await api.researchList(c);
+      set({ crashEvents: parseCrashEvents(rows), crashEventsLoading: false });
+    } catch {
+      // 失败保持空清单不阻塞面板（campaign/lines 同款静默——权限/连接
+      // 问题不该卡死 overlay 的开关）。
+      set({ crashEvents: [], crashEventsLoading: false });
     }
   },
 
@@ -2277,14 +2489,22 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   },
 
   /** Tab 补全：slash overlay 当前项回填「/name 」到输入框（不执行——继续
-   *  输参数，Enter 才执行；inputFill 通道带回焦点）。 */
+   *  输参数，Enter 才执行；inputFill 通道带回焦点）。v4 对象补全：对象
+   *  模式回填「/命令 id 」——裸 id 会失去 / 前缀被当普通文本发给 LLM。 */
   completeSlashOverlay() {
     const ov = get().overlay;
     if (!ov || ov.kind !== 'slash') return;
     const item = ov.items[ov.sel];
+    const text = ov.slashObjCommand
+      ? item
+        ? `/${ov.slashObjCommand} ${item.name} `
+        : `/${ov.slashObjCommand} `
+      : item
+        ? `${item.name} `
+        : '/';
     set({
       overlay: null,
-      inputFill: { text: item ? `${item.name} ` : '/', nonce: (get().inputFill?.nonce ?? 0) + 1 },
+      inputFill: { text, nonce: (get().inputFill?.nonce ?? 0) + 1 },
     });
   },
 
@@ -2619,6 +2839,8 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     const action = escAction({
       overlayOpen: s.overlay !== null,
       tasksOpen: s.tasksOpen,
+      linesOpen: s.linesOpen,
+      inspectorOpen: s.inspectorOpen,
       queueOpen: s.queueOpen,
       boundaryOpen: s.boundaryAsks.length > 0,
       decisionOpen: s.decisions.length > 0 && s.activeDecisionId !== null,
@@ -2635,6 +2857,12 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         break;
       case 'close-tasks':
         set({ tasksOpen: false, tasksSelected: null });
+        break;
+      case 'close-lines':
+        set({ linesOpen: false });
+        break;
+      case 'close-inspector':
+        set({ inspectorOpen: false });
         break;
       case 'close-queue':
         set({ queueOpen: false, queueServer: [] });
@@ -2829,6 +3057,20 @@ async function refreshCampaigns(
   } catch {
     /* 刷新失败保旧清单 */
   }
+}
+
+/**
+ * v4 对象补全的对象源惰性拉取闸：每个源页面生命周期内只拉一次。
+ * openOverlay('slash') 随每个按键重入——没有闸，输 /resume 的四个按键
+ * 就是四发 line/list；只拉一次的代价是极端滞后（拉后新建线），面板/
+ * 动作路径的刷新会兜底。
+ */
+const slashObjHydrated = new Set<'lines' | 'campaigns'>();
+
+function ensureSlashObjectsHydrated(source: 'lines' | 'campaigns', pull: () => void): void {
+  if (slashObjHydrated.has(source)) return;
+  slashObjHydrated.add(source);
+  pull();
 }
 
 /** 稳定的空会话单例：sessions 缺条目时兜底，避免 selector 每次返回新引用。 */
@@ -3050,6 +3292,44 @@ async function runSlashCommand(
   }
   if (cmd === 'help') {
     s.showToast('/help：Esc 中断（busy）· Ctrl+R 历史 · ↑ 空输入历史 · Enter 发送（运行中发送=纠偏）');
+    return;
+  }
+  // ── v4 动词（对象补全见 openOverlay('slash')；LOCAL_COMMANDS 同步登记——
+  //    走这里特判，不进 SLASH_ROUTES 端点路由） ──────────────────────────
+  // /resume <线id>：切线（resume 有成本——服务端要重跑该线引擎）。id 必须在
+  // 本地线清单命中：对象补全/线面板是 id 的唯一事实源，不命中引导回补全。
+  if (cmd === 'resume') {
+    const id = inlineArgs?.trim() ?? '';
+    const line = id ? s.lines.find((l) => l.id === id) : undefined;
+    if (!line) {
+      s.showToast('`/resume <线id>`——可先输 /resume 看对象补全');
+      return;
+    }
+    await s.switchToLine(line.id);
+    return;
+  }
+  // /kill <id>：终止战役。命中才弹既有二次确认模态（confirmCampaignStop
+  // 真正发 campaign/stop——破坏性动作的终审权在人，这里不直接发请求）。
+  if (cmd === 'kill') {
+    const q = inlineArgs?.trim() ?? '';
+    const campaign = q ? s.campaigns.find((c) => c.id === q || c.goal === q) : undefined;
+    if (!campaign) {
+      s.showToast(q ? `/kill：未找到战役 "${q}"——可先输 /kill 看对象补全` : '`/kill <id>`——可先输 /kill 看对象补全');
+      return;
+    }
+    s.requestCampaignStop({ id: campaign.id, goal: campaign.goal });
+    return;
+  }
+  // /mission <标签>：改任务形态（挖掘|利用|复现|ctf|无类型）。复用 Toolbar
+  // 选择器的 store 动作（session/mission 直设 + 线态回写 + 回执 toast）。
+  if (cmd === 'mission') {
+    const label = inlineArgs?.trim() ?? '';
+    const option = label ? MISSION_OPTIONS.find((o) => o.label.toLowerCase() === label.toLowerCase()) : undefined;
+    if (!option) {
+      s.showToast('`/mission <挖掘|利用|复现|ctf|无类型>`——可先输 /mission 看对象补全');
+      return;
+    }
+    await s.setMission(missionPatchValue(option.value));
     return;
   }
   // 1.5.2 实锤修复④：可吃 inline 参数的命令带参直发（跳过 slash-args 模态

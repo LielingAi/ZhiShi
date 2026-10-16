@@ -12,6 +12,7 @@ import type React from 'react';
 
 import { selectTaskRows, useGuiStore } from '../store/useGuiStore';
 import { campaignActionOf, type CampaignState } from '../model/campaign';
+import { CampaignCard } from './CampaignCard';
 import type { LoopTranscriptLine } from '../client/api';
 
 /** transcript 单行渲染（user / assistant / tool，前 400 字截断）。 */
@@ -57,8 +58,14 @@ export function TasksPanel(): React.JSX.Element | null {
   // 1.6.8 M2：战役卡片行内动作（终止二次确认 / 暂停续命）。
   const requestCampaignStop = useGuiStore((s) => s.requestCampaignStop);
   const resumeCampaign = useGuiStore((s) => s.resumeCampaign);
+  // 第三批 v4：选中战役行按 campaignId 取 record 渲染对象卡（找不到回落 transcript）。
+  const campaigns = useGuiStore((s) => s.campaigns);
 
   if (!open) return null;
+
+  const campaignRecord = selected?.campaignId
+    ? (campaigns.find((r) => r.id === selected.campaignId) ?? null)
+    : null;
 
   return (
     <div className="overlay-backdrop tasks-backdrop open">
@@ -81,13 +88,19 @@ export function TasksPanel(): React.JSX.Element | null {
               </button>
             </div>
             <div className="tp-body">
-              {selected.transcript === null && (
-                <div className="ov-empty">该行无 transcript（后台进程只有事件快照）</div>
+              {campaignRecord ? (
+                <CampaignCard record={campaignRecord} />
+              ) : (
+                <>
+                  {selected.transcript === null && (
+                    <div className="ov-empty">该行无 transcript（后台进程只有事件快照）</div>
+                  )}
+                  {selected.transcript && selected.transcript.length === 0 && (
+                    <div className="ov-empty">transcript 为空</div>
+                  )}
+                  {selected.transcript?.map((l, i) => <TranscriptLine line={l} i={i} key={i} />)}
+                </>
               )}
-              {selected.transcript && selected.transcript.length === 0 && (
-                <div className="ov-empty">transcript 为空</div>
-              )}
-              {selected.transcript?.map((l, i) => <TranscriptLine line={l} i={i} key={i} />)}
             </div>
           </div>
         ) : (

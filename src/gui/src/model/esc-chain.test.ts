@@ -1,7 +1,8 @@
 /**
- * Esc 链优先级单测（1.3.1 ②③④ + 1.3.2 ① + 1.4.1 扩展）：一次弹一层，顺序
- * overlay > tasks > queue > boundary > decision > modal > drawer > page >
- * autoRun 终止确认 > busy 中断 > none。1.7.7：verdict 层随终审机制删除。
+ * Esc 链优先级单测（1.3.1 ②③④ + 1.3.2 ① + 1.4.1 + 1.8.7 P3b 扩展）：一次
+ * 弹一层，顺序 overlay > tasks > lines（研究线面板）> queue > boundary >
+ * decision > modal > drawer > page > autoRun 终止确认 > busy 中断 > none。
+ * 1.7.7：verdict 层随终审机制删除。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -11,6 +12,8 @@ import { escAction } from './esc-chain';
 const base = {
   overlayOpen: false,
   tasksOpen: false,
+  linesOpen: false,
+  inspectorOpen: false,
   queueOpen: false,
   boundaryOpen: false,
   decisionOpen: false,
@@ -40,7 +43,23 @@ describe('escAction', () => {
     expect(escAction({ ...base, tasksOpen: true, boundaryOpen: true })).toEqual({ type: 'close-tasks' });
   });
 
-  it('queue 面板在 tasks 之后', () => {
+  it('lines 面板在 tasks 之后、queue 之前（1.8.7 P3b B6/B7）', () => {
+    expect(escAction({ ...base, tasksOpen: true, linesOpen: true })).toEqual({ type: 'close-tasks' });
+    expect(escAction({ ...base, linesOpen: true, queueOpen: true })).toEqual({ type: 'close-lines' });
+    expect(escAction({ ...base, linesOpen: true, boundaryOpen: true, busy: true })).toEqual({
+      type: 'close-lines',
+    });
+  });
+
+  it('崩溃件检查器在 lines 之后、queue 之前（与 lines 同族 overlay）', () => {
+    expect(escAction({ ...base, linesOpen: true, inspectorOpen: true })).toEqual({ type: 'close-lines' });
+    expect(escAction({ ...base, inspectorOpen: true, queueOpen: true })).toEqual({ type: 'close-inspector' });
+    expect(escAction({ ...base, inspectorOpen: true, boundaryOpen: true, busy: true })).toEqual({
+      type: 'close-inspector',
+    });
+  });
+
+  it('queue 面板在 lines 之后', () => {
     expect(escAction({ ...base, queueOpen: true, boundaryOpen: true })).toEqual({ type: 'close-queue' });
   });
 

@@ -9,6 +9,7 @@ import type React from 'react';
 import { selectCurrentSession, useGuiStore } from '../store/useGuiStore';
 import { hostAnchorLabel } from '../model/access-gate';
 import { bgStatusSegments } from '../model/tasks';
+import { shortLineId } from '../model/lines';
 import { loadConnection } from '../model/connection';
 
 export function StatusBar(): React.JSX.Element {
@@ -22,6 +23,9 @@ export function StatusBar(): React.JSX.Element {
   const subagents = useGuiStore((s) => s.subagents);
   const theme = useGuiStore((s) => s.theme);
   const toggleTheme = useGuiStore((s) => s.toggleTheme);
+  // 1.8.7 P3b：研究线入口——当前线短线 id + 状态点（线面板打开前为占位）。
+  const lines = useGuiStore((s) => s.lines);
+  const openLinesPanel = useGuiStore((s) => s.openLinesPanel);
 
   const phase = session.phase;
   const phaseText =
@@ -40,6 +44,9 @@ export function StatusBar(): React.JSX.Element {
         : 'idle';
 
   const segments = bgStatusSegments(bgTasks, subagents);
+
+  // 1.8.7 P3b：当前研究线（line/list 的 active 行——面板开过即有数据）。
+  const activeLine = lines.find((r) => r.active);
 
   // 模式角标（1.8.7——「我当前是团队模式还是单机模式」必须在界面上有明确
   // 表示，不然使用者会忘记自己在哪个大脑上操作。本机=dim；团队大脑连上=
@@ -74,6 +81,14 @@ export function StatusBar(): React.JSX.Element {
     <div className="statusbar">
       <span className={`status-dot ${dotClass}`} />
       <span className="env-anchor">{hostAnchorLabel(envKey)}</span>
+      <span
+        className="seg clickable ln-anchor"
+        title="研究线——点击打开线面板（line/list）"
+        onClick={() => void openLinesPanel()}
+      >
+        · 线 <span className={`ln-dot ${activeLine?.stateDot ?? 'cold'}`} />
+        <span className="ln-anchor-id">{activeLine ? shortLineId(activeLine.id) : '—'}</span>
+      </span>
       <span
         className={`mode-badge ${modeBadge.cls}`}
         title={modeBadge.title}

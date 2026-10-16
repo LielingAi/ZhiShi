@@ -933,6 +933,38 @@ export function campaignResume(
 }
 
 // ---------------------------------------------------------------------------
+// 1.8.7 P3b 研究线（line/list|share|unshare——线面板数据源，B6/B7）
+// ---------------------------------------------------------------------------
+
+/** POST line/list { workspace } → data（形状窄化在 model/lines::parseLineList；
+ *  workspace 必填——调用方从 store.workspace（chat:init 的 agentDir）取）。 */
+export function fetchLineList(
+  client: GuiSidecarClient,
+  workspace: string,
+): Promise<{ success: boolean; error?: string; data?: unknown }> {
+  return client.adminPost<{ success: boolean; error?: string; data?: unknown }>('line/list', {
+    workspace,
+  });
+}
+
+/** POST line/share { loopSessionId }（私有线 → 共享线；无权时服务端回
+ *  {success:false,error:'forbidden'}——toast 原文，前端不预判权限）。 */
+export function lineShare(
+  client: GuiSidecarClient,
+  loopSessionId: string,
+): Promise<{ success: boolean; error?: string }> {
+  return client.adminPost<{ success: boolean; error?: string }>('line/share', { loopSessionId });
+}
+
+/** POST line/unshare { loopSessionId }（共享线 → 私有线，归属改登记为调用方）。 */
+export function lineUnshare(
+  client: GuiSidecarClient,
+  loopSessionId: string,
+): Promise<{ success: boolean; error?: string }> {
+  return client.adminPost<{ success: boolean; error?: string }>('line/unshare', { loopSessionId });
+}
+
+// ---------------------------------------------------------------------------
 // 1.4.4 研究档案（archive/list 查询 / archive/correct 人纠正）
 // ---------------------------------------------------------------------------
 
