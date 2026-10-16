@@ -23,6 +23,7 @@ pub mod trust;
 pub mod terminal;
 pub mod cli_launcher;
 pub mod usb_updater;
+pub mod webview_cache;
 pub mod workspace_files;
 mod tray;
 mod updater;
@@ -182,6 +183,33 @@ pub fn run() {
             // calls (extremely early startup) fall back to a synchronous
             // append protected by a mutex.
             logger::init_buffered_writer();
+
+            // ── WebView2 缓存版本化（WREN 实机事故根治）────────────────
+            // 实机事故一句话：重装 1.9.11 后 %LOCALAPPDATA%\com.zhishi.app
+            // \EBWebView 的 WebView2 磁盘缓存跨重装存活，tauri.localhost
+            // 资源被启发式缓存，新 exe 渲染整套旧 UI，只能手工清缓存恢复。
+            // 根治 = 版本化 data directory + 清扫旧版本目录（详见
+            // webview_cache 模块头注释的 A/B 选型推导）。config 窗口必须
+            // 配 create:false：tauri 内部 setup 先于本钩子创建 config 窗口，
+            // 留在 config 里则任何缓存清理都永远跑在 webview 实例化之后。
+            let webview_data_dir = webview_cache::versioned_webview_data_dir(app);
+            {
+                let window_config = app
+                    .config()
+                    .app
+                    .windows
+                    .iter()
+                    .find(|w| w.label == "main")
+                    .cloned()
+                    .expect("tauri.conf.json 必须保留 label=main 的窗口定义（create:false）");
+                let mut builder =
+                    tauri::WebviewWindowBuilder::from_config(app.handle(), &window_config)
+                        .expect("主窗口 builder 构造失败");
+                if let Some(dir) = webview_data_dir {
+                    builder = builder.data_directory(dir);
+                }
+                builder.build().expect("GUI 主窗口创建失败");
+            }
 
             // USB Portable: ensure the resolved data directory exists (needed
             // for portable mode where the directory may not have been created
