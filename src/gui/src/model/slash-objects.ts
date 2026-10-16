@@ -10,27 +10,32 @@
  * 纯函数：不 import store / React / client；单测断言行装配与过滤口径。
  */
 
+import type { EnvEntry } from '../client/api';
 import type { CampaignRecordLike } from './campaign';
 import type { LineRow, LineStateDot } from './lines';
 import type { MissionOption } from './mission';
 
 /** 对象候选行（name = 对象 id——选中后经 slashArgs 通道进 runSlashCommand）。 */
 export interface SlashObjectItem {
-  /** 对象 id：resume/kill = 服务端 id；mission = 中文标签（store 映射回 kind）。 */
+  /** 对象 id：resume/kill/use = 服务端 id；mission = 中文标签（store 映射回 kind）。 */
   name: string;
   detail: string;
   tag: string;
 }
 
-/** 对象数据源（store 快照注入——lines/campaigns 来自状态，missions 是常量表）。 */
+/** 对象数据源（store 快照注入——lines/campaigns/envs 来自状态，missions 是常量表）。 */
 export interface SlashObjectSources {
   lines: LineRow[];
   campaigns: CampaignRecordLike[];
   /** 形态选项表（MISSION_OPTIONS 注入；首项 '' = 无类型也参与补全）。 */
   missions: MissionOption[];
+  /** 环境注册表（V4-S4 /use 动词对象源——EnvSidebar 退正门后的中途切环境）。 */
+  envs: EnvEntry[];
+  /** 运行中环境 id 集合（EnvEntry 无 state 字段——运行态走 ps 现场列表）。 */
+  runningIds: ReadonlySet<string>;
 }
 
-/** 线状态点中文标签（与 LinesPanel title 同口径——即线行 detail 的 stateLabel）。 */
+/** 线状态点中文标签（与 SidePane「线」页签行 title 同口径——即线行 detail 的 stateLabel）。 */
 export const LINE_STATE_LABELS: Record<LineStateDot, string> = {
   running: '运行中',
   idle: '在线空闲',
@@ -68,6 +73,13 @@ const REGISTRY: Record<string, RegistryFn> = {
     return src.missions
       .filter((o) => !q || norm(o.label).includes(q))
       .map((o) => ({ name: o.label, detail: o.value === '' ? '清除任务形态' : o.value, tag: '形态' }));
+  },
+  /** /use <环境id>：环境注册表（id/name 过滤）；detail = 运行状态（V4-S4）。 */
+  use: (args, src) => {
+    const q = norm(args);
+    return src.envs
+      .filter((e) => !q || e.id.toLowerCase().includes(q) || (e.name ?? '').toLowerCase().includes(q))
+      .map((e) => ({ name: e.id, detail: src.runningIds.has(e.id) ? '运行中' : '已停止', tag: '环境' }));
   },
 };
 

@@ -1,7 +1,7 @@
 /**
  * 状态栏（1.3.1 ⑦）：env 锚（宿主显性化 ①）+ phase（spinner）+ 队列 +
  * 上下文 + 后台任务段（⛁ name×N，③ 数据）+ 模型名（点击开模型选择）+
- * 主题切换（1.3.2 ③）。
+ * 主题切换（1.3.2 ③）+ V4-S1 回执段（✓ 动作确认，nonce 变化短暂高亮）。
  */
 
 import type React from 'react';
@@ -10,6 +10,7 @@ import { selectCurrentSession, useGuiStore } from '../store/useGuiStore';
 import { hostAnchorLabel } from '../model/access-gate';
 import { bgStatusSegments } from '../model/tasks';
 import { shortLineId } from '../model/lines';
+import { hasLiveActivity } from '../model/side-pane';
 import { loadConnection } from '../model/connection';
 
 export function StatusBar(): React.JSX.Element {
@@ -23,9 +24,18 @@ export function StatusBar(): React.JSX.Element {
   const subagents = useGuiStore((s) => s.subagents);
   const theme = useGuiStore((s) => s.theme);
   const toggleTheme = useGuiStore((s) => s.toggleTheme);
-  // 1.8.7 P3b：研究线入口——当前线短线 id + 状态点（线面板打开前为占位）。
+  // 1.8.7 P3b：研究线入口——当前线短线 id + 状态点；V4-S1 起点击开
+  // SidePane「线」页签（浮层 LinesPanel 退役，Esc 链 close-lines 层摘除）。
   const lines = useGuiStore((s) => s.lines);
-  const openLinesPanel = useGuiStore((s) => s.openLinesPanel);
+  const openSidePane = useGuiStore((s) => s.openSidePane);
+  // V4-S2 纠偏入口层：env 锚点击开环境详情（复用侧栏 ℹ 同一动作；宿主
+  // 未锚定则无详情可看，不可点）。
+  const openEnvDetail = useGuiStore((s) => s.openEnvDetail);
+  // V4-S2 活性静态报数：campaigns 参与 ⛁ 段活性判定（bgTasks 外第二数据源）。
+  const campaigns = useGuiStore((s) => s.campaigns);
+  // V4-S1 回执通道：store showReceipt 写 receipt + nonce（2200ms 自隐）；
+  // key=nonce 让同段连击时重挂载，CSS 动画随之重放（短暂高亮）。
+  const receipt = useGuiStore((s) => s.receipt);
 
   const phase = session.phase;
   const phaseText =
@@ -44,6 +54,8 @@ export function StatusBar(): React.JSX.Element {
         : 'idle';
 
   const segments = bgStatusSegments(bgTasks, subagents);
+  // V4-S2 活性静态报数口径：⛁ 段有 running 后台/活性战役 → .live 转 accent 色。
+  const live = hasLiveActivity(bgTasks, campaigns);
 
   // 1.8.7 P3b：当前研究线（line/list 的 active 行——面板开过即有数据）。
   const activeLine = lines.find((r) => r.active);
@@ -80,11 +92,18 @@ export function StatusBar(): React.JSX.Element {
   return (
     <div className="statusbar">
       <span className={`status-dot ${dotClass}`} />
-      <span className="env-anchor">{hostAnchorLabel(envKey)}</span>
+      {/* V4-S2 入口层：env 锚可点（有锚定环境时）——直达环境详情模态。 */}
+      <span
+        className={`env-anchor${envKey ? ' clickable' : ''}`}
+        title={envKey ? '当前环境——点击查看详情（登记条目快照）' : '宿主（未锚定环境）'}
+        onClick={envKey ? () => openEnvDetail(envKey) : undefined}
+      >
+        {hostAnchorLabel(envKey)}
+      </span>
       <span
         className="seg clickable ln-anchor"
-        title="研究线——点击打开线面板（line/list）"
-        onClick={() => void openLinesPanel()}
+        title="研究线——点击打开 SidePane「线」页签（line/list）"
+        onClick={() => openSidePane('lines')}
       >
         · 线 <span className={`ln-dot ${activeLine?.stateDot ?? 'cold'}`} />
         <span className="ln-anchor-id">{activeLine ? shortLineId(activeLine.id) : '—'}</span>
@@ -114,8 +133,18 @@ export function StatusBar(): React.JSX.Element {
         <span className="caret">▾</span>
       </span>
       <div className="right">
+        {receipt && (
+          <span key={receipt.nonce} className="receipt-seg" title="动作回执">
+            ✓ {receipt.text}
+          </span>
+        )}
         {segments.length > 0 && (
-          <span className="bg-seg" title="后台任务/子代理（/tasks 查看详情）">
+          // V4-S2 入口层：⛁ 段可点 → SidePane「任务」页签；活性时 .live 转 accent 色。
+          <span
+            className={`bg-seg${live ? ' live' : ''}`}
+            title="任务与后台进程——打开 SidePane「任务」页签"
+            onClick={() => openSidePane('tasks')}
+          >
             ⛁ {segments.map((g) => `${g.name}×${g.count}`).join(' · ')}
           </span>
         )}

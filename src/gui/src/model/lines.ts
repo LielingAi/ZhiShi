@@ -42,6 +42,8 @@ export interface LineRow {
   segLabel: string;
   /** 归属标签：shared→「共享」；owner=调用方→「我」；归属未知→「旧」。 */
   ownerLabel: string;
+  /** 共享标记（menubar 共享徽章直接读，不必反推 canShare/canUnshare）。 */
+  shared: boolean;
   stateDot: LineStateDot;
   active: boolean;
   /** 最后活动：今天 HH:MM；否则 M-D。 */
@@ -120,6 +122,7 @@ export function buildLineRows(entries: LineEntry[], opts: BuildLineRowsOpts): Li
       envKey: e.envKey,
       segLabel,
       ownerLabel: ownerLabelOf(e, segLabel, opts.actorName),
+      shared: e.shared,
       stateDot: !e.live ? 'cold' : e.busy ? 'running' : 'idle',
       active: e.active,
       updatedLabel: formatLineUpdated(e.updatedAt),

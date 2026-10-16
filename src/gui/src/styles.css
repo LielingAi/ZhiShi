@@ -68,6 +68,73 @@ kbd {
   border-left: 1px solid var(--border-soft); border-right: 1px solid var(--border-soft);
 }
 
+/* ===== V4-S4 正门（gate-*——全幅启动台；EnvSidebar 本体零改动，壳与
+   布局在这里重写） ===== */
+/* 全幅页面（非居中窄列）——WREN 真机：窄列留白太多；4-6vw 内边距随窗口呼吸。 */
+.gate-wrap {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  overflow-y: auto; background: var(--bg); padding: 22px 5vw 14px; gap: 14px;
+}
+
+/* 横幅带：品牌 + 大标题 + 右侧（计数/时钟/主按钮）。 */
+.gate-banner {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.gate-brand { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.gate-logo { font-family: var(--mono); font-weight: 600; color: var(--text); font-size: 14px; user-select: none; }
+.gate-heading { font-size: 22px; font-weight: 600; color: var(--text); line-height: 1.25; }
+.gate-sub { font-size: 12px; color: var(--muted); }
+.gate-banner-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; flex-wrap: wrap; }
+.gate-meta { font-family: var(--mono); font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.gate-enter { margin: 0; }
+
+/* 主体容器：吃掉旧窄列定义，全幅放行 EnvSidebar。 */
+.gate-col { width: 100%; display: flex; flex-direction: column; min-height: 0; }
+/* 全幅下不再套外框卡片——横幅分隔线已分区；envbar 只去窄栏壳。 */
+.gate-col .envbar {
+  width: 100%; border-right: none; background: var(--bg); border: none;
+}
+
+/* 分组横铺（核心）：运行中/已停止/本机已有 各成一列卡片；auto-fit 在
+   最大化时铺满三列、窄窗自然收成两列/一列——版面随窗口饱满。 */
+.gate-col .eb-scroll {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 12px; align-items: start; overflow: visible;
+}
+.gate-col .eb-group {
+  background: var(--panel); border: 1px solid var(--border); padding: 6px 10px 10px;
+}
+/* 组头 = 列标题 + 计数 + 细分隔线（计数随组件内联，标题行压出分隔）。 */
+.gate-col .ebg-label {
+  display: flex; align-items: baseline; gap: 6px;
+  padding: 6px 4px 8px; margin-bottom: 4px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 11px; font-weight: 600; color: var(--text-dim); letter-spacing: .4px;
+}
+
+/* 行加高充实：纵向 12px、状态点 8px、名称 13px；能力徽章放宽少截断。 */
+.gate-col .eb-item { padding: 12px 10px; }
+.gate-col .eb-item .st { width: 8px; height: 8px; }
+.gate-col .eb-item .nm { font-size: 13px; }
+.gate-col .eb-item .cap { max-width: 58%; }
+.gate-col .eb-item .eb-actions { right: 8px; }
+
+/* 底栏（组件自带新建/设置）：全幅同排展开，与横幅主按钮遥相呼应。 */
+.gate-col .eb-foot {
+  flex-direction: row; gap: 10px; padding: 12px 2px 0;
+  border-top: 1px solid var(--border); margin-top: 2px;
+}
+.gate-col .eb-foot .btn { flex: 1; text-align: center; }
+
+/* 底部提示条：照实际入口写——操作全收录，不画蛇添足。 */
+.gate-foot {
+  display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding-top: 12px; border-top: 1px solid var(--border);
+  color: var(--faint); font-size: 11.5px;
+}
+
 /* ===== 环境栏 ===== */
 .envbar {
   width: 190px; flex-shrink: 0; display: flex; flex-direction: column;
@@ -145,15 +212,35 @@ kbd {
 
 /* ===== 主区 ===== */
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.app-toolbar {
-  display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px;
+
+/* ===== V4-S1 menubar（设计稿 §2 第一行，30px 细栏——原 Toolbar 收编） ===== */
+.menubar {
+  display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 10px;
   border-bottom: 1px solid var(--border); background: var(--bg-deep); flex-shrink: 0;
+  min-width: 0;
 }
-.app-toolbar .at-env { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
-.app-toolbar .at-env .ok { color: var(--cyan); }
-.app-toolbar .conn-err {
-  font-size: 11.5px; color: var(--red); overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; max-width: 40vw;
+.menubar .mb-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mb-brand { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--text); user-select: none; }
+/* 当前线身份段（line/list active 行）：状态点 + 短线 id + 共享徽章。 */
+.mb-line { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--text-dim); }
+.mb-line-id { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.mb-shared {
+  font-size: 10px; color: var(--cyan); border: 1px solid var(--cyan-dim);
+  border-radius: 0; padding: 0 4px; flex-shrink: 0;
+}
+/* 原 Toolbar 按钮群（历史/auto loop/研究/决策待答/重试）——S2/S4 才迁走。 */
+.menubar .mb-actions { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
+/* 系统计量（ctx%/tokens/env/时钟）——段不可换行压缩，整体顶到最右。 */
+.menubar .mb-meters { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.mb-meter { font-size: 11px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mb-meter b { color: var(--text-dim); font-weight: 500; }
+.mb-env { font-family: var(--mono); font-size: 11px; color: var(--cyan); }
+.mb-env.clickable { cursor: pointer; }
+.mb-env.clickable:hover { color: var(--text); }
+.mb-clock { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+.menubar .conn-err {
+  font-size: 11px; color: var(--red); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; max-width: 24vw;
 }
 .stream-wrap { flex: 1; display: flex; min-height: 0; }
 .stream-jump-wrap { flex: 1; display: flex; min-height: 0; position: relative; }
@@ -168,7 +255,7 @@ kbd {
 .stream-jump-bottom { bottom: 10px; }
 
 /* ===== 会话流（虚拟化） ===== */
-.stream { flex: 1; min-width: 0; overflow-y: auto; padding: 16px 26px 20px; }
+.stream { flex: 1; min-width: 0; overflow-y: auto; padding: 18px 34px 24px; }
 .stream::-webkit-scrollbar { width: 10px; }
 .stream::-webkit-scrollbar-thumb { background: var(--panel-3); border-radius: 5px; border: 2px solid var(--bg); }
 .stream-inner { position: relative; width: 100%; }
@@ -202,6 +289,66 @@ kbd {
 }
 .conclusion-hl.streaming { border-left-color: var(--cyan-dim); }
 .conclusion-hl .cursor { color: var(--cyan); animation: pulse 1s ease-in-out infinite; }
+
+/* ===== V4-S7 Markdown 正文（md-*——仪器感映射，密度纪律：段落间距 ≤0.6em） ===== */
+.md { font-size: 13.5px; line-height: 1.6; color: var(--text); word-break: break-word; }
+/* 纯文本兜底：与 md 态同字阶/行距，只多一个 pre-wrap 保住原始换行。 */
+.md-plain { white-space: pre-wrap; }
+.md > :first-child, .md-plain:first-child { margin-top: 0; }
+.md > :last-child, .md-plain:last-child { margin-bottom: 0; }
+.conclusion-hl .md { margin: 0; }
+.md-p { margin: 0 0 .55em; line-height: 1.6; }
+/* 小节标题：h1-h3 三级合一（仪器感不兴大字）——左 accent 竖条 + 紧凑行。 */
+.md-h {
+  margin: .9em 0 .4em; padding-left: 8px; border-left: 2px solid var(--cyan-dim);
+  font-size: 13.5px; font-weight: 600; color: var(--text); line-height: 1.4;
+}
+.md-h:first-child { margin-top: 0; }
+.md-h4 { font-size: 12.5px; color: var(--text-dim); }
+/* 列表悬挂缩进。 */
+.md-ul, .md-ol { margin: .3em 0 .6em; padding-left: 1.5em; }
+.md-li { margin: .18em 0; line-height: 1.55; }
+.md-ul .md-ul, .md-ol .md-ol { margin: .18em 0; }
+/* 引用：dim 竖条，不抢戏。 */
+.md-quote {
+  margin: .5em 0; padding: 2px 10px; border-left: 2px solid var(--faint);
+  color: var(--text-dim);
+}
+.md-quote .md-p:last-child { margin-bottom: 0; }
+/* 行内 code = 深色 chip（现成 token）。 */
+.md-code {
+  font-family: var(--mono); font-size: 12px;
+  background: var(--panel-3); border: 1px solid var(--border-soft);
+  padding: 0 4px; border-radius: 0;
+}
+/* 代码块 = 工具输出同款深色面板（左紫竖条——家族一致）。 */
+.md-pre {
+  background: var(--bg-deep); border: 1px solid var(--border);
+  border-left: 3px solid var(--purple);
+  padding: 8px 10px; margin: .5em 0; overflow-x: auto;
+}
+.md-pre .md-code { background: none; border: none; padding: 0; font-size: 12px; line-height: 1.55; }
+/* 链接 accent；分隔线细条。 */
+.md-a { color: var(--cyan); }
+.md-a:hover { text-decoration: underline; }
+.md-hr { border: none; border-top: 1px solid var(--border); margin: .8em 0; }
+/* 表格紧凑线框（gfm）。 */
+.md-table { border-collapse: collapse; margin: .5em 0; font-size: 12.5px; }
+.md-th, .md-td { border: 1px solid var(--border); padding: 3px 8px; text-align: left; }
+.md-th { background: var(--panel-2); font-weight: 600; color: var(--text); }
+/* gfm 任务列表复选框：勾选态 accent 实心（=做了），未勾选暗边框空心（=待办）——
+   两者必须一眼可辨（原生 disabled 灰方块两态同灰，实测不可辨）。 */
+.md-li input[type='checkbox'] {
+  appearance: none; width: 11px; height: 11px; margin: 0 6px 0 0;
+  border: 1px solid var(--faint); background: none;
+  vertical-align: -1px; cursor: default;
+}
+.md-li input[type='checkbox']:checked {
+  background: var(--cyan); border-color: var(--cyan);
+}
+/* 已完成条目标签压暗——完成是既成事实，不再请求注意力。 */
+.md-li:has(input[type='checkbox']:checked) { color: var(--text-dim); }
+
 .empty-reply { margin-top: 8px; color: var(--faint); font-size: 12px; }
 .badge-row {
   display: inline-flex; align-items: center; gap: 6px; margin-top: 6px;
@@ -281,7 +428,7 @@ kbd {
 .chip .x { cursor: pointer; margin-left: 2px; opacity: .7; }
 /* 1.5.2 @ 引用 chip 类型徽章（选择后让人看见它是什么）。 */
 .chip-type { font-size: 10px; padding: 0 3px; border-radius: 0; background: rgba(88,166,255,.14); color: #58a6ff; font-family: inherit; }
-.chip-env .chip-type { background: rgba(63,185,80,.14); color: #3fb950; }
+.chip-env .chip-type { background: rgba(108,182,255,.14); color: var(--cyan); }
 .chip-file .chip-type { background: rgba(88,166,255,.14); color: #58a6ff; }
 .chip-snapshot .chip-type { background: rgba(210,153,34,.16); color: #d29922; }
 
@@ -508,7 +655,7 @@ mark.h-search { background: rgba(232,160,76,.3); color: var(--text); border-radi
 .bs .bs-name { color: var(--text-dim); }
 .bs .bs-state { margin-left: auto; font-family: var(--mono); font-size: 11.5px; }
 .bs.done .bs-name { color: var(--muted); } .bs.done .bs-state { color: var(--faint); }
-.bs.done .bs-state::before { content: "✓ "; color: var(--green); }
+.bs.done .bs-state::before { content: "✓ "; color: var(--cyan); }
 .bs.cur .bs-name { color: var(--text); } .bs.cur .bs-state { color: var(--cyan); }
 .np-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 0; cursor: pointer; transition: background .1s; }
 .np-item:hover { background: var(--panel-2); }
@@ -586,12 +733,79 @@ mark.h-search { background: rgba(232,160,76,.3); color: var(--text); border-radi
 .np-item.gated { opacity: .55; cursor: not-allowed; }
 .np-item.gated:hover { background: transparent; }
 
-/* 状态栏：后台任务段 */
+/* 状态栏：后台任务段（V4-S2 入口层——可点进 SidePane「任务」页签）。
+   常态压暗（⛁ 不是警报位）；有 running 后台/活性战役 → .live 升 accent 色
+   （类切换的静态报数，零动画）。 */
 .statusbar .bg-seg {
   display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono);
-  font-size: 11px; color: var(--cyan); border: 1px solid var(--cyan-dim);
-  border-radius: 0; padding: 0 6px; background: rgba(108,182,255,.06);
+  font-size: 11px; color: var(--muted); border: 1px solid var(--border);
+  border-radius: 0; padding: 0 6px; cursor: pointer;
+  transition: color .12s, border-color .12s;
   max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.statusbar .bg-seg:hover { color: var(--text); border-color: var(--faint); }
+.statusbar .bg-seg.live {
+  color: var(--cyan); border-color: var(--cyan-dim); background: rgba(108,182,255,.06);
+}
+
+/* V4-S2 入口层：env 锚可点（有锚定环境时）——hover 亮文本色，不动布局。 */
+.env-anchor.clickable { cursor: pointer; }
+.env-anchor.clickable:hover { color: var(--text); }
+
+/* V4-S1 状态行回执段（✓ 动作确认，accent 色）：StatusBar 以 receipt.nonce
+   作 key——同段连击重挂载，高亮动画随之重放。 */
+.statusbar .receipt-seg {
+  color: var(--cyan); font-size: 11.5px; max-width: 34vw;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  animation: receipt-flash 1.2s ease-out;
+}
+@keyframes receipt-flash {
+  0% { background: rgba(108,182,255,.28); }
+  100% { background: transparent; }
+}
+
+/* ===== V4-S3 命令中枢（Ctrl+K 面板，pal-*——形态照 v4 原型 #palette） ===== */
+.pal-backdrop {
+  position: fixed; inset: 0; z-index: 150; background: rgba(6,8,11,.5);
+  display: flex; justify-content: center; align-items: flex-start; padding-top: 14vh;
+}
+.pal-panel {
+  width: min(640px, 92vw); background: var(--panel-2); border: 1px solid var(--border);
+  box-shadow: var(--shadow); display: flex; flex-direction: column;
+}
+.pal-input-row {
+  display: flex; align-items: center; gap: 1ch; padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.pal-mark { color: var(--cyan); font-weight: 600; font-family: var(--mono); }
+.pal-input { flex: 1; background: none; border: 0; outline: 0; color: var(--text); font: inherit; font-size: 14px; }
+.pal-input::placeholder { color: var(--faint); }
+.pal-list { max-height: 320px; overflow-y: auto; padding: 6px 0; }
+.pal-group-label {
+  padding: 7px 14px 2px; font-size: 10px; color: var(--faint);
+  letter-spacing: .4px; text-transform: uppercase;
+}
+.pal-item {
+  display: flex; align-items: center; gap: 2ch; padding: 5px 14px;
+  cursor: pointer; color: var(--text-dim); font-size: 13px;
+}
+.pal-item.sel { background: rgba(108,182,255,.10); color: var(--text); }
+.pal-title { color: var(--cyan); min-width: 110px; font-family: var(--mono); flex-shrink: 0; }
+/* 历史行标题是完整 cmdline——不抢动词的 accent，压成 dim。 */
+.pal-item.hist .pal-title { color: var(--text-dim); min-width: 0; }
+.pal-detail {
+  color: var(--muted); margin-left: auto; font-size: 12px; flex-shrink: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pal-tag {
+  margin-left: auto; color: var(--faint); font-size: 11.5px;
+  border: 1px solid var(--border); border-radius: 0; padding: 0 5px; flex-shrink: 0;
+}
+.pal-item .pal-detail + .pal-tag { margin-left: 0; }
+.pal-empty { padding: 12px 14px; font-size: 12px; color: var(--faint); }
+.pal-foot {
+  display: flex; gap: 2.5ch; padding: 5px 14px; border-top: 1px solid var(--border);
+  color: var(--faint); font-size: 11.5px;
 }
 
 /* boundary 模态（琥珀边框，v19 风格；z-index 压过普通模态） */
@@ -607,10 +821,15 @@ mark.h-search { background: rgba(232,160,76,.3); color: var(--text); border-radi
 }
 .bd-object .mono { font-family: var(--mono); }
 
-/* /tasks 与 /queue 面板（overlay 形态） */
+/* /tasks 与 /queue 面板（1.3.1 ③④——V4-S2：/tasks 内容迁驻 SidePane「任务」
+   页签，行内类 tp-*/tk-* 原样复用；overlay 壳样式由 /queue 独用保留） */
 .tasks-backdrop { bottom: 90px; width: min(640px, 94vw); z-index: 140; }
 .tasks-panel { max-height: 60vh; display: flex; flex-direction: column; }
 .tasks-panel .overlay-title { display: flex; align-items: center; }
+.sp-tasks { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* 清单体/详情体吃满页签剩余高度（浮层时代的 max-height 语义不再适用）。 */
+.sp-tasks-list { flex: 1; min-height: 0; }
+.tp-transcript { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .tp-close {
   margin-left: auto; background: none; border: none; color: var(--faint);
   font-size: 13px; cursor: pointer; padding: 1px 6px; border-radius: 0;
@@ -632,7 +851,7 @@ mark.h-search { background: rgba(232,160,76,.3); color: var(--text); border-radi
 .tp-conclusion { font-size: 11.5px; color: var(--green); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tp-caret { color: var(--faint); font-size: 14px; flex-shrink: 0; }
 .tp-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); }
-.tp-body { padding: 8px 12px 12px; overflow-y: auto; max-height: 44vh; display: flex; flex-direction: column; gap: 6px; }
+.tp-body { padding: 8px 12px 12px; overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
 .tk-line { font-size: 12px; line-height: 1.6; color: var(--text-dim); word-break: break-all; }
 .tk-line .tk-role {
   font-family: var(--mono); font-size: 10.5px; border-radius: 0; padding: 0 5px;
@@ -665,7 +884,7 @@ mark.h-search { background: rgba(232,160,76,.3); color: var(--text); border-radi
 /* 挂起待人 = 中断待人（琥珀）；终止态不画在轨道上（走 cc-terminal 收尾行）。 */
 .fsm .fsm-halt { color: var(--amber); border-style: dotted; border-color: rgba(232,160,76,.5); }
 /* 终态行（替代轨道）：dim 虚线收尾。 */
-.cc-terminal { font-size: 12px; color: var(--muted); border: 1px dashed var(--border); border-radius: 4px; padding: 4px 8px; }
+.cc-terminal { font-size: 12px; color: var(--muted); border: 1px dashed var(--border); border-radius: 0; padding: 4px 8px; }
 .cc-wall-label { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-dim); user-select: none; }
 .cc-bar { height: 6px; background: var(--panel-3); margin-top: 3px; }
 .cc-bar i { display: block; height: 100%; background: var(--cyan); }
@@ -683,7 +902,7 @@ mark.h-search { background: rgba(232,160,76,.3); color: var(--text); border-radi
 .cc-banner {
   font-size: 12px; color: var(--green); word-break: break-all;
   background: rgba(92,214,132,.07); border: 1px solid rgba(92,214,132,.3);
-  border-radius: 5px; padding: 5px 8px;
+  border-radius: 0; padding: 5px 8px;
 }
 /* 信号 feed：倒序可滚动列表（最新在前）。 */
 .cc-feed { max-height: 168px; overflow-y: auto; display: flex; flex-direction: column; }
@@ -693,10 +912,50 @@ mark.h-search { background: rgba(232,160,76,.3); color: var(--text); border-radi
 .cc-sig .d { flex: 1; min-width: 0; word-break: break-all; }
 .cc-actions { display: flex; gap: 8px; }
 
-/* 研究线面板（1.8.7 P3b B6/B7——overlay 形态复用 tasks 底座类） */
-.lines-backdrop { bottom: 90px; width: min(720px, 94vw); z-index: 140; }
-.lines-panel { max-height: 60vh; display: flex; flex-direction: column; }
-.lines-panel .overlay-title { display: flex; align-items: center; gap: 6px; }
+/* ===== V4-S1 右侧检查面板（SidePane——设计稿 §2 柱2 的壳） ===== */
+/* 分割条：收起态留 5px 细轨（dblclick 从收起态展开，不留死角），
+   展开态可拖（drag 调宽走 store 钳制 260px~60vw）。 */
+.sp-splitter { width: 5px; flex: none; cursor: col-resize; background: transparent; }
+.sp-splitter:hover { background: var(--panel-3); }
+.sp-splitter:not(.open) { cursor: pointer; }
+.sidepane {
+  flex: none; display: flex; flex-direction: column; min-height: 0;
+  background: var(--bg); border-left: 1px solid var(--border);
+  max-width: 60vw; /* 双保险：inline width 经 store 钳制过一遍 */
+}
+.sp-tabs {
+  display: flex; align-items: center; gap: 2px; padding: 0 6px;
+  height: 30px; flex: none; border-bottom: 1px solid var(--border);
+  background: var(--bg-deep);
+}
+.sp-tab {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  cursor: pointer; padding: 2px 8px; font-size: 12px; color: var(--muted);
+}
+.sp-tab:hover { color: var(--text-dim); }
+.sp-tab.on { color: var(--text); border-bottom-color: var(--cyan); }
+/* V4-S2 活性报数：「线」页签有 running 线 → 静态 accent 小圆点（类切换，零动画）。 */
+.sp-tab-dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--cyan); margin-left: 4px; vertical-align: 1px;
+}
+.sp-close {
+  margin-left: auto; background: none; border: none; color: var(--faint);
+  font-size: 12px; cursor: pointer; padding: 1px 6px; border-radius: 0;
+}
+.sp-close:hover { color: var(--text); background: var(--panel-2); }
+.sp-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+/* 研究线清单（1.8.7 P3b B6/B7；V4-S1 起驻 SidePane「线」页签——浮层
+   .lines-backdrop/.lines-panel 退役删除，行内类 ln-* 原样复用）。 */
+.sp-lines { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sp-lines-head {
+  display: flex; align-items: center; gap: 6px; padding: 6px 12px;
+  border-bottom: 1px solid var(--border-soft); flex: none;
+}
+.sp-lines-title { font-size: 12px; font-weight: 600; color: var(--text); }
+/* 清单体吃满页签剩余高度（浮层时代的 overlay-list max-height 语义不再适用）。 */
+.sp-lines-list { flex: 1; overflow-y: auto; }
 .ln-icon {
   margin-left: auto; background: none; border: none; color: var(--faint);
   font-size: 12px; cursor: pointer; padding: 1px 6px; border-radius: 0;
@@ -735,17 +994,16 @@ mark.h-search { background: rgba(232,160,76,.3); color: var(--text); border-radi
 .ln-ops { width: 52px; flex-shrink: 0; }
 .ln-item .btn.small { margin-left: auto; }
 
-/* 崩溃件检查器（第四批 v4——crash 对象 → fuzz 分拣结论;overlay 同族） */
-.ci-backdrop { bottom: 90px; width: min(720px, 94vw); z-index: 140; }
-.ci-panel { max-height: 60vh; display: flex; flex-direction: column; }
-.ci-title { display: flex; align-items: center; gap: 6px; }
+/* 崩溃件检查器（第四批 v4——crash 对象 → fuzz 分拣结论；V4-S2：overlay 壳
+   退役，内容驻 SidePane「检查器」页签，行内类 ci-* 原样复用） */
+.sp-inspector { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .ci-filter {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 6px 14px; font-size: 12px; color: var(--muted);
-  border-bottom: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft); flex: none;
 }
 .ci-filter .ci-fp-text { font-family: var(--mono); color: var(--purple); }
-.ci-list { overflow-y: auto; }
+.ci-list { overflow-y: auto; flex: 1; min-height: 0; }
 .ci-item { padding: 8px 14px; border-bottom: 1px solid var(--border-soft); }
 .ci-item:last-child { border-bottom: none; }
 .ci-row { display: flex; align-items: center; gap: 8px; }
@@ -758,7 +1016,11 @@ mark.h-search { background: rgba(232,160,76,.3); color: var(--text); border-radi
 .ci-summary { margin-top: 4px; font-size: 12px; color: var(--text-dim); white-space: pre-wrap; word-break: break-word; }
 .ci-ws { margin-top: 2px; font-family: var(--mono); font-size: 11px; color: var(--faint); }
 .ci-ops { margin-top: 6px; display: flex; gap: 6px; }
-.ci-foot { padding: 6px 14px; font-size: 11px; color: var(--faint); border-top: 1px solid var(--border); }
+.ci-foot { padding: 6px 14px; font-size: 11px; color: var(--faint); border-top: 1px solid var(--border); flex: none; }
+
+/* 「档案」页签（决策②修订 V4-S3：宽屏窄屏同一形态——真 ResearchPanel 常驻
+   本页签；行内类 arc-* 原样复用）。弹性填充页签体，看板可用满高。 */
+.sp-archive { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
 
 /* 状态栏：研究线入口段 */
 .statusbar .ln-anchor .ln-dot { margin-right: 2px; }
@@ -1002,7 +1264,7 @@ mark.h-search { background: rgba(232,160,76,.3); color: var(--text); border-radi
   border: 1px solid var(--border); border-radius: 0; padding: 0 6px;
 }
 .wiz-step.cur { color: var(--cyan); border-color: var(--cyan-dim); }
-.wiz-step.done { color: var(--green); border-color: rgba(92,214,132,.4); }
+.wiz-step.done { color: var(--cyan); border-color: rgba(108,182,255,.4); }
 .wiz-confirm { display: flex; flex-direction: column; gap: 6px; }
 .wiz-confirm-row { display: flex; gap: 12px; font-size: 12.5px; }
 .wiz-confirm-row .wc-label { width: 72px; flex-shrink: 0; color: var(--muted); }
@@ -1069,40 +1331,9 @@ mark.h-search { background: rgba(232,160,76,.3); color: var(--text); border-radi
 .vc-crit .dc-badge { align-self: center; }
 .vc-statement { font-size: 12px; color: var(--text-dim); white-space: pre-wrap; word-break: break-word; padding: 2px 0; }
 
-/* ── 1.4.4 研究档案：分屏看板 ───────────────────────────── */
-
-.main-split { flex: 1; display: flex; min-height: 0; min-width: 0; }
-.main-split.swapped { flex-direction: row-reverse; }
-.arc-pane {
-  min-width: 260px;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border-left: 1px solid var(--panel-3);
-  background: var(--bg);
-  overflow: hidden;
-}
-.main-split.swapped .arc-pane { border-left: none; border-right: 1px solid var(--panel-3); }
-.arc-divider { width: 6px; flex: none; cursor: col-resize; background: transparent; }
-.arc-divider:hover { background: var(--panel-3); }
-
-/* 小窗抽屉入口（≥1280px 分屏恒在，按钮由媒体查询隐藏） */
-.ar-toolbar-btn { display: inline-flex; }
-@media (min-width: 1280px) { .ar-toolbar-btn { display: none; } }
-
-.arc-drawer-backdrop {
-  position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.35);
-  display: flex; justify-content: flex-end;
-}
-.arc-drawer {
-  width: min(430px, 92vw); height: 100%; background: var(--bg);
-  border-left: 1px solid var(--panel-3); display: flex; flex-direction: column;
-}
-.arc-drawer-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 14px; border-bottom: 1px solid var(--panel-3);
-}
-.arc-drawer-title { font-weight: 600; }
+/* ── 研究档案看板（决策②修订 V4-S3：分屏/抽屉/flash 已退役——以下只保留
+   ResearchPanel 本体行内类；.main-split/.arc-divider/.arc-drawer*/.arc-pane.flash
+   随拆除面删除。QueuePanel 的 tp-*/overlay-* 壳样式与本族无涉，未动） ── */
 
 /* 面板本体 */
 .arc-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; }
@@ -1138,7 +1369,7 @@ mark.h-search { background: rgba(232,160,76,.3); color: var(--text); border-radi
 .arc-chip-live { background: rgba(88,166,255,.15); color: #58a6ff; }
 .arc-chip-bad { background: rgba(248,81,73,.15); color: #f85149; }
 .arc-chip-warn { background: rgba(210,153,34,.16); color: #d29922; }
-.arc-chip-human { background: rgba(63,185,80,.14); color: #3fb950; }
+.arc-chip-human { background: rgba(232,160,76,.14); color: var(--amber); }
 .arc-chip-ok { background: rgba(63,185,80,.14); color: #3fb950; }
 .arc-resolve { flex: none; padding: 0 6px; font-size: 10px; line-height: 18px; color: #3fb950; border-color: rgba(63,185,80,.4); }
 .arc-resolve:hover { background: rgba(63,185,80,.14); }

@@ -11,7 +11,8 @@
  * 1.3.1 新增状态：
  *   - currentEnvKey: string | null（null = 宿主未锚定；启动时 environment/current 恢复）
  *   - boundaryAsks / bgTasks / subagents（SSE 事件登记表，纯函数归约在 model/）
- *   - tasksOpen / tasksSelected / queueOpen / queueServer（/tasks、/queue 面板）
+ *   - tasksSelected / queueOpen / queueServer（/queue 面板；V4-S2 起 /tasks 内容
+ *     驻 SidePane「任务」页签，overlay 开关 tasksOpen 随壳退役）
  *   - boot（environment/up 真进度：请求 + 轮询 environment/ps）
  *
  * 1.3.2 新增状态：
@@ -127,6 +128,23 @@ import {
   type CampaignRecordLike,
 } from '../model/campaign';
 import { buildLineRows, parseLineList, shortLineId, type LineRow } from '../model/lines';
+import {
+  clampSidePaneWidth,
+  initialSidePaneOpen,
+  ReceiptScheduler,
+  SIDE_PANE_DEFAULT_WIDTH,
+  SIDE_PANE_MIN_WIDTH,
+  WIDE_SCREEN_MIN,
+  type SidePaneTab,
+} from '../model/side-pane';
+import {
+  loadPaletteHistory,
+  paletteItems as buildPaletteItems,
+  pushPaletteHistoryList,
+  savePaletteHistory,
+  type PaletteItem,
+  type PaletteSources,
+} from '../model/command-palette';
 import { parseCrashEvents, type CrashEvent } from '../model/crash-events';
 import { parseExpertImport } from '../model/expert-import';
 import { pickModelPickerProviders } from '../model/model-picker';
@@ -161,6 +179,8 @@ export interface SlashCommand {
 }
 
 export const SLASH_COMMANDS: SlashCommand[] = [
+  { name: 'use', detail: '切环境 <环境id>（对象补全=环境注册表）', group: '环境' },
+  { name: 'gate', detail: '正门（选/建环境）', group: '环境' },
   { name: 'attach', detail: '接管环境 shell', group: '环境' },
   { name: 'snapshot', detail: '给当前环境打快照 [名]', group: '环境' },
   { name: 'rollback', detail: '回滚到快照 <名>', group: '环境' },
@@ -313,7 +333,7 @@ export interface BootState {
   error?: string;
 }
 
-export type Page = 'chat' | 'settings' | 'attach' | 'history';
+export type Page = 'chat' | 'settings' | 'attach' | 'history' | 'gate';
 
 export type ConnectionState = 'discovering' | 'connecting' | 'live' | 'reconnecting' | 'failed';
 
@@ -370,12 +390,9 @@ export interface GuiState {
   /** 跳流目标：档案锚 → 流内 user 消息 id（一次性信号——Stream 按 nonce
    *  消费触发滚动，store 侧只写不清；重复跳同一锚靠 nonce 递增再触发）。 */
   archiveJumpTarget: { messageId: string; nonce: number } | null;
-  /** 分屏比例（流宽占比,默认 0.6;拖动更新 + localStorage 持久化）。 */
-  archivePaneRatio: number;
-  /** 左右互换（档案在左、流在右）。 */
-  archiveSwapped: boolean;
-  /** 小窗抽屉开关（≥1280px 分屏恒在,无抽屉语义）。 */
-  archiveDrawerOpen: boolean;
+  // 决策②修订（V4-S3）：档案分屏/抽屉/flash 全退役——档案唯一落位 SidePane
+  // 「档案」页签；archivePaneRatio/archiveSwapped/archiveDrawerOpen 随之移除
+  //（localStorage 旧键不再读取，自然作废）。
 
   // 1.3.2 ③：主题（深色默认；localStorage 持久化）
   theme: ThemeMode;
@@ -396,22 +413,31 @@ export interface GuiState {
   /** 1.3.3 @ 补全：选中后替换输入框尾部 @token 的一次性信号。 */
   mentionApply: { replace: string; nonce: number } | null;
 
-  // 1.3.1 ③④：/tasks 与 /queue 面板
-  tasksOpen: boolean;
+  // 1.3.1 ③④：/tasks 与 /queue 面板（V4-S2：tasks overlay 壳退役——内容驻
+  // SidePane「任务」页签，由 sidePaneTab==='tasks' 驱动；数据节奏见
+  // refreshTasksTab。queue 保留 overlay 形态）
   tasksSelected: TasksSelected | null;
   queueOpen: boolean;
   queueServer: QueueStatusItem[];
   /** 1.6.8 M2：战役观察卡片数据源（campaign/list；/tasks 第四源，开面板刷新）。 */
   campaigns: CampaignRecordLike[];
 
-  // 1.8.7 P3b：研究线面板（line/list；B6/B7 线一等对象视图）
-  linesOpen: boolean;
+  // 1.8.7 P3b：研究线清单（line/list；B6/B7 线一等对象视图）。V4-S1 起线面板
+  // 驻 SidePane「线」页签（见下方 sidePaneOpen/sidePaneTab），linesOpen 浮层
+  // 开关随浮层退役，数据面（lines/linesLoading）不动。
   /** 展示行（model/lines::buildLineRows 装配——归属段/live·busy 都在装配期定型）。 */
   lines: LineRow[];
   linesLoading: boolean;
 
-  // 第四批 v4：崩溃件检查器（crash 对象 → research/list 的 fuzz 分拣结论）
-  inspectorOpen: boolean;
+  // V4-S1 骨架壳：右侧检查面板（SidePane——设计稿 §2 柱2 的壳；S2 起能力迁入）
+  sidePaneOpen: boolean;
+  sidePaneTab: SidePaneTab;
+  /** 面板宽（px；钳制 260~60vw 后持久化 localStorage）。 */
+  sidePaneWidth: number;
+
+  // 第四批 v4：崩溃件检查器（crash 对象 → research/list 的 fuzz 分拣结论；
+  // V4-S2 起内容驻 SidePane「检查器」页签——overlay 开关 inspectorOpen 随壳
+  // 退役，过滤指纹 inspectorFilter 留 store，入口动作 openCrashInspector 驱动页签）
   /** 过滤指纹（crashClass；null = 全量）。 */
   inspectorFilter: string | null;
   crashEvents: CrashEvent[];
@@ -434,8 +460,20 @@ export interface GuiState {
   settingsTab: string;
   toast: string | null;
   toastNonce: number;
+  /** V4-S1 状态行回执通道（✓ 动作确认；nonce 变化驱动 StatusBar 短暂高亮）。 */
+  receipt: { text: string; nonce: number } | null;
   /** 历史 overlay 选中 → 回填输入框的一次性载荷。 */
   inputFill: { text: string; nonce: number } | null;
+
+  // V4-S3 命令中枢（Ctrl+K）——独立面板面，不动 OverlayState（一门两窗：
+  // 输入行 `/` 仍走 overlay，Ctrl+K 走本面；执行统一 execSlashCommand 出口）。
+  paletteOpen: boolean;
+  paletteText: string;
+  paletteSel: number;
+  /** 当前候选（setPaletteText 内重算；推导见 model/command-palette）。 */
+  paletteItems: PaletteItem[];
+  /** 执行历史（LRU 8 条；openPalette 时从 localStorage 载，成功后落盘）。 */
+  paletteHistory: string[];
 
   // actions
   init(): void;
@@ -526,18 +564,18 @@ export interface GuiState {
   resolveArchiveEntity(id: string): Promise<void>;
   abandonArchiveEntity(id: string, reason: string): Promise<void>;
   setArchiveHighlight(id: string | null): void;
+  /** 档案锚 → 流跳转（只写不清：nonce 递增驱动 Stream 滚动消费）。跳流时
+      把 SidePane「档案」页签开到前台——锚的上下文保持可见（决策②修订：原
+      archiveDrawerOpen 语义整体搬进 SidePane）。 */
   jumpToArchiveAnchor(messageId: string): void;
-  setArchivePaneRatio(ratio: number): void;
-  toggleArchiveSwap(): void;
-  setArchiveDrawerOpen(open: boolean): void;
   // 1.3.2 ①：promote（决策块入专家库）
   submitPromote(entry: Record<string, unknown>): Promise<{ ok: boolean; message: string }>;
   // 1.3.2 ③：主题
   toggleTheme(): void;
   setTheme(mode: ThemeMode): void;
   // 1.3.1 ③④：tasks / queue
-  openTasksPanel(): Promise<void>;
-  closeTasksPanel(): void;
+  /** V4-S2：「任务」页签数据节奏——切到该页签重拉 taskList + campaignList。 */
+  refreshTasksTab(): Promise<void>;
   backToList(): void;
   selectTaskRow(key: string): Promise<void>;
   /** 1.6.8 M2：战役卡片「终止」——开二次确认模态（campaign/stop）。 */
@@ -546,10 +584,8 @@ export interface GuiState {
   confirmCampaignStop(): Promise<void>;
   /** 1.6.8 M2：战役卡片「续命」（campaign/resume，仅 paused 态；成功重拉 + toast）。 */
   resumeCampaign(id: string): Promise<void>;
-  // 1.8.7 P3b：研究线面板（B6/B7——line/list 一等对象视图）
-  openLinesPanel(): Promise<void>;
-  closeLinesPanel(): void;
-  /** 重拉线清单（不置 open；面板 ⟳ 与 share/unshare 成功后复用同一路径）。 */
+  // 1.8.7 P3b：研究线动作（B6/B7——line/list 一等对象视图；面板壳见 SidePane）
+  /** 重拉线清单（不置 open；「线」页签打开 / share/unshare 成功后复用同一路径）。 */
   refreshLines(): Promise<void>;
   /** 切到指定线（/sessions/switch 同 resumeSession 语义；busy 类错误服务端裁决,
    *  文案原样 toast——与 resumeSession 的本地闸不同,切线交给服务端排它）。 */
@@ -558,11 +594,11 @@ export interface GuiState {
   shareLine(loopSessionId: string): Promise<void>;
   /** 共享线 → 私有线（line/unshare,归属改登记为调用方）。 */
   unshareLine(loopSessionId: string): Promise<void>;
-  // 第四批 v4：崩溃件检查器（research/list fuzz 桶——crash 对象双击进入）
-  /** 打开检查器；filter = crashClass 指纹（缺省 null = 全量）。crashEvents 为空
+  // 第四批 v4：崩溃件检查器（research/list fuzz 桶——crash 对象双击进入；
+  // V4-S2：动作名保留、驱动 SidePane「检查器」页签）
+  /** 打开「检查器」页签；filter = crashClass 指纹（缺省 null = 全量）。crashEvents 为空
    *  且非 loading 时惰性拉一次 researchList——只此一次不造定时器。 */
   openCrashInspector(filter?: string | null): void;
-  closeCrashInspector(): void;
   /** 重拉 fuzz 分拣事件（面板 ⟳ 用；失败保持空清单不阻塞——lines 同款静默）。 */
   refreshCrashEvents(): Promise<void>;
   openQueuePanel(): Promise<void>;
@@ -578,6 +614,28 @@ export interface GuiState {
   openSettingsTab(tab: string): void;
   showToast(msg: string): void;
   clearToast(): void;
+  /** V4-S1 回执通道：动作确认沉底状态行（✓ 文本，2200ms 自隐——调用点 S5 全量接线）。 */
+  showReceipt(text: string): void;
+  // V4-S1 骨架壳：右侧检查面板（SidePane）开关/页签/宽度
+  /** 打开面板；tab 缺省保持当前页签。切到「线」页签沿用浮层时代的数据节奏（重拉 line/list）。
+      开合即持久化（V4-S2：收起过一次就永远记住）。 */
+  openSidePane(tab?: SidePaneTab): void;
+  closeSidePane(): void;
+  /** 分割条 dblclick 的同一入口（收起 ↔ 展开）。 */
+  toggleSidePane(): void;
+  setSidePaneTab(tab: SidePaneTab): void;
+  setSidePaneWidth(width: number): void;
+  // V4-S3 命令中枢（Ctrl+K）：开/关/输入/导航/选中/历史。
+  /** 开面板：清输入、载历史（localStorage）、重算目录态候选。 */
+  openPalette(): void;
+  closePalette(): void;
+  /** 输入变化：重算候选 + 选中归零（同 openOverlay 逐键重推节奏）。 */
+  setPaletteText(t: string): void;
+  movePaletteSel(delta: number): void;
+  /** 统一出口：动词未带参 → 回填 /verb 继续输参（同 Tab 语义）；带参/
+      对象/历史 → execSlashCommand 直执行 + 记历史 + 关面板。at 供鼠标点选。 */
+  pickPalette(at?: number): void;
+  pushPaletteHistory(cmdline: string): void;
   addRef(ref: Ref): void;
   removeRef(index: number): void;
   addHistory(text: string): void;
@@ -604,6 +662,9 @@ let connecting = false;
 let lifecycleGen = 0;
 /** 启动环境恢复只做一次（chat:init 的 workspace 到达后）。 */
 let envRestoreDone = false;
+/** V4-S4 决策④：启动路由只判定一次——初始环境解析落定后烧掉，不随后续
+ *  状态（中途删环境/掉宿主等）自动跳正门；中途进出正门全是显式动作。 */
+let gateRouteDone = false;
 /** boot 轮询句柄（dispose / 重复 boot 时清理）。 */
 let bootPollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -627,14 +688,43 @@ function browserStorage(): Pick<Storage, 'getItem' | 'setItem'> | undefined {
   }
 }
 
-// 1.4.4 研究档案分屏偏好（比例/左右互换;localStorage 持久化,记住用户习惯）。
-const ARCHIVE_RATIO_KEY = 'zhishi.gui.archiveRatio';
-const ARCHIVE_SWAP_KEY = 'zhishi.gui.archiveSwapped';
+// 1.4.4 研究档案分屏偏好已随决策②修订退役（V4-S3）：archiveRatio/archiveSwapped
+// 的 localStorage 读取点一并删除——旧键留盘不读，自然作废。
 
-function readArchiveRatio(): number {
-  const raw = browserStorage()?.getItem(ARCHIVE_RATIO_KEY);
+// V4-S1 检查面板宽度偏好（localStorage 持久化,照 archiveRatio 的做法）。
+const SIDE_PANE_WIDTH_KEY = 'zhishi.gui.sidePaneWidth';
+// V4-S2 纠偏：开合偏好持久化（'1' 展开 / '0' 收起；无键 = 未表态，按屏宽默认）。
+const SIDE_PANE_OPEN_KEY = 'zhishi.gui.sidePaneOpen';
+
+/** 回执自隐调度器（模块级单例：clearTimeout 语义见 model/side-pane.ts）。 */
+const receiptScheduler = new ReceiptScheduler();
+
+function readSidePaneWidth(): number {
+  const raw = browserStorage()?.getItem(SIDE_PANE_WIDTH_KEY);
   const n = Number(raw);
-  return Number.isFinite(n) && n >= 0.3 && n <= 0.85 ? n : 0.6;
+  return Number.isFinite(n) && n >= SIDE_PANE_MIN_WIDTH ? Math.round(n) : SIDE_PANE_DEFAULT_WIDTH;
+}
+
+function persistSidePaneOpen(open: boolean): void {
+  browserStorage()?.setItem(SIDE_PANE_OPEN_KEY, open ? '1' : '0');
+}
+
+/** 命令中枢候选推导的数据源快照（store 状态 → 纯函数 ctx）。 */
+function paletteCtx(s: GuiState): PaletteSources {
+  return {
+    lines: s.lines,
+    campaigns: s.campaigns,
+    missions: MISSION_OPTIONS,
+    envs: s.envs,
+    runningIds: runningIdsOf(s),
+    slashCommands: SLASH_COMMANDS,
+    history: s.paletteHistory,
+  };
+}
+
+/** 运行中环境 id 集合（EnvEntry 无 state 字段——运行态以 ps 现场列表为准）。 */
+function runningIdsOf(s: GuiState): ReadonlySet<string> {
+  return new Set(s.running.map((r) => r.id).filter((id): id is string => typeof id === 'string' && !!id));
 }
 
 function currentSession(s: GuiState): SessionState {
@@ -673,9 +763,6 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   archive: null,
   archiveHighlightId: null,
   archiveJumpTarget: null,
-  archivePaneRatio: readArchiveRatio(),
-  archiveSwapped: browserStorage()?.getItem(ARCHIVE_SWAP_KEY) === '1',
-  archiveDrawerOpen: false,
 
   tools: [],
 
@@ -684,18 +771,24 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   mission: null,
   mentionApply: null,
 
-  tasksOpen: false,
   tasksSelected: null,
   campaigns: [],  queueOpen: false,
   queueServer: [],
 
-  // 1.8.7 P3b：研究线面板
-  linesOpen: false,
+  // 1.8.7 P3b：研究线清单（面板壳 = SidePane「线」页签）
   lines: [],
   linesLoading: false,
 
-  // 第四批 v4：崩溃件检查器
-  inspectorOpen: false,
+  // V4-S1 骨架壳：右侧检查面板（默认开合按屏宽判定一次——宽屏展开/窄屏收起；
+  // 用户收起/展开过一次则以记忆值为准，见 model/side-pane.ts::initialSidePaneOpen）
+  sidePaneOpen: initialSidePaneOpen(
+    browserStorage()?.getItem(SIDE_PANE_OPEN_KEY) ?? null,
+    typeof window !== 'undefined' ? window.innerWidth : WIDE_SCREEN_MIN,
+  ),
+  sidePaneTab: 'lines',
+  sidePaneWidth: readSidePaneWidth(),
+
+  // 第四批 v4：崩溃件检查器（过滤指纹；内容壳 = SidePane「检查器」页签）
   inspectorFilter: null,
   crashEvents: [],
   crashEventsLoading: false,
@@ -712,7 +805,16 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   settingsTab: 'model',
   toast: null,
   toastNonce: 0,
+  receipt: null,
   inputFill: null,
+
+  // V4-S3 命令中枢（Ctrl+K）——初始关闭；历史惰性到 openPalette 才载
+  //（启动不背 localStorage 读）。
+  paletteOpen: false,
+  paletteText: '',
+  paletteSel: 0,
+  paletteItems: [],
+  paletteHistory: [],
 
   // ── 连接 ────────────────────────────────────────────────────────────
 
@@ -721,6 +823,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     connecting = true;
     const gen = ++lifecycleGen;
     envRestoreDone = false;
+    gateRouteDone = false; // 新连接生命周期 = 新的启动路由判定窗口
     void (async () => {
       const { invoke } = tauriInvoke();
       const search = typeof window !== 'undefined' ? window.location.search : '';
@@ -1068,7 +1171,8 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     });
     get().reconnect();
     void get().refreshSidebar();
-    get().showToast(`◈ 已切换到 ${key} 的会话线`);
+    // S5 双轨：动作成功 → 状态行回执（toast 轨道留给错误/需留意）。
+    get().showReceipt(`已切环境 ${key}`);
   },
 
   // ── 1.3.1 ①：启动已停止环境（docker/vm 都走 environment/up） ──────
@@ -1099,7 +1203,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         return;
       }
       void state.refreshSidebar();
-      state.showToast(`✓ ${entry.id} 已启动`);
+      state.showReceipt(`已启动 ${entry.id}`);
     } catch (err) {
       state.showToast(`启动失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1123,6 +1227,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       }
       void state.refreshSidebar();
       const domains = res.data?.capabilityDomains ?? [];
+      // S5 双发：回执给确认感（短），toast 给详情（能力域清单）——信息量大
+      // 的动作是双轨的正确用法，不是冗余。
+      state.showReceipt(`能力已重推 ${envId}`);
       state.showToast(`✓ ${envId} 能力：${domains.join(' · ') || '（无）'}`);
     } catch (err) {
       state.showToast(`能力重推失败：${err instanceof Error ? err.message : String(err)}`);
@@ -1156,6 +1263,8 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       set({ modal: null });
       void state.refreshSidebar();
       const missing = res.data?.capabilityMissing;
+      // S5 双发：回执短句确认；「仍缺 N 项」是后续要留意的信息，走 toast。
+      state.showReceipt(`${target.label} 补齐完成`);
       state.showToast(
         `✓ ${target.label} 补齐完成${missing?.length ? `——探测面仍缺 ${missing.length} 项` : '，探测面全在场'}`,
       );
@@ -1192,7 +1301,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         return { ok: false, error: errText };
       }
       void state.refreshSidebar();
-      state.showToast(`✓ 已登记 ${payload.id}`);
+      state.showReceipt(`已登记 ${payload.id}`);
       // 运行中才尝试切入（docker Up / VM running）；停着的只入侧栏
       //（无配方的已停止条目切过去是死线，等启动后再进）。
       if (isDiscoveredRunning(item)) {
@@ -1235,7 +1344,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       }
       set({ modal: null });
       void state.refreshSidebar();
-      state.showToast(`✓ 已删除 ${target.label}`);
+      state.showReceipt(`已删除 ${target.label}`);
     } catch (err) {
       state.showToast(`删除失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1265,7 +1374,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       }
       set({ modal: null });
       void state.refreshSidebar();
-      state.showToast(`✓ 已停止 ${target.label}`);
+      state.showReceipt(`已停止 ${target.label}`);
     } catch (err) {
       state.showToast(`停止失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1299,7 +1408,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       // 缺 data 的旧 sidecar 回落 refreshSidebar。
       if (res.data?.environments) set({ envs: res.data.environments });
       else void state.refreshSidebar();
-      state.showToast(trimmed ? `✓ 已改名为 ${trimmed}` : '✓ 已清除别名');
+      state.showReceipt(trimmed ? `已改名 ${trimmed}` : '已清除别名');
     } catch (err) {
       state.showToast(`改名失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1334,7 +1443,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         return;
       }
       void state.refreshSidebar();
-      state.showToast(`✓ ${recipe} 已启动（镜像派生）`);
+      state.showReceipt(`已启动 ${recipe}（镜像）`);
     } catch (err) {
       state.showToast(`启动失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1366,7 +1475,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       }
       set({ modal: null });
       void state.refreshSidebar();
-      state.showToast(`✓ ${target.label} 已重建（镜像重建 + 全新容器）`);
+      state.showReceipt(`已重建 ${target.label}`);
     } catch (err) {
       state.showToast(`重建失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1396,7 +1505,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       }
       set({ modal: null });
       void state.refreshSidebar();
-      state.showToast(`✓ ${target.label} 已重置（镜像不动，换干净容器）`);
+      state.showReceipt(`已重置 ${target.label}`);
     } catch (err) {
       state.showToast(`重置失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1431,7 +1540,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       }
       set({ modal: null });
       void state.refreshSidebar();
-      state.showToast(`✓ 已更新 ${target.id} 的配方绑定`);
+      state.showReceipt('已更新配方绑定');
     } catch (err) {
       state.showToast(`绑定更新失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1466,8 +1575,10 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         return;
       }
       const outcome = classifySendResponse(res);
-      if (outcome === 'steering') get().showToast(`↳ 已插入纠偏：${text}`);
-      else if (outcome === 'fifo-queued') get().showToast(`已排队（FIFO）：${text}`);
+      // S5：发送被接受（纠偏/FIFO）= 动作成功的回执——原文案回显消息文本，
+      // 消息本身在流里可见，回执不必复述（≤16 字）。
+      if (outcome === 'steering') get().showReceipt('已插入纠偏');
+      else if (outcome === 'fifo-queued') get().showReceipt('已排队（FIFO）');
     } catch (err) {
       get().showToast(`发送失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1495,7 +1606,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       const key = get().currentEnvKey ?? 'host';
       set((s) => ({ sessions: { ...s.sessions, [key]: emptySession() } }));
       get().reconnect();
-      get().showToast('对话已重置');
+      get().showReceipt('对话已重置');
     } catch (err) {
       get().showToast(`重置失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1512,7 +1623,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       }
       const key = get().currentEnvKey ?? 'host';
       set((s) => ({ sessions: { ...s.sessions, [key]: { ...currentSession(s), model } } }));
-      get().showToast(`已切换模型：${model}`);
+      get().showReceipt(`已切模型 ${model}`);
     } catch (err) {
       get().showToast(`切换模型失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1536,10 +1647,12 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
           lines: s.lines,
           campaigns: s.campaigns,
           missions: MISSION_OPTIONS,
+          envs: s.envs,
+          runningIds: runningIdsOf(s),
         });
         if (objects !== null) {
           // 对象源明显过期（清单为空）时惰性拉一次——openOverlay 随击键重入，
-          // 模块级闸保证不每击键一发 campaign/list（参照 openTasksPanel 拉法）。
+          // 模块级闸保证不每击键一发 campaign/list（参照 refreshTasksTab 拉法）。
           if (nameSeg === 'resume' && s.lines.length === 0) {
             ensureSlashObjectsHydrated('lines', () => void get().refreshLines());
           }
@@ -1713,7 +1826,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         decisions: removeDecision(s.decisions, decisionId),
         activeDecisionId: s.activeDecisionId === decisionId ? null : s.activeDecisionId,
       }));
-      state.showToast('✓ 决定已提交——回注会话流继续');
+      state.showReceipt('决定已提交');
     } catch (err) {
       state.showToast(`应答失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1772,6 +1885,8 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         modal: null,
         autoRun: optimisticAutoRunEntry(res.id, payload, undefined, res.loopSessionId),
       });
+      // S5 双发：回执给确认感；loop 名是用户起的 goal，走 toast 留名。
+      state.showReceipt('auto loop 已启动');
       state.showToast(`✓ auto loop 已启动：${payload.name}`);
     } catch (err) {
       state.showToast(`启动失败：${err instanceof Error ? err.message : String(err)}`);
@@ -1807,7 +1922,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
             ? { ...s.autoRun, status: 'stopped', updatedAt: Date.now() }
             : s.autoRun,
       }));
-      state.showToast('⏹ auto loop 已终止——会话回到普通模式');
+      state.showReceipt('auto loop 已终止');
     } catch (err) {
       state.showToast(`终止失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1878,11 +1993,10 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       set({ toast: res.error ?? '纠正失败', toastNonce: get().toastNonce + 1 });
       return;
     }
-    set({
-      archiveHighlightId: null,
-      toast: `已纠正 ${id}——下游已标待复核`,
-      toastNonce: get().toastNonce + 1,
-    });
+    // S5：行内纠正成功 → 状态行回执；「下游标待复核」的详情语义留注释即可
+    //（看板行自己会翻待复核态）。
+    set({ archiveHighlightId: null });
+    get().showReceipt(`已纠正 ${id}`);
   },
 
   /** 假设证实/问题解决（终态推进;服务端广播 archive:changed 回来）。 */
@@ -1894,11 +2008,8 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       set({ toast: res.error ?? '操作失败', toastNonce: get().toastNonce + 1 });
       return;
     }
-    set({
-      archiveHighlightId: null,
-      toast: `${id} 已有终态（已证实/已解决）`,
-      toastNonce: get().toastNonce + 1,
-    });
+    set({ archiveHighlightId: null });
+    get().showReceipt(`${id} 已有终态`);
   },
 
   /** 搁置假设/问题（不追了≠错了;服务端广播 archive:changed 回来）。 */
@@ -1910,11 +2021,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       set({ toast: res.error ?? '搁置失败', toastNonce: get().toastNonce + 1 });
       return;
     }
-    set({
-      archiveHighlightId: null,
-      toast: `${id} 已搁置——不追了≠错了，已留痕`,
-      toastNonce: get().toastNonce + 1,
-    });
+    // 「不追了≠错了，已留痕」是详情注记；确认感走回执。
+    set({ archiveHighlightId: null });
+    get().showReceipt(`${id} 已搁置`);
   },
 
   setArchiveHighlight(id: string | null) {
@@ -1925,24 +2034,10 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   jumpToArchiveAnchor(messageId: string) {
     set({
       archiveJumpTarget: { messageId, nonce: (get().archiveJumpTarget?.nonce ?? 0) + 1 },
-      archiveDrawerOpen: true, // 小窗抽屉形态：跳流时档案侧保持可用
     });
-  },
-
-  setArchivePaneRatio(ratio: number) {
-    const clamped = Math.min(0.85, Math.max(0.3, ratio));
-    set({ archivePaneRatio: clamped });
-    browserStorage()?.setItem(ARCHIVE_RATIO_KEY, String(clamped));
-  },
-
-  toggleArchiveSwap() {
-    const next = !get().archiveSwapped;
-    set({ archiveSwapped: next });
-    browserStorage()?.setItem(ARCHIVE_SWAP_KEY, next ? '1' : '0');
-  },
-
-  setArchiveDrawerOpen(open: boolean) {
-    set({ archiveDrawerOpen: open });
+    // 决策②修订：档案唯一落位 SidePane「档案」页签——跳流时把页签开到前台，
+    // 锚的上下文保持可见（原 archiveDrawerOpen:true 语义的整体搬迁）。
+    get().openSidePane('archive');
   },
 
   // ── 1.3.2 ①：promote（决策块 → expert/add 入专家库） ─────────────
@@ -1974,18 +2069,19 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     persistTheme(mode);
   },
 
-  // ── 1.3.1 ③④：/tasks 面板 ──────────────────────────────────────────
+  // ── 1.3.1 ③④：/tasks 面板（V4-S2 起内容驻 SidePane「任务」页签）/ /queue ──
 
-  async openTasksPanel() {
+  // V4-S2：原 openTasksPanel 的拉取逻辑原样搬此——「切到任务页签」即重拉
+  // taskList + campaignList（开面板重拉节奏不变；失败保旧/置空不阻塞面板）。
+  async refreshTasksTab() {
     const c = client;
-    set({ tasksOpen: true, tasksSelected: null });
     if (!c) return;
     try {
       serverTaskCache = (await api.taskList(c)) as ServerTaskLike[];
     } catch {
       serverTaskCache = [];
     }
-    // 1.6.8 M2：战役观察卡片随面板打开同节奏刷新（复用既有「开面板重拉」，
+    // 1.6.8 M2：战役观察卡片随页签切入同节奏刷新（复用既有「开面板重拉」，
     // 不新造定时器；拉取失败保持旧清单不阻塞面板）。
     try {
       const res = await api.campaignList(c, get().workspace ?? undefined);
@@ -1993,10 +2089,6 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     } catch {
       /* campaign/list 失败不阻塞任务中心 */
     }
-  },
-
-  closeTasksPanel() {
-    set({ tasksOpen: false, tasksSelected: null });
   },
 
   backToList() {
@@ -2076,7 +2168,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       }
       set({ modal: null });
       await refreshCampaigns(get, set);
-      state.showToast(`✓ 战役已终止（${target.id}）`);
+      state.showReceipt('战役已终止');
     } catch (err) {
       state.showToast(`终止战役失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -2096,27 +2188,122 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         return;
       }
       await refreshCampaigns(get, set);
-      state.showToast(`✓ 战役已续命（paused → running，预算重置起算）`);
+      // 「预算重置起算」是后续要留意的信息，双发留 toast。
+      state.showReceipt('战役已续命');
+      state.showToast('✓ 战役已续命（paused → running，预算重置起算）');
     } catch (err) {
       state.showToast(`续命失败：${err instanceof Error ? err.message : String(err)}`);
     }
   },
 
+  // ── V4-S1 骨架壳：右侧检查面板（SidePane）+ 状态行回执通道 ──────────────
+
+  openSidePane(tab) {
+    const patch: Partial<GuiState> = { sidePaneOpen: true };
+    if (tab) patch.sidePaneTab = tab;
+    set(patch);
+    persistSidePaneOpen(true); // 开合即记住：下次启动/换屏宽都以此为准
+    // 页签数据节奏沿用浮层时代语义：「线」打开即重拉 line/list（loading 即刻
+    // 可见，拉取不阻塞面板）；「任务」重拉 taskList + campaignList。
+    const target = tab ?? get().sidePaneTab;
+    if (target === 'lines') void get().refreshLines();
+    if (target === 'tasks') void get().refreshTasksTab();
+  },
+
+  closeSidePane() {
+    set({ sidePaneOpen: false });
+    persistSidePaneOpen(false); // 收起过一次就永远记住（不再自动弹）
+  },
+
+  toggleSidePane() {
+    if (get().sidePaneOpen) get().closeSidePane();
+    else get().openSidePane();
+  },
+
+  setSidePaneTab(tab) {
+    set({ sidePaneTab: tab });
+    if (tab === 'lines') void get().refreshLines();
+    if (tab === 'tasks') void get().refreshTasksTab();
+  },
+
+  setSidePaneWidth(width) {
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
+    const clamped = clampSidePaneWidth(width, vw);
+    set({ sidePaneWidth: clamped });
+    browserStorage()?.setItem(SIDE_PANE_WIDTH_KEY, String(clamped));
+  },
+
+  showReceipt(text) {
+    set((s) => ({ receipt: { text, nonce: (s.receipt?.nonce ?? 0) + 1 } }));
+    // 新回执顶掉旧计时器——2200ms 窗口从最后一次动作起算（Toast effect 同语义）。
+    receiptScheduler.schedule(() => set({ receipt: null }));
+  },
+
+  // ── V4-S3 命令中枢（Ctrl+K）─────────────────────────────────────────
+
+  openPalette() {
+    const history = loadPaletteHistory(browserStorage());
+    set({
+      paletteOpen: true,
+      paletteText: '',
+      paletteSel: 0,
+      paletteHistory: history,
+      paletteItems: buildPaletteItems('', { ...paletteCtx(get()), history }),
+    });
+  },
+
+  closePalette() {
+    set({ paletteOpen: false });
+  },
+
+  setPaletteText(t) {
+    set({
+      paletteText: t,
+      paletteSel: 0,
+      paletteItems: buildPaletteItems(t, paletteCtx(get())),
+    });
+  },
+
+  movePaletteSel(delta) {
+    set((s) => {
+      if (s.paletteItems.length === 0) return {};
+      const sel = (s.paletteSel + delta + s.paletteItems.length) % s.paletteItems.length;
+      return { paletteSel: sel };
+    });
+  },
+
+  pickPalette(at) {
+    const s = get();
+    const item = s.paletteItems[at ?? s.paletteSel];
+    if (!item) return;
+    const parsed = parseSlashInput(item.runCmdline);
+    // 动词未带参 → 回填 /verb 继续输参（同 slash overlay 的 Tab 语义）。已
+    // 在 /verb 态再选中同一动词（文本 trim 后 == runCmdline）则放行执行——
+    // 否则无对象表的动词（/model 等）会在回填上死循环。
+    if (item.kind === 'verb' && parsed && !parsed.args && s.paletteText.trim() !== item.runCmdline) {
+      get().setPaletteText(`${item.runCmdline} `);
+      return;
+    }
+    get().pushPaletteHistory(item.runCmdline);
+    set({ paletteOpen: false });
+    // 一门两窗的执行引擎出口：与输入行 / 直输同一 runSlashCommand 管线。
+    if (parsed) void get().execSlashCommand(parsed.name, parsed.args);
+  },
+
+  pushPaletteHistory(cmdline) {
+    const next = pushPaletteHistoryList(get().paletteHistory, cmdline);
+    set({ paletteHistory: next });
+    savePaletteHistory(browserStorage(), next);
+  },
+
   // ── 1.8.7 P3b：研究线面板（line/list|share|unshare，B6/B7） ───────────
-
-  async openLinesPanel() {
-    // 置 open+loading 即刻可见,拉取与 resumeSession 同语义不阻塞面板。
-    set({ linesOpen: true, linesLoading: true });
-    await get().refreshLines();
-  },
-
-  closeLinesPanel() {
-    set({ linesOpen: false });
-  },
 
   async refreshLines() {
     const c = client;
     if (!c) return;
+    // V4-S1：loading 置位收进本动作（浮层时代由 openLinesPanel 代劳）——
+    // 「线」页签 ⟳ 刷新也要有拉取中提示。
+    set({ linesLoading: true });
     const workspace = get().workspace;
     if (!workspace) {
       // chat:init 未至（workspace 未到）——清单置空等下一次拉取。
@@ -2157,7 +2344,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       set({ page: 'chat', drawer: null, overlay: null });
       get().reconnect();
       void get().refreshSidebar();
-      get().showToast(`✓ 已切到线 ${shortLineId(loopSessionId)}（resume）`);
+      get().showReceipt(`已切到线 ${shortLineId(loopSessionId)}`);
     } catch (err) {
       state.showToast(`切线失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -2178,7 +2365,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         return;
       }
       await get().refreshLines();
-      get().showToast(`✓ 已共享线 ${shortLineId(loopSessionId)}`);
+      get().showReceipt(`已共享线 ${shortLineId(loopSessionId)}`);
     } catch (err) {
       state.showToast(`共享失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -2198,7 +2385,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         return;
       }
       await get().refreshLines();
-      get().showToast(`✓ 已转私有线 ${shortLineId(loopSessionId)}（归属改为你）`);
+      get().showReceipt(`已转私有 ${shortLineId(loopSessionId)}`);
     } catch (err) {
       state.showToast(`转私有失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -2207,17 +2394,16 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
   // ── 第四批 v4：崩溃件检查器（research/list 的 fuzz 分拣结论桶） ────────
 
   openCrashInspector(filter = null) {
-    set({ inspectorOpen: true, inspectorFilter: filter ?? null });
+    // V4-S2：检查器从浮层迁入 SidePane「检查器」页签——动作名保留（CampaignCard
+    // chips / 「显全部」入口零改动），驱动页签而非 overlay；筛选语义不变。
+    set({ inspectorFilter: filter ?? null });
+    get().openSidePane('inspector');
     // 惰性拉一次：crashEvents 为空且非 loading 才发请求（research/list 无
     // 轮询义务——数据靠面板 ⟳ 手动刷新;失败保持空,下次打开自然重试）。
     const s = get();
     if (s.crashEvents.length === 0 && !s.crashEventsLoading) {
       void get().refreshCrashEvents();
     }
-  },
-
-  closeCrashInspector() {
-    set({ inspectorOpen: false });
   },
 
   async refreshCrashEvents() {
@@ -2261,7 +2447,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         get().showToast(`取消失败：${res.error ?? '未知错误'}`);
         return;
       }
-      get().showToast('已取消排队消息');
+      get().showReceipt('已取消排队');
       const fresh = await api.fetchQueueStatus(c).catch(() => null);
       set({ queueServer: fresh?.queue ?? get().queueServer.filter((q) => q.id !== queueId) });
     } catch (err) {
@@ -2377,7 +2563,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       }
       set({ wizard: null, modal: null });
       void get().refreshSidebar();
-      get().showToast(`✓ 已登记 ${payload.input.id}`);
+      get().showReceipt(`已登记 ${payload.input.id}`);
     } catch (err) {
       state.showToast(`SSH 接入失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -2404,6 +2590,8 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         return;
       }
       set({ modal: null });
+      // 「快照 zhishi-clean」是详情，双发留 toast。
+      state.showReceipt('模板已养成');
       state.showToast(`✓ 模板 ${recipeId} 已养成（快照 zhishi-clean）`);
     } catch (err) {
       state.showToast(`认领失败：${err instanceof Error ? err.message : String(err)}`);
@@ -2457,7 +2645,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       }
       set({ boot: { recipeId, base: recipe?.base, stage: stages.length, status: 'done' } });
       await state.refreshSidebar();
-      state.showToast(`✓ 环境 ${recipeId} 构建完成`);
+      state.showReceipt(`构建完成 ${recipeId}`);
       // 1.3.7：完成入侧栏后，仅当环境运行中才自动切入（workspace 就绪前提）。
       if (get().workspace) {
         const target = findRunningEnvForRecipe(recipeId, get().envs, get().running);
@@ -2749,7 +2937,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
           ? { historySessions: s.historySessions.filter((r) => r.id !== id) }
           : {},
       );
-      state.showToast('✓ 会话已删除（含 transcript）');
+      state.showReceipt('会话已删除');
     } catch (err) {
       state.showToast(`删除失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -2786,7 +2974,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       set({ page: 'chat', drawer: null, overlay: null });
       get().reconnect();
       void get().refreshSidebar();
-      get().showToast('✓ 已载回会话——续跑从最新消息开始');
+      get().showReceipt('已载回会话');
     } catch (err) {
       state.showToast(`载回失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -2826,7 +3014,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       // 线态即时生效（chat:mission-changed 广播同值到达时幂等覆盖）。
       const applied = res.data?.mission ?? kind;
       set({ mission: { kind: applied } });
-      state.showToast(applied ? `✓ 任务形态：${missionLabel(applied)}` : '✓ 已清除任务形态');
+      state.showReceipt(applied ? `任务形态：${missionLabel(applied)}` : '已清除任务形态');
     } catch (err) {
       state.showToast(`任务形态设置失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -2838,9 +3026,6 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     const s = get();
     const action = escAction({
       overlayOpen: s.overlay !== null,
-      tasksOpen: s.tasksOpen,
-      linesOpen: s.linesOpen,
-      inspectorOpen: s.inspectorOpen,
       queueOpen: s.queueOpen,
       boundaryOpen: s.boundaryAsks.length > 0,
       decisionOpen: s.decisions.length > 0 && s.activeDecisionId !== null,
@@ -2854,15 +3039,6 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     switch (action.type) {
       case 'close-overlay':
         set({ overlay: null });
-        break;
-      case 'close-tasks':
-        set({ tasksOpen: false, tasksSelected: null });
-        break;
-      case 'close-lines':
-        set({ linesOpen: false });
-        break;
-      case 'close-inspector':
-        set({ inspectorOpen: false });
         break;
       case 'close-queue':
         set({ queueOpen: false, queueServer: [] });
@@ -2889,6 +3065,10 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         set({ drawer: null });
         break;
       case 'close-page':
+        // 决策④：正门是无环境场景的「家」——gate 且无环境时 Esc 无处可回，
+        // 停在正门（no-op，不报错也不 dump 进无环境的 chat）；有环境则回
+        // 工作区（page 层原语义）。escAction 纯函数不动，闸在执行层。
+        if (get().page === 'gate' && !get().currentEnvKey) break;
         set({ page: 'chat' });
         break;
       case 'confirm-stop-auto-run':
@@ -2976,14 +3156,33 @@ function applyInitEnvAnchor(
 ): void {
   envRestoreDone = true;
   const guiKey = initAnchorToGuiKey(anchor);
-  if (guiKey === get().currentEnvKey) return;
-  const key = sessionKey(guiKey);
-  set({
-    currentEnvKey: guiKey,
-    sessions: { ...get().sessions, [key]: get().sessions[key] ?? emptySession() },
-    page: 'chat',
-  });
-  get().reconnect();
+  if (guiKey !== get().currentEnvKey) {
+    const key = sessionKey(guiKey);
+    set({
+      currentEnvKey: guiKey,
+      sessions: { ...get().sessions, [key]: get().sessions[key] ?? emptySession() },
+      page: 'chat',
+    });
+    get().reconnect();
+  }
+  // 决策④：锚落定（currentEnvKey 已就位）= 启动路由的判定时刻。
+  routeStartupPage(get, set);
+}
+
+/**
+ * 决策④启动路由（只判定一次）：初始环境解析落定——有环境不回写（初始
+ * page 即 'chat'，天然回昨天现场）；无环境落 'gate'（正门：无环境/新建
+ * 场景的家）。只判定一次是因为「现场」只在启动瞬间有意义：之后 currentEnvKey
+ * 的一切变化（切环境/删环境/掉宿主）都是用户动作的结果，不该触发页面
+ * 自动跳转——否则中途操作会被路由劫持（sidePaneOpen 初始化同一纪律）。
+ */
+function routeStartupPage(
+  get: () => GuiState,
+  set: (partial: Partial<GuiState>) => void,
+): void {
+  if (gateRouteDone) return;
+  gateRouteDone = true;
+  if (!get().currentEnvKey) set({ page: 'gate' });
 }
 
 /** 主题 → body.light class（styles.css 的浅色变量组开关）。 */
@@ -3107,6 +3306,8 @@ async function restoreEnvSelection(
   } catch {
     // 静默——恢复失败保持宿主线。
   }
+  // 决策④：兜底路径的启动路由判定（锚路径已在 applyInitEnvAnchor 烧掉闸）。
+  routeStartupPage(get, set);
 }
 
 /** 模型切换 overlay 条目（1.3.6 过滤口径；1.3.10 抽公共供打开与刷新复用）。 */
@@ -3296,6 +3497,24 @@ async function runSlashCommand(
   }
   // ── v4 动词（对象补全见 openOverlay('slash')；LOCAL_COMMANDS 同步登记——
   //    走这里特判，不进 SLASH_ROUTES 端点路由） ──────────────────────────
+  // /gate：正门（选/建环境）——V4-S4 EnvSidebar 退常驻后的显式入口。
+  if (cmd === 'gate') {
+    s.setPage('gate');
+    s.showReceipt('已开正门');
+    return;
+  }
+  // /use <环境id>：中途切环境（V4-S4——正门只做无环境/新建，中途换环境 ≤2
+  // 次输入）。id 必须在本地注册表命中：对象补全是 id 的唯一事实源。
+  if (cmd === 'use') {
+    const id = inlineArgs?.trim() ?? '';
+    const env = id ? s.envs.find((e) => e.id === id) : undefined;
+    if (!env) {
+      s.showToast('`/use <环境id>`——可先输 /use 看对象补全');
+      return;
+    }
+    await s.switchEnv(env.id);
+    return;
+  }
   // /resume <线id>：切线（resume 有成本——服务端要重跑该线引擎）。id 必须在
   // 本地线清单命中：对象补全/线面板是 id 的唯一事实源，不命中引导回补全。
   if (cmd === 'resume') {
@@ -3348,7 +3567,9 @@ async function runSlashCommand(
       await s.openQueuePanel();
       return;
     case 'tasks':
-      await s.openTasksPanel();
+      // V4-S2：内容驻 SidePane「任务」页签——打开面板并切页签（拉取在
+      // openSidePane('tasks') 路径内，与浮层时代开面板重拉同节奏）。
+      s.openSidePane('tasks');
       return;
     case 'export': {
       // 1.3.5：/export [sanitize]——先闸工作区，再走 slash-args 模态收
@@ -3490,7 +3711,7 @@ async function executeSlash(
         s.showToast(`/${command} 失败：${res.error ?? '未知错误'}`);
         return;
       }
-      toastSlashSuccess(s, command, arg, res.data);
+      receiptSlashSuccess(s, command, arg, res.data);
     } else {
       if (route.command === 'rewind') {
         const res = await api.chatRewind(c, String(payload.userMessageId));
@@ -3498,7 +3719,7 @@ async function executeSlash(
           s.showToast(`/rewind 失败：${res.error ?? '未知错误'}`);
           return;
         }
-        s.showToast('已回退——重连重建该线程历史');
+        s.showReceipt('已回退，重连重建中');
         s.reconnect();
         return;
       }
@@ -3508,7 +3729,7 @@ async function executeSlash(
           s.showToast(`/fork 失败：${res.error ?? '未知错误'}`);
           return;
         }
-        s.showToast('已分叉新线程');
+        s.showReceipt('已分叉新线程');
         s.reconnect();
       }
     }
@@ -3517,26 +3738,27 @@ async function executeSlash(
   }
 }
 
-function toastSlashSuccess(
+/** slash 环境动词成功回执（S5 双轨：确认感走状态行回执短句；这批动作
+ *  的详情——快照名/路径/传输通道——价值低，不再双发 toast，回执即全部）。 */
+function receiptSlashSuccess(
   s: GuiState,
   command: SlashCommandName,
   arg: string,
   data?: { pushedTo?: string; via?: 'scp' | 'vmrun' },
 ): void {
   if (command === 'snapshot') {
-    s.showToast(arg.trim() ? `✓ 快照 ${arg.trim()} 已建立` : '✓ 快照已建立');
+    s.showReceipt(arg.trim() ? `快照 ${arg.trim()} 已建立` : '快照已建立');
     return;
   }
   if (command === 'rollback') {
-    s.showToast(`✓ 已回滚到快照 ${arg.trim()}（回滚后自动恢复运行）`);
+    s.showReceipt(`已回滚到 ${arg.trim()}`);
     return;
   }
   if (command === 'extract') {
-    s.showToast(`✓ 已回收 ${arg.trim()} 到宿主 output/extracted/`);
+    s.showReceipt(`已回收 ${arg.trim()}`);
     return;
   }
   if (command === 'push') {
-    const dest = data?.pushedTo ?? '环境';
-    s.showToast(`✓ 已传入到 ${dest}${data?.via ? `（${data.via}）` : ''}`);
+    s.showReceipt(`已传入 ${data?.pushedTo ?? '环境'}`);
   }
 }

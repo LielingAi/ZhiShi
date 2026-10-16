@@ -13,6 +13,7 @@ import type React from 'react';
 import { buildBadgeSummary, type ThinkingDetail, type TurnBlock } from '../model/blocks';
 import { parseDecisionBody } from '../model/decision';
 import { useGuiStore } from '../store/useGuiStore';
+import { Markdown } from './Markdown';
 import { ToolCard } from './ToolCard';
 
 function fmtTime(ts: number): string {
@@ -114,9 +115,10 @@ export function TurnView({ turn }: { turn: TurnBlock }): React.JSX.Element {
 
   // 1.4.4 研究档案：本块产生的档案实体（anchorMessageId 落在本块 srvIds）
   // ——流内「→V3」归档标记，点一下在档案里定位（反推论的交互落实）。
+  // 决策②修订：定位动作 = 高亮实体 + 开 SidePane「档案」页签（档案唯一落位）。
   const archive = useGuiStore((s) => s.archive);
   const setHighlight = useGuiStore((s) => s.setArchiveHighlight);
-  const setDrawerOpen = useGuiStore((s) => s.setArchiveDrawerOpen);
+  const openSidePane = useGuiStore((s) => s.openSidePane);
   const anchors = useMemo(
     () =>
       archive
@@ -160,7 +162,7 @@ export function TurnView({ turn }: { turn: TurnBlock }): React.JSX.Element {
               title={`${e.text}（点击在档案中定位）`}
               onClick={() => {
                 setHighlight(e.id);
-                setDrawerOpen(true);
+                openSidePane('archive');
               }}
             >
               → {e.id}
@@ -169,10 +171,10 @@ export function TurnView({ turn }: { turn: TurnBlock }): React.JSX.Element {
         </div>
       )}
 
-      {/* 亮顶：结论聚合 */}
+      {/* 亮顶：结论聚合（V4-S7：markdown 双轨渲染——纯文本维持 pre-wrap 兜底） */}
       {hasConclusion && (
         <div className={`conclusion-hl ${turn.conclusionStreaming ? 'streaming' : ''}`}>
-          <span className="conclusion-text">{turn.conclusion}</span>
+          <Markdown text={turn.conclusion} />
           {turn.conclusionStreaming && <span className="cursor">▌</span>}
         </div>
       )}

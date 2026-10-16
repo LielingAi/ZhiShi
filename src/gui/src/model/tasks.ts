@@ -216,7 +216,7 @@ export function buildTaskRows(
       detail: typeof t.description === 'string' ? t.description : '',
       status: typeof t.status === 'string' ? t.status : '未知',
       // 1.3.2 任务二 #5：行补 conclusion（有结论就带，截断样式照现有
-      // TasksPanel 的 tp-conclusion）。
+      // 「任务」页签的 tp-conclusion）。
       ...(typeof t.conclusion === 'string' && t.conclusion
         ? { conclusion: t.conclusion }
         : {}),

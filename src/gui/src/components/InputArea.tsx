@@ -7,7 +7,8 @@
  *   Shift+Enter            → 换行
  *   ↑（空输入）            → 历史 overlay
  *   Ctrl+R                 → 历史 overlay
- *   `/` 前缀 / Ctrl+K      → 命令 overlay；`@` 前缀 → 引用 overlay
+ *   `/` 前缀               → 命令 overlay；Ctrl+K → 命令中枢面板（一门两窗，
+ *                            同一执行引擎；`@` 前缀 → 引用 overlay
  *   Esc                    → 交给全局单处理器（useEsc），这里不拦截
  */
 
@@ -35,6 +36,7 @@ export function InputArea(): React.JSX.Element {
   const busy = useGuiStore((s) => selectCurrentSession(s).phase === 'running');
   const overlay = useGuiStore((s) => s.overlay);
   const openOverlay = useGuiStore((s) => s.openOverlay);
+  const openPalette = useGuiStore((s) => s.openPalette);
   const closeOverlay = useGuiStore((s) => s.closeOverlay);
   const execSlashCommand = useGuiStore((s) => s.execSlashCommand);
   const inputFill = useGuiStore((s) => s.inputFill);
@@ -111,7 +113,9 @@ export function InputArea(): React.JSX.Element {
       openOverlay('history', '');
     } else if (e.key === 'k' && e.ctrlKey) {
       e.preventDefault();
-      openOverlay('slash', '');
+      // V4-S3：Ctrl+K → 命令中枢面板（/ 前缀仍走 overlay——一门两窗，
+      // 共用同一候选推导与 execSlashCommand 执行出口）。
+      openPalette();
     }
   };
 

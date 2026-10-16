@@ -5,10 +5,7 @@
  * 处理器方案——本实现改为单处理器（hooks/useEsc.ts 一个 window keydown），
  * 每按一次 Esc 只弹一层，优先级固定：
  *
- *   overlay（命令/@引用/历史/模型选择）＞ tasks 面板（/tasks overlay）
- *   ＞ lines 面板（研究线 overlay，1.8.7 P3b B6/B7）＞ 崩溃件检查器
- *   （crash 对象 overlay，第四批 v4——与 lines 同族，紧跟其后）＞ queue
- *   面板（/queue）
+ *   overlay（命令/@引用/历史/模型选择）＞ queue 面板（/queue）
  *   ＞ boundary 模态（1.3.1 ②：Esc = 收起模态不作答，
  *   ask 保持 pending，重连 replay 会重新弹出）＞ decision 模态（1.3.2 ①：
  *   Esc = 收起不作答，decision 保持 pending 并缩为会话头部待答指示）
@@ -20,6 +17,11 @@
  * 上，中断主会话没有意义），改为弹「终止 auto loop？」确认模态（store 打开
  * modal kind 'auto-run-stop'；确认模态打开后 Esc 走 modal 层=取消）。
  * 1.7.7：verdict 模态随终审机制删除——Esc 链不再有 verdict 层。
+ * V4-S1：研究线浮层退役（LinesPanel 迁驻 SidePane「线」页签），close-lines
+ * 层同步摘除——不留在链里占空窗位。
+ * V4-S2：tasks 面板与崩溃件检查器迁入 SidePane 页签（overlay 壳退役），
+ * close-tasks / close-inspector 两层同步摘除——页签由 SidePane ✕/分割条
+ * 收起，不占 Esc 语义（Esc 链终态见设计稿 §6 S2）。
  *
  * 逻辑抽成纯函数便于单测；副作用（关面板 / POST /chat/stop）由 store 执行。
  */
@@ -27,13 +29,7 @@
 /** 面板层级（存在即「打开」）。 */
 export interface EscUiState {
   overlayOpen: boolean;
-  /** /tasks 面板打开（overlay 形态，1.3.1 ③）。 */
-  tasksOpen: boolean;
-  /** 研究线面板打开（overlay 形态，1.8.7 P3b B6/B7）。 */
-  linesOpen: boolean;
-  /** 崩溃件检查器打开（overlay 形态，第四批 v4——crash 对象双击进入）。 */
-  inspectorOpen: boolean;
-  /** /queue 面板打开（1.3.1 ④）。 */
+  /** /queue 面板打开（1.3.1 ④，瞬态操作清单——S2 后 overlay 面板只剩它）。 */
   queueOpen: boolean;
   /** 越界 ask 模态打开（1.3.1 ②）。 */
   boundaryOpen: boolean;
@@ -51,9 +47,6 @@ export interface EscUiState {
 
 export type EscAction =
   | { type: 'close-overlay' }
-  | { type: 'close-tasks' }
-  | { type: 'close-lines' }
-  | { type: 'close-inspector' }
   | { type: 'close-queue' }
   | { type: 'close-boundary' }
   | { type: 'close-decision' }
@@ -67,9 +60,6 @@ export type EscAction =
 /** 单次 Esc 的目标动作：一次只弹一层。 */
 export function escAction(s: EscUiState): EscAction {
   if (s.overlayOpen) return { type: 'close-overlay' };
-  if (s.tasksOpen) return { type: 'close-tasks' };
-  if (s.linesOpen) return { type: 'close-lines' };
-  if (s.inspectorOpen) return { type: 'close-inspector' };
   if (s.queueOpen) return { type: 'close-queue' };
   if (s.boundaryOpen) return { type: 'close-boundary' };
   if (s.decisionOpen) return { type: 'close-decision' };

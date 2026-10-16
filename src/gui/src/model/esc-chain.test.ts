@@ -1,8 +1,13 @@
 /**
  * Esc 链优先级单测（1.3.1 ②③④ + 1.3.2 ① + 1.4.1 + 1.8.7 P3b 扩展）：一次
- * 弹一层，顺序 overlay > tasks > lines（研究线面板）> queue > boundary >
- * decision > modal > drawer > page > autoRun 终止确认 > busy 中断 > none。
+ * 弹一层，顺序 overlay > queue > boundary > decision > modal > drawer >
+ * page > autoRun 终止确认 > busy 中断 > none。
  * 1.7.7：verdict 层随终审机制删除。
+ * V4-S1：lines 浮层退役（研究线改驻 SidePane「线」页签），close-lines 层
+ * 同步移出 Esc 链——层位不留空窗。
+ * V4-S2：tasks 面板与崩溃件检查器迁入 SidePane 页签（overlay 壳退役），
+ * close-tasks / close-inspector 两层同步摘除——页签由 SidePane ✕/分割条
+ * 收起，不占 Esc 语义（设计稿 §6 S2 的 Esc 链简化落地）。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -11,9 +16,6 @@ import { escAction } from './esc-chain';
 
 const base = {
   overlayOpen: false,
-  tasksOpen: false,
-  linesOpen: false,
-  inspectorOpen: false,
   queueOpen: false,
   boundaryOpen: false,
   decisionOpen: false,
@@ -29,7 +31,7 @@ describe('escAction', () => {
       escAction({
         ...base,
         overlayOpen: true,
-        tasksOpen: true,
+        queueOpen: true,
         boundaryOpen: true,
         modalOpen: true,
         drawerOpen: true,
@@ -39,28 +41,9 @@ describe('escAction', () => {
     ).toEqual({ type: 'close-overlay' });
   });
 
-  it('tasks 面板次之（boundary 模态同时存在时不抢层）', () => {
-    expect(escAction({ ...base, tasksOpen: true, boundaryOpen: true })).toEqual({ type: 'close-tasks' });
-  });
-
-  it('lines 面板在 tasks 之后、queue 之前（1.8.7 P3b B6/B7）', () => {
-    expect(escAction({ ...base, tasksOpen: true, linesOpen: true })).toEqual({ type: 'close-tasks' });
-    expect(escAction({ ...base, linesOpen: true, queueOpen: true })).toEqual({ type: 'close-lines' });
-    expect(escAction({ ...base, linesOpen: true, boundaryOpen: true, busy: true })).toEqual({
-      type: 'close-lines',
-    });
-  });
-
-  it('崩溃件检查器在 lines 之后、queue 之前（与 lines 同族 overlay）', () => {
-    expect(escAction({ ...base, linesOpen: true, inspectorOpen: true })).toEqual({ type: 'close-lines' });
-    expect(escAction({ ...base, inspectorOpen: true, queueOpen: true })).toEqual({ type: 'close-inspector' });
-    expect(escAction({ ...base, inspectorOpen: true, boundaryOpen: true, busy: true })).toEqual({
-      type: 'close-inspector',
-    });
-  });
-
-  it('queue 面板在 lines 之后', () => {
+  it('queue 面板紧随 overlay（tasks/inspector 浮层 V4-S2 迁入 SidePane，不再进链）', () => {
     expect(escAction({ ...base, queueOpen: true, boundaryOpen: true })).toEqual({ type: 'close-queue' });
+    expect(escAction({ ...base, queueOpen: true, busy: true })).toEqual({ type: 'close-queue' });
   });
 
   it('boundary 模态进链：在 modal 之前', () => {
@@ -106,6 +89,7 @@ describe('escAction', () => {
 
   it('面板存在时 busy 不触发中断（一层一层弹）', () => {
     expect(escAction({ ...base, overlayOpen: true, busy: true })).toEqual({ type: 'close-overlay' });
+    expect(escAction({ ...base, queueOpen: true, busy: true })).toEqual({ type: 'close-queue' });
     expect(escAction({ ...base, drawerOpen: true, busy: true })).toEqual({ type: 'close-drawer' });
   });
 
@@ -121,6 +105,9 @@ describe('escAction', () => {
   });
 
   it('auto loop 活跃但更高层开着：一层一层弹，不直达终止确认', () => {
+    expect(escAction({ ...base, autoRunActive: true, queueOpen: true })).toEqual({
+      type: 'close-queue',
+    });
     expect(escAction({ ...base, autoRunActive: true, decisionOpen: true })).toEqual({
       type: 'close-decision',
     });

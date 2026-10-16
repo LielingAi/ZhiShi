@@ -22,6 +22,7 @@ function line(over: Partial<LineRow>): LineRow {
     envKey: 'dev',
     segLabel: '我',
     ownerLabel: '我',
+    shared: false,
     stateDot: 'running',
     active: false,
     updatedLabel: '12:00',
@@ -52,7 +53,37 @@ const sources = (over: Partial<SlashObjectSources> = {}): SlashObjectSources => 
     campaign({ id: 'cmp-def', goal: '复现 CVE-2024-1234', state: 'paused' }),
   ],
   missions: MISSION_OPTIONS,
+  // V4-S4 /use 动词对象源：环境注册表 + 运行状态（runningIds）。
+  envs: [],
+  runningIds: new Set(),
   ...over,
+});
+
+describe('slashObjectItems — use（环境对象，V4-S4 正门中途切环境）', () => {
+  const envs = [
+    { id: 'env:pwn-vm', kind: 'vm' as const, name: 'pwn 靶机' },
+    { id: 'env:dev-box', kind: 'docker' as const },
+  ];
+
+  it('对象 = 环境注册表；detail = 运行状态（runningIds 现场判定）', () => {
+    const items = slashObjectItems(
+      { name: 'use', args: '' },
+      sources({ envs, runningIds: new Set(['env:pwn-vm']) }),
+    );
+    expect(items).toEqual([
+      { name: 'env:pwn-vm', detail: '运行中', tag: '环境' },
+      { name: 'env:dev-box', detail: '已停止', tag: '环境' },
+    ]);
+  });
+
+  it('按 id/name 过滤（大小写不敏感）', () => {
+    expect(
+      slashObjectItems({ name: 'use', args: 'PWN' }, sources({ envs, runningIds: new Set() }))!.map((i) => i.name),
+    ).toEqual(['env:pwn-vm']);
+    expect(
+      slashObjectItems({ name: 'use', args: '靶机' }, sources({ envs, runningIds: new Set() }))!.map((i) => i.name),
+    ).toEqual(['env:pwn-vm']);
+  });
 });
 
 describe('slashObjectItems — 非对象命令返回 null', () => {
