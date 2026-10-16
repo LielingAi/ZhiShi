@@ -14,6 +14,7 @@
  * 名保留，内部驱动本页签（filter 状态留 store）；「显全部」同动作传 null。
  */
 
+import { useState } from 'react';
 import type React from 'react';
 
 import { useGuiStore } from '../store/useGuiStore';
@@ -29,7 +30,18 @@ export function SidePaneInspector(): React.JSX.Element {
   const loading = useGuiStore((s) => s.crashEventsLoading);
   const openCrashInspector = useGuiStore((s) => s.openCrashInspector);
   const refreshCrashEvents = useGuiStore((s) => s.refreshCrashEvents);
+  const attachEvidence = useGuiStore((s) => s.attachEvidence);
   const showToast = useGuiStore((s) => s.showToast);
+  // 已挂标注（本地 state，不重拉档案）：键 = 事件行 id（旧行 id 缺省用
+  // bugClass+createdAt 复合键——同一事件挂过一次就够，防连点重复立实体。
+  const [attached, setAttached] = useState<ReadonlySet<string>>(new Set());
+
+  const evKey = (e: { id: number | null; bugClass?: string; createdAt?: string }, i: number) =>
+    e.id !== null ? `id:${e.id}` : `${e.bugClass ?? ''}-${e.createdAt ?? ''}-${i}`;
+
+  const markAttached = (key: string) => {
+    setAttached((prev) => new Set(prev).add(key));
+  };
 
   const matched = filter ? matchCrashClass(events, filter) : events;
   // 无命中回落全量（见文件头注释）；filter 条仍报真实匹配数,全量由
@@ -89,6 +101,26 @@ export function SidePaneInspector(): React.JSX.Element {
             )}
             {e.workspace && <div className="ci-ws">{e.workspace}</div>}
             <div className="ci-ops">
+              {/* 1.9.20 挂证据到档案：一键把 triager 结论落成 V# 证据实体
+                  （archive/op evidence——服务端复用 research_archive 执行体，
+                  与模型侧 op 语义同口径）。旧行缺 id/双缺内容不可挂。 */}
+              <button
+                className="btn small"
+                disabled={e.id === null || (!e.bugClass && !e.summary) || attached.has(evKey(e, i))}
+                title={
+                  e.id === null
+                    ? '旧行缺行 id，不可挂'
+                    : attached.has(evKey(e, i))
+                      ? '已挂到研究档案（档案页签可见）'
+                      : '挂到研究档案为证据实体 V#（archive/op evidence）'
+                }
+                onClick={() => {
+                  const key = evKey(e, i);
+                  void attachEvidence(e.id).then((ok) => ok && markAttached(key));
+                }}
+              >
+                {attached.has(evKey(e, i)) ? '已挂 ✓' : '挂证据'}
+              </button>
               <button
                 className="btn small"
                 disabled={!e.bugClass}
@@ -109,9 +141,9 @@ export function SidePaneInspector(): React.JSX.Element {
       </div>
 
       {/* 诚实边界：面板只到 triager 结论层——寄存器/回溯在环境 crash
-          文件里（:attach 看原文）；结论挂档案（archive/op）是后续批次。 */}
+          文件里（:attach 看原文）。挂证据已兑现（上方「挂证据」按钮）。 */}
       <div className="ci-foot">
-        寄存器/回溯在环境 crash 文件内——:attach 进环境看；挂证据到档案（archive/op）待后续批次
+        寄存器/回溯在环境 crash 文件内——:attach 进环境看
       </div>
     </div>
   );

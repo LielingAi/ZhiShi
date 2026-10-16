@@ -145,7 +145,7 @@ import {
   type PaletteItem,
   type PaletteSources,
 } from '../model/command-palette';
-import { parseCrashEvents, type CrashEvent } from '../model/crash-events';
+import { parseCrashEvents, evidencePayloadOf, type CrashEvent } from '../model/crash-events';
 import { parseExpertImport } from '../model/expert-import';
 import { pickModelPickerProviders } from '../model/model-picker';
 import { mergeSidebarSnapshot } from '../model/sidebar';
@@ -601,6 +601,10 @@ export interface GuiState {
   openCrashInspector(filter?: string | null): void;
   /** 重拉 fuzz 分拣事件（面板 ⟳ 用；失败保持空清单不阻塞——lines 同款静默）。 */
   refreshCrashEvents(): Promise<void>;
+  /** 1.9.20 挂证据到档案：崩溃事件 → archive/op evidence 入参一键落 V# 实体。
+   *  成功回执（带新实体 id）；失败 toast 服务端 error 原文。返回成功与否供
+   *  按钮本地「已挂」标注。 */
+  attachEvidence(evId: number | null): Promise<boolean>;
   openQueuePanel(): Promise<void>;
   closeQueuePanel(): void;
   cancelQueueItem(queueId: string): Promise<void>;
@@ -2418,6 +2422,36 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       // 问题不该卡死 overlay 的开关）。
       set({ crashEvents: [], crashEventsLoading: false });
     }
+  },
+
+  async attachEvidence(evId) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return false;
+    }
+    const ev = state.crashEvents.find((e) => e.id === evId);
+    if (!ev) {
+      state.showToast('未找到该崩溃事件');
+      return false;
+    }
+    const payload = evidencePayloadOf(ev);
+    if (!payload.text) {
+      // 指纹/结论双缺的事件没有可挂内容（parse 层已挡大部分，这是兜底）。
+      state.showToast('该事件缺指纹与结论，无可挂内容');
+      return false;
+    }
+    const res = await api.archiveOp(c, payload);
+    if (!res.ok) {
+      // 工具执行期校验（举证强度/终态门等）的纪律文本原样给人。
+      state.showToast(`挂证据失败：${res.error ?? '未知错误'}`);
+      return false;
+    }
+    // 服务端广播 archive:changed 会自动刷新研究面板——这里不重拉档案，
+    // 只给确认感（有新实体 id 就报 id）。
+    state.showReceipt(res.entityId ? `已挂证据 ${res.entityId}` : '已挂证据到档案');
+    return true;
   },
 
   // ── 1.3.1 ④：/queue 面板 ────────────────────────────────────────────

@@ -1014,3 +1014,18 @@ export function postArchiveAbandon(
     .then((r) => ({ ok: r.success, error: r.error }))
     .catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
 }
+
+/** POST archive/op（1.9.20——模型语义的档案写；evidence 入参复用
+ *  research_archive 工具执行体，响应 data.entityId = 新实体 V#N）。 */
+export function archiveOp(
+  client: GuiSidecarClient,
+  input: { op: string; text?: string; anchor?: string; refs?: string },
+): Promise<{ ok: boolean; error?: string; entityId?: string | null }> {
+  return client
+    .adminPost<{ success: boolean; error?: string; data?: { text?: string; entityId?: string | null } }>(
+      'archive/op',
+      input,
+    )
+    .then((r) => ({ ok: r.success, error: r.error, entityId: r.data?.entityId ?? null }))
+    .catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err), entityId: null }));
+}

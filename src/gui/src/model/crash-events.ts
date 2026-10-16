@@ -17,6 +17,7 @@
  */
 
 import type { ResearchEventRow } from '../client/api';
+import { formatLineUpdated } from './lines';
 
 // ---------------------------------------------------------------------------
 // 记录窄化
@@ -93,6 +94,41 @@ export function matchCrashClass(events: CrashEvent[], fingerprint: string): Cras
   const exact = events.filter((e) => e.bugClass === fp);
   if (exact.length > 0) return exact;
   return events.filter((e) => e.bugClass !== undefined && e.bugClass.includes(fp));
+}
+
+// ---------------------------------------------------------------------------
+// 挂证据到档案（1.9.20 第一批——archive/op 的 evidence 入参装配）
+// ---------------------------------------------------------------------------
+
+/**
+ * evidence 正文上限：照注入口径（archive.ts renderArchiveForInjection 的
+ * oneLine 200）——实体本身无硬字符上限，但注入段单行截 200，超长此后的
+ * 正文无增量价值；全文在检查器面板/复制结论里拿得到。
+ */
+export const EVIDENCE_TEXT_MAX = 200;
+
+/** archive/op 的 evidence 入参（字段名照服务端 archiveParameters 契约：
+ *  op/text 必填语义 + anchor 来源标注——admin-archive.ts::handleArchiveOp
+ *  原样透传进 createArchiveTool 执行体）。 */
+export interface ArchiveEvidencePayload {
+  op: 'evidence';
+  text: string;
+  anchor?: string;
+}
+
+/**
+ * 崩溃事件 → evidence 入参：content = `bugClass：summary`（无 summary 兜底
+ * bugClass 单行，双缺留空由 store 挡下）；anchor = crash-triager fuzz 桶 +
+ * 落库时间（anchor 纪律标「证据在流的哪里」，这里标「谁在何时落库」）。
+ */
+export function evidencePayloadOf(ev: CrashEvent): ArchiveEvidencePayload {
+  const bugClass = ev.bugClass?.trim();
+  const summary = ev.summary?.trim();
+  let text = bugClass && summary ? `${bugClass}：${summary}` : (bugClass ?? summary ?? '');
+  if (text.length > EVIDENCE_TEXT_MAX) text = `${text.slice(0, EVIDENCE_TEXT_MAX - 1)}…`;
+  const when = ev.createdAt ? formatLineUpdated(ev.createdAt) : '';
+  const anchor = `crash-triager fuzz 桶${when ? ` · ${when}` : ''}`;
+  return { op: 'evidence', text, anchor };
 }
 
 // ---------------------------------------------------------------------------

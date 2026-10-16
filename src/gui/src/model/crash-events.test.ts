@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { crashEventTitle, matchCrashClass, parseCrashEvents } from './crash-events';
+import { crashEventTitle, evidencePayloadOf, EVIDENCE_TEXT_MAX, matchCrashClass, parseCrashEvents } from './crash-events';
 import type { ResearchEventRow } from '../client/api';
 
 function row(partial: Partial<ResearchEventRow>): ResearchEventRow {
@@ -98,5 +98,34 @@ describe('crashEventTitle', () => {
 
   it('id 也缺省（防御）回落 fuzz#?', () => {
     expect(crashEventTitle({ id: null })).toBe('fuzz#?');
+  });
+});
+
+describe('evidencePayloadOf（1.9.20 挂证据到档案——archive/op evidence 入参）', () => {
+  it('content = bugClass：summary 组合；anchor 带 fuzz 桶标注', () => {
+    const p = evidencePayloadOf({
+      id: 7,
+      bugClass: 'segv-read-cJSON',
+      summary: 'cJSON_Print 越界读，寄存器 rax=0x41414141',
+      createdAt: '2026-10-16T08:30:00.000Z',
+    });
+    expect(p.op).toBe('evidence');
+    expect(p.text).toBe('segv-read-cJSON：cJSON_Print 越界读，寄存器 rax=0x41414141');
+    expect(p.anchor).toContain('crash-triager fuzz 桶');
+    expect(p.anchor!.length).toBeGreaterThan('crash-triager fuzz 桶'.length); // 时间标注已挂上
+  });
+
+  it('无 summary → content 兜底 bugClass 单行', () => {
+    expect(evidencePayloadOf({ id: 8, bugClass: 'heap-overflow-parse' }).text).toBe('heap-overflow-parse');
+  });
+
+  it('截断到 EVIDENCE_TEXT_MAX（照注入口径 200——实体无硬上限，注入单行截 200，超长无增量价值）', () => {
+    const p = evidencePayloadOf({ id: 9, bugClass: 'bp', summary: 'x'.repeat(500) });
+    expect(p.text.length).toBe(EVIDENCE_TEXT_MAX);
+    expect(p.text.endsWith('…')).toBe(true);
+  });
+
+  it('指纹与结论双缺 → 空 text（store 侧挡下，不入库空证据）', () => {
+    expect(evidencePayloadOf({ id: 10 }).text).toBe('');
   });
 });
