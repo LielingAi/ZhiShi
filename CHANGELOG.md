@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.20] - 2026-10-16
+
+> **崩溃件检查器兑现"挂证据到档案"**——`archive/op` 端点首次接入 GUI（此前仅模型侧可达）。崩溃件从"看一眼就完"变成可入档案账本的证据实体。
+
+### Added
+
+- **检查器一键挂证据**：fuzz 崩溃事件行「挂证据」按钮 → 落为研究档案 V# 证据实体（payload=`bugClass：summary`，单行 200 截断，anchor 标"crash-triager fuzz 桶·时间"——不标轮次，遵守档案纪律）；成功状态行回执 `已挂证据 V#N` + 按钮标注已挂，档案面板经 `archive:changed` 广播自动刷新（孤儿区可见，看得见的断链）；无权限/失败 toast 服务端原文
+
+### 验证
+
+vitest 2834 通过（新增 4 项）；typecheck/eslint 0；build:gui 通过。
+
+> 签名说明同前：本版未附 Tauri updater 签名，自动更新链不含本版元数据，请手动下载安装。
+
 ## [1.9.19] - 2026-10-16
 
 > **GUI v4 骨架整体落地**（设计稿 `docs/design/gui-v4-skeleton-design.md`，hacker = 操作感：对象一等公民/动词直达/因果即时闭环）。hacker 感不是配色——是交互语法长进了布局。全部对照 `gui-v4-capability-audit.md` 74 项能力不丢项自查。
