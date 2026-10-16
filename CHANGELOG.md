@@ -18,6 +18,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.11] - 2026-10-16
+
+> **GUI v4 首批落地**（设计底账 `docs/design/gui-v4-capability-audit.md`：9 域 74 项能力不丢项清单）。定调来自 v4 操作语法稿——hacker = 操作感（对象一等公民/动词直达/因果即时闭环），不是配色。本批全是"现有 GUI 上长新能力"：布局与交互路径不动，五批功能 + 一次全表换肤。
+
+### Added
+
+- **线面板（线 = 一等对象）**：`line/list` 端点首次接入 GUI（此前从未被调用）——状态栏「线」入口，分线清单（环境/归属/活性点/最后活动），行点击 = resume 切线，行尾共享/转私有（`line/share·unshare`，403 文案原样透出）。Esc 链加 `close-lines` 层。
+- **命令面板对象补全**：三个 v4 动词进命令面——`/resume <线>` `/kill <战役>`（走既有二次确认）`/mission <形态>`；输完命令名 overlay 自动切对象候选（线列表/战役/五形态），直输与选中执行同路径。
+- **战役对象卡**：`/tasks` 选中战役行，详情从信号文本列表升级为结构化卡——FSM 四段轨道（盲跑→破冰→分拣→深挖，循环态不造假进度）、墙钟预算条（1s 实时续算）、采样行、崩溃类 chips、倒序信号 feed。
+- **崩溃件检查器**：战役卡 chips 点击直达——`research/list` fuzz 桶对象化（crash-triager 分拣结论），指纹两级匹配（精确→includes），复制指纹/结论。
+
+### Changed
+
+- **全表换肤（仪器感五律）**：v4 token 对齐（强调色青→蓝 #6cb6ff，57 处硬编码 rgba 同步）；五律色彩审计抓 5 处违规（3 处"过程"误用成果绿改 accent、2 处"中断"误用危险红改琥珀），运行态全产品统一蓝；密度收紧（chrome 行高/输入区/行高 1.45）；50 处圆角清零。
+
+### 验证
+
+GUI 单测 515→553（新增 38 项，先红后绿）；全量 unit 2795 通过；typecheck/eslint 0；vite build 通过。真机验收 1.9.11 包（WebView2 缓存坑：重装需清 `%LOCALAPPDATA%\com.zhishi.app\EBWebView`）。
+
 ## [1.9.10] - 2026-10-15
 
 > **新原生工具 `code_query`**（设计稿 `docs/design/code-search-design.md` v2）：研究环境内的 CPG 语义查询——模型用 CPGQL 问数据流/调用结构问题（"memcpy 且 len 来自报文字段"一语句命中），拿回 file:line + 截断上下文段落。立项依据：xerj spike 证"段落级检索 ≫ 文件级阅读"（7.7×），超大项目审计不再靠 grep 撞大运。joern 随 code-audit/pentest 配方分发，本版只做工具化 + 生命周期 + 成本控制。
