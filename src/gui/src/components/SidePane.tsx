@@ -27,7 +27,6 @@ function SidePaneLines(): React.JSX.Element {
   const lines = useGuiStore((s) => s.lines);
   const loading = useGuiStore((s) => s.linesLoading);
   const refreshLines = useGuiStore((s) => s.refreshLines);
-  const closeSidePane = useGuiStore((s) => s.closeSidePane);
   const switchToLine = useGuiStore((s) => s.switchToLine);
   const shareLine = useGuiStore((s) => s.shareLine);
   const unshareLine = useGuiStore((s) => s.unshareLine);
@@ -35,7 +34,7 @@ function SidePaneLines(): React.JSX.Element {
   return (
     <div className="sp-lines">
       <div className="sp-lines-head">
-        <span className="sp-lines-title">研究线</span>
+        <span className="sp-lines-title">线</span>
         <button
           className="ln-icon"
           title="刷新线清单（line/list）"
@@ -66,8 +65,8 @@ function SidePaneLines(): React.JSX.Element {
             title={`归属段 ${r.segLabel}`}
             onClick={() => {
               if (r.active) return;
-              // 先收面板再发切线（switchToLine 回执 toast）——浮层时代同序。
-              closeSidePane();
+              // 2.0 修复：面板保持常驻——切线只换主区现场，右侧面板是你正在
+              // 用的工具面（浮层时代"先收面板"的顺序在这里是反用户直觉的）。
               void switchToLine(r.id);
             }}
           >

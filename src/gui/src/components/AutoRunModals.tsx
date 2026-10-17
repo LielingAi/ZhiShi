@@ -53,8 +53,10 @@ function AutoRunStartModal(): React.JSX.Element | null {
     setCriteria((cs) => (cs.length > 1 ? cs.filter((_, idx) => idx !== i) : cs));
   const addCriterion = () => setCriteria((cs) => [...cs, '']);
 
-  // 1.4.1 用户拍板：环境 = 当前环境，不可选。无当前环境（host）→ 整表单不可提交。
-  const envKey = currentEnvKey;
+  // 2.0-M3 派活到任意环境：环境可任选（默认当前环境）——"每个环境做不同的
+  // 事"的入口；auto-run 仍按 envKey 单实例闸（同环境一个活跃 run，服务端）。
+  const envs = useGuiStore((s) => s.envs);
+  const [envKey, setEnvKey] = useState<string | null>(currentEnvKey);
   const noEnv = !envKey;
 
   const submit = () => {
@@ -93,11 +95,22 @@ function AutoRunStartModal(): React.JSX.Element | null {
               />
             </div>
             <div>
-              <div className="f-label">环境（当前环境 · 启动即锁定，运行中不可换）</div>
+              <div className="f-label">环境（可选任意已登记环境 · 启动即锁定该环境）</div>
               {noEnv ? (
-                <div className="m-note">当前未选环境——先在侧栏选择环境（一切操作都在环境内）</div>
+                <div className="m-note">未选环境——先在正门选择环境（一切操作都在环境内）</div>
               ) : (
-                <div className="ar-env-locked">🔒 {envKey}</div>
+                <select
+                  className="f-input"
+                  value={envKey ?? ''}
+                  onChange={(e) => setEnvKey(e.target.value)}
+                >
+                  {!envs.some((v) => v.id === envKey) && <option value={envKey ?? ''}>{envKey}</option>}
+                  {envs.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.name && v.name !== v.id ? `${v.name}（${v.id}）` : v.id}
+                    </option>
+                  ))}
+                </select>
               )}
             </div>
             <div>
@@ -219,7 +232,7 @@ function AutoRunStopModal(): React.JSX.Element | null {
             <span className="wc-value">{autoRun.name}</span>
           </div>
           <div className="m-danger">
-            终止后 loop 结束、会话回到普通模式——已有产出保留在轨迹与研究档案；
+            终止后 loop 结束、线回到普通模式——已有产出保留在轨迹与研究档案；
             进行中的研究轮次会被丢弃。
           </div>
           <div className="m-actions">

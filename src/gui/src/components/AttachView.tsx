@@ -7,7 +7,7 @@
  *   - 一次性执行模式：保留 1.3.2 的 POST /api/admin/environment/exec
  *     （stdout + exitCode 落屏）。
  *
- * Esc 返回会话流沿用现有全局 Esc 链（page='attach' → close-page）。宿主会话
+ * Esc 返回线视图沿用现有全局 Esc 链（page='attach' → close-page）。宿主会话
  * （未锚定环境）无 shell 可挂——两种模式都提示先切换环境。
  */
 
@@ -67,7 +67,7 @@ function TermPane({ envKey }: { envKey: string | null }): React.JSX.Element {
   useEffect(() => {
     if (!envKey) {
       setStatus('closed');
-      setNotice('attach：宿主会话没有环境 shell——先切换到运行中环境再 /attach');
+      setNotice('attach：宿主（无线）没有环境 shell——先切换到运行中环境再 /attach');
       return;
     }
     const client = getSettingsClient();
@@ -196,7 +196,7 @@ function TermPane({ envKey }: { envKey: string | null }): React.JSX.Element {
       {exitInfo && (
         <div className="at-exit">
           已退出：exit={exitInfo.code}
-          {exitInfo.signal ? `（${exitInfo.signal}）` : ''}——按 <kbd>Esc</kbd> 返回会话流
+          {exitInfo.signal ? `（${exitInfo.signal}）` : ''}——按 <kbd>Esc</kbd> 返回线视图
         </div>
       )}
       {notice && <StateHint kind="error" text={notice} />}
@@ -223,7 +223,7 @@ function ExecPane({ envKey }: { envKey: string | null }): React.JSX.Element {
       return;
     }
     if (!envKey) {
-      showToast('attach：宿主会话没有环境 shell——先切换到运行中环境');
+      showToast('attach：宿主（无线）没有环境 shell——先切换到运行中环境');
       return;
     }
     const client = getSettingsClient();
@@ -260,10 +260,10 @@ function ExecPane({ envKey }: { envKey: string | null }): React.JSX.Element {
         {lines.length === 0 && (
           <StateHint
             kind="empty"
-            text={envKey ? `已连接到 ${envKey}` : '宿主会话没有环境 shell'}
+            text={envKey ? `已连接到 ${envKey}` : '宿主（无线）没有环境 shell'}
             hint={
               envKey
-                ? '输入命令回车执行（输出与 exit code 落屏）——会话流在后台继续接收'
+                ? '输入命令回车执行（输出与 exit code 落屏）——线视图在后台继续接收'
                 : '回侧栏切换到运行中环境再 /attach'
             }
           />
@@ -341,7 +341,7 @@ export function AttachView(): React.JSX.Element {
           {mode === 'term'
             ? '交互 pty · input/resize 透传 · 重复连接旧连接被顶替'
             : 'environment/exec 一次性执行'}{' '}
-          · <kbd>Esc</kbd> 返回会话流
+          · <kbd>Esc</kbd> 返回线视图
         </span>
         <button className="ah-close" onClick={() => setPage('chat')}>✕</button>
       </div>

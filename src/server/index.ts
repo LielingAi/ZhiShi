@@ -328,6 +328,15 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'environment/install') return await api.handleEnvironmentInstall(payload as Parameters<typeof api.handleEnvironmentInstall>[0]);
   if (route === 'environment/build') return await api.handleEnvironmentBuild(payload as Parameters<typeof api.handleEnvironmentBuild>[0]);
   if (route === 'environment/rm') return await api.handleEnvironmentRm(payload as Parameters<typeof api.handleEnvironmentRm>[0]);
+  // 2.0-M1 台账治理：同名重复登记合并（只摘登记，不删底层实体）
+  if (route === 'environment/merge') return await api.handleEnvironmentMerge(payload as Parameters<typeof api.handleEnvironmentMerge>[0]);
+  // 2.0-M1 台账治理：僵尸清理（候选清单只读 + 勾选后逐个 rm）
+  if (route === 'environment/prune/list') return await api.handleEnvironmentPruneList();
+  if (route === 'environment/prune/apply') return await api.handleEnvironmentPruneApply(payload as Parameters<typeof api.handleEnvironmentPruneApply>[0]);
+  // 2.0-M2 注视语义：只读查看任意环境的线（不触引擎）
+  if (route === 'environment/peek') return await api.handleEnvironmentPeek(payload as Parameters<typeof api.handleEnvironmentPeek>[0]);
+  // 2.0-M3 跨环境直达：extract→暂存→put 单命令编排
+  if (route === 'environment/xfer') return await api.handleEnvironmentXfer(payload as Parameters<typeof api.handleEnvironmentXfer>[0]);
   // 1.6.6 改名（别名：只动 name，id 是身份不改）
   if (route === 'environment/rename') return await api.handleEnvironmentRename(payload as Parameters<typeof api.handleEnvironmentRename>[0]);
   if (route === 'environment/exec') return await api.handleEnvironmentExec(payload as Parameters<typeof api.handleEnvironmentExec>[0]);

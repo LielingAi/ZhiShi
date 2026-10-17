@@ -192,14 +192,14 @@ export function HistoryPanel(): React.JSX.Element {
     if (!selectedId) return;
     const row = historySessions?.find((r) => r.id === selectedId);
     if (!row) {
-      setViewer({ status: 'error', error: '会话不存在（可能刚被删除）' });
+      setViewer({ status: 'error', error: '线不存在（可能刚被删除）' });
       return;
     }
     const wireLoopId = row.loopSessionId ?? row.archivedLoopSessionId;
     if (!wireLoopId) {
       setViewer({
         status: 'error',
-        error: '该会话没有 loop-session 绑定（旧会话 / 从未落盘），无法 wire 回看',
+        error: '该线没有 loop-session 绑定（旧线 / 从未落盘），无法 wire 回看',
       });
       return;
     }
@@ -280,17 +280,17 @@ export function HistoryPanel(): React.JSX.Element {
   return (
     <div className="history-page show">
       <div className="history-head">
-        <span className="hh-title">历史会话</span>
+        <span className="hh-title">历史 · 线</span>
         <input
           className="hh-search"
           placeholder="搜索标题 / 内容预览…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <button className="btn small" onClick={() => void openHistoryPanel(true)} title="重新拉取会话清单">
+        <button className="btn small" onClick={() => void openHistoryPanel(true)} title="重新拉取线清单">
           ⟳ 刷新
         </button>
-        <button className="history-close" onClick={() => setPage('chat')} title="Esc 返回会话流">
+        <button className="history-close" onClick={() => setPage('chat')} title="Esc 返回线视图">
           ✕
         </button>
       </div>
@@ -298,14 +298,14 @@ export function HistoryPanel(): React.JSX.Element {
         <div className="history-list">
           {historySessions === null ? (
             historyError ? (
-              <StateHint kind="error" text="会话清单载入失败" hint={`${historyError} · 点「⟳ 刷新」重试`} />
+              <StateHint kind="error" text="线清单载入失败" hint={`${historyError} · 点「⟳ 刷新」重试`} />
             ) : (
-              <StateHint kind="loading" text="会话清单加载中…" />
+              <StateHint kind="loading" text="线清单加载中…" />
             )
           ) : groups.length === 0 ? (
             <StateHint
               kind="empty"
-              text={search ? '无匹配会话' : '暂无会话'}
+              text={search ? '无匹配线' : '暂无线'}
               hint={search ? undefined : '新对话落盘后这里会出现记录'}
             />
           ) : (
@@ -351,7 +351,7 @@ export function HistoryPanel(): React.JSX.Element {
         </div>
         <div className="history-viewer">
           {!selectedRow && (
-            <StateHint kind="empty" center text="← 选一条会话查看只读回放" hint="决策块 / 工具卡照常渲染" />
+            <StateHint kind="empty" center text="← 选一条线查看只读回放" hint="决策块 / 工具卡照常渲染" />
           )}
           {selectedRow && (
             <>
@@ -371,7 +371,7 @@ export function HistoryPanel(): React.JSX.Element {
                     title={
                       busy
                         ? '当前 turn 运行中——Esc 中断后再载回（避免与活跃会话流冲突）'
-                        : 'POST /sessions/switch 载回续跑（关闭面板回到活跃会话视图）'
+                        : 'POST /sessions/switch 载回续跑（回到活跃线视图）'
                     }
                     onClick={() => resume(selectedRow)}
                   >
@@ -395,7 +395,7 @@ export function HistoryPanel(): React.JSX.Element {
                   )}
                   <div className="hv-body">
                     {viewer.session.items.length === 0 && (
-                      <StateHint kind="empty" text="该会话 wire 为空" />
+                      <StateHint kind="empty" text="该线 wire 为空" />
                     )}
                     {viewer.session.items.map((item) => (
                       <ViewerItem item={item} key={item.id} />
@@ -490,7 +490,7 @@ function SessionRow(p: SessionRowProps): React.JSX.Element {
         </button>
         <button
           className={`hr-act danger ${p.confirming ? 'confirm' : ''}`}
-          title={p.confirming ? '再点一次确认删除（含 transcript，不可恢复）' : '删除会话（DELETE，含 transcript）'}
+          title={p.confirming ? '再点一次确认删除（含 transcript，不可恢复）' : '删除线（DELETE，含 transcript）'}
           onClick={p.onDelete}
         >
           {p.confirming ? '确认?' : '✕'}

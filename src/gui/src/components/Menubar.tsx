@@ -18,7 +18,6 @@ import { useEffect, useState } from 'react';
 import type React from 'react';
 
 import { selectCurrentSession, useGuiStore } from '../store/useGuiStore';
-import { hostAnchorLabel } from '../model/access-gate';
 import { archiveBadgeCount } from '../model/archive';
 import { formatTokens, isAutoRunActive } from '../model/auto-run';
 import { missionLabel, missionPatchValue, MISSION_OPTIONS } from '../model/mission';
@@ -55,7 +54,6 @@ export function Menubar(): React.JSX.Element {
   const connectionState = useGuiStore((s) => s.connectionState);
   const connectError = useGuiStore((s) => s.connectError);
   const init = useGuiStore((s) => s.init);
-  const setPage = useGuiStore((s) => s.setPage);
   const decisions = useGuiStore((s) => s.decisions);
   const activeDecisionId = useGuiStore((s) => s.activeDecisionId);
   const openDecision = useGuiStore((s) => s.openDecision);
@@ -91,7 +89,7 @@ export function Menubar(): React.JSX.Element {
         <span className="mb-brand" title="zhishi">◣ zhishi</span>
         <span
           className="mb-line"
-          title={`当前研究线（line/list active 行）${activeLine ? `——${activeLine.envKey}` : ''}`}
+          title={`当前线（line/list active 行）${activeLine ? `——${activeLine.envKey}` : ''}`}
         >
           线 <span className={`ln-dot ${activeLine?.stateDot ?? 'cold'}`} />
           <span className="mb-line-id">{activeLine ? shortLineId(activeLine.id) : '—'}</span>
@@ -106,7 +104,7 @@ export function Menubar(): React.JSX.Element {
         )}
         <select
           className="btn small mission-select"
-          title="任务形态（打法轴，挂会话线不挂环境；挖掘=战役形态入口；改动随系统提示注入后续 turn）"
+          title="任务形态（打法轴，挂线不挂环境；挖掘=战役形态入口；改动随系统提示注入后续 turn）"
           value={mission?.kind ?? ''}
           disabled={connectionState !== 'live'}
           onChange={(e) => void setMission(missionPatchValue(e.target.value))}
@@ -122,7 +120,7 @@ export function Menubar(): React.JSX.Element {
       <div className="mb-actions">
         <button
           className="btn small"
-          title="历史会话（清单 / 只读回看 / 载回续跑）"
+          title="历史线（清单 / 只读回看 / 载回续跑）"
           onClick={() => void openHistoryPanel()}
         >
           ▤ 历史
@@ -170,22 +168,15 @@ export function Menubar(): React.JSX.Element {
       {/* 系统计量（设计稿 §2 menubar 右段） */}
       <div className="mb-meters">
         {session.contextPct !== undefined && (
-          <span className="mb-meter" title="上下文占用（会话内 tokens / 模型窗口）">
+          <span className="mb-meter" title="上下文占用（线内 tokens / 模型窗口）">
             ctx <b>{session.contextPct}%</b>
           </span>
         )}
-        <span className="mb-meter" title="本会话已完成 turn 的 token 累计（input + output）">
+        <span className="mb-meter" title="本条线已完成 turn 的 token 累计（input + output）">
           tok <b>{formatTokens(tokensUsed)}</b>
         </span>
-        {/* 决策①④：env 计量段 = 正门显式入口（无环境/新建场景的家）。
-            环境详情 modal 仍走 StatusBar env 锚——两个入口各管一件事。 */}
-        <span
-          className="mb-meter mb-env clickable"
-          title={`当前环境：${hostAnchorLabel(envKey)}——点击开正门（选/建环境；${connectionState === 'live' ? '就绪' : '等待 sidecar'}）`}
-          onClick={() => setPage('gate')}
-        >
-          ◈ {hostAnchorLabel(envKey)}
-        </span>
+        {/* 2.0-M4 去重：env 计量段撤除——切换/可见性归 statusbar 任务栏环境段
+            （点当前项=详情、⊕=正门），menubar 不再承载环境入口（三入口混收敛）。 */}
         <MenubarClock />
       </div>
     </div>

@@ -226,7 +226,7 @@ export function ResearchPanel(): React.JSX.Element {
           <span className="arc-head-sub">过程记录 + 成果汇总</span>
         </div>
         <div className="arc-empty">
-          档案随研究生长——模型开始研究后，这里会长出研究线：假设 → 证据 → 结论。结论必须有证据支撑；反证与证伪同样留痕。
+          档案随研究生长——模型开始研究后，这里会长出假设链：假设 → 证据 → 结论。结论必须有证据支撑；反证与证伪同样留痕。
         </div>
       </div>
     );
@@ -282,13 +282,13 @@ export function ResearchPanel(): React.JSX.Element {
         <Section title="待答问题" count={openQuestions.length}>
           {openQuestions.map(renderRow)}
         </Section>
-        <Section title="研究线" count={threads.length}>
+        <Section title="假设链" count={threads.length}>
           {threads.map((t) => (
             <div className="arc-thread" key={t.hypothesis.id}>
               <div className="arc-thread-head">
                 <span
                   className="arc-fold arc-thread-fold"
-                  title={threadCollapsed(t) ? '展开研究线' : '折叠研究线'}
+                  title={threadCollapsed(t) ? '展开假设链' : '折叠假设链'}
                   onClick={() =>
                     setCollapsedThreads((prev) => ({ ...prev, [t.hypothesis.id]: !threadCollapsed(t) }))
                   }

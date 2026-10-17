@@ -27,7 +27,8 @@ import { managementApi } from './utils/management-api';
 // 1.3.2 任务二 #5：task/list 行 conclusion 字段的数据源（cron 结论登记）。
 import { taskConclusionFor } from './cron/task-conclusions';
 // Localhost loopback timeout for management / sidecar self-calls.
-import { existsSync , mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync } from 'fs';
+import { existsSync , mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
 import { ensureDirSync } from './utils/fs-utils';
 import { resolveSshTarget, execInEnvironment, buildScpArgv, buildScpUploadArgv } from './loop/env-exec';
 // 1.8.7 P4 团队大脑——文件传输（客户端 ↔ 服务器侧环境）：取回机器 +
@@ -36,6 +37,7 @@ import {
   getFilesSpillDir,
   guestBasename,
   maxTransferBytes,
+  putFileToEnv,
   resolveTransferEnv,
   takeFileFromEnv,
 } from './environment/file-transfer';
@@ -72,6 +74,7 @@ import {
   autoRunFilePath,
   defaultAutoRunsDir,
   listAutoRuns,
+  listAutoRunRecordFiles,
   startAutoRun,
   stopAutoRun,
   getAutoRun,
@@ -107,7 +110,8 @@ import { setAgents } from './agent-session';
 import { getPiAgentState, envSwitchBlocker, getEnvSessionBinding, getPiLineMission, setPiLineMission, switchEnvSession, resolveSessionEnv, resolveSessionEnvKey } from './loop/chat-engine';
 import { isMissionKind, MISSION_KINDS } from '../shared/mission';
 import { loadArchive } from './loop/archive';
-import { envKeyForSelection, getEnvSessionLine, loadEnvSessionsMap, removeEnvSessionsForEnvId } from './environment/env-sessions';
+import { envKeyForSelection, getEnvSessionLine, loadEnvSessionsMap, removeEnvSessionsForEnvId, renameEnvSessionEnvId } from './environment/env-sessions';
+import { canMergeEntries } from './environment/env-merge';
 import { canReadLine } from './auth/line-access';
 import { getLineOwnership } from './loop/line-ownership';
 import { resolveLoopModel } from './loop/pi-provider';
@@ -3672,6 +3676,195 @@ export async function handleEnvironmentRm(payload: {
     success: false,
     error: `env rm 只对 VM 环境条目生效；"${id}" 未命中登记条目 / Hyper-V / VirtualBox（zhishi env list 查看已有环境）`,
   };
+}
+/** `environment/merge` — 2.0-M1 同名环境合并（台账治理，设计稿
+ *  docs/design/multi-env-design.md §1 P5a）。
+ *  语义：keep 保留、drop **只摘登记**——两者必须同名且不同解析目标
+ *  （守卫纯函数在 environment/env-merge.ts）。
+ *  映射迁移走 renameEnvSessionEnvId（现存者优先口径：目标键已有映射则
+ *  保留既有、丢弃被迁移行）。**不删底层实体**——合并收拾的是重复登记
+ *  （fuzz 双条目这类历史脏账），容器/VM 实体归 keep 条目继续用；
+ *  要连实体删除请走 environment/rm。 */
+export async function handleEnvironmentMerge(payload: {
+  keepId?: string;
+  dropId?: string;
+}): Promise<AdminResponse> {
+  const keepId = typeof payload.keepId === 'string' ? payload.keepId.trim() : '';
+  const dropId = typeof payload.dropId === 'string' ? payload.dropId.trim() : '';
+  if (!keepId || !dropId) {
+    return { success: false, error: 'Missing required argument: <keepId, dropId>' };
+  }
+  if (keepId === dropId) {
+    return { success: false, error: 'keepId 与 dropId 相同——合并需要两个不同条目' };
+  }
+  if (keepId === LOCAL_ENV_ID || dropId === LOCAL_ENV_ID) {
+    return { success: false, error: `环境 "${LOCAL_ENV_ID}" 是内置本机条目，不可参与合并` };
+  }
+  const entries = listEnvironments(loadConfig());
+  const keep = findEnvironmentEntry(entries, keepId);
+  const drop = findEnvironmentEntry(entries, dropId);
+  if (!keep) return { success: false, error: `未找到环境 "${keepId}"（zhishi env list 查看已有环境）` };
+  if (!drop) return { success: false, error: `未找到环境 "${dropId}"（zhishi env list 查看已有环境）` };
+  const verdict = canMergeEntries(keep, drop);
+  if (!verdict.ok) return { success: false, error: verdict.error };
+  // 映射迁移：drop 的线映射改挂 keep（既有 keep 映射优先，drop 行丢弃）。
+  await renameEnvSessionEnvId(dropId, keepId);
+  try {
+    await atomicModifyConfig((config) => {
+      const removed = removeEnvironmentEntry(listEnvironments(config), dropId);
+      if (!removed.ok) throw new Error(removed.error);
+      return { ...config, environments: removed.entries };
+    });
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  console.log(`[env] merged "${dropId}" into "${keepId}"（同名重复登记收拾，只摘登记）`);
+  return { success: true, data: { keepId, mergedFrom: dropId } };
+}
+/** `environment/prune/list` — 2.0-M1 僵尸清理候选（设计稿 §1 P5c）。
+ * 判据（保守：宁可漏报不误杀）：
+ *   ① 已登记、非内置条目、非 ssh（远端探活成本高，保守排除）
+ *   ② 未被任何线映射引用——env-sessions 无 `env:<id>` 行 = 从未开过线或
+ *      映射早已清空（有使用史的环境一律不进候选）
+ *   ③ 无活跃 auto-run 引用（status='running' 的 run 保护其环境）
+ *   ④ 非占用中（1.8.7 P5 envOccupancy；他人/自己在用都不动）
+ *   ⑤ 现场探测：docker 容器在跑 / VM 在跑 → 排除；**探测失败也排除**
+ *      （不可知即不删——D14 销毁纪律的第一道保险）
+ * 时间判据说明：设计稿"停止超过 7 天"落地不了——EnvEntry 无时间戳字段；
+ * v1 以"零使用痕迹"替代时间窗（更硬：连映射都没有的环境不需要等 7 天）。
+ * 候选仍需人在正门勾选 + 明确确认后才删（本端点只读）。 */
+export async function handleEnvironmentPruneList(): Promise<AdminResponse> {
+  const entries = listEnvironments(loadConfig());
+  const map = loadEnvSessionsMap();
+  // 行键尾部即 env 身份：`<ws>::<段>::env:<id>` / 旧两段式 `env:<id>`。
+  const usedEnvRefs = new Set<string>();
+  for (const key of Object.keys(map.lines)) {
+    const i = key.lastIndexOf('::');
+    usedEnvRefs.add(i >= 0 ? key.slice(i + 2) : key);
+  }
+  // 活跃 auto-run 的 envKey（run 记录里存的就是 `env:<id>` 形态）。
+  const activeRunEnvs = new Set(
+    listAutoRunRecordFiles()
+      .filter((r) => r.status === 'running')
+      .map((r) => r.envKey),
+  );
+  const candidates: Array<Record<string, unknown>> = [];
+  for (const entry of entries) {
+    if (entry.id === LOCAL_ENV_ID) continue;
+    if (entry.kind === 'ssh') continue;
+    const ref = `env:${entry.id}`;
+    if (usedEnvRefs.has(ref)) continue;
+    if (activeRunEnvs.has(ref)) continue;
+    if (envOccupancy(entry.id)) continue;
+    if (entry.kind === 'docker' && entry.container) {
+      const p = await rmDockerProbeImpl(entry.container);
+      if (!p.ok || p.running) continue; // 探测失败/在跑 → 不删
+    } else if (entry.kind === 'vm') {
+      const vmx = resolveVmxForEntry(entry, { templates: loadConfig().vmTemplates });
+      if (!vmx.ok) continue; // 解析不出 = 不可知 → 不删
+      const ps = await vmEnvPs();
+      if (!ps.ok) continue;
+      if (ps.vmxes.some((v) => normalizeVmxPath(v) === normalizeVmxPath(vmx.vmx))) continue;
+    }
+    candidates.push({
+      id: entry.id,
+      name: entry.name ?? entry.id,
+      kind: entry.kind,
+      detail: entry.container ?? entry.vmName ?? '',
+      reason: '无使用痕迹（无分线映射 / 无活跃任务）+ 已停止',
+    });
+  }
+  return { success: true, data: { candidates } };
+}
+/** `environment/prune/apply { ids }` — 逐个走 handleEnvironmentRm 的完整删除
+ *  语义（docker 停+rm+摘登记 / vm 摘登记 / 探测失败跳过实体删除），失败聚合
+ *  回报不中断。破坏性动作的最后仲裁在正门确认模态（D14）。 */
+export async function handleEnvironmentPruneApply(payload: {
+  ids?: unknown;
+}): Promise<AdminResponse> {
+  const ids = Array.isArray(payload.ids)
+    ? payload.ids.filter((x): x is string => typeof x === 'string' && x.trim() !== '').map((x) => x.trim())
+    : [];
+  if (ids.length === 0) {
+    return { success: false, error: 'Missing required argument: <ids[]>（先在 prune/list 里勾选候选）' };
+  }
+  const removed: string[] = [];
+  const failed: Array<{ id: string; error: string }> = [];
+  for (const id of ids) {
+    const r = await handleEnvironmentRm({ id });
+    if (r.success) removed.push(id);
+    else failed.push({ id, error: r.error ?? 'unknown' });
+  }
+  return {
+    success: failed.length === 0,
+    ...(failed.length > 0
+      ? { error: `部分失败：${failed.map((f) => `${f.id}（${f.error}）`).join('、')}` }
+      : {}),
+    data: { removed, failed },
+  };
+}
+/** `environment/peek { workspace, envKey }` — 2.0-M2 注视语义：只读查看任意
+ *  环境的线。**不触引擎**（不 switchEnvSession、不开新线）——busy 环境不能
+ *  切执行现场时（envSwitchBlocker 拒绝「先 Esc」），GUI 用本接口拿到目标环境
+ *  的 loopSessionId 走只读通道（/chat/stream?sessionId= 他线只读视图 +
+ *  loop-session messages），看完 Esc 回，原线现场无损。
+ *  无映射（该环境从未开过线）→ loopSessionId=null。 */
+export async function handleEnvironmentPeek(payload: {
+  workspace?: string;
+  envKey?: string;
+}): Promise<AdminResponse> {
+  const workspace = typeof payload.workspace === 'string' ? payload.workspace.trim() : '';
+  const envKey = typeof payload.envKey === 'string' ? payload.envKey.trim() : '';
+  if (!workspace || !envKey) {
+    return { success: false, error: 'Missing required argument: <workspace, envKey>' };
+  }
+  const line = getEnvSessionLine(loadEnvSessionsMap(), workspace, envKey, { actor: currentActor().name });
+  return {
+    success: true,
+    data: { loopSessionId: line?.loopSessionId ?? null, updatedAt: line?.updatedAt ?? null },
+  };
+}
+/** `environment/xfer {fromId, fromPath, toId, toPath}` — 2.0-M3 跨环境直达
+ *  （设计稿 §1 P3）。编排 takeFileFromEnv → 宿主临时目录 → putFileToEnv
+ *  （全 kind 覆盖：docker cp / vmrun / scp）。**不触 boundary ask**——与
+ *  extract-file/uploads 同口径：受管临时中转不是用户可见的宿主新对象，
+ *  D14 四类越界面不触发（临时目录用后即删）。kind=local 两头由底层拒绝
+ *  （文件传输不服务宿主读写）。源=目标拒绝（环境内移动请用 env_exec）。 */
+export async function handleEnvironmentXfer(payload: {
+  fromId?: string;
+  fromPath?: string;
+  toId?: string;
+  toPath?: string;
+}): Promise<AdminResponse> {
+  const fromId = typeof payload.fromId === 'string' ? payload.fromId.trim() : '';
+  const fromPath = typeof payload.fromPath === 'string' ? payload.fromPath.trim() : '';
+  const toId = typeof payload.toId === 'string' ? payload.toId.trim() : '';
+  const toPath = typeof payload.toPath === 'string' ? payload.toPath.trim() : '';
+  if (!fromId || !fromPath || !toId || !toPath) {
+    return { success: false, error: 'Missing required argument: <fromId, fromPath, toId, toPath>' };
+  }
+  if (fromId === toId) {
+    return { success: false, error: '源与目标相同——单环境内移动请用 env_exec（cp/mv）' };
+  }
+  const entries = listEnvironmentsWithBuiltin(loadConfig());
+  const from = findEnvironmentEntry(entries, fromId);
+  if (!from) return { success: false, error: `未找到源环境 "${fromId}"` };
+  const to = findEnvironmentEntry(entries, toId);
+  if (!to) return { success: false, error: `未找到目标环境 "${toId}"` };
+  const tmpDir = mkdtempSync(join(tmpdir(), 'zhishi-xfer-'));
+  try {
+    const got = await takeFileFromEnv(from, fromPath, tmpDir);
+    if (!got.ok) return { success: false, error: `取回失败：${got.error}` };
+    const put = await putFileToEnv(to, got.savedPath, toPath);
+    if (!put.ok) return { success: false, error: `传入失败：${put.error}` };
+    const bytes = statSync(got.savedPath).size;
+    return {
+      success: true,
+      data: { fromId, fromPath, toId, toPath, name: guestBasename(fromPath), bytes, via: put.via },
+    };
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 /** `environment/exec` — 执行通道（P2 B2 guest-exec + 1.8.6 分派扩面）：
  *  docker / ssh 直达条目经 execInEnvironment（loop/env-exec 统一通道：

@@ -716,7 +716,35 @@ export async function handleSwitchSession(request: Request, jsonResponse: JsonRe
 
         // 新线)无归属可查,放行。
 
-        const targetLoopId = getSessionMetadata(payload.sessionId)?.loopSessionId;
+        //
+
+        // 2.0 fix：兼容双身份——历史面板传会话 meta id；线面板/命令中枢
+
+        // （/resume、line/list 行）传 loopSessionId（ls-xxxx）。先按 meta id
+
+        // 查，查不到按 loopSessionId 反查 meta——线的第一身份是 loopSessionId，
+
+        // 按线切是正当调用（1.9.11 线面板接线时的映射缺口，此前必 404）。
+
+        const directMeta = getSessionMetadata(payload.sessionId);
+
+        let resolvedMetaId = payload.sessionId;
+
+        let targetLoopId = directMeta?.loopSessionId;
+
+        if (!directMeta) {
+
+          const hit = getAllSessionMetadata().find((m) => m.loopSessionId === payload.sessionId);
+
+          if (hit) {
+
+            resolvedMetaId = hit.id;
+
+            targetLoopId = hit.loopSessionId ?? payload.sessionId;
+
+          }
+
+        }
 
         if (targetLoopId && !canReadLine(currentActor(), getLineOwnership(targetLoopId))) {
           return jsonResponse({ success: false, error: 'forbidden' }, 403);
@@ -724,7 +752,7 @@ export async function handleSwitchSession(request: Request, jsonResponse: JsonRe
 
 
 
-        const success = await switchPiSession(payload.sessionId);
+        const success = await switchPiSession(resolvedMetaId);
 
         if (!success) {
 
@@ -734,9 +762,9 @@ export async function handleSwitchSession(request: Request, jsonResponse: JsonRe
 
 
 
-        console.log(`[sessions] Switched to session: ${payload.sessionId}`);
+        console.log(`[sessions] Switched to session: ${resolvedMetaId}`);
 
-        return jsonResponse({ success: true, sessionId: payload.sessionId });
+        return jsonResponse({ success: true, sessionId: resolvedMetaId });
 
 }
 

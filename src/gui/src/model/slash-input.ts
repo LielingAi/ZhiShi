@@ -15,7 +15,7 @@ import { SLASH_ROUTES, type SlashCommandName } from './slash-routes';
 
 /** 本地命令（不走 SLASH_ROUTES 端点路由——runSlashCommand 特判；
  *  v4 增 resume/kill/mission（对象补全）+ use/gate（S4：正门与中途切环境））。 */
-export const LOCAL_COMMANDS = ['attach', 'model', 'reset', 'help', 'resume', 'kill', 'mission', 'use', 'gate'] as const;
+export const LOCAL_COMMANDS = ['attach', 'model', 'reset', 'help', 'resume', 'kill', 'mission', 'use', 'gate', 'xfer'] as const;
 
 /** 可吃 inline 参数直发的命令（跳过 slash-args 模态）。rewind/fork 需要
  *  消息选择器，不在此列；queue/tasks/export 参数形态特殊，export 的

@@ -292,7 +292,7 @@ function PickMessageModal(): React.JSX.Element | null {
           <button className="m-close" onClick={closeModal}>✕</button>
         </div>
         <div className="m-body">
-          {targets.length === 0 && <div className="ov-empty">当前会话没有可{command === 'rewind' ? '回退' : '分叉'}的消息</div>}
+          {targets.length === 0 && <div className="ov-empty">当前线没有可{command === 'rewind' ? '回退' : '分叉'}的消息</div>}
           {targets.map((t) => (
             <div className="pm-item" key={t.id} onClick={() => void pickMessageTarget(t.id)}>
               <span className="pm-label">{t.label}</span>
@@ -1074,7 +1074,7 @@ function EnvDetailModal(): React.JSX.Element | null {
               title={
                 '探测推导，不是声明：= ① 该环境绑定的配方所属域 ∪ ② 环境里实际探到的「独占」工具所属域'
                 + '（1.9.3 起跨域共用工具如 python3 / nc / socat 不算证据，sg 这类撞名也按判别式探测）。'
-                + '它决定能力清单段怎么写、会话域基线取哪个——与下面的「配方绑定」是两回事。'
+                + '它决定能力清单段怎么写、研究域基线取哪个——与下面的「配方绑定」是两回事。'
                 + (entry.capabilityDerivedAt ? `；本次探测于 ${entry.capabilityDerivedAt}` : '')
                 + '。重推：侧栏该环境的「⟳ 重推能力集合」。'
               }

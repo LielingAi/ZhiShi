@@ -208,6 +208,51 @@ export function psRowMatchesEntry(row: PsInstanceLike, entry: EnvEntryLike): boo
   return entry.kind === 'docker' && !!entry.container && row.name === entry.container;
 }
 
+/**
+ * 2.0-M1 台账治理：同名环境分组（name 大小写不敏感 + trim）。
+ *
+ * 背景实锤：WREN 清单里 "fuzz" 双条目（运行中 + 已停止各一）——
+ * long 用出来的历史脏账，产品此前没有任何发现机制。
+ *
+ * 本函数只负责**发现与建议**：查重 → 分组 → suggestKeepId（运行中优先，
+ * 其次先出现者）。是否合并由人确认（正门提示条 → 合并模态 → 服务端
+ * environment/merge 再做同名/同目标双守卫）。不做自动合并是刻意的——
+ * 合并会摘登记，属于破坏性动作，必须有人拍板。
+ */
+export interface NameDupGroup {
+  /** 展示名（首个成员 name/id 原样）。 */
+  name: string;
+  members: EnvEntryLike[];
+  /** 建议保留的条目（运行中优先；无运行者取先出现者）。 */
+  suggestKeepId: string;
+}
+
+export function findNameDuplicates(
+  envs: EnvEntryLike[],
+  runningIds: Iterable<string> = [],
+): NameDupGroup[] {
+  const runSet = new Set(runningIds);
+  const groups = new Map<string, EnvEntryLike[]>();
+  for (const e of envs) {
+    const key = (e.name ?? e.id).trim().toLowerCase();
+    if (!key) continue;
+    const g = groups.get(key);
+    if (g) g.push(e);
+    else groups.set(key, [e]);
+  }
+  const out: NameDupGroup[] = [];
+  for (const members of groups.values()) {
+    if (members.length < 2) continue;
+    const keep = members.find((m) => runSet.has(m.id)) ?? members[0];
+    out.push({
+      name: (members[0].name ?? members[0].id).trim(),
+      members,
+      suggestKeepId: keep.id,
+    });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // 1.3.8 ②：三态判定统一——每环境的唯一状态判定收口为单点纯函数。
 // 三源输入（登记条目 / ps 运行实例 / discover 本机已有）→ 一个状态输出：

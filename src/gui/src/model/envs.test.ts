@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildRegisterPayload, capabilityBadgeText, capabilityTooltip, groupSidebar, imageStartRecipe, isDiscoveredRunning, matchRegisteredEnv, middleEllipsis, psRowMatchesEntry, resolveEnvState, startRecipeFor } from './envs';
+import { buildRegisterPayload, capabilityBadgeText, capabilityTooltip, findNameDuplicates, groupSidebar, imageStartRecipe, isDiscoveredRunning, matchRegisteredEnv, middleEllipsis, psRowMatchesEntry, resolveEnvState, startRecipeFor } from './envs';
 
 const envs = [
   { id: 'pwn@docker', kind: 'docker', name: 'pwn@docker' },
@@ -608,5 +608,43 @@ describe('middleEllipsis（1.7.3 长名中间省略）', () => {
 
   it('max < 5 时直接截头（退化为前缀截断）', () => {
     expect(middleEllipsis('abcdefghij', 4)).toBe('abcd');
+  });
+});
+
+describe('findNameDuplicates（2.0-M1 台账治理：同名环境发现）', () => {
+  it('无同名 → 空数组', () => {
+    expect(findNameDuplicates([
+      { id: 'a', kind: 'docker', name: 'a' },
+      { id: 'b', kind: 'docker', name: 'b' },
+    ])).toEqual([]);
+  });
+
+  it('同名双条目成组；运行中优先做建议保留', () => {
+    const groups = findNameDuplicates([
+      { id: 'fuzz-old', kind: 'docker', name: 'fuzz' },
+      { id: 'fuzz', kind: 'docker', name: 'fuzz' },
+    ], ['fuzz']);
+    expect(groups.length).toBe(1);
+    expect(groups[0].name).toBe('fuzz');
+    expect(groups[0].members.length).toBe(2);
+    expect(groups[0].suggestKeepId).toBe('fuzz');
+  });
+
+  it('大小写与空白不敏感：Fuzz / fuzz 同组；都未运行取先出现者', () => {
+    const groups = findNameDuplicates([
+      { id: 'x1', kind: 'docker', name: ' Fuzz ' },
+      { id: 'x2', kind: 'docker', name: 'fuzz' },
+    ]);
+    expect(groups.length).toBe(1);
+    expect(groups[0].suggestKeepId).toBe('x1');
+  });
+
+  it('缺 name 用 id 归一化参与查重（same id 不算重名——id 唯一）', () => {
+    const groups = findNameDuplicates([
+      { id: 'kali', kind: 'vm' },
+      { id: 'kali2', kind: 'vm', name: 'kali' },
+    ]);
+    expect(groups.length).toBe(1);
+    expect(groups[0].suggestKeepId).toBe('kali');
   });
 });

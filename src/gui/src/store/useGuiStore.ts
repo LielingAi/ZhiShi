@@ -87,6 +87,7 @@ import {
   type ArchiveSnapshot,
 } from '../model/archive';
 import { reduceSseEvent } from '../model/reducer';
+import type { EnvRunLike } from '../model/env-panel';
 import {
   appendRefPlaceholder,
   isLargeValueRef,
@@ -180,6 +181,7 @@ export interface SlashCommand {
 
 export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'use', detail: '切环境 <环境id>（对象补全=环境注册表）', group: '环境' },
+  { name: 'xfer', detail: '跨环境传产物 <源:路径> <目标:路径>', group: '环境' },
   { name: 'gate', detail: '正门（选/建环境）', group: '环境' },
   { name: 'attach', detail: '接管环境 shell', group: '环境' },
   { name: 'snapshot', detail: '给当前环境打快照 [名]', group: '环境' },
@@ -432,6 +434,11 @@ export interface GuiState {
   // V4-S1 骨架壳：右侧检查面板（SidePane——设计稿 §2 柱2 的壳；S2 起能力迁入）
   sidePaneOpen: boolean;
   sidePaneTab: SidePaneTab;
+  /** 2.0-M2 注视语义：只读查看中的他线（null=未查看）。 */
+  peekView: { envKey: string; loopSessionId: string; lines: LoopTranscriptLine[] } | null;
+  /** 2.0-M4b：环境面板（底栏单入口点开；行内带在干什么/最近完成）。 */
+  envPanelOpen: boolean;
+  envRuns: EnvRunLike[];
   /** 面板宽（px；钳制 260~60vw 后持久化 localStorage）。 */
   sidePaneWidth: number;
 
@@ -481,6 +488,13 @@ export interface GuiState {
   reconnect(): void;
   refreshSidebar(): Promise<void>;
   switchEnv(key: string): Promise<void>;
+  /** 2.0-M2 注视语义：只读查看某环境的线（忙碌环境切执行现场被拒时的归宿）。 */
+  peekEnv(envKey: string): Promise<void>;
+  exitPeek(): void;
+  /** 2.0-M4b：环境面板开合 + 记录拉取（auto-run/list → 在干什么/最近完成）。 */
+  toggleEnvPanel(): void;
+  closeEnvPanel(): void;
+  loadEnvRuns(): Promise<void>;
   startEnv(itemKey: string): Promise<void>;
   /** 1.3.7 场景 3：重推环境能力集合（environment/capability-refresh → 刷新侧栏）。 */
   refreshEnvCapability(envId: string): Promise<void>;
@@ -511,6 +525,12 @@ export interface GuiState {
   requestEnvRename(target: { id: string; label: string; name?: string }): void;
   /** 1.6.6：确认改名（environment/rename → 成功用 data.environments 刷新 + toast；失败保留模态）。 */
   confirmEnvRename(name: string): Promise<void>;
+  /** 2.0-M1 台账治理：同名重复登记合并（keepId 保留、dropId 只摘登记）。 */
+  mergeEnv(keepId: string, dropId: string): Promise<void>;
+  /** 2.0-M1 僵尸清理：拉候选（只读；组件侧给模态用）。失败返回空表。 */
+  fetchPruneCandidates(): Promise<api.PruneCandidate[]>;
+  /** 2.0-M1 僵尸清理：勾选执行（逐个环境 rm，失败聚合 toast）。 */
+  applyPrune(ids: string[]): Promise<void>;
   /** 1.3.8 多配方：侧栏 ℹ 入口——开环境详情模态（登记条目快照）。 */
   openEnvDetail(envId: string): void;
   /** 1.3.8 多配方：应用绑定集合（environment/bind-recipes → 成功关模态 + refreshSidebar + toast）。 */
@@ -790,6 +810,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     typeof window !== 'undefined' ? window.innerWidth : WIDE_SCREEN_MIN,
   ),
   sidePaneTab: 'lines',
+  peekView: null,
+  envPanelOpen: false,
+  envRuns: [],
   sidePaneWidth: readSidePaneWidth(),
 
   // 第四批 v4：崩溃件检查器（过滤指纹；内容壳 = SidePane「检查器」页签）
@@ -1027,6 +1050,16 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
               set({ archiveHighlightId: null });
             }
           }
+          // 2.0-M4b（WREN 反馈②：环境干完任务不知道）：auto-run 终态全局广播
+          // → 状态行回执（无论哪个环境收口都看得见）；环境面板开着就顺手刷新
+          // 行内「最近完成」。
+          if (input.event === 'auto-run:completed') {
+            const p = input.payload as { outcome?: unknown } | null;
+            const outcome = p && typeof p.outcome === 'string' ? p.outcome : '';
+            const label = outcome === 'passed' ? '已通过' : outcome === 'stopped' ? '已终止' : '已退出';
+            get().showReceipt(`auto loop 结束：${label}`);
+            if (get().envPanelOpen) void get().loadEnvRuns();
+          }
           // 1.4.7 SSE 漏面收口：chat:session-title-changed——auto-titler/人改
           // 标题后，已加载的历史行就地换标题（不重拉清单）。
           if (input.event === 'chat:session-title-changed') {
@@ -1161,6 +1194,12 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     if (!plan.changed) return; // 目标线已是激活线
     const res = await api.environmentSelect(c, state.workspace, { kind: 'env', id: key });
     if (!res.success) {
+      // 2.0-M2 注视语义：忙碌环境不能切执行现场（服务端「响应进行中，先 Esc」），
+      // 但注视切换永远允许——改走只读查看（不触引擎，原线继续跑，Esc 回无损）。
+      if (/进行中/.test(res.error ?? '')) {
+        await state.peekEnv(key);
+        return;
+      }
       state.showToast(`切换失败：${res.error ?? '未知错误'}`);
       return;
     }
@@ -1177,6 +1216,72 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     void get().refreshSidebar();
     // S5 双轨：动作成功 → 状态行回执（toast 轨道留给错误/需留意）。
     get().showReceipt(`已切环境 ${key}`);
+  },
+
+  /** 2.0-M2 注视语义：只读查看任意环境的线——peek 查线 + 拉 wire transcript，
+   *  全程不触引擎（不 switchEnvSession、不开新线）。忙碌环境切执行现场被拒时
+   *  由 switchEnv 转入本路径；原线继续跑，看完 exitPeek 回，现场无损。 */
+  async peekEnv(envKey) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    if (!state.workspace) {
+      state.showToast('工作区尚未就绪（等待 chat:init）');
+      return;
+    }
+    try {
+      const res = await api.environmentPeek(c, { workspace: state.workspace, envKey });
+      const loopSessionId = res.success ? res.data?.loopSessionId ?? null : null;
+      if (!loopSessionId) {
+        state.showToast(`环境 ${envKey} 还没有线——切过去开一条即可（当前线运行中的话等它跑完）`);
+        return;
+      }
+      const lines = (await api.fetchLoopTranscript(c, loopSessionId)) ?? [];
+      set({ peekView: { envKey, loopSessionId, lines } });
+    } catch (err) {
+      state.showToast(`只读查看失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  exitPeek() {
+    set({ peekView: null });
+  },
+
+  /** 2.0-M4b 环境面板：开=拉记录（auto-run/list 全量，行内"在干什么/最近
+   *  完成"的数据源）；关=零成本。 */
+  toggleEnvPanel() {
+    const next = !get().envPanelOpen;
+    set({ envPanelOpen: next });
+    if (next) void get().loadEnvRuns();
+  },
+
+  closeEnvPanel() {
+    set({ envPanelOpen: false });
+  },
+
+  async loadEnvRuns() {
+    const c = client;
+    const state = get();
+    if (!c) return;
+    try {
+      const res = (await api.autoRunList(c)) as { success?: boolean; data?: { records?: unknown } };
+      const records = Array.isArray(res?.data?.records) ? res.data.records : [];
+      const runs = records
+        .filter((r): r is Record<string, unknown> => !!r && typeof r === 'object' && !Array.isArray(r))
+        .map((r) => ({
+          id: typeof r.id === 'string' ? r.id : undefined,
+          name: typeof r.name === 'string' ? r.name : undefined,
+          envKey: typeof r.envKey === 'string' ? r.envKey : undefined,
+          status: typeof r.status === 'string' ? r.status : undefined,
+        }));
+      set({ envRuns: runs });
+      void state;
+    } catch {
+      /* 记录拉取失败不阻塞面板（行内"在干什么"留空即降级） */
+    }
   },
 
   // ── 1.3.1 ①：启动已停止环境（docker/vm 都走 environment/up） ──────
@@ -1415,6 +1520,77 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       state.showReceipt(trimmed ? `已改名 ${trimmed}` : '已清除别名');
     } catch (err) {
       state.showToast(`改名失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  /** 2.0-M1 台账治理：同名重复登记合并——keep 保留、drop 只摘登记（服务端
+   *  双守卫：同名/同目标）。成功后 refreshSidebar 让正门列表即时收敛。 */
+  async mergeEnv(keepId, dropId) {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return;
+    }
+    if (!keepId || !dropId || keepId === dropId) {
+      state.showToast('合并参数无效（需要两个不同条目）');
+      return;
+    }
+    try {
+      const res = await api.environmentMerge(c, { keepId, dropId });
+      if (!res.success) {
+        state.showToast(`合并失败：${res.error ?? '未知错误'}`);
+        return;
+      }
+      void state.refreshSidebar();
+      state.showReceipt(`已合并 ${dropId} → ${keepId}`);
+    } catch (err) {
+      state.showToast(`合并失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
+  /** 2.0-M1 僵尸清理：候选清单（只读）。组件侧模态直接消费返回值，
+   *  不进全局状态——一次性数据不常驻（同 /tasks 的"看一眼即散"纪律）。 */
+  async fetchPruneCandidates() {
+    const c = client;
+    const state = get();
+    if (!c) {
+      state.showToast('未连接 sidecar');
+      return [];
+    }
+    try {
+      const res = await api.environmentPruneList(c);
+      if (!res.success) {
+        state.showToast(`清理候选加载失败：${res.error ?? '未知错误'}`);
+        return [];
+      }
+      return res.data?.candidates ?? [];
+    } catch (err) {
+      state.showToast(`清理候选加载失败：${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  },
+
+  /** 2.0-M1 僵尸清理执行：服务端逐个走 environment/rm 完整语义
+   *  （D14：删除的实体级后果在服务端 rm 内按 kind 分派），这里只回报结果。 */
+  async applyPrune(ids) {
+    const c = client;
+    const state = get();
+    if (!c || ids.length === 0) {
+      if (!c) state.showToast('未连接 sidecar');
+      return;
+    }
+    try {
+      const res = await api.environmentPruneApply(c, ids);
+      const removed = res.data?.removed ?? [];
+      if (res.success) {
+        state.showReceipt(`已清理 ${removed.length} 个环境`);
+      } else {
+        state.showToast(`清理部分失败：${res.error ?? '未知错误'}`);
+      }
+      void state.refreshSidebar();
+    } catch (err) {
+      state.showToast(`清理失败：${err instanceof Error ? err.message : String(err)}`);
     }
   },
 
@@ -2853,7 +3029,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ historySessions: null, historyError: message });
-      get().showToast(`会话清单加载失败：${message}`);
+      get().showToast(`线清单加载失败：${message}`);
     }
   },
 
@@ -2971,7 +3147,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
           ? { historySessions: s.historySessions.filter((r) => r.id !== id) }
           : {},
       );
-      state.showReceipt('会话已删除');
+      state.showReceipt('线已删除');
     } catch (err) {
       state.showToast(`删除失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -2996,7 +3172,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       return;
     }
     if (currentSession(state).phase === 'running') {
-      state.showToast('当前 turn 运行中——Esc 中断后再载回（避免与活跃会话流冲突）');
+      state.showToast('当前 turn 运行中——Esc 中断后再载回（避免与活跃线视图冲突）');
       return;
     }
     try {
@@ -3008,7 +3184,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
       set({ page: 'chat', drawer: null, overlay: null });
       get().reconnect();
       void get().refreshSidebar();
-      get().showReceipt('已载回会话');
+      get().showReceipt('已载回线');
     } catch (err) {
       state.showToast(`载回失败：${err instanceof Error ? err.message : String(err)}`);
     }
@@ -3549,6 +3725,35 @@ async function runSlashCommand(
     await s.switchEnv(env.id);
     return;
   }
+  // /xfer <envA:路径> <envB:路径>：2.0-M3 跨环境传产物——服务端编排
+  // extract→暂存→put（两段各取第一个 ':' 切分；环境内路径从 '/' 起）。
+  if (cmd === 'xfer') {
+    const parts = (inlineArgs ?? '').trim().split(/\s+/).filter(Boolean);
+    const parse = (tok: string): { id: string; path: string } | null => {
+      const i = tok.indexOf(':');
+      if (i <= 0 || i >= tok.length - 1) return null;
+      return { id: tok.slice(0, i), path: tok.slice(i + 1) };
+    };
+    const a = parts[0] ? parse(parts[0]) : null;
+    const b = parts[1] ? parse(parts[1]) : null;
+    if (!a || !b) {
+      s.showToast('`/xfer <源环境:源路径> <目标环境:目标路径>`——例：/xfer fuzz:/work/crash-01 pwn:/tmp/');
+      return;
+    }
+    const c2 = client;
+    if (!c2) {
+      s.showToast('未连接 sidecar');
+      return;
+    }
+    const res = await api.environmentXfer(c2, { fromId: a.id, fromPath: a.path, toId: b.id, toPath: b.path });
+    if (res.success) {
+      const size = res.data?.bytes !== undefined ? `（${Math.round(res.data.bytes / 1024)}KB · ${res.data.via ?? ''}）` : '';
+      s.showReceipt(`已传 ${res.data?.name ?? a.path} → ${b.id}${size}`);
+    } else {
+      s.showToast(`xfer 失败：${res.error ?? '未知错误'}`);
+    }
+    return;
+  }
   // /resume <线id>：切线（resume 有成本——服务端要重跑该线引擎）。id 必须在
   // 本地线清单命中：对象补全/线面板是 id 的唯一事实源，不命中引导回补全。
   if (cmd === 'resume') {
@@ -3633,7 +3838,7 @@ async function runSlashCommand(
       const session = s.sessions[key] ?? emptySession();
       const targets = route.command === 'rewind' ? rewindTargets(session.items) : forkTargets(session.items);
       if (targets.length === 0) {
-        s.showToast(`/${cmd}：当前会话没有可回退/分叉的消息`);
+        s.showToast(`/${cmd}：当前线没有可回退/分叉的消息`);
         return;
       }
       set({ modal: { kind: 'pick-message', command: route.command } });
@@ -3681,7 +3886,7 @@ async function executeSlash(
     const session = s.sessions[key] ?? emptySession();
     const query = effectiveQuery(arg, session.items);
     if (!query) {
-      s.showToast(`/${command}：需要查询词（当前会话还没有上下文可吃）`);
+      s.showToast(`/${command}：需要查询词（当前线还没有上下文可吃）`);
       return;
     }
     s.showToast(`⏳ 检索情报库：${query.slice(0, 60)}${query.length > 60 ? '…' : ''}`);

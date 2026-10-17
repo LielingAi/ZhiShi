@@ -399,6 +399,55 @@ export function environmentRename(
   return client.adminPost('environment/rename', input);
 }
 
+/** 2.0-M1 台账治理：同名重复登记合并（keepId 保留、dropId 只摘登记）。
+ *  服务端双守卫：同名校验 + 同底层目标拒绝；映射迁移现存者优先。 */
+export function environmentMerge(
+  client: GuiSidecarClient,
+  input: { keepId: string; dropId: string },
+): Promise<{ success: boolean; error?: string; data?: { keepId?: string; mergedFrom?: string } }> {
+  return client.adminPost('environment/merge', input);
+}
+
+export interface PruneCandidate {
+  id: string;
+  name?: string;
+  kind?: string;
+  detail?: string;
+  reason?: string;
+}
+
+/** 2.0-M1 僵尸清理候选（只读）：已停止 + 零使用痕迹 + 非占用的登记条目。 */
+export function environmentPruneList(
+  client: GuiSidecarClient,
+): Promise<{ success: boolean; error?: string; data?: { candidates?: PruneCandidate[] } }> {
+  return client.adminPost('environment/prune/list', {});
+}
+
+/** 2.0-M1 僵尸清理执行：逐个走 environment/rm 完整语义，失败聚合回报。 */
+export function environmentPruneApply(
+  client: GuiSidecarClient,
+  ids: string[],
+): Promise<{ success: boolean; error?: string; data?: { removed?: string[]; failed?: Array<{ id: string; error: string }> } }> {
+  return client.adminPost('environment/prune/apply', { ids });
+}
+
+/** 2.0-M3 跨环境直达：服务端编排 extract→暂存→put（环境间传产物一条命令）。 */
+export function environmentXfer(
+  client: GuiSidecarClient,
+  input: { fromId: string; fromPath: string; toId: string; toPath: string },
+): Promise<{ success: boolean; error?: string; data?: { name?: string; bytes?: number; via?: string } }> {
+  return client.adminPost('environment/xfer', input);
+}
+
+/** 2.0-M2 注视语义：只读查看任意环境的线（peek 查 loopSessionId，不触引擎）。
+ *  busy 环境切执行现场被拒时的归宿——原线继续跑，看完 Esc 回。 */
+export function environmentPeek(
+  client: GuiSidecarClient,
+  input: { workspace: string; envKey: string },
+): Promise<{ success: boolean; error?: string; data?: { loopSessionId?: string | null; updatedAt?: string | null } }> {
+  return client.adminPost('environment/peek', input);
+}
+
 export interface CurrentEnvResult {
   success: boolean;
   error?: string;

@@ -25,6 +25,10 @@ import { Menubar } from './components/Menubar';
 import { SidePane } from './components/SidePane';
 import { GatePage } from './components/GatePage';
 import { CommandPalette } from './components/CommandPalette';
+// 2.0-M2 注视语义：忙碌环境只读查看。
+import { PeekView } from './components/PeekView';
+// 2.0-M4b 环境面板（底栏 chip 点开）。
+import { EnvPanel } from './components/EnvPanel';
 import { Overlay } from './components/Overlay';
 import { Modal } from './components/Modal';
 import { BoundaryModal } from './components/BoundaryModal';
@@ -97,6 +101,10 @@ export function App(): React.JSX.Element {
       {/* V4-S3 命令中枢（Ctrl+K）——独立面板面，Esc/方向键自管（capture 拦
           在 useEsc 之前），不进 Esc 链。 */}
       <CommandPalette />
+      {/* 2.0-M2 注视语义：忙碌环境的只读查看（覆盖主区，Esc capture 自管）。 */}
+      <PeekView />
+      {/* 2.0-M4b 环境面板（底栏 chip 点开；Esc/点外部关闭）。 */}
+      <EnvPanel />
       <Overlay />
       <QueuePanel />
       <BoundaryModal />

@@ -7,10 +7,11 @@
 import type React from 'react';
 
 import { selectCurrentSession, useGuiStore } from '../store/useGuiStore';
-import { hostAnchorLabel } from '../model/access-gate';
 import { bgStatusSegments } from '../model/tasks';
 import { shortLineId } from '../model/lines';
 import { hasLiveActivity } from '../model/side-pane';
+import { buildEnvStrip } from '../model/env-strip';
+import { isAutoRunActive } from '../model/auto-run';
 import { loadConnection } from '../model/connection';
 
 export function StatusBar(): React.JSX.Element {
@@ -28,14 +29,26 @@ export function StatusBar(): React.JSX.Element {
   // SidePane「线」页签（浮层 LinesPanel 退役，Esc 链 close-lines 层摘除）。
   const lines = useGuiStore((s) => s.lines);
   const openSidePane = useGuiStore((s) => s.openSidePane);
-  // V4-S2 纠偏入口层：env 锚点击开环境详情（复用侧栏 ℹ 同一动作；宿主
-  // 未锚定则无详情可看，不可点）。
-  const openEnvDetail = useGuiStore((s) => s.openEnvDetail);
   // V4-S2 活性静态报数：campaigns 参与 ⛁ 段活性判定（bgTasks 外第二数据源）。
   const campaigns = useGuiStore((s) => s.campaigns);
   // V4-S1 回执通道：store showReceipt 写 receipt + nonce（2200ms 自隐）；
   // key=nonce 让同段连击时重挂载，CSS 动画随之重放（短暂高亮）。
   const receipt = useGuiStore((s) => s.receipt);
+
+  // 2.0-M4b 环境入口：单 chip（当前环境状态点 + 运行中计数）→ 环境面板。
+  const envs = useGuiStore((s) => s.envs);
+  const running = useGuiStore((s) => s.running);
+  const setPage = useGuiStore((s) => s.setPage);
+  const toggleEnvPanel = useGuiStore((s) => s.toggleEnvPanel);
+  const autoRun = useGuiStore((s) => s.autoRun);
+  const envStrip = buildEnvStrip(
+    envs,
+    running.map((r) => r.id),
+    envKey,
+    isAutoRunActive(autoRun) && autoRun?.envKey ? [`env:${autoRun.envKey}`] : [],
+    6,
+  );
+  const runningCount = running.length;
 
   const phase = session.phase;
   const phaseText =
@@ -92,13 +105,23 @@ export function StatusBar(): React.JSX.Element {
   return (
     <div className="statusbar">
       <span className={`status-dot ${dotClass}`} />
-      {/* V4-S2 入口层：env 锚可点（有锚定环境时）——直达环境详情模态。 */}
+      {/* 2.0-M4b（WREN 三条反馈）：多段平铺废弃——单入口 chip（当前环境 +
+          运行中计数 ▾），点开环境面板看每个环境在干什么/最近完成。 */}
       <span
-        className={`env-anchor${envKey ? ' clickable' : ''}`}
-        title={envKey ? '当前环境——点击查看详情（登记条目快照）' : '宿主（未锚定环境）'}
-        onClick={envKey ? () => openEnvDetail(envKey) : undefined}
+        className="seg clickable env-chip"
+        title="环境面板——每个环境的运行状态/在干什么/最近完成；点击切换"
+        onClick={() => toggleEnvPanel()}
       >
-        {hostAnchorLabel(envKey)}
+        <span className={`es-dot ${envStrip.rows.find((r) => r.current)?.state ?? 'stopped'}`} />
+        {envKey ?? '宿主'}
+        {runningCount > 0 && <span className="chip-n">·{runningCount}</span>} ▾
+      </span>
+      <span
+        className="es-item manage"
+        title="环境管理（正门）"
+        onClick={() => setPage('gate')}
+      >
+        ⊕
       </span>
       <span
         className="seg clickable ln-anchor"
