@@ -18,6 +18,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-10-17
+
+> **全链路审计修复批**（依据 `docs/design/audit-2026-10-17.md`：291 文件体检 + 逐条复核 + 真链验证）。修复 15 项 + 真链新发现 1 项全部闭环，门禁全程零失败。
+
+### Fixed
+
+- **环境面板绕过准入闸（P1）**：`panelRowGate` 复用同一 `accessGate`——点已停止 docker/vm 环境提示「先启动再进入」（此前直接进冷线，发消息才报错）；running/ssh/本机路径零变化
+- **`/xfer` 目录语义（P2）**：源侧 stat 校验，目录显式拒绝并给替代路径（此前 docker 静默嵌套、scp/vmrun 报错，跨 kind 不一致）
+- **`environment/rm` 对已删容器不容错（真链暴露）**：`No such container` 视为已删继续摘登记（rm 幂等补齐，与 stop 幂等同口径）
+- **`prune` 的 VM 探活 N 次 spawn**：vm 列表一次取全；探活失败 fail-closed 语义不变
+
+### Changed（重复实现收敛，行为零变化）
+
+- **shared 三件**：`isLargeValueRef`（GUI/CLI 逐行副本）→ `shared/ref-wire`；`normalizeServerUrl` 双端镜像 → `shared/connection-url`；`NO_BASELINE_MARK` 跨 wire 哨兵（server 常量 + GUI 两处字面量）→ `shared/decision-marks`
+- **可测化重构**：merge 计划器 `planMergeEntries`、prune 候选选择器 `selectPruneCandidates` 从 handler 剥离（+7 测）；switch 按线 id 反查 meta 分支补测
+- **清理**：StatusBar 状态点直查（删 6 段排序装配）、EnvPanel 战役叙事补齐（campaign 记录无 envKey → 经 line.list 反查归属）、`initLogger` 撞名改名 `initAgentSessionLog`、全仓 lint 存量错 1 处（1.8.7 遗留未用导入）
+
+### 验证
+
+vitest **2869 通过（+16，先红后绿）**；全仓 eslint + depcruise 0 违规；tsc 0；**真链双容器冒烟**：xfer 正例（14 字节 docker-cp 落目标复验）+ 目录/同源反例拒绝、挂证据 V#1 落档（孤儿区提醒正确）、rm 幂等原场景复验通过。
+
+> 签名说明同前：本版未附 Tauri updater 签名，自动更新链不含本版元数据，请手动下载安装。
+
 ## [2.0.0] - 2026-10-17
 
 > **多环境大版本**（设计稿 `docs/design/multi-env-design.md`：「多环境可用，单环境专注」——每个环境做不同的事，能力长在语义/动词层）。四条真机反馈驱动到终版：环境面板（每个环境在干什么/干完没有）、切线不藏面板、术语统一、切线身份映射修复。
