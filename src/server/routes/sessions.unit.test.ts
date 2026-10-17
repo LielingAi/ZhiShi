@@ -403,6 +403,17 @@ describe('POST /sessions/switch（handleSwitchSession）', () => {
     expect(res.status).toBe(200);
     expect((await bodyOf(res)).sessionId).toBe('s1');
   });
+
+  it('2.0：按 loopSessionId（线 id）反查 meta 再切——线面板/命令中枢路径', async () => {
+    // 线 id 不是 meta id：直接查不到 → 反查命中 → 以 meta id 切引擎、回显 meta id。
+    storeMocks.getSessionMetadata.mockReturnValue(null);
+    storeMocks.getAllSessionMetadata.mockReturnValue([makeMeta('meta-1', { loopSessionId: 'ls-x' })]);
+    chatEngineMocks.switchPiSession.mockResolvedValue(true);
+    const res = await handleSwitchSession(jsonRequest({ sessionId: 'ls-x' }), jsonResponse);
+    expect(res.status).toBe(200);
+    expect((await bodyOf(res)).sessionId).toBe('meta-1');
+    expect(chatEngineMocks.switchPiSession).toHaveBeenCalledWith('meta-1');
+  });
 });
 
 describe('POST /sessions/fork（handleForkSession）', () => {

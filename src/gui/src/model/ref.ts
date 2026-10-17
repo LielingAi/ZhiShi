@@ -20,35 +20,11 @@
 
 import type { SessionState, RefItem } from './blocks';
 
-/** 服务端 LargeValueRef 形状镜像（large-value-store.ts）。 */
-export interface LargeValueRef {
-  kind: 'ref';
-  /** 8–32 位小写 hex（uuid 首段；/refs/:id 路由同口径校验）。 */
-  id: string;
-  sizeBytes: number;
-  mimetype: string;
-  preview: string;
-  expiresAt: number;
-}
-
-const REF_ID_RE = /^[a-f0-9]{8,32}$/;
-
-/**
- * `{kind:'ref'}` 占位识别。id 必须过路由同口径正则——否则取回必 400，
- * 按非占位处理（让原归约兜底，不制造必失败的取回）。
- */
-export function isLargeValueRef(v: unknown): v is LargeValueRef {
-  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
-  const p = v as Record<string, unknown>;
-  return (
-    p.kind === 'ref' &&
-    typeof p.id === 'string' &&
-    REF_ID_RE.test(p.id) &&
-    typeof p.sizeBytes === 'number' &&
-    typeof p.preview === 'string' &&
-    typeof p.expiresAt === 'number'
-  );
-}
+// 2.0 audit D1：类型与守卫收敛到 shared（GUI/CLI 曾逐行副本）；本文件对外
+// API 不变（re-export），消费方 import 路径零改动。
+export type { LargeValueRef } from '../../../shared/ref-wire';
+export { isLargeValueRef } from '../../../shared/ref-wire';
+import type { LargeValueRef } from '../../../shared/ref-wire';
 
 /** 人类可读体积（徽标文案用）：≥1MB 一位小数，否则整 KB。 */
 export function formatRefSize(sizeBytes: number): string {

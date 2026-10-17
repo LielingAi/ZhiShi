@@ -37,6 +37,47 @@ const RUN_STATUS_LABEL: Record<string, string> = {
   exited: '已退出',
 };
 
+/** 战役（挖掘）活跃态与中文标签（campaign 记录无 envKey——经线反查归属，
+ *  见 campaignDoingOf）。 */
+const CAMPAIGN_ACTIVE = new Set(['running', 'plateau', 'triaging', 'deepening']);
+const CAMPAIGN_STATE_TEXT: Record<string, string> = {
+  running: '进行中',
+  plateau: '破冰介入中',
+  triaging: '分拣介入中',
+  deepening: '深挖介入中',
+};
+
+/** 面板数据的战役最小面（CampaignRecordLike 子集）。 */
+export interface CampaignLike {
+  goal?: string;
+  state?: string;
+  loopSessionId?: string;
+}
+
+/** 环境线的最小面（LineRow 子集：id = loopSessionId）。 */
+export interface LineLike {
+  id: string;
+  envKey: string;
+}
+
+/**
+ * 战役活跃叙事（audit P3：面板漏战役——campaign 记录只有 loopSessionId，
+ * 经 line.list 的 envKey 映射归属到环境）。
+ */
+export function campaignDoingOf(
+  campaigns: CampaignLike[],
+  lines: LineLike[],
+  envId: string,
+): string {
+  const lineIds = new Set(lines.filter((l) => l.envKey === envId).map((l) => l.id));
+  const hit = campaigns.find(
+    (c) => c.state && CAMPAIGN_ACTIVE.has(c.state) && c.loopSessionId && lineIds.has(c.loopSessionId),
+  );
+  if (!hit) return '';
+  const goal = (hit.goal ?? '').trim();
+  return `战役「${goal || '未命名'}」· ${CAMPAIGN_STATE_TEXT[hit.state!] ?? hit.state}`;
+}
+
 /** 某环境最近一条 auto-run 记录（记录按新→旧；run.envKey 是 `env:<id>` 形态）。 */
 export function latestRunOf(runs: EnvRunLike[], envId: string): EnvRunLike | null {
   const ref = `env:${envId}`;
@@ -60,18 +101,22 @@ export function buildEnvPanelRows(
   runningIds: Iterable<string>,
   currentEnvKey: string | null,
   runs: EnvRunLike[] = [],
+  extra: { campaigns?: CampaignLike[]; lines?: LineLike[] } = {},
 ): EnvPanelRow[] {
   const runSet = new Set(runningIds);
   const rows: EnvPanelRow[] = envs.map((e) => {
     const state: EnvStripState = e.kind === 'local' ? 'local' : runSet.has(e.id) ? 'running' : 'stopped';
     const run = latestRunOf(runs, e.id);
+    // 叙事优先级：活跃战役 > auto-run 记录（在跑 > 最近完成）。
+    const campaignText = campaignDoingOf(extra.campaigns ?? [], extra.lines ?? [], e.id);
+    const doing = campaignText || doingTextOf(run);
     return {
       id: e.id,
       fullName: (e.name ?? e.id).trim() || e.id,
       state,
       current: currentEnvKey === e.id,
-      doing: doingTextOf(run),
-      done: run?.status === 'completed',
+      doing,
+      done: !campaignText && run?.status === 'completed',
     };
   });
   const weight = (r: EnvPanelRow): number => (r.state === 'running' ? 0 : r.state === 'stopped' ? 1 : 2);

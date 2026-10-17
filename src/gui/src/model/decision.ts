@@ -20,8 +20,10 @@
 // 常量与类型
 // ---------------------------------------------------------------------------
 
-/** 库边界标注（与服务端 NO_BASELINE_MARK 同值——展示时原样呈现该语义）。 */
-export const NO_BASELINE_MARK = '库中无基准';
+// 2.0 audit D4：值收敛到 shared（曾与 server 常量按值对齐）——re-export
+// 保持本文件对外 API 不变。
+export { NO_BASELINE_MARK } from '../../../shared/decision-marks';
+import { NO_BASELINE_MARK } from '../../../shared/decision-marks';
 
 /** pending 决策登记条目（SSE chat:decision-request 的 GUI 侧形状）。 */
 export interface DecisionPending {

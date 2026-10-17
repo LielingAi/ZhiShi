@@ -21,6 +21,7 @@ import {
   buildDockerRunArgs,
   containerNameFor,
   dockerContainerRunning,
+  isDockerMissingContainerError,
   envDown,
   envImages,
   envPs,
@@ -727,5 +728,14 @@ describe('dockerContainerRunning（environment/rm 前置的单容器运行探测
       exec: async () => ({ exitCode: 1, stdout: '', stderr: 'Cannot connect to the Docker daemon' }),
     });
     expect(down.ok).toBe(false);
+  });
+});
+
+describe('isDockerMissingContainerError（rm 幂等：容器已被外部删除视为成功）', () => {
+  it('No such container（大小写/前后缀）命中；其他 docker 错误不命中', () => {
+    expect(isDockerMissingContainerError('Error response from daemon: No such container: zq-a')).toBe(true);
+    expect(isDockerMissingContainerError('no such container')).toBe(true);
+    expect(isDockerMissingContainerError('permission denied')).toBe(false);
+    expect(isDockerMissingContainerError(undefined)).toBe(false);
   });
 });

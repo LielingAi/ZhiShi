@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildEnvPanelRows, doingTextOf, latestRunOf } from './env-panel';
+import { buildEnvPanelRows, campaignDoingOf, doingTextOf, latestRunOf } from './env-panel';
 
 const ENVS = [
   { id: 'fuzz', kind: 'docker', name: 'fuzz' },
@@ -49,5 +49,38 @@ describe('buildEnvPanelRows', () => {
       [{ id: 'x', name: 't', envKey: 'env:egym_p14', status: 'completed' }],
     );
     expect(rows.find((r) => r.id === 'egym_p14')?.done).toBe(true);
+  });
+});
+
+describe('campaignDoingOf（audit P3：面板战役叙事——经线反查归属）', () => {
+  const LINES = [
+    { id: 'ls-fuzz', envKey: 'fuzz' },
+    { id: 'ls-audit', envKey: 'egym_p14' },
+  ];
+
+  it('活跃战役经 loopSessionId→envKey 映射归属到环境；文案带目标名和状态', () => {
+    const text = campaignDoingOf(
+      [{ goal: 'usrsctp 审计', state: 'plateau', loopSessionId: 'ls-fuzz' }],
+      LINES,
+      'fuzz',
+    );
+    expect(text).toBe('战役「usrsctp 审计」· 破冰介入中');
+  });
+
+  it('终态战役不叙事；无目标名回落「未命名」', () => {
+    expect(campaignDoingOf([{ goal: 'x', state: 'completed', loopSessionId: 'ls-fuzz' }], LINES, 'fuzz')).toBe('');
+    expect(campaignDoingOf([{ state: 'running', loopSessionId: 'ls-audit' }], LINES, 'egym_p14')).toContain('未命名');
+  });
+
+  it('buildEnvPanelRows：战役叙事优先于 auto-run 完成标记（done 归战役行）', () => {
+    const rows = buildEnvPanelRows(
+      [{ id: 'fuzz', kind: 'docker', name: 'fuzz' }],
+      ['fuzz'],
+      'fuzz',
+      [{ name: '旧任务', envKey: 'env:fuzz', status: 'completed' }],
+      { campaigns: [{ goal: 'g', state: 'triaging', loopSessionId: 'ls-fuzz' }], lines: LINES },
+    );
+    expect(rows[0].doing).toContain('战役「g」');
+    expect(rows[0].done).toBe(false);
   });
 });

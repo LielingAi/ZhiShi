@@ -10,8 +10,6 @@ import { selectCurrentSession, useGuiStore } from '../store/useGuiStore';
 import { bgStatusSegments } from '../model/tasks';
 import { shortLineId } from '../model/lines';
 import { hasLiveActivity } from '../model/side-pane';
-import { buildEnvStrip } from '../model/env-strip';
-import { isAutoRunActive } from '../model/auto-run';
 import { loadConnection } from '../model/connection';
 
 export function StatusBar(): React.JSX.Element {
@@ -40,15 +38,16 @@ export function StatusBar(): React.JSX.Element {
   const running = useGuiStore((s) => s.running);
   const setPage = useGuiStore((s) => s.setPage);
   const toggleEnvPanel = useGuiStore((s) => s.toggleEnvPanel);
-  const autoRun = useGuiStore((s) => s.autoRun);
-  const envStrip = buildEnvStrip(
-    envs,
-    running.map((r) => r.id),
-    envKey,
-    isAutoRunActive(autoRun) && autoRun?.envKey ? [`env:${autoRun.envKey}`] : [],
-    6,
-  );
   const runningCount = running.length;
+  // 当前环境状态点（audit C 清理：不再为取一个点跑 6 段排序装配）。
+  const currentEntry = envs.find((e) => e.id === envKey);
+  const currentState = envKey
+    ? currentEntry?.kind === 'local'
+      ? 'local'
+      : running.some((r) => r.id === envKey)
+        ? 'running'
+        : 'stopped'
+    : 'stopped';
 
   const phase = session.phase;
   const phaseText =
@@ -112,7 +111,7 @@ export function StatusBar(): React.JSX.Element {
         title="环境面板——每个环境的运行状态/在干什么/最近完成；点击切换"
         onClick={() => toggleEnvPanel()}
       >
-        <span className={`es-dot ${envStrip.rows.find((r) => r.current)?.state ?? 'stopped'}`} />
+        <span className={`es-dot ${currentState}`} />
         {envKey ?? '宿主'}
         {runningCount > 0 && <span className="chip-n">·{runningCount}</span>} ▾
       </span>

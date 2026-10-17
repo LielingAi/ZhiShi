@@ -53,6 +53,43 @@ export function gateToast(item: SidebarEnvItem, gate: Exclude<GateResult, { allo
   return '环境未启动，先启动再进入';
 }
 
+/** 2.0 audit P1：环境面板行 → 准入判定。
+ *  面板行（EnvPanelRow）只有 state/id，缺 SidebarEnvItem 的 kind/startable——
+ *  从登记条目补齐后走同一个 accessGate（面板与侧栏一个闸口，不旁路）。
+ *  state='local' 按 run 组处理（本机点击=锚定放行，同侧栏 1.7.8 口径）；
+ *  ssh 恒放行（无启停语义，1.5.10 口径）。startable 推导口径与
+ *  groupSidebar 的已停止行一致：docker/vm 且绑定集合非空。 */
+export interface PanelGateEntryLike {
+  id: string;
+  kind?: string;
+  recipeId?: string;
+  recipeIds?: string[];
+}
+
+export function panelRowGate(
+  entry: PanelGateEntryLike,
+  state: 'running' | 'stopped' | 'local',
+): GateResult {
+  const startable =
+    state === 'stopped' &&
+    (entry.kind === 'docker' || entry.kind === 'vm') &&
+    Boolean(entry.recipeId || (entry.recipeIds && entry.recipeIds.length > 0));
+  return accessGate({
+    key: entry.id,
+    label: entry.id,
+    group: state === 'stopped' ? 'stop' : 'run',
+    detail: '',
+    kind: entry.kind ?? 'env',
+    warn: false,
+    startable,
+  });
+}
+
+/** 面板行拦截文案（gateToast 需要 SidebarEnvItem 签名，这里收窄成只吃结论）。 */
+export function panelGateToast(gate: Exclude<GateResult, { allow: true }>): string {
+  return gateToast({ key: '', label: '', group: 'stop', detail: '', kind: '', warn: false, startable: false }, gate);
+}
+
 // ---------------------------------------------------------------------------
 // 宿主锚显性化 / 启动恢复映射
 // ---------------------------------------------------------------------------

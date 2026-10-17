@@ -37,16 +37,10 @@ type StorageLike = { getItem(k: string): string | null; setItem?(k: string, v: s
  * - 剥尾部斜杠（调用方直接拼 `/api/admin`、`/health`，双斜杠会 404）；
  * - 非法 URL 抛错（调用方翻成 UI 提示，不静默回落本机）。
  */
-export function normalizeServerUrl(raw: string): string {
-  let s = raw.trim();
-  if (!s) throw new Error('empty server URL');
-  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(s)) s = `http://${s}`;
-  s = s.replace(/\/+$/, '');
-  // new URL 只为校验形态；解析结果不回用（保留原始 host 写法——打到 UI
-  // 的 URL 应与用户输入一致）。
-  new URL(s);
-  return s;
-}
+// 2.0 audit D3：归一化实现收敛到 shared（曾与 CLI 逐字镜像）；本文件对外
+// API 不变（re-export），消费方 import 路径零改动。语义：补 scheme/剥斜杠/
+// 非法抛错——解析结果不回用（打到 UI 的 URL 应与用户输入一致）。
+export { normalizeServerUrl } from '../../../shared/connection-url';
 
 /**
  * 读持久化连接设置：缺失/损坏/非法 mode 一律回落本机默认。

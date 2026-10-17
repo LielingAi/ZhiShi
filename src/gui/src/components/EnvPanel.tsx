@@ -14,6 +14,7 @@ import type React from 'react';
 
 import { useGuiStore } from '../store/useGuiStore';
 import { buildEnvPanelRows } from '../model/env-panel';
+import { panelGateToast, panelRowGate } from '../model/access-gate';
 
 export function EnvPanel(): React.JSX.Element | null {
   const open = useGuiStore((s) => s.envPanelOpen);
@@ -21,11 +22,14 @@ export function EnvPanel(): React.JSX.Element | null {
   const running = useGuiStore((s) => s.running);
   const currentEnvKey = useGuiStore((s) => s.currentEnvKey);
   const envRuns = useGuiStore((s) => s.envRuns);
+  const campaigns = useGuiStore((s) => s.campaigns);
+  const lines = useGuiStore((s) => s.lines);
   const closeEnvPanel = useGuiStore((s) => s.closeEnvPanel);
   const setPage = useGuiStore((s) => s.setPage);
   const switchEnv = useGuiStore((s) => s.switchEnv);
   const openEnvDetail = useGuiStore((s) => s.openEnvDetail);
   const loadEnvRuns = useGuiStore((s) => s.loadEnvRuns);
+  const showToast = useGuiStore((s) => s.showToast);
 
   useEffect(() => {
     if (!open) return;
@@ -42,7 +46,10 @@ export function EnvPanel(): React.JSX.Element | null {
 
   if (!open) return null;
 
-  const rows = buildEnvPanelRows(envs, running.map((r) => r.id), currentEnvKey, envRuns);
+  const rows = buildEnvPanelRows(envs, running.map((r) => r.id), currentEnvKey, envRuns, {
+    campaigns,
+    lines,
+  });
 
   return (
     <div
@@ -66,8 +73,21 @@ export function EnvPanel(): React.JSX.Element | null {
             title={r.current ? '当前环境——点击看详情' : '点击切换（忙碌环境转只读查看，原线照跑）'}
             onClick={() => {
               closeEnvPanel();
-              if (r.current) void openEnvDetail(r.id);
-              else void switchEnv(r.id);
+              if (r.current) {
+                void openEnvDetail(r.id);
+                return;
+              }
+              // 2.0 audit P1：停止的环境不绕准入闸（与侧栏一个闸口）——
+              // ssh/本机按设计放行；docker/vm 提示先启动（gateToast 文案）。
+              if (r.state === 'stopped') {
+                const entry = envs.find((e) => e.id === r.id);
+                const gate = panelRowGate(entry ?? { id: r.id }, 'stopped');
+                if (!gate.allow) {
+                  showToast(panelGateToast(gate));
+                  return;
+                }
+              }
+              void switchEnv(r.id);
             }}
           >
             <div className="ep-row-top">

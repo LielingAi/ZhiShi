@@ -1266,8 +1266,15 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     const c = client;
     const state = get();
     if (!c) return;
+    // 战役叙事（audit P3）：campaign 记录无 envKey，靠 lines 的 envKey 映射——
+    // lines 未载时先拉一次（面板打开一次的代价，换"在干什么"完整）。
+    if (state.lines.length === 0) void state.refreshLines();
+    const [runsRes, campRes] = await Promise.all([
+      api.autoRunList(c).catch(() => null),
+      api.campaignList(c, state.workspace ?? undefined).catch(() => null),
+    ]);
     try {
-      const res = (await api.autoRunList(c)) as { success?: boolean; data?: { records?: unknown } };
+      const res = runsRes as { success?: boolean; data?: { records?: unknown } } | null;
       const records = Array.isArray(res?.data?.records) ? res.data.records : [];
       const runs = records
         .filter((r): r is Record<string, unknown> => !!r && typeof r === 'object' && !Array.isArray(r))
@@ -1277,8 +1284,10 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
           envKey: typeof r.envKey === 'string' ? r.envKey : undefined,
           status: typeof r.status === 'string' ? r.status : undefined,
         }));
-      set({ envRuns: runs });
-      void state;
+      const patch: Partial<GuiState> = { envRuns: runs };
+      const camp = campRes as { success?: boolean; data?: { records?: unknown } } | null;
+      if (camp?.success) patch.campaigns = parseCampaignRecords(camp.data?.records);
+      set(patch);
     } catch {
       /* 记录拉取失败不阻塞面板（行内"在干什么"留空即降级） */
     }

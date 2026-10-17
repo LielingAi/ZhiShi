@@ -31,8 +31,11 @@ export type BroadcastFn = (event: string, data: unknown, opts?: { line?: string 
 
 export const REQUEST_DECISION_TOOL_NAME = 'request_decision';
 
-/** 库边界标注(expert_search 语义约定:查不到≠不存在)。 */
-export const NO_BASELINE_MARK = '库中无基准';
+/** 库边界标注(expert_search 语义约定:查不到≠不存在)。
+ *  2.0 audit D4：值收敛到 shared（跨 wire 又被 GUI 以字面量引用）——
+ *  这里 re-export，消费方 import 不变。 */
+export { NO_BASELINE_MARK } from '../../shared/decision-marks';
+import { NO_BASELINE_MARK } from '../../shared/decision-marks';
 
 /**
  * 决策记录(pending 表条目 + wire/持久化 marker 共用形状)。

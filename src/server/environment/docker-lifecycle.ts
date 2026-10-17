@@ -863,3 +863,13 @@ export async function envPs(
   }
   return { ok: true, instances: parseDockerPs(result.stdout) };
 }
+
+/**
+ * 2.0 audit 真链暴露的 rm 幂等缺口：容器已被外部删除（手工 docker rm -f、
+ * 崩溃残留清理）时 `docker rm` 报 "No such container"——对"摘登记"目标而言
+ * 容器不存在=已删除，应视为成功（与 1.5.10「stop 幂等」同一口径）。
+ * 仅此一种错误放行；其余 docker 错误照旧上抛。
+ */
+export function isDockerMissingContainerError(error: string | undefined): boolean {
+  return /no such container/i.test(error ?? '');
+}

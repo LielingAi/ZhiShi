@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { accessGate, gateToast, hostAnchorLabel, initAnchorToGuiKey, selectionToGuiKey } from './access-gate';
+import { accessGate, gateToast, hostAnchorLabel, initAnchorToGuiKey, panelRowGate, selectionToGuiKey } from './access-gate';
 import type { SidebarEnvItem } from './envs';
 
 function item(partial: Partial<SidebarEnvItem>): SidebarEnvItem {
@@ -129,5 +129,30 @@ describe('initAnchorToGuiKey（1.3.2 任务二 #2：chat:init environment 锚）
       }),
     ).toBeNull();
     expect(initAnchorToGuiKey({ kind: 'env', id: '', name: '', type: '' })).toBeNull();
+  });
+});
+
+describe('panelRowGate（2.0 audit P1：环境面板行准入——面板不绕闸）', () => {
+  it('已停止 docker + 有配方 → 拦，可启动', () => {
+    const g = panelRowGate({ id: 'fuzz', kind: 'docker', recipeId: 'fuzz' }, 'stopped');
+    expect(g).toEqual({ allow: false, reason: 'not-started', canStart: true });
+  });
+
+  it('已停止 docker 无配方 / 已停止 vm 无配方 → 拦，不可启动', () => {
+    expect(panelRowGate({ id: 'x', kind: 'docker' }, 'stopped')).toEqual({
+      allow: false, reason: 'not-started', canStart: false,
+    });
+    expect(panelRowGate({ id: 'y', kind: 'vm' }, 'stopped')).toEqual({
+      allow: false, reason: 'not-started', canStart: false,
+    });
+  });
+
+  it('已停止 ssh → 放行（无启动语义，设计口径同侧栏）', () => {
+    expect(panelRowGate({ id: 'h', kind: 'ssh' }, 'stopped').allow).toBe(true);
+  });
+
+  it('运行中 / 本机 → 放行', () => {
+    expect(panelRowGate({ id: 'r', kind: 'docker' }, 'running').allow).toBe(true);
+    expect(panelRowGate({ id: 'local', kind: 'local' }, 'local').allow).toBe(true);
   });
 });

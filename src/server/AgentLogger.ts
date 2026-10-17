@@ -39,10 +39,12 @@ function getLogFilePath(sessionId: string): string {
 }
 
 /**
- * Initialize logger for a new session
- * Does NOT create the file - just prepares the session ID
+ * Initialize (or reset) the per-session log stream.
+ * Does NOT create the file - just prepares the session ID.
+ * 2.0 audit D7：原叫 initLogger，与 logger.ts 的 SSE 广播 initLogger 撞名——
+ * 改名消歧（本函数当前无生产调用方；保留能力面，不删）。
  */
-export function initLogger(sessionId: string): void {
+export function initAgentSessionLog(sessionId: string): void {
   // Close previous stream if exists
   if (logStream) {
     logStream.end();

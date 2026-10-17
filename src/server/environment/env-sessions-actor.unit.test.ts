@@ -29,7 +29,6 @@ import {
   retargetEnvSessionLinesInMap,
   serializeEnvSessionsMap,
   setEnvSessionLine,
-  setEnvSessionLineInMap,
   SHARED_LINE_SEGMENT,
   type EnvSessionsMap,
 } from './env-sessions';

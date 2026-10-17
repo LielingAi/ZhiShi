@@ -18,36 +18,11 @@
  * 纯函数 + 可注入 fetch——单测不碰真实网络（ref.unit.test.ts）。
  */
 
-/** 服务端 LargeValueRef 形状镜像（large-value-store.ts）。 */
-export interface LargeValueRef {
-  kind: 'ref';
-  id: string;
-  sizeBytes: number;
-  mimetype: string;
-  preview: string;
-  expiresAt: number;
-}
-
-const REF_ID_RE = /^[a-f0-9]{8,32}$/;
-
-/** /refs/:id 路由同口径 id 校验（8–32 位小写 hex）。 */
-export function isValidRefId(id: string): boolean {
-  return REF_ID_RE.test(id);
-}
-
-/** `{kind:'ref'}` 占位识别（字段齐全 + id 过路由正则才算）。 */
-export function isLargeValueRef(v: unknown): v is LargeValueRef {
-  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
-  const p = v as Record<string, unknown>;
-  return (
-    p.kind === 'ref' &&
-    typeof p.id === 'string' &&
-    REF_ID_RE.test(p.id) &&
-    typeof p.sizeBytes === 'number' &&
-    typeof p.preview === 'string' &&
-    typeof p.expiresAt === 'number'
-  );
-}
+// 2.0 audit D1：类型/守卫/ID 校验收敛到 shared（曾与 GUI 逐行副本）；
+// 本文件对外 API 不变（re-export），消费方 import 路径零改动。
+export type { LargeValueRef } from '../shared/ref-wire';
+export { isLargeValueRef, isValidRefId } from '../shared/ref-wire';
+import { isLargeValueRef, isValidRefId, type LargeValueRef } from '../shared/ref-wire';
 
 const COLLECT_MAX_DEPTH = 8;
 

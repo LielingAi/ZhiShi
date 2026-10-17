@@ -48,16 +48,11 @@ const REMOTE_HEALTH_TIMEOUT_MS = 2_000;
  * - 剥尾部斜杠（调用方直接拼 `/api/admin`、`/health`，双斜杠会让路由 404）；
  * - 非法 URL 抛错（调用方翻成 CLI 报错，exit 2）。
  */
-export function normalizeServerUrl(raw: string): string {
-  let s = raw.trim();
-  if (!s) throw new Error('empty server URL');
-  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(s)) s = `http://${s}`;
-  s = s.replace(/\/+$/, '');
-  // new URL 只为校验形态；解析结果不回用（保留原始 host 写法，不做 punycode
-  // 等归一——打到 stderr 的 URL 应与用户输入一致）。
-  new URL(s);
-  return s;
-}
+// 2.0 audit D3：实现收敛到 shared（曾与 GUI 逐字镜像）；本文件对外 API
+// 不变（re-export）。语义：补 scheme/剥斜杠/非法抛错——解析结果不回用
+// （打到 stderr 的 URL 应与用户输入一致）。
+export { normalizeServerUrl } from '../shared/connection-url';
+import { normalizeServerUrl } from '../shared/connection-url';
 
 /**
  * 解析远端 server：--server 旗标 > ZHISHI_SERVER 环境变量；都未设返回

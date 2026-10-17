@@ -20,6 +20,8 @@ import type React from 'react';
 
 import { useGuiStore } from '../store/useGuiStore';
 import { optionHotkey, optionHotkeyIndex, parseExpertHit } from '../model/decision';
+// 2.0 audit D4：哨兵串统一走 shared（禁字面量硬编码——此前两处）。
+import { NO_BASELINE_MARK } from '../../../shared/decision-marks';
 
 export function DecisionModal(): React.JSX.Element | null {
   const activeDecisionId = useGuiStore((s) => s.activeDecisionId);
@@ -107,14 +109,14 @@ export function DecisionModal(): React.JSX.Element | null {
           <div className="dc-experts">
             <div className="dc-section-label">专家依据</div>
             {decision.expertHits.length === 0 && (
-              <div className="dc-hit no-baseline">⚠ {`库中无基准`}</div>
+              <div className="dc-hit no-baseline">⚠ {NO_BASELINE_MARK}</div>
             )}
             {decision.expertHits.map((line, i) => {
               const hit = parseExpertHit(line);
               if (hit.kind === 'no-baseline') {
                 return (
                   <div className="dc-hit no-baseline" key={i}>
-                    ⚠ 库中无基准
+                    ⚠ {NO_BASELINE_MARK}
                   </div>
                 );
               }

@@ -111,7 +111,8 @@ import { getPiAgentState, envSwitchBlocker, getEnvSessionBinding, getPiLineMissi
 import { isMissionKind, MISSION_KINDS } from '../shared/mission';
 import { loadArchive } from './loop/archive';
 import { envKeyForSelection, getEnvSessionLine, loadEnvSessionsMap, removeEnvSessionsForEnvId, renameEnvSessionEnvId } from './environment/env-sessions';
-import { canMergeEntries } from './environment/env-merge';
+import { planMergeEntries } from './environment/env-merge';
+import { selectPruneCandidates } from './environment/env-prune';
 import { canReadLine } from './auth/line-access';
 import { getLineOwnership } from './loop/line-ownership';
 import { resolveLoopModel } from './loop/pi-provider';
@@ -190,6 +191,7 @@ import {
 } from './environment/recipes';
 import {
   dockerContainerRunning,
+  isDockerMissingContainerError,
   envDown,
   envImages,
   envPs,
@@ -3615,7 +3617,12 @@ export async function handleEnvironmentRm(payload: {
     }
     if (probe.ok) {
       const rm = await rmDockerOpsImpl.rmContainer(container);
-      if (!rm.ok) return { success: false, error: rm.error };
+      // 2.0 audit 真链暴露：容器已被外部删除（手工 docker rm -f 等）时 daemon
+      // 报 No such container——对摘登记而言即已删，视为成功（rm 幂等补齐，
+      // 与 1.5.10「stop 幂等」同口径）；其余错误照旧原样返回。
+      if (!rm.ok && !isDockerMissingContainerError(rm.error)) {
+        return { success: false, error: rm.error };
+      }
     }
     return unregisterEntry();
   }
@@ -3691,22 +3698,9 @@ export async function handleEnvironmentMerge(payload: {
 }): Promise<AdminResponse> {
   const keepId = typeof payload.keepId === 'string' ? payload.keepId.trim() : '';
   const dropId = typeof payload.dropId === 'string' ? payload.dropId.trim() : '';
-  if (!keepId || !dropId) {
-    return { success: false, error: 'Missing required argument: <keepId, dropId>' };
-  }
-  if (keepId === dropId) {
-    return { success: false, error: 'keepId 与 dropId 相同——合并需要两个不同条目' };
-  }
-  if (keepId === LOCAL_ENV_ID || dropId === LOCAL_ENV_ID) {
-    return { success: false, error: `环境 "${LOCAL_ENV_ID}" 是内置本机条目，不可参与合并` };
-  }
-  const entries = listEnvironments(loadConfig());
-  const keep = findEnvironmentEntry(entries, keepId);
-  const drop = findEnvironmentEntry(entries, dropId);
-  if (!keep) return { success: false, error: `未找到环境 "${keepId}"（zhishi env list 查看已有环境）` };
-  if (!drop) return { success: false, error: `未找到环境 "${dropId}"（zhishi env list 查看已有环境）` };
-  const verdict = canMergeEntries(keep, drop);
-  if (!verdict.ok) return { success: false, error: verdict.error };
+  // 计划器纯函数（env-merge.ts，单测覆盖）：参数/内置条目/存在性/双守卫。
+  const plan = planMergeEntries(listEnvironments(loadConfig()), keepId, dropId, LOCAL_ENV_ID);
+  if (!plan.ok) return { success: false, error: plan.error };
   // 映射迁移：drop 的线映射改挂 keep（既有 keep 映射优先，drop 行丢弃）。
   await renameEnvSessionEnvId(dropId, keepId);
   try {
@@ -3748,32 +3742,35 @@ export async function handleEnvironmentPruneList(): Promise<AdminResponse> {
       .filter((r) => r.status === 'running')
       .map((r) => r.envKey),
   );
-  const candidates: Array<Record<string, unknown>> = [];
+  const occupiedIds = new Set(entries.filter((e) => envOccupancy(e.id)).map((e) => e.id));
+  // 探活采样（audit P3：vm 列表一次取全，不再每候选 spawn）——失败记 unknown，
+  // selector 按 fail-closed 排除。
+  const probe: Record<string, 'running' | 'stopped' | 'unknown'> = {};
+  const vmxSet = new Set<string>();
+  let vmPsOk = false;
+  const vmEntries = entries.filter((e) => e.kind === 'vm');
+  if (vmEntries.length > 0) {
+    const ps = await vmEnvPs();
+    vmPsOk = ps.ok;
+    if (ps.ok) for (const v of ps.vmxes) vmxSet.add(normalizeVmxPath(v));
+  }
   for (const entry of entries) {
-    if (entry.id === LOCAL_ENV_ID) continue;
-    if (entry.kind === 'ssh') continue;
-    const ref = `env:${entry.id}`;
-    if (usedEnvRefs.has(ref)) continue;
-    if (activeRunEnvs.has(ref)) continue;
-    if (envOccupancy(entry.id)) continue;
     if (entry.kind === 'docker' && entry.container) {
       const p = await rmDockerProbeImpl(entry.container);
-      if (!p.ok || p.running) continue; // 探测失败/在跑 → 不删
+      probe[entry.id] = !p.ok ? 'unknown' : p.running ? 'running' : 'stopped';
     } else if (entry.kind === 'vm') {
       const vmx = resolveVmxForEntry(entry, { templates: loadConfig().vmTemplates });
-      if (!vmx.ok) continue; // 解析不出 = 不可知 → 不删
-      const ps = await vmEnvPs();
-      if (!ps.ok) continue;
-      if (ps.vmxes.some((v) => normalizeVmxPath(v) === normalizeVmxPath(vmx.vmx))) continue;
+      probe[entry.id] = !vmPsOk || !vmx.ok
+        ? 'unknown'
+        : vmxSet.has(normalizeVmxPath(vmx.vmx))
+          ? 'running'
+          : 'stopped';
     }
-    candidates.push({
-      id: entry.id,
-      name: entry.name ?? entry.id,
-      kind: entry.kind,
-      detail: entry.container ?? entry.vmName ?? '',
-      reason: '无使用痕迹（无分线映射 / 无活跃任务）+ 已停止',
-    });
   }
+  const candidates = selectPruneCandidates(
+    { entries, usedEnvRefs, activeRunEnvs, occupiedIds, probe },
+    LOCAL_ENV_ID,
+  );
   return { success: true, data: { candidates } };
 }
 /** `environment/prune/apply { ids }` — 逐个走 handleEnvironmentRm 的完整删除
@@ -3855,6 +3852,20 @@ export async function handleEnvironmentXfer(payload: {
   try {
     const got = await takeFileFromEnv(from, fromPath, tmpDir);
     if (!got.ok) return { success: false, error: `取回失败：${got.error}` };
+    // 2.0 audit P2：v1 仅传文件——目录在不同 kind 下语义不一致（docker cp
+    // 会静默嵌套拷贝、scp/vmrun 直接报错），统一在源侧显式拒绝。
+    let stat: ReturnType<typeof statSync>;
+    try {
+      stat = statSync(got.savedPath);
+    } catch {
+      return { success: false, error: '取回产物不存在（传输通道异常）' };
+    }
+    if (!stat.isFile()) {
+      return {
+        success: false,
+        error: `目录传输暂不支持（v1 仅文件）："${fromPath}" 取回的是目录——请打包后传（env_exec tar）或逐个文件传`,
+      };
+    }
     const put = await putFileToEnv(to, got.savedPath, toPath);
     if (!put.ok) return { success: false, error: `传入失败：${put.error}` };
     const bytes = statSync(got.savedPath).size;

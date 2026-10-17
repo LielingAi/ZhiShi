@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { canMergeEntries, mergeNameOf, sameUnderlyingTarget } from './env-merge';
+import { canMergeEntries, mergeNameOf, planMergeEntries, sameUnderlyingTarget } from './env-merge';
 
 describe('mergeNameOf / sameUnderlyingTarget', () => {
   it('name 优先、trim + 小写；缺 name 回落 id', () => {
@@ -81,5 +81,30 @@ describe('canMergeEntries（双守卫）', () => {
     );
     expect(v.ok).toBe(false);
     expect(v.error).toContain('同一底层目标');
+  });
+});
+
+describe('planMergeEntries（合并计划器：能不能合从怎么合里剥离）', () => {
+  const E = (id: string, name: string, container?: string) => ({ id, kind: 'docker', name, container });
+  const entries = [E('fuzz', 'fuzz', 'new-ct'), E('fuzz-old', 'fuzz', 'old-ct'), E('other', 'other', 'x')];
+
+  it('正常同名不同目标 → ok，keep/drop 定位', () => {
+    const p = planMergeEntries(entries, 'fuzz', 'fuzz-old', 'local');
+    expect(p.ok).toBe(true);
+    expect(p.keep?.id).toBe('fuzz');
+    expect(p.drop?.id).toBe('fuzz-old');
+  });
+
+  it('参数缺失/相等/内置条目 → 各自错误', () => {
+    expect(planMergeEntries(entries, '', 'x', 'local').error).toContain('Missing');
+    expect(planMergeEntries(entries, 'fuzz', 'fuzz', 'local').error).toContain('相同');
+    expect(planMergeEntries(entries, 'local', 'fuzz', 'local').error).toContain('内置本机条目');
+  });
+
+  it('不存在 → 未找到；不同名 → 拒绝合并；同目标 → 引导逐个 rm', () => {
+    expect(planMergeEntries(entries, 'ghost', 'fuzz', 'local').error).toContain('未找到环境 "ghost"');
+    expect(planMergeEntries(entries, 'fuzz', 'other', 'local').error).toContain('不同名');
+    const same = [E('a', 'dup', 'ct'), E('b', 'dup', 'ct')];
+    expect(planMergeEntries(same, 'a', 'b', 'local').error).toContain('同一底层目标');
   });
 });

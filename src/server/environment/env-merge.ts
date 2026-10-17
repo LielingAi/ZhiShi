@@ -66,3 +66,45 @@ export function canMergeEntries(keep: MergeEntryLike, drop: MergeEntryLike): Mer
   }
   return { ok: true };
 }
+
+// ---------------------------------------------------------------------------
+// 合并计划器（2.0 audit：handler 接线可测化——把"能不能合"从"怎么合"里剥离）
+// ---------------------------------------------------------------------------
+
+/** 合并计划：ok=true 时 keep/drop 已定位；error 文案与 handler 逐字一致。 */
+export interface MergePlan {
+  ok: boolean;
+  error?: string;
+  keep?: MergeEntryLike;
+  drop?: MergeEntryLike;
+}
+
+/**
+ * 合并前置计划（含 id 空/相等、内置条目、存在性、双守卫）。
+ * 纯函数——handler 只管执行动作（映射迁移 + 摘登记）。
+ * @param localEnvId 内置本机条目 id（registry.LOCAL_ENV_ID；参数注入避免
+ *   env-merge 依赖 registry 模块，单测无需 mock 配置层）。
+ */
+export function planMergeEntries(
+  entries: MergeEntryLike[],
+  keepId: string,
+  dropId: string,
+  localEnvId: string,
+): MergePlan {
+  if (!keepId || !dropId) {
+    return { ok: false, error: 'Missing required argument: <keepId, dropId>' };
+  }
+  if (keepId === dropId) {
+    return { ok: false, error: 'keepId 与 dropId 相同——合并需要两个不同条目' };
+  }
+  if (keepId === localEnvId || dropId === localEnvId) {
+    return { ok: false, error: `环境 "${localEnvId}" 是内置本机条目，不可参与合并` };
+  }
+  const keep = entries.find((e) => e.id === keepId);
+  if (!keep) return { ok: false, error: `未找到环境 "${keepId}"（zhishi env list 查看已有环境）` };
+  const drop = entries.find((e) => e.id === dropId);
+  if (!drop) return { ok: false, error: `未找到环境 "${dropId}"（zhishi env list 查看已有环境）` };
+  const verdict = canMergeEntries(keep, drop);
+  if (!verdict.ok) return { ok: false, error: verdict.error };
+  return { ok: true, keep, drop };
+}
