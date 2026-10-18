@@ -84,6 +84,7 @@ import {
 } from '../model/auto-run';
 import {
   applyArchiveChanged as applyArchiveChangedPayload,
+  isArchiveSnapshotForLine,
   type ArchiveSnapshot,
 } from '../model/archive';
 import { reduceSseEvent } from '../model/reducer';
@@ -387,6 +388,10 @@ export interface GuiState {
   // 在写档案（交互线或 auto-run 线——auto-run 运行中交互被锁,互斥成立）,
   // archive:changed 整包覆盖即正确;chat:init 重连用 archive/list 重锚。
   archive: ArchiveSnapshot | null;
+  /** 档案锚线（2.0.2）：档案视图归属的线 id——跨线 archive:changed 快照一律
+   *  丢弃（GUI 全量订阅；busy 安全切换后旧线仍在写档案，不过滤会被旧线
+   *  快照反复盖掉 = 「切环境档案丢失」）。 */
+  archiveSessionId: string | null;
   /** 看板高亮实体（流内「→V3」徽章点进来的定位;null = 无高亮）。 */
   archiveHighlightId: string | null;
   /** 跳流目标：档案锚 → 流内 user 消息 id（一次性信号——Stream 按 nonce
@@ -785,6 +790,7 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
 
   // 1.4.4 研究档案（分屏看板）
   archive: null,
+  archiveSessionId: null,
   archiveHighlightId: null,
   archiveJumpTarget: null,
 
@@ -1194,12 +1200,6 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
     if (!plan.changed) return; // 目标线已是激活线
     const res = await api.environmentSelect(c, state.workspace, { kind: 'env', id: key });
     if (!res.success) {
-      // 2.0-M2 注视语义：忙碌环境不能切执行现场（服务端「响应进行中，先 Esc」），
-      // 但注视切换永远允许——改走只读查看（不触引擎，原线继续跑，Esc 回无损）。
-      if (/进行中/.test(res.error ?? '')) {
-        await state.peekEnv(key);
-        return;
-      }
       state.showToast(`切换失败：${res.error ?? '未知错误'}`);
       return;
     }
@@ -2146,8 +2146,11 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
 
   // ── 1.4.4 研究档案（分屏看板） ─────────────────────────────────────
 
-  /** archive:changed 整包快照（SSE 事件;单槽设计——活跃线互斥,整包覆盖正确）。 */
+  /** archive:changed 整包快照（2.0.2：按锚线过滤——GUI 是全量订阅，旧线
+   *  （busy 安全切换后还在跑）的档案事件照样到达；不过滤会被旧线快照反复
+   *  盖掉 = 「切环境档案丢失」。payload.sessionId ≠ 锚线 → 丢弃。）。 */
   applyArchiveChanged(payload: unknown) {
+    if (!isArchiveSnapshotForLine(get().archiveSessionId, payload)) return;
     set({ archive: applyArchiveChangedPayload(payload) });
   },
 
@@ -2165,8 +2168,11 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
           ? get().autoRun!.loopSessionId
           : undefined);
       const res = await api.fetchArchiveList(c, sid ? { sessionId: sid } : {});
-      if (res.ok && res.archive) set({ archive: res.archive });
-      else if (res.ok) set({ archive: null });
+      // 2.0.2 立锚：显式 sid > 回包 sessionId（服务端按调用方当前线解析）>
+      // null。锚是跨线快照过滤的唯一事实源。
+      const anchorId = sid ?? res.archive?.sessionId ?? null;
+      if (res.ok && res.archive) set({ archive: res.archive, archiveSessionId: anchorId });
+      else if (res.ok) set({ archive: null, archiveSessionId: anchorId });
       // 失败静默——档案缺失不阻塞会话（零注入语义同侧）。
     } catch {
       /* 静默 */

@@ -239,3 +239,16 @@ export const FINDING_TYPE_LABEL: Record<string, string> = {
   constraint: '约束',
   fact: '事实',
 };
+
+/**
+ * 2.0.2：archive:changed 快照是否归属当前档案锚线。
+ * GUI 是全量订阅（不带线参数）——busy 安全切换后旧线仍在跑、仍在写档案，
+ * 它的快照事件照样到达；不过滤会被旧线快照反复盖掉（「切环境档案丢失」）。
+ * 锚未立（null）或 payload 无 sessionId → 不接（等 chat:init 的 loadArchive
+ * 立锚，避免错基线）。纯函数：store 的 applyArchiveChanged 唯一事实源。
+ */
+export function isArchiveSnapshotForLine(anchor: string | null, payload: unknown): boolean {
+  if (!anchor) return false;
+  const p = payload as { sessionId?: unknown } | null;
+  return !!p && typeof p.sessionId === 'string' && p.sessionId === anchor;
+}

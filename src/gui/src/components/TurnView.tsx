@@ -171,10 +171,17 @@ export function TurnView({ turn }: { turn: TurnBlock }): React.JSX.Element {
         </div>
       )}
 
-      {/* 亮顶：结论聚合（V4-S7：markdown 双轨渲染——纯文本维持 pre-wrap 兜底） */}
+      {/* 亮顶：结论聚合（V4-S7 双轨）。
+          2.0.2 假死修复：流式期降级纯文本——每个 chunk 对全文重跑 Markdown
+          解析的成本超线性（实测 20KB=145ms/50KB=467ms，chunk 间隔 30~100ms
+          必积压），流式态用 pre-wrap 线性追加；定格时才做一次 Markdown 渲染。 */}
       {hasConclusion && (
         <div className={`conclusion-hl ${turn.conclusionStreaming ? 'streaming' : ''}`}>
-          <Markdown text={turn.conclusion} />
+          {turn.conclusionStreaming ? (
+            <div className="md md-plain">{turn.conclusion}</div>
+          ) : (
+            <Markdown text={turn.conclusion} />
+          )}
           {turn.conclusionStreaming && <span className="cursor">▌</span>}
         </div>
       )}

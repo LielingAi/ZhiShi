@@ -107,7 +107,7 @@ import { augmentedProcessEnv, resolveCommand } from './utils/env-utils';
 import { resolve } from 'path';
 import { connect } from 'net';
 import { setAgents } from './agent-session';
-import { getPiAgentState, envSwitchBlocker, getEnvSessionBinding, getPiLineMission, setPiLineMission, switchEnvSession, resolveSessionEnv, resolveSessionEnvKey } from './loop/chat-engine';
+import { getPiAgentState, getEnvSessionBinding, getPiLineMission, setPiLineMission, switchEnvSession, resolveSessionEnv, resolveSessionEnvKey } from './loop/chat-engine';
 import { isMissionKind, MISSION_KINDS } from '../shared/mission';
 import { loadArchive } from './loop/archive';
 import { envKeyForSelection, getEnvSessionLine, loadEnvSessionsMap, removeEnvSessionsForEnvId, renameEnvSessionEnvId } from './environment/env-sessions';
@@ -4454,9 +4454,9 @@ export async function handleEnvironmentSelect(payload: {
   if (!workspace) return { success: false, error: 'Missing required argument: <workspace>' };
   const validated = validateEnvSelection(payload.selection);
   if (!validated.ok) return { success: false, error: validated.error };
-  // 1.1.6 #4：busy 拒绝（仅当目标是本 sidecar 引擎的 workspace；其余 workspace 只落盘）
-  const blocker = envSwitchBlocker(workspace);
-  if (blocker) return { success: false, error: blocker };
+  // 2.0.2：busy 不再前置拒绝——switchEnvSession 走 busy 安全路径（P3b 多引擎：
+  // 目标线取/建独立引擎，原引擎原地继续跑）。失败仅余「目标线自己也在跑」
+  // 自闸，沿用下方「选定已落盘、重选即愈合」口径。
 
   // R3 探活：选中目标是 SSH 通道条目时先验通（失败不落盘——坏环境选定 =
   // 整个会话废掉，轨迹实证 mtoeh7nt）。内置本机条目（kind='local'）宿主

@@ -2571,6 +2571,16 @@ const engines = new Map<string, ChatEngine>();
 /** per-actor 活跃线指针(actor 名 → loopSessionId)。缺省解析见
  *  getActiveLoopSessionIdForActor(指针 → 环境分线映射按 actor → 启动线)。 */
 const activeLines = new Map<string, string>();
+/** 测试专用：清空引擎注册表与 per-actor 活跃指针并重铸启动引擎——
+ * P3b 多引擎后，用例里经 busy 安全切换等路径创建的额外线引擎不再随
+ * initPiChatEngine 泄漏到下一个用例（测试卫生）。 */
+export function __resetEngineRegistryForTests(): void {
+  engines.clear();
+  activeLines.clear();
+  bootEngine = new ChatEngine();
+  engines.set(bootEngine.getPiSessionId(), bootEngine);
+}
+
 /** 启动引擎(initPiChatEngine 初始化的那台;注册表换键时随之重指)。 */
 let bootEngine = new ChatEngine();
 engines.set(bootEngine.getPiSessionId(), bootEngine);
@@ -2873,10 +2883,29 @@ export function envSwitchBlocker(workspace: string): string | null {
 }
 
 export async function switchEnvSession(workspace: string, envKey: string): Promise<{ ok: boolean; error?: string }> {
-  const engine = getActiveEngine();
-  const result = await engine.switchEnvSession(workspace, envKey);
-  syncEngineRegistry(engine);
-  if (result.ok) activeLines.set(currentActor().name, engine.getPiSessionId());
+  const actor = currentActor().name;
+  const active = getActiveEngine();
+  if (active.getPiAgentState().sessionState !== 'running') {
+    // idle：迁移式老路径（1.1.6 起语义逐字节不变——引擎数不增殖）。
+    const result = await active.switchEnvSession(workspace, envKey);
+    syncEngineRegistry(active);
+    if (result.ok) activeLines.set(actor, active.getPiSessionId());
+    return result;
+  }
+  // 2.0.2 busy 安全切换：P3b 起服务端本就是多引擎（engines 按 loopSessionId
+  // 并存、busy 永不回收）——busy 闸挡的一直是「迁移式实现」本身（引擎=线绑定，
+  // 迁移=打断在跑 turn），不是多线能力。修正：不迁移在跑的活跃引擎，目标线
+  // 取/建独立引擎接管，活跃指针指过去；原引擎原地继续跑。目标线若自己也在
+  // 跑（它自己的 turn），其引擎 switchEnvSession 自闸拒绝——不踩别人的活。
+  if (!registryAgentDir || normalizeWorkspaceKey(workspace) !== normalizeWorkspaceKey(registryAgentDir)) {
+    return { ok: true }; // 别的 workspace 的选定：本实例不动（同老口径）
+  }
+  const line = getEnvSessionLine(loadEnvSessionsMap(), registryAgentDir, envKey, { actor });
+  const target = getOrCreateEngine(line?.loopSessionId ?? newLoopSessionId());
+  const result = await target.switchEnvSession(workspace, envKey);
+  if (!result.ok) return result;
+  syncEngineRegistry(target);
+  activeLines.set(actor, target.getPiSessionId());
   return result;
 }
 

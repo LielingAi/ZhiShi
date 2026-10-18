@@ -139,3 +139,14 @@ describe('1.4.8 链式投影（研究线派生 + 孤儿区 + 反证计数）', (
     expect(archiveOrphans(null)).toEqual({ evidence: [], findings: [] });
   });
 });
+
+describe('isArchiveSnapshotForLine（2.0.2 跨线快照过滤）', () => {
+  it('锚匹配才接；错线/无锚/无 sessionId 一律丢弃', async () => {
+    const { isArchiveSnapshotForLine } = await import('./archive');
+    expect(isArchiveSnapshotForLine('ls-a', { sessionId: 'ls-a' })).toBe(true);
+    expect(isArchiveSnapshotForLine('ls-a', { sessionId: 'ls-b' })).toBe(false); // 旧线快照盖新线 = 档案丢失根因
+    expect(isArchiveSnapshotForLine(null, { sessionId: 'ls-a' })).toBe(false); // 锚未立不接
+    expect(isArchiveSnapshotForLine('ls-a', {})).toBe(false);
+    expect(isArchiveSnapshotForLine('ls-a', null)).toBe(false);
+  });
+});

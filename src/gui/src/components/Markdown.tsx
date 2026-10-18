@@ -15,11 +15,12 @@
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { memo } from 'react';
 import type React from 'react';
 
 import { looksLikeMarkdown } from '../model/markdown';
 
-export function Markdown({ text }: { text: string }): React.JSX.Element {
+function MarkdownInner({ text }: { text: string }): React.JSX.Element {
   if (!looksLikeMarkdown(text)) {
     return <div className="md md-plain">{text}</div>;
   }
@@ -67,3 +68,10 @@ export function Markdown({ text }: { text: string }): React.JSX.Element {
     </div>
   );
 }
+
+/**
+ * 2.0.2 假死修复：memo 化——思考块/工具事件/其他 store 更新导致的重渲染里
+ * 正文没变时不再触发全文重解析（ReactMarkdown 解析是渲染层最贵的操作，
+ * 实测 20KB≈145ms）。
+ */
+export const Markdown = memo(MarkdownInner);

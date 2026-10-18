@@ -237,6 +237,7 @@ import {
   getPiSessionId,
   getPiSystemInitInfo,
   initPiChatEngine,
+  __resetEngineRegistryForTests,
   injectPiDecision,
   INTERRUPTED_TURN_NOTE,
   invokePiSession,
@@ -322,6 +323,9 @@ function gateFirstTurn() {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  // P3b 多引擎卫生：先清注册表与活跃指针，再按老流程重置（2.0.2 busy 安全
+  // 切换会用例内创建额外线引擎——不清理会泄漏给下一个用例）。
+  __resetEngineRegistryForTests();
   bgRegistryListMock.mockReturnValue([]);
   envSessionsData.clear();
   lineOwnershipData.clear();
@@ -641,18 +645,25 @@ describe('会话跨重启(1.1.6 #4 env-aware:按当前环境分线映射续接)'
 });
 
 describe('环境分线切换(1.1.6 #4:switchEnvSession/envSwitchBlocker)', () => {
-  it('busy 拒绝(rewind/fork 同口径);别的 workspace 不拦', async () => {
+  it('busy 安全切换（2.0.2）：不迁移在跑引擎——目标线独立引擎接管，原 turn 跑完', async () => {
     expect(envSwitchBlocker('E:/ws')).toBeNull();
     expect(envSwitchBlocker('D:/other')).toBeNull();
     const release = gateFirstTurn();
     await sendPiChatMessage({ text: 'one' });
+    const hostLine = getPiSessionId();
     expect(envSwitchBlocker('E:/ws')).toContain('进行中');
-    expect(envSwitchBlocker('D:/other')).toBeNull(); // 别的 workspace 的选定与本引擎无关
+    // 无映射目标环境：busy 也切换成功——新线空回放、活跃指针已指过去
     const r = await switchEnvSession('E:/ws', 'env:pwn-vm');
-    expect(r.ok).toBe(false);
-    expect(r.error).toContain('进行中');
+    expect(r.ok).toBe(true);
+    expect(getPiSessionId()).not.toBe(hostLine);
+    expect(getPiMessages()).toEqual([]);
     release();
-    await waitTurnSettled();
+    // 等旧线 turn 真收尾：活跃指针已指到新线，通用 waitTurnSettled 只看活跃
+    // 引擎（新线恒 idle 会立即返回）——这里轮询旧线的落盘调用（user 起跑 +
+    // assistant 收尾 ≥2 次）。
+    await vi.waitFor(() => {
+      expect(appendLoopMessagesMock.mock.calls.filter((c) => c[0] === hostLine).length).toBeGreaterThanOrEqual(2);
+    });
   });
 
   it('闲时切线:有映射 → 接线(回放重建 + 旧线回填不丢 + 续跑写目标线)', async () => {
