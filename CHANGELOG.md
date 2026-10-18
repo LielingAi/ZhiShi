@@ -18,6 +18,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-10-18
+
+> **三大实机问题修复**：任务假死（渲染层）、busy 切环境被拒（引擎层）、切环境档案丢失（订阅层）。每条带实测数据/单测/真机验证。
+
+### Fixed
+
+- **GUI 跑任务假死**：流式期间每个 chunk 对全文重跑 Markdown 解析，成本超线性（实测 20KB=145ms/50KB=467ms，chunk 间隔 30~100ms 必积压）。修复：流式期降级纯文本逐字追加（线性），定格瞬间才做一次 Markdown 渲染；`Markdown` memo 化（思考块等无关更新不再触发重解析）
+- **busy 时无法切环境**（「环境还没有线」死胡同）：busy 闸本是"迁移式切换实现"的护垫，不是多线限制（P3b 起服务端本就是多引擎）。修复：`switchEnvSession` busy 安全路径——不迁移在跑的引擎，目标线取/建独立引擎接管，活跃指针指过去，原 turn 原地跑完；目标线自跑时自闸。单测验证：切换成功 + 旧线 turn 不被打断正常收尾
+- **切换环境研究档案丢失**：GUI 全量订阅下旧线（busy 安全切换后仍在跑）的 `archive:changed` 快照推过来覆盖新线档案视图。修复：档案锚线（`loadArchive` 立锚，`isArchiveSnapshotForLine` 纯函数过滤跨线快照，+5 用例）
+
+### 验证
+
+vitest 2870 通过；chat-engine 117/117（含 busy 安全切换新语义用例 + 引擎注册表测试卫生）；tsc/全仓 lint 0；Markdown 解析基准实测（5KB=37ms → 流式期零解析）。
+
+> 签名说明同前：本版未附 Tauri updater 签名，请手动下载安装。
+
 ## [2.0.1] - 2026-10-17
 
 > **全链路审计修复批**（依据 `docs/design/audit-2026-10-17.md`：291 文件体检 + 逐条复核 + 真链验证）。修复 15 项 + 真链新发现 1 项全部闭环，门禁全程零失败。
