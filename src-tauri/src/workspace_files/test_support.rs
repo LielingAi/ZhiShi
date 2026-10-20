@@ -11,8 +11,6 @@
 //!
 //! Each test cleans up its own directory; we don't share state across tests.
 
-#![cfg(test)]
-
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 

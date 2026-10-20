@@ -592,7 +592,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let canonical_root = fs::canonicalize(&root).unwrap();
         let child = canonical_root.join("baoyu-imagine").join("SKILL.md");
-        assert!(is_trusted_managed_target(&child, &[canonical_root.clone()]));
+        assert!(is_trusted_managed_target(&child, std::slice::from_ref(&canonical_root)));
         // Sibling-of-prefix must NOT match — `starts_with` works on path
         // components, so `/tmp/trusted` does not pretend to contain
         // `/tmp/trusted_evil` even though the string starts the same.

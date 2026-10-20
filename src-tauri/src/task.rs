@@ -2374,7 +2374,7 @@ mod tests {
         });
     }
 
-    fn sample_direct_input(ws: &PathBuf) -> TaskCreateDirectInput {
+    fn sample_direct_input(ws: &Path) -> TaskCreateDirectInput {
         TaskCreateDirectInput {
             name: "升级 openclaw lark 适配器".to_string(),
             executor: TaskExecutor::Agent,
