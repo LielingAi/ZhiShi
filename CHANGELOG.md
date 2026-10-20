@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.4] - 2026-10-20
+
+> **只密码设备可接入**：推不进公钥的嵌入式/网络设备/老服务器（密码是唯一凭据）登记即用，D-T4「密码本体不落盘」红线不动。
+
+### Added
+
+- **ssh 密码执行通道（passwordRef 消费链）**：环境条目无 keyPath 有 passwordRef（`env:VAR` 形态）即走密码认证——win32 宿主 plink `-pw` + hostkey 钉指纹（复用密钥引导同一套纪律），posix 宿主 `SSH_ASKPASS_REQUIRE=force`（密码经子进程环境注入，不进 argv/日志）。动机：2026-09-06 砍掉密码持久化主链的前提是「推不进公钥的设备不存在」，现实已推翻；方案按当初被否的「方案二」的引用式变体落地——D-T4 不保管密码本体的原则不变（与断网 VM 的 guest 通道同口径扩到全 ssh）。语义：与 keyPath 同给时**密钥优先**（不做隐式回退）；v1 仅命令执行可用
+- **secrets.env 集中供值**：`<数据目录>/secrets.env`（`KEY=VALUE` 每行一个，建议 chmod 600）sidecar 启动自动加载进进程环境——多台只密码设备一行一个变量、条目各指各的；同名真实环境变量优先；权限松于 600 告警。团队模式天然友好：passwordRef 在执行机（大脑）解析，成员不碰密码
+- **入口**：CLI `env add --password-ref`（给了引用即跳过密钥引导密码询问）；GUI 新建向导「手动 SSH」步新增密码引用字段 + 确认页回显引用（引用不是秘密）；zhishi-cli SKILL.md 同步 + SYSTEM_SKILLS_VERSION bump
+- **边界护栏**：文件传输（put/get/extract）与终端 attach 对密码条目**明确报错**（不挂起在 BatchMode/密码提示上），需要时先配 keyPath（可 `--password` 现场推公钥自动配置）
+
+### Fixed
+
+- 无（本版纯新增面；密钥/agent 路径逐字节不变，23 个新单测 + 全量 2902 绿 + typecheck/eslint 干净，characterization test 抓出并修复 askpass 分支漏装 argv 的真 bug）
+
 ## [2.0.3] - 2026-10-20
 
 > **团队大脑成员零配置**：远端 GUI 直连大脑，不再需要手工 SSH 隧道。
