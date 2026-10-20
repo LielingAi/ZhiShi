@@ -15,6 +15,7 @@
 - [x] **2.0.2 实机三修**：任务假死（流式纯文本 + Markdown memo）、busy 安全切环境（引擎不迁移，P3b 能力兑现）、档案锚线（跨线快照过滤）
 - [~] **2.0.3 团队大脑内建中继**（remote relay：`ssh -L` 应用内建化，成员 GUI 零配置直连大脑）——设计 `docs/design/2.0.3-remote-relay.md`；relay.cjs + 前端本机全绿，Rust 侧待 CI 编译验证
 - [~] **2.0.4 只密码设备主链**（passwordRef + plink/SSH_ASKPASS 密码执行通道 + secrets.env 集中供值）——动机：2026-09-06 砍「方案二」的前提是「推不进公钥的设备不存在」，现实已推翻（嵌入式/网络设备/老服务器）；D-T4「密码本体不落盘」红线不动（引用式消费，与断网 VM 的 guest 通道同口径扩到全 ssh）；v1 边界：文件传输/attach 明确报错，cred/op 引用形态不做
+- [~] **2.0.5 团队模式实机三连修**（WREN 实机排障：一直连接中/切不回本机/server 自杀）——根因：①GUI 启动/退出清扫按 /zhishi/nodejs/ 误杀手工起的 LAN 大脑（kill_stale_processes 加 exclude + brain serve 恒带 --zhishi-brain 标记）②auth 闸对回环无豁免而本机模式不带 token=401 死锁（本机模式携带连接设置 token）③SSE 401/403 静默重试（立即上抛落 failed）；外加 `zhishi brain serve` 一等命令（内置 node 相对定位 server-dist，双布局）
 
 ## 1.8.0 —— Windows 研究配方族（office-lab / browser-lab / win-kernel）（立项，进行中）
 

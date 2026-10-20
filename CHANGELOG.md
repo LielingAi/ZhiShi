@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.5] - 2026-10-20
+
+> **团队模式实机缺陷三连修**：大脑被清扫误杀 / 本机模式 auth 死锁 / 鉴权失败静默转圈——团队模式由此真正可用。
+
+### Fixed
+
+- **大脑「自己会挂」= GUI 清扫误杀**：应用启动/退出/更新三处 `kill_stale_processes` 按 cmdline 模式 `/zhishi/nodejs/` 清孤儿，手工起的 LAN 大脑（同款内置 node 路径）被当孤儿杀掉——每重启一次 GUI 死一次。清扫器新增 `exclude` 豁免（命中标记的进程及其子树不碰），三处 call site 全部接入
+- **团队服务器机「切不回本机」**：auth 闸对回环无豁免 + 本机模式客户端不带 token = 401 死锁「一直连接中」。本机模式现携带连接设置里的同一 token（auth 未启用时多一个请求头无害）——本机/团队随切随用
+- **鉴权失败静默转圈**：SSE 遇 401/403 无限退避重试，UI 永远「连接中」无报错。现立即上抛转「连接失败 + 真实状态码」，排障一眼定位
+
+### Added
+
+- **`zhishi brain serve` 一等命令**：`zhishi brain serve --host 10.0.93.49 --port 7411 --agent-dir <工作区>`——CLI 自身跑在应用内置 node 上（`process.execPath`），相对定位 `server-dist.js`（便携平铺/安装包两布局），前台常驻 Ctrl+C 停，argv 恒带 `--zhishi-brain` 清扫免疫标记。团队大脑从「手拼 node 全路径 + 被自家门卫追杀」变成一条命令
+
 ## [2.0.4] - 2026-10-20
 
 > **只密码设备可接入**：推不进公钥的嵌入式/网络设备/老服务器（密码是唯一凭据）登记即用，D-T4「密码本体不落盘」红线不动。
