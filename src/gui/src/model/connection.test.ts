@@ -2,6 +2,10 @@
  * 连接模式单测（注入 storage，不碰真 localStorage）。
  * normalizeServerUrl 用例与 src/cli/remote.unit.test.ts 同口径（两边语义
  * 必须一致——CLI/GUI 连的是同一个团队大脑）。
+ *
+ * 2.0.3 增补：pollRemoteRelayPort（远端中继端口轮询）——契约对齐
+ * commands.rs::get_sidecar_port：幂等 ensure、null = 未就绪、IPC 瞬断
+ * 吞错重试、超时兜底返回 null。时钟/睡眠全部注入，零真实等待。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -11,6 +15,7 @@ import {
   CONNECTION_STORAGE_KEY,
   loadConnection,
   normalizeServerUrl,
+  pollRemoteRelayPort,
   saveConnection,
   type ConnectionSettings,
 } from './connection';
@@ -91,5 +96,90 @@ describe('saveConnection / loadConnection 往返', () => {
         CONNECTION_DEFAULTS,
       ),
     ).not.toThrow();
+  });
+});
+
+function makeClock(start = 10_000) {
+  let t = start;
+  return {
+    now: () => t,
+    sleep: (ms: number) => {
+      t += ms;
+      return Promise.resolve();
+    },
+  };
+}
+
+describe('pollRemoteRelayPort', () => {
+  it('立即就绪：一次调用返回端口', async () => {
+    const calls: Array<[string, Record<string, unknown> | undefined]> = [];
+    const port = await pollRemoteRelayPort(
+      async (cmd, args) => {
+        calls.push([cmd, args]);
+        return 41_234;
+      },
+      'http://10.0.0.8:7411',
+      makeClock(),
+    );
+    expect(port).toBe(41_234);
+    expect(calls).toEqual([['get_sidecar_port', { remoteUrl: 'http://10.0.0.8:7411' }]]);
+  });
+
+  it('未就绪轮询：null 若干次后拿到端口', async () => {
+    let n = 0;
+    const clock = makeClock();
+    const port = await pollRemoteRelayPort(
+      async () => {
+        n++;
+        return n < 3 ? null : 37_411;
+      },
+      'http://10.0.0.8:7411',
+      { ...clock, intervalMs: 500, timeoutMs: 20_000 },
+    );
+    expect(port).toBe(37_411);
+    expect(n).toBe(3);
+  });
+
+  it('超时返回 null，调用次数符合 interval/timeout', async () => {
+    let n = 0;
+    const clock = makeClock();
+    const port = await pollRemoteRelayPort(
+      async () => {
+        n++;
+        return null;
+      },
+      'http://10.0.0.8:7411',
+      { ...clock, intervalMs: 500, timeoutMs: 2_000 },
+    );
+    expect(port).toBeNull();
+    // t=10k 起：10k/15k/20k/25k/30k 各查一次（30k ≥ deadline 停）。
+    expect(n).toBe(5);
+  });
+
+  it('IPC 瞬断（抛错）吞掉继续轮询', async () => {
+    let n = 0;
+    const port = await pollRemoteRelayPort(
+      async () => {
+        n++;
+        if (n < 3) throw new Error('IPC 窗口关闭竞态');
+        return 41_234;
+      },
+      'http://10.0.0.8:7411',
+      makeClock(),
+    );
+    expect(port).toBe(41_234);
+    expect(n).toBe(3);
+  });
+
+  it('非法返回值（0 / 超界 / 非数字）忽略继续轮询', async () => {
+    const values: unknown[] = [0, 70_000, '4133', -1, null, 41_234];
+    let n = 0;
+    const port = await pollRemoteRelayPort(
+      async () => values[n++] ?? null,
+      'http://10.0.0.8:7411',
+      makeClock(),
+    );
+    expect(port).toBe(41_234);
+    expect(n).toBe(6);
   });
 });

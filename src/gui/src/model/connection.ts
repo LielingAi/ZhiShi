@@ -73,3 +73,46 @@ export function saveConnection(storage: StorageLike | null | undefined, settings
     // 静默：同 theme.ts 的读写兜底口径。
   }
 }
+
+// ---------------------------------------------------------------------------
+// 2.0.3 remote relay：轮询本机回环中继端口
+// ---------------------------------------------------------------------------
+
+/**
+ * 轮询 Tauri IPC 直到远端中继（remote_relay 模块 spawn 的 relay.cjs）
+ * 报告可服务端口，或超时返回 null。
+ *
+ * 为什么中继在 Rust 侧异步就绪：spawn 内置 node + 等子进程 stdout 的
+ * READY 行是毫秒~秒级不确定延迟，同步 IPC 契约（Option<u16>）下只能由
+ * 前端轮询消化——本机模式的端口发现（client/port.ts::pollTauriPort）同口径。
+ *
+ * 契约（与 commands.rs::get_sidecar_port 对齐）：
+ * - 每次调用都是幂等 ensure（稳态 = 锁内一次比较，不会重复 spawn）；
+ * - 返回 1-65535 的整数 = 中继就绪；null = 启动中/失败冷却；
+ * - IPC 瞬时抛错（窗口关闭竞态）吞掉继续轮询，超时兜底交失败态。
+ *
+ * 依赖全部注入（invoke/sleep/now），单测友好。
+ */
+export async function pollRemoteRelayPort(
+  invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>,
+  serverUrl: string,
+  opts: { intervalMs?: number; timeoutMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+): Promise<number | null> {
+  const interval = opts.intervalMs ?? 500;
+  const timeout = opts.timeoutMs ?? 20_000;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = opts.now ?? Date.now;
+  const deadline = now() + timeout;
+  for (;;) {
+    try {
+      const port = await invoke('get_sidecar_port', { remoteUrl: serverUrl });
+      if (typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65535) {
+        return port;
+      }
+    } catch {
+      // IPC 瞬断——继续轮询；连续失败由超时兜底。
+    }
+    if (now() >= deadline) return null;
+    await sleep(interval);
+  }
+}

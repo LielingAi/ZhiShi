@@ -387,16 +387,22 @@ zhishi auth enable
 - **GUI**：设置 → 连接 → 团队大脑 → 地址 + token。状态栏的**模式角标**常驻显示「本机 / 团队大脑 · host / 连接失败」，点它直达连接设置。
 - **CLI**：`zhishi --server http://host:port --token <secret> <命令>`（或 `ZHISHI_SERVER` / `ZHISHI_TOKEN` 环境变量）。
 
-### 传输：为什么成员要 SSH 隧道
+### 传输：GUI 直连与 SSH 隧道（2.0.3 起）
 
-**成员 GUI 不能直接填 `http://<服务器IP>`**——Chrome 混合内容拦截（webview 的 `*.localhost` 是安全上下文，非回环 http 会被挡在请求发出前；回环豁免，所以本机 `127.0.0.1` 没事）。可用路径：
+**成员 GUI 为什么不能直接填 `http://<服务器IP>`**：webview 页面是安全上下文（`http://tauri.localhost`），Chrome 混合内容拦截会把页面向非回环 http 发起的**一切**请求挡在发出前（回环豁免，所以 `127.0.0.1` 没事）；auth 开启后服务端 CORS allowlist 也只放行 Tauri origin 与回环 origin。
+
+**2.0.3 起成员零配置**：应用自带回环中继（等价内建 `ssh -L` 的哑 TCP 管道）——填地址 + token 即连，GUI 流量经 `127.0.0.1:<中继端口>` 转发到大脑，fetch / SSE / 终端 WebSocket / 大文件全透明。中继只绑回环、token 鉴权仍在大脑侧兜底。Windows 防火墙若弹窗提示 node.exe 联网，允许即可（那是中继在连大脑）。
+
+CLI 不受浏览器层限制，`zhishi --server http://<IP>:7411 --token <secret>` 直接通。
+
+**SSH 隧道降级为备选**：旧版成员应用（2.0.3 之前）、或浏览器 dev 页（无 Tauri 接不到中继）可用：
 
 ```bash
 ssh -L 7411:127.0.0.1:7411 wren@192.168.x.x    # 成员各起一条隧道
 # 然后 GUI / CLI 连 http://127.0.0.1:7411 + token
 ```
 
-CLI 不受此限（无浏览器层，`zhishi --server http://<IP>` 直接通）。HTTPS 列为后续选项。
+HTTPS 仍列为后续选项（服务端本体不碰 TLS，设计上架一层 terminator 才走 https——见 `docs/design/2.0.3-remote-relay.md`）。
 
 ### 线：私有线与共享线
 

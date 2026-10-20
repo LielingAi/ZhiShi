@@ -168,7 +168,7 @@ import type {
 } from '../client/api';
 import { resolvePort } from '../client/port';
 import { GuiHttpError, GuiSidecarClient, type SseInput } from '../client/sse-client';
-import { loadConnection, normalizeServerUrl } from '../model/connection';
+import { loadConnection, normalizeServerUrl, pollRemoteRelayPort } from '../model/connection';
 
 // ---------------------------------------------------------------------------
 // 常量（v19 SLASH 清单，15 条——v4 增 resume/kill/mission 三动词，带对象补全）
@@ -863,10 +863,12 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
 
       // ── 1.8.7 P0.5 团队大脑（远端模式）──────────────────────────────
       // 连接设置持久化在 localStorage（model/connection.ts）。远端分支：
-      // base = 归一化后的 server URL，所有请求挂 Bearer token；通过
-      // get_sidecar_port(remote_url) 告知 Rust 不要 spawn 本机 sidecar；
-      // 远端不可达 = 明确失败态（带 URL），绝不静默回落本机 sidecar——
-      // 「以为连着团队大脑、实际在操作本机空 sidecar」比报错更糟。
+      // base = 归一化后的 server URL（设置回显与错误文案都用真实地址）；
+      // 2.0.3 起 Tauri 成员的流量走本机回环中继（remote_relay——内建
+      // 等价 ssh -L 的哑 TCP 管道，绕开 webview 混合内容/CORS 双闸）：
+      // client 实际打 http://127.0.0.1:<relayPort>，由 Rust spawn 的
+      // relay.cjs 转发到团队大脑。浏览器 dev 无 Rust 可依赖，维持直连
+      // （混合内容拦截依旧，可自架 ssh -L / portproxy，见用户指南 §10）。
       const conn = loadConnection(browserStorage());
       if (conn.mode === 'remote') {
         let base: string;
@@ -880,18 +882,24 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
           });
           return;
         }
-        // spawn 抑制信号（best-effort：浏览器 dev 无 Tauri；失败不阻断——
-        // 远端连不上会在下面 probeHealth 明确报错）。
+        let clientBase = base;
         if (invoke) {
-          try {
-            await invoke('get_sidecar_port', { remoteUrl: base });
-          } catch {
-            // IPC 不可达（窗口关闭竞态等）——继续，HTTP 层会给出明确结果。
+          // spawn 抑制信号 + 中继端口经同一 IPC（幂等 ensure，稳态一次锁内
+          // 比较）；未就绪返回 null 继续等，超时进失败态——绝不静默回落本机。
+          const relayPort = await pollRemoteRelayPort((cmd, args) => invoke(cmd, args), base);
+          if (gen !== lifecycleGen) return; // dispose / re-init 竞态
+          if (relayPort === null) {
+            connecting = false;
+            set({
+              connectionState: 'failed',
+              connectError: `本地中继启动失败（团队大脑 ${base}）——详见日志（~/.zhishi/logs/unified-*.log），点「重试」`,
+            });
+            return;
           }
+          clientBase = `http://127.0.0.1:${relayPort}`;
         }
-        if (gen !== lifecycleGen) return; // dispose / re-init 竞态
         set({ connectionState: 'connecting', connectError: null });
-        client = new GuiSidecarClient({ base, token: conn.token.trim() ? conn.token.trim() : undefined });
+        client = new GuiSidecarClient({ base: clientBase, token: conn.token.trim() ? conn.token.trim() : undefined });
         const probe = await client.probeHealth();
         if (gen !== lifecycleGen) return;
         if (!probe.ok) {
@@ -899,7 +907,9 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
           client = null;
           set({
             connectionState: 'failed',
-            connectError: `无法连接团队大脑（${base}）：${probe.error}`,
+            // probe 传输层消息里嵌的是中继地址——换回升维前的真实大脑地址，
+            // 用户照此排查网络/token，而不是对着 127.0.0.1 发愣。
+            connectError: `无法连接团队大脑（${base}）：${probe.error.replaceAll(clientBase, base)}`,
           });
           return;
         }

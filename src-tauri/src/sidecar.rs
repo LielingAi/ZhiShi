@@ -2200,7 +2200,10 @@ fn diagnose_immediate_exit(status: &std::process::ExitStatus, node_path: &std::p
 
 /// Find the Node.js executable path.
 /// Returns a normalized path safe for `Command::new()` (no `\\?\` prefix on Windows).
-fn find_node_executable<R: Runtime>(app_handle: &AppHandle<R>) -> Option<PathBuf> {
+///
+/// `pub(crate)`：远端中继（remote_relay）spawn relay.cjs 时复用同一套
+/// dev/打包/prod 三态解析，不另写一份路径逻辑。
+pub(crate) fn find_node_executable<R: Runtime>(app_handle: &AppHandle<R>) -> Option<PathBuf> {
     find_node_executable_inner(app_handle).map(normalize_external_path)
 }
 

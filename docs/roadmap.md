@@ -13,6 +13,7 @@
 - [x] **2.0.0 多环境**（`docs/design/multi-env-design.md` v4）：环境面板（每环境在干什么/最近完成/点行即切）、注视语义、`/xfer` 跨环境直达、台账治理（同名合并/僵尸清理）、auto-run 环境任选、术语统一（线/假设链）、GUI v4 骨架（正门/三列/命令中枢/回执双轨/Markdown）
 - [x] **2.0.1 审计修复批**（`docs/design/audit-2026-10-17.md`）：291 文件体检 → 15 项修复 + 真链验证（xfer 双容器冒烟/挂证据/rm 幂等）
 - [x] **2.0.2 实机三修**：任务假死（流式纯文本 + Markdown memo）、busy 安全切环境（引擎不迁移，P3b 能力兑现）、档案锚线（跨线快照过滤）
+- [~] **2.0.3 团队大脑内建中继**（remote relay：`ssh -L` 应用内建化，成员 GUI 零配置直连大脑）——设计 `docs/design/2.0.3-remote-relay.md`；relay.cjs + 前端本机全绿，Rust 侧待 CI 编译验证
 
 ## 1.8.0 —— Windows 研究配方族（office-lab / browser-lab / win-kernel）（立项，进行中）
 

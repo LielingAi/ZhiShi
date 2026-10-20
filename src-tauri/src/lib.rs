@@ -16,6 +16,7 @@ pub mod perf_trace;
 pub mod process_cleanup;
 pub mod process_cmd;
 mod proxy_config;
+mod remote_relay;
 pub mod system_binary;
 mod sidecar;
 pub mod task;
@@ -103,6 +104,11 @@ pub fn run() {
     let sidecar_state_for_management = sidecar_state.clone();
     let sidecar_state_for_launcher = sidecar_state.clone();
 
+    // 2.0.3 远端中继（团队大脑回环 TCP 隧道）状态——进入远端模式时
+    // spawn relay.cjs，退出/换目标/应用退出时收尸。
+    let remote_relay_state = remote_relay::RemoteRelayManager::new();
+    let remote_relay_state_for_exit = remote_relay_state.clone();
+
     // Track if cleanup has been performed to avoid duplicate cleanup
     // All clones share the same underlying AtomicBool - whichever exit path
     // triggers first will do cleanup, and all others will see the flag as true
@@ -155,6 +161,7 @@ pub fn run() {
         .manage(sidecar_state)
         .manage(terminal_state)
         .manage(task_state)
+        .manage(remote_relay_state)
         .setup(move |app| {
             // Initialize logging before acquire_lock() and cleanup_stale_sidecars()
             // because those paths need a logger backend for log::warn!/info! calls.
@@ -496,6 +503,8 @@ pub fn run() {
                     // every platform/path without a forgettable flag.
                     app_dirs::record_clean_exit(code == Some(tauri::RESTART_EXIT_CODE));
                     let _ = stop_all_sidecars(&sidecar_state_for_exit);
+                    // 2.0.3 远端中继陪葬——它是回环隧道，应用退出后留着就是孤儿。
+                    remote_relay_state_for_exit.stop();
                     // Clean up terminal PTY sessions
                     let ts = terminal_state_for_exit.clone();
                     tauri::async_runtime::block_on(terminal::close_all_terminals(&ts));

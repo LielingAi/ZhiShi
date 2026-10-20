@@ -37,6 +37,9 @@ export default defineConfig({
             'src/server/**/*.unit.test.ts',
             'src/cli/**/*.unit.test.ts',
             'src/gui/**/*.test.ts',
+            // 跨层产物测试（如 src-tauri/resources/relay.cjs 的端到端契约），
+            // 纯 loopback、OS 分配端口、无共享状态，与 unit 池约束一致。
+            'tests/**/*.test.ts',
             // 抽包后的 workspace 测试（zhishi-loop-core / zhishi-memory-core）。
             // 包内测试都是纯逻辑（真 IO 用 mkdtemp，不碰模块级单例/端口），
             // 归 unit 池；若将来包内出现 stateful 测试，需另行加进 stateful 的 include。

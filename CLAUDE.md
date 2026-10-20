@@ -18,7 +18,7 @@
 
 | 后端 | Node.js ≥22 + 自研 loop（`src/server/loop/`，pi 底座钉版；单例 Sidecar，会话按环境分线；1.8.7 P3b 起引擎按线并存——per-line busy/steering/abort + 空闲回收，「当前线」per-actor，本机单 actor 语义不变） |
 
-| 通信 | GUI ↔ Sidecar 直连 HTTP+SSE+WS（127.0.0.1）；Rust panel_api 代理 term/管理面（reqwest via `local_http` 模块） |
+| 通信 | GUI ↔ Sidecar 直连 HTTP+SSE+WS（127.0.0.1）；Rust panel_api 代理 term/管理面（reqwest via `local_http` 模块）；远端模式（团队大脑）走内建回环中继 `remote_relay` + `resources/relay.cjs`（等价 ssh -L 的哑 TCP 管道，绕 webview 混合内容/CORS 双闸，见 `docs/design/2.0.3-remote-relay.md`） |
 
 | 运行时 | 单一 Node.js ≥22（Sidecar / MCP Server / CLI），内置于应用包 |
 
