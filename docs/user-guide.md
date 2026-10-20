@@ -405,7 +405,7 @@ netsh advfirewall firewall add rule name="ZhiShi Brain 7411" dir=in action=allow
 
 ### 传输：GUI 直连与 SSH 隧道（2.0.3 起）
 
-**成员 GUI 为什么不能直接填 `http://<服务器IP>`**：webview 页面是安全上下文（`http://tauri.localhost`），Chrome 混合内容拦截会把页面向非回环 http 发起的**一切**请求挡在发出前（回环豁免，所以 `127.0.0.1` 没事）；auth 开启后服务端 CORS allowlist 也只放行 Tauri origin 与回环 origin。
+**成员 GUI 为什么不能直接填 `http://<服务器IP>`**：webview 页面是安全上下文（`http://tauri.localhost`），Chrome 混合内容拦截会把页面向非回环 http 发起的**一切**请求挡在发出前（回环豁免，所以 `127.0.0.1` 没事）。（2.0.6 起 CORS 预检回显任意来源——鉴权门是 token；此前按 origin 白名单阻断的尝试曾把自家 webview 锁死，见 `src/server/auth/cors.ts` 模块头。）
 
 **2.0.3 起成员零配置**：应用自带回环中继（等价内建 `ssh -L` 的哑 TCP 管道）——填地址 + token 即连，GUI 流量经 `127.0.0.1:<中继端口>` 转发到大脑，fetch / SSE / 终端 WebSocket / 大文件全透明。中继只绑回环、token 鉴权仍在大脑侧兜底。Windows 防火墙若弹窗提示 node.exe 联网，允许即可（那是中继在连大脑）。
 

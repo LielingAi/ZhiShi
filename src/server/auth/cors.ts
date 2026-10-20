@@ -1,19 +1,23 @@
 /**
- * 1.8.7 P1 团队大脑——CORS 收紧（仅 auth.enabled=true 时生效；disabled 时
- * 逐字节保持 1.8.6 的 ACAO:* 行为）。
+ * 1.8.7 P1 团队大脑——CORS 策略（2.0.6 起：auth 模式下从 allowlist 阻断
+ * 回退为「回显 + 审计」，真正的门是 token）。
  *
- * 收紧动机：监听非回环后，浏览器里的恶意网页可以向 sidecar 发跨域请求；
- * 带 Authorization 头的请求必触发预检，预检不回 ACAO 即被浏览器拦死。
+ * 回退原因（实机事故，2026-10-20）：auth.enabled=true 时预检走 allowlist，
+ * 而 Tauri webview 的实际 origin 形态**不可跨版本/平台枚举**——白名单没命中
+ * 就 403，浏览器把正式请求全部掐死，表现为 GUI「一直连接中」（本地/远端
+ * 模式同死；auth disable 立即恢复）。allowlist 从「保护」变成「锁死自家
+ * 客户端」。
  *
- * allowlist（实机核对的客户端形态）：
- * - Tauri webview 原生 fetch（/refs/ 大值取回走 WebKit，不经 Rust 代理）：
- *   `tauri://localhost`（macOS）/ `http(s)://tauri.localhost`（Windows）；
- * - 回环 http(s) origin（任意端口）：浏览器 dev（vite）+ 回环直连。
- * 注意 Tauri 客户端的 /api/*、/sessions/*、/chat/stream 全部经 Rust
- * local_http 代理转发（server→server，无 Origin 头）——CORS 对它们不适用，
- * 鉴权靠 token 不靠 origin。
+ * 安全模型（为什么回显不降级）：鉴权闸的门是 Authorization token——恶意
+ * 网页拿不到 token，除开放路由（GET /health、/health/ready）外一律 401；
+ * CORS 原本只是纵深防御的备份，不该成为主门。`isAllowedBrowserOrigin`
+ * 保留（审计/单测/将来若要按 origin 分级时复用），运行时不再承担阻断。
  *
- * 纯函数模块（unit 池可测）：Response 改写也在这里，index.ts 只调。
+ * 语义：
+ * - auth disabled → 与 1.8.6 逐字节一致（预检 ACAO:*）；
+ * - auth enabled → 预检回显任意 origin（无 Origin 头仍 403——浏览器预检必带
+ *   Origin，缺失即非浏览器客户端）；响应 ACAO 回显任意 origin + Vary。
+ * - 无 Origin（CLI / Rust 代理）：CORS 不适用，原样返回。
  */
 
 import { isLoopbackHost } from './bind-host';
@@ -21,7 +25,7 @@ import { isLoopbackHost } from './bind-host';
 const ALLOW_METHODS = 'GET, POST, PUT, DELETE, OPTIONS';
 const ALLOW_HEADERS = 'Content-Type, Authorization';
 
-/** Origin 是否在 allowlist 内。 */
+/** Origin 是否在「预期客户端形态」清单（审计用；2.0.6 起不再参与阻断）。 */
 export function isAllowedBrowserOrigin(origin: string): boolean {
   const o = origin.trim();
   if (!o) return false;
@@ -38,8 +42,7 @@ export function isAllowedBrowserOrigin(origin: string): boolean {
 
 /**
  * CORS 预检响应。auth disabled → 与现状逐字节一致（ACAO:*）；enabled →
- * 仅 allowlist origin 回 ACAO（echo + Vary），其余 403 且无 CORS 头
- * （浏览器据此拦掉后续真实请求）。
+ * 回显请求 Origin（见模块头：token 才是真门）。无 Origin 头 → 403。
  */
 export function preflightResponse(originHeader: string | null, authEnabled: boolean): Response {
   if (!authEnabled) {
@@ -52,9 +55,7 @@ export function preflightResponse(originHeader: string | null, authEnabled: bool
       },
     });
   }
-  if (!originHeader || !isAllowedBrowserOrigin(originHeader)) {
-    return new Response(null, { status: 403 });
-  }
+  if (!originHeader) return new Response(null, { status: 403 });
   return new Response(null, {
     status: 204,
     headers: {
@@ -69,20 +70,15 @@ export function preflightResponse(originHeader: string | null, authEnabled: bool
 /**
  * 响应 ACAO 改写（套在 fetch handler 最外层，覆盖 jsonResponse / SSE /
  * /refs 文件响应里硬编码的 ACAO:*）。auth disabled → 原样返回（零变化）。
- * 无 Origin 头 = 非浏览器客户端（CLI / Rust 代理 / curl）——CORS 不适用，
- * 原样返回。
+ * auth enabled → 回显任意 Origin（2.0.6：allowlist 阻断曾把自家 GUI 锁死，
+ * 见模块头；token 缺照样 401）。无 Origin 头 = 非浏览器客户端（CLI / Rust
+ * 代理 / curl）——CORS 不适用，原样返回。
  */
 export function applyCorsDecision(originHeader: string | null, authEnabled: boolean, response: Response): Response {
   if (!authEnabled || !originHeader) return response;
   const headers = new Headers(response.headers);
-  if (isAllowedBrowserOrigin(originHeader)) {
-    headers.set('Access-Control-Allow-Origin', originHeader);
-    headers.set('Vary', 'Origin');
-  } else {
-    // 非 allowlist origin：摘掉 ACAO，浏览器读不到响应（预检阶段已 403，
-    // 这里是简单请求/直发的双保险）。
-    headers.delete('Access-Control-Allow-Origin');
-  }
+  headers.set('Access-Control-Allow-Origin', originHeader);
+  headers.set('Vary', 'Origin');
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
