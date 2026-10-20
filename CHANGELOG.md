@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.6] - 2026-10-20
+
+> **auth 开启后 GUI 全面「连接中」根治**：CORS 预检的 origin 白名单把自家 webview 锁死——allowlist 阻断降级为回显，真正的门交还 token。
+
+### Fixed
+
+- **auth.enabled=true 时 GUI 一切请求被预检 403 掐死**（团队模式实机事故）：1.8.7 P1 的 CORS 收紧按 origin 白名单（Tauri webview 形态 + 回环）回显/阻断，但 webview 的实际 Origin 形态不可跨 Tauri 版本/平台枚举——白名单没命中就 403，浏览器把正式请求全部拦下，SSE 每 5 秒重试一轮 OPTIONS，UI 永远「连接中」（本地/远端模式同死；`auth disable` 立即恢复，实机确认因果）。修复：auth 模式下预检与响应改为**回显任意来源 origin**；安全边界回到设计本意——门是 Authorization token（恶意页面拿不到 token，除开放路由 /health 外一律 401），CORS allowlist 从阻断职责降级为审计清单（`isAllowedBrowserOrigin` 保留）
+- 无 Origin 头的预检仍 403（浏览器预检必带 Origin，缺失即非浏览器客户端）；auth disabled 路径逐字节不变（ACAO:*）
+
 ## [2.0.5] - 2026-10-20
 
 > **团队模式实机缺陷三连修**：大脑被清扫误杀 / 本机模式 auth 死锁 / 鉴权失败静默转圈——团队模式由此真正可用。
