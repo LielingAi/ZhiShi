@@ -75,13 +75,19 @@ describe('向导状态机', () => {
     const base = stateAt(2, { source: 'docker-recipe' });
     expect(wizardStepError(base)).toBe('请选择一个配方');
     expect(wizardStepError(stateAt(2, { source: 'discovered' }))).toBe('请勾选一个本机条目');
-    // 1.6.5 密钥引导：host/user 必填，keyPath 与 password 至少其一（都空才拦）
+    // 1.6.5/2.0.4：host/user 必填，keyPath / password（引导）/ passwordRef（只密码设备）至少其一
     expect(wizardStepError(stateAt(2, { source: 'ssh' }))).toBe('host / 用户 必填');
     expect(
       wizardStepError(
         stateAt(2, { source: 'ssh', params: { ...initialWizardParams(), sshHost: 'h', sshUser: 'u' } }),
       ),
-    ).toBe('密钥路径 / 登录密码 至少其一');
+    ).toBe('密钥路径 / 登录密码 / 密码引用 至少其一');
+    // 2.0.4：只密码设备——仅凭 passwordRef 放行。
+    expect(
+      wizardStepError(
+        stateAt(2, { source: 'ssh', params: { ...initialWizardParams(), sshHost: 'h', sshUser: 'u', sshPasswordRef: 'env:CAM01_PW' } }),
+      ),
+    ).toBeNull();
     const sshOk = stateAt(2, {
       source: 'ssh',
       params: { ...initialWizardParams(), sshHost: 'h', sshUser: 'u', sshKeyPath: 'k' },
@@ -274,10 +280,34 @@ describe('payload 构造', () => {
     }
   });
 
-  it('1.6.5：keyPath 与 password 都空 → 校验拦 + payload null', () => {
+  it('1.6.5/2.0.4：keyPath / password / passwordRef 都空 → 校验拦 + payload null', () => {
     const params = { ...initialWizardParams(), sshHost: 'h', sshUser: 'u' };
-    expect(wizardStepError(stateAt(2, { source: 'ssh', params }))).toBe('密钥路径 / 登录密码 至少其一');
+    expect(wizardStepError(stateAt(2, { source: 'ssh', params }))).toBe('密钥路径 / 登录密码 / 密码引用 至少其一');
     expect(buildWizardPayload(stateAt(4, { source: 'ssh', params }))).toBeNull();
+  });
+
+  it('2.0.4：只凭 passwordRef 过校验，payload 带 passwordRef（引用本体不下发）', () => {
+    const params = { ...initialWizardParams(), sshHost: 'h', sshUser: 'u', sshPasswordRef: ' env:CAM01_PW ' };
+    expect(wizardStepError(stateAt(2, { source: 'ssh', params }))).toBeNull();
+    const p = buildWizardPayload(stateAt(4, { source: 'ssh', params }));
+    expect(p?.type).toBe('ssh-add');
+    if (p?.type === 'ssh-add') {
+      expect(p.input.passwordRef).toBe('env:CAM01_PW');
+      expect(p.input.keyPath).toBeUndefined();
+      expect(p.input.password).toBeUndefined();
+    }
+  });
+
+  it('2.0.4：确认页——无 keyPath 有 passwordRef 显示引用行（引用不是秘密）', () => {
+    const s = stateAt(3, {
+      source: 'ssh',
+      params: { ...initialWizardParams(), sshHost: 'h', sshUser: 'u', sshPasswordRef: 'env:CAM01_PW' },
+    });
+    const map = Object.fromEntries(
+      wizardSummaryRows(s, { recipes: RECIPES, domains: DOMAINS }).map((r) => [r.label, r.value]),
+    );
+    expect(map['密码引用']).toBe('env:CAM01_PW');
+    expect(map['凭据']).toBeUndefined();
   });
 
   it('1.6.5：确认页——keyPath 空而 password 非空显示引导说明行（不回显密码本体）', () => {

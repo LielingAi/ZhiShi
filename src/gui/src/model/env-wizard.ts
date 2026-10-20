@@ -68,6 +68,10 @@ export interface WizardParams {
   /** 1.6.5 密钥引导：缺 keyPath 时现场给一次密码（瞬传服务端自动生成密钥对，
    *  不落 config.json；条目只落生成的 keyPath）。 */
   sshPassword: string;
+  /** 2.0.4 只密码设备：密码引用（env:VAR，D-T4 本体不落盘）。填了它 = 显式
+   *  声明「推不进公钥，永久走密码」——与服务端 sshAuthMethod 同语义：与
+   *  keyPath 同给时密钥优先。 */
+  sshPasswordRef: string;
   /** 字符串表单值；payload 构造时转 number（空 = 缺省 22，不下发）。 */
   sshPort: string;
   sshName: string;
@@ -97,6 +101,7 @@ export function initialWizardParams(): WizardParams {
     sshUser: '',
     sshKeyPath: '',
     sshPassword: '',
+    sshPasswordRef: '',
     sshPort: '',
     sshName: '',
     sshOsFamily: '',
@@ -173,13 +178,13 @@ export function wizardStepError(
       return null;
     }
     if (state.source === 'ssh') {
-      // 1.6.5 密钥引导：host/user 必填；keyPath 与 password 至少其一
-      // （缺 keyPath 时服务端用 password 现场生成密钥对并推公钥）。
+      // 1.6.5 密钥引导 + 2.0.4 只密码设备：host/user 必填；keyPath /
+      // password（引导）/ passwordRef（永久密码引用）至少其一。
       if (!p.sshHost.trim() || !p.sshUser.trim()) {
         return 'host / 用户 必填';
       }
-      if (!p.sshKeyPath.trim() && !p.sshPassword.trim()) {
-        return '密钥路径 / 登录密码 至少其一';
+      if (!p.sshKeyPath.trim() && !p.sshPassword.trim() && !p.sshPasswordRef.trim()) {
+        return '密钥路径 / 登录密码 / 密码引用 至少其一';
       }
       if (p.sshPort.trim()) {
         const port = Number(p.sshPort.trim());
@@ -272,6 +277,8 @@ export type WizardPayload =
         keyPath?: string;
         /** 1.6.5 密钥引导：瞬传密码（不落盘；与 keyPath 同给由服务端拦）。 */
         password?: string;
+        /** 2.0.4 只密码设备：密码引用（env:VAR，D-T4 本体不落盘）。 */
+        passwordRef?: string;
         port?: number;
         name?: string;
         osFamily?: 'linux' | 'windows';
@@ -329,8 +336,11 @@ export function buildWizardPayload(state: EnvWizardState): WizardPayload | null 
   const user = p.sshUser.trim();
   const keyPath = p.sshKeyPath.trim();
   const password = p.sshPassword.trim();
+  const passwordRef = p.sshPasswordRef.trim();
   // 1.6.5 密钥引导：keyPath 空则不带 keyPath 键，password 非空则透传（瞬传）。
-  if (!host || !user || (!keyPath && !password)) return null;
+  // 2.0.4 只密码设备：passwordRef 一并透传（引用不落盘；与 keyPath 同给时
+  // 服务端 sshAuthMethod 密钥优先——载荷不预判，保持「服务端定序」纪律）。
+  if (!host || !user || (!keyPath && !password && !passwordRef)) return null;
   const port = p.sshPort.trim() ? Number(p.sshPort.trim()) : undefined;
   if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) return null;
   return {
@@ -342,6 +352,7 @@ export function buildWizardPayload(state: EnvWizardState): WizardPayload | null 
       user,
       ...(keyPath ? { keyPath } : {}),
       ...(password ? { password } : {}),
+      ...(passwordRef ? { passwordRef } : {}),
       ...(port !== undefined ? { port } : {}),
       ...(p.sshName.trim() ? { name: p.sshName.trim() } : {}),
       ...(p.sshOsFamily ? { osFamily: p.sshOsFamily } : {}),
@@ -461,8 +472,12 @@ export function wizardSummaryRows(
     const p = state.params;
     rows.push({ label: '主机', value: `${p.sshUser.trim()}@${p.sshHost.trim()}${p.sshPort.trim() ? `:${p.sshPort.trim()}` : ''}` });
     // 1.6.5 密钥引导：keyPath 空而 password 非空 → 只显引导说明行，不回显密码本体。
+    // 2.0.4 只密码设备：passwordRef 行优先于引导说明（同给时服务端密钥优先，
+    // 但密码引用是显式声明，回显引用本身——引用不是秘密）。
     if (p.sshKeyPath.trim()) {
       rows.push({ label: '密钥路径', value: p.sshKeyPath.trim() });
+    } else if (p.sshPasswordRef.trim()) {
+      rows.push({ label: '密码引用', value: p.sshPasswordRef.trim() });
     } else if (p.sshPassword.trim()) {
       rows.push({ label: '凭据', value: '密码引导（自动生成密钥，密码不落盘）' });
     }

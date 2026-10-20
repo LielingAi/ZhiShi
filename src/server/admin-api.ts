@@ -30,7 +30,7 @@ import { taskConclusionFor } from './cron/task-conclusions';
 import { existsSync , mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { ensureDirSync } from './utils/fs-utils';
-import { resolveSshTarget, execInEnvironment, buildScpArgv, buildScpUploadArgv } from './loop/env-exec';
+import { resolveSshTarget, execInEnvironment, buildScpArgv, buildScpUploadArgv, sshFileChannelUnsupported } from './loop/env-exec';
 // 1.8.7 P4 团队大脑——文件传输（客户端 ↔ 服务器侧环境）：取回机器 +
 // refs 化在本模块消费；上传路由本体在 environment/file-transfer.ts。
 import {
@@ -3116,6 +3116,9 @@ export async function handleEnvironmentExtract(payload: {
     requestedBy: currentActor().name,
   });
   if (!approved) return { success: false, error: '越界提取已被拒绝或超时(写宿主需人批准)' };
+  // 2.0.4：只密码设备的 extract 走 file-transfer 的同一护栏口径。
+  const extractBlocked = sshFileChannelUnsupported(target, '环境提取（extract）');
+  if (extractBlocked) return { success: false, error: extractBlocked };
   ensureDirSync(destDir);
   const argv = buildScpArgv(target, guestPath, destDir);
   const proc = spawnSubprocess([resolveCommand(argv[0]), ...argv.slice(1)], {
@@ -3188,6 +3191,9 @@ export async function handleEnvironmentPush(payload: {
     };
   }
   const argv = buildScpUploadArgv(resolved.target, absHostPath, guestPath);
+  // 2.0.4：只密码设备的 scp 传入护栏（put-file 与 file-transfer 同口径）。
+  const pushBlocked = sshFileChannelUnsupported(resolved.target, '文件传入（push/put-file）');
+  if (pushBlocked) return { success: false, error: pushBlocked };
   const proc = spawnSubprocess([resolveCommand(argv[0]), ...argv.slice(1)], {
     env: augmentedProcessEnv(),
     stdin: 'ignore',

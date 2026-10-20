@@ -559,6 +559,17 @@ function NewEnvModal(): React.JSX.Element | null {
           />
         </div>
         <div>
+          {/* 2.0.4 只密码设备：推不进公钥的嵌入式/网络设备/老服务器，永久走
+              密码引用（D-T4 本体不落盘）。与上方密钥同填时密钥优先。 */}
+          <div className="f-label">密码引用 passwordRef（可选——只密码设备填 env:变量名）</div>
+          <input
+            className="f-input"
+            placeholder="env:CAM01_PW —— 执行机环境变量/<数据目录>/secrets.env 供值"
+            value={p.sshPasswordRef}
+            onChange={(e) => wizardSetParam('sshPasswordRef', e.target.value)}
+          />
+        </div>
+        <div>
           <div className="f-label">端口 port（可选，缺省 22）</div>
           <input
             className="f-input"

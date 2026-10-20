@@ -7,18 +7,25 @@
  * 执行错误面（远端非零 exit 原样回传 / 进程级失败 → ok:false / exec
  * 抛错 → ok:false / timeoutMs 透传）。
  */
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, beforeEach } from 'vitest';
 
 import type { EnvironmentEntry } from '../../shared/config-types';
 import {
   buildDockerExecArgv,
   buildLocalExecArgv,
+  buildPlinkPasswordArgv,
   buildPtyDockerExecArgv,
   buildPtySpawnSpec,
   buildPtySshArgv,
   buildRemoteTimeoutWrapper,
   buildScpUploadArgv,
   buildSshArgv,
+  buildSshPasswordArgv,
+  buildSshPasswordEnv,
+  ensureAskpassScript,
   execInEnvironment,
   interactiveShellScript,
   noteExecOutcome,
@@ -26,6 +33,9 @@ import {
   resolveExecTarget,
   resolvePasswordRef,
   resolveSshTarget,
+  sshAuthMethod,
+  sshFileChannelUnsupported,
+  SSH_ASKPASS_PASSWORD_ENV,
   truncateOutput,
   EXEC_TIMEOUT_STREAK_LIMIT,
   OUTPUT_LIMIT_BYTES,
@@ -544,6 +554,242 @@ describe('1.7.8 local 通道（Windows 宿主直 spawn）', () => {
     if (r.ok) {
       expect(r.spec.file).toBe('sh');
       expect(r.spec.args).toEqual(['-c', '[ -x /bin/bash ] && exec /bin/bash; exec sh']);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2.0.4 只密码设备 —— ssh 密码执行通道
+// ---------------------------------------------------------------------------
+
+const PW_ENTRY: EnvironmentEntry = {
+  id: 'cam01',
+  kind: 'ssh',
+  host: '192.168.1.50',
+  user: 'admin',
+  passwordRef: 'env:ZHISHI_TEST_PW_REF',
+  createdAt: '2026-01-01T00:00:00Z',
+};
+
+function fakeExecCapture(): {
+  exec: EnvExec;
+  calls: { argv: string[]; timeoutMs: number; env?: Record<string, string> }[];
+} {
+  const calls: { argv: string[]; timeoutMs: number; env?: Record<string, string> }[] = [];
+  const exec: EnvExec = async (argv, timeoutMs, opts) => {
+    calls.push({ argv, timeoutMs, env: opts?.env });
+    return { exitCode: 0, stdout: '', stderr: '' };
+  };
+  return { exec, calls };
+}
+
+describe('sshAuthMethod（认证方式分派）', () => {
+  it('keyPath 优先；其次 passwordRef；皆无 = agent', () => {
+    expect(sshAuthMethod({ destination: 'h', host: 'h', keyPath: '/k', passwordRef: 'env:X' })).toBe('key');
+    expect(sshAuthMethod({ destination: 'h', host: 'h', passwordRef: 'env:X' })).toBe('password');
+    expect(sshAuthMethod({ destination: 'h', host: 'h' })).toBe('agent');
+  });
+});
+
+describe('buildSshPasswordArgv（posix 密码通道）', () => {
+  it('无 BatchMode / NumberOfPasswordPrompts=1 / 无 -i / accept-new 保留', () => {
+    const argv = buildSshPasswordArgv(
+      { destination: 'admin@192.168.1.50', host: '192.168.1.50', user: 'admin', port: 2222 },
+      'id',
+      { controlMaster: false },
+    );
+    expect(argv[0]).toBe('ssh');
+    expect(argv).not.toContain('BatchMode=yes');
+    expect(argv).toContain('NumberOfPasswordPrompts=1');
+    expect(argv).not.toContain('-i');
+    expect(argv).toContain('StrictHostKeyChecking=accept-new');
+    expect(argv[argv.indexOf('-p') + 1]).toBe('2222');
+    expect(argv[argv.length - 2]).toBe('admin@192.168.1.50');
+    expect(argv[argv.length - 1]).toBe('id');
+  });
+
+  it('windows 家族远端命令同样走 EncodedCommand 包装（与 buildSshArgv 同口径）', () => {
+    const keyArgv = buildSshArgv(
+      { destination: 'u@h', host: 'h' },
+      'whoami',
+      { controlMaster: false, osFamily: 'windows' },
+    );
+    const pwArgv = buildSshPasswordArgv(
+      { destination: 'u@h', host: 'h' },
+      'whoami',
+      { controlMaster: false, osFamily: 'windows' },
+    );
+    expect(pwArgv[pwArgv.length - 1]).toBe(keyArgv[keyArgv.length - 1]);
+    expect(pwArgv[pwArgv.length - 1]).toContain('powershell -NoProfile -EncodedCommand');
+  });
+});
+
+describe('buildSshPasswordEnv + ensureAskpassScript（ASKPASS 三件套）', () => {
+  it('环境三件套：脚本路径 / REQUIRE=force / 密码载体', () => {
+    const env = buildSshPasswordEnv('s3cret', '/tmp/ask.sh');
+    expect(env.SSH_ASKPASS).toBe('/tmp/ask.sh');
+    expect(env.SSH_ASKPASS_REQUIRE).toBe('force');
+    expect(env[SSH_ASKPASS_PASSWORD_ENV]).toBe('s3cret');
+  });
+
+  it('助手脚本幂等落盘且不含秘密本体', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zhishi-askpass-'));
+    try {
+      const p1 = ensureAskpassScript(dir);
+      const p2 = ensureAskpassScript(dir);
+      expect(p1).toBe(p2);
+      const content = readFileSync(p1, 'utf-8');
+      expect(content).toContain(SSH_ASKPASS_PASSWORD_ENV);
+      expect(content.startsWith('#!/bin/sh')).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('buildPlinkPasswordArgv（win32 密码通道）', () => {
+  it('-pw / -hostkey 钉指纹 / -P 端口插位 / user 显式给', () => {
+    const argv = buildPlinkPasswordArgv(
+      '/bin/plink',
+      { destination: 'admin@h', host: 'h', user: 'admin', port: 2222 },
+      'id',
+      'pw',
+      ['SHA256:abc', 'SHA256:def'],
+    );
+    expect(argv[0]).toBe('/bin/plink');
+    expect(argv[argv.indexOf('-pw') + 1]).toBe('pw');
+    expect(argv[argv.indexOf('-P') + 1]).toBe('2222');
+    expect(argv[argv.indexOf('-hostkey') + 1]).toBe('SHA256:abc');
+    expect(argv[argv.length - 2]).toBe('admin@h');
+    // -P 必须插在目标之前（buildPlinkArgsWithPort 同构纪律）。
+    expect(argv.indexOf('-P')).toBeLessThan(argv.length - 2);
+  });
+});
+
+describe('sshFileChannelUnsupported（文件传输/attach 护栏）', () => {
+  it('密码条目给明确错误；密钥/agent 不受限', () => {
+    expect(sshFileChannelUnsupported({ destination: 'h', host: 'h', passwordRef: 'env:X' }, 'attach')).toContain('attach');
+    expect(sshFileChannelUnsupported({ destination: 'h', host: 'h', keyPath: '/k', passwordRef: 'env:X' }, 'attach')).toBeNull();
+    expect(sshFileChannelUnsupported({ destination: 'h', host: 'h' }, 'attach')).toBeNull();
+  });
+
+  it('buildPtySpawnSpec：密码条目 attach 明确拒绝（不挂密码提示）', () => {
+    const r = buildPtySpawnSpec(PW_ENTRY);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('暂不支持密码通道');
+  });
+});
+
+describe('execInEnvironment：密码引用执行链', () => {
+  it('askpass 策略：argv 无 BatchMode、env 三件套注入、远端命令已包超时杀', async () => {
+    process.env.ZHISHI_TEST_PW_REF = 's3cret';
+    try {
+      const { exec, calls } = fakeExecCapture();
+      const r = await execInEnvironment(PW_ENTRY, 'id', {
+        exec,
+        passwordStrategy: 'askpass',
+        sshPasswordChannel: { askpassScriptPath: () => '/tmp/ask.sh', ensurePlink: async () => ({ ok: false, error: 'n/a' }), resolveHostKeyFingerprints: async () => undefined },
+      });
+      expect(r.ok).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].argv).not.toContain('BatchMode=yes');
+      expect(calls[0].env?.SSH_ASKPASS).toBe('/tmp/ask.sh');
+      expect(calls[0].env?.[SSH_ASKPASS_PASSWORD_ENV]).toBe('s3cret');
+      // 远端命令末位 = 超时杀包装（linux 家族 = timeout 前缀）。
+      const last = calls[0].argv[calls[0].argv.length - 1];
+      expect(last.startsWith('timeout -k 5')).toBe(true);
+    } finally {
+      delete process.env.ZHISHI_TEST_PW_REF;
+    }
+  });
+
+  it('引用解析不到 → 明确失败（指引 secrets.env），不 spawn', async () => {
+    delete process.env.ZHISHI_TEST_PW_REF;
+    const { exec, calls } = fakeExecCapture();
+    const r = await execInEnvironment(PW_ENTRY, 'id', { exec, passwordStrategy: 'askpass' });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain('解析不到密码');
+      expect(r.error).toContain('secrets.env');
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it('keyPath 与 passwordRef 同给 → 密钥通道（argv 带 -i、无密码 env）', async () => {
+    process.env.ZHISHI_TEST_PW_REF = 's3cret';
+    try {
+      const { exec, calls } = fakeExecCapture();
+      const r = await execInEnvironment({ ...PW_ENTRY, keyPath: '/k' }, 'id', { exec, passwordStrategy: 'askpass' });
+      expect(r.ok).toBe(true);
+      expect(calls[0].argv).toContain('-i');
+      expect(calls[0].env).toBeUndefined();
+    } finally {
+      delete process.env.ZHISHI_TEST_PW_REF;
+    }
+  });
+
+  it('plink 策略：编排 ensurePlink → 钉指纹 → plink argv', async () => {
+    process.env.ZHISHI_TEST_PW_REF = 's3cret';
+    try {
+      const { exec, calls } = fakeExecCapture();
+      const r = await execInEnvironment(PW_ENTRY, 'id', {
+        exec,
+        passwordStrategy: 'plink',
+        sshPasswordChannel: {
+          ensurePlink: async () => ({ ok: true, path: '/bin/plink' }),
+          resolveHostKeyFingerprints: async () => ['SHA256:abc'],
+          askpassScriptPath: () => '/tmp/ask.sh',
+        },
+      });
+      expect(r.ok).toBe(true);
+      expect(calls[0].argv[0]).toBe('/bin/plink');
+      expect(calls[0].argv[calls[0].argv.indexOf('-pw') + 1]).toBe('s3cret');
+      expect(calls[0].argv[calls[0].argv.indexOf('-hostkey') + 1]).toBe('SHA256:abc');
+      expect(calls[0].env).toBeUndefined();
+    } finally {
+      delete process.env.ZHISHI_TEST_PW_REF;
+    }
+  });
+
+  it('plink 策略：指纹取不到 → 明确失败（不挂起等超时）', async () => {
+    process.env.ZHISHI_TEST_PW_REF = 's3cret';
+    try {
+      const { exec, calls } = fakeExecCapture();
+      const r = await execInEnvironment(PW_ENTRY, 'id', {
+        exec,
+        passwordStrategy: 'plink',
+        sshPasswordChannel: {
+          ensurePlink: async () => ({ ok: true, path: '/bin/plink' }),
+          resolveHostKeyFingerprints: async () => undefined,
+          askpassScriptPath: () => '/tmp/ask.sh',
+        },
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain('host key 指纹');
+      expect(calls).toHaveLength(0);
+    } finally {
+      delete process.env.ZHISHI_TEST_PW_REF;
+    }
+  });
+
+  it('plink 策略：plink 不可用 → 错误透传（含引导文案）', async () => {
+    process.env.ZHISHI_TEST_PW_REF = 's3cret';
+    try {
+      const { exec, calls } = fakeExecCapture();
+      const r = await execInEnvironment(PW_ENTRY, 'id', {
+        exec,
+        passwordStrategy: 'plink',
+        sshPasswordChannel: {
+          ensurePlink: async () => ({ ok: false, error: 'plink 缺席' }),
+          resolveHostKeyFingerprints: async () => ['SHA256:abc'],
+          askpassScriptPath: () => '/tmp/ask.sh',
+        },
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain('plink 缺席');
+      expect(calls).toHaveLength(0);
+    } finally {
+      delete process.env.ZHISHI_TEST_PW_REF;
     }
   });
 });

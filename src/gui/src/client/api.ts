@@ -218,6 +218,9 @@ export interface SshAddInput {
   keyPath?: string;
   /** 1.6.5 密钥引导：瞬传密码（不落盘；与 keyPath 同给由服务端拦）。 */
   password?: string;
+  /** 2.0.4 只密码设备：密码引用（env:VAR，D-T4 本体不落盘；与 keyPath
+   *  同给时服务端 sshAuthMethod 密钥优先）。 */
+  passwordRef?: string;
   /** 1.3.7 向导补齐：非标端口（缺省 22）。 */
   port?: number;
   name?: string;

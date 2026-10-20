@@ -62,6 +62,7 @@ import { getZhiShiDataDir } from '../utils/app-dirs';
 import {
   buildScpArgv,
   buildScpUploadArgv,
+  sshFileChannelUnsupported,
   defaultEnvExec,
   resolveSshTarget,
   type EnvExec,
@@ -303,6 +304,9 @@ export async function putFileToEnv(
   // 联网环境（ssh 条目 / 联网 VM）→ scp 上传（与 push 同 argv 构造）。
   const resolved = resolveSshTarget(entry);
   if (!resolved.ok) return { ok: false, error: `环境 "${entry.id}"（kind=${entry.kind}）不支持上传——${resolved.error}` };
+  // 2.0.4：只密码设备的文件传输 v1 不支持（明确报错，不挂起在 BatchMode 上）。
+  const blocked = sshFileChannelUnsupported(resolved.target, '文件传入（put-file）');
+  if (blocked) return { ok: false, error: blocked };
   const exec = opts.exec ?? defaultEnvExec;
   const r = await exec(buildScpUploadArgv(resolved.target, hostPath, envPath), TRANSFER_TIMEOUT_MS);
   if (r.exitCode !== 0 || r.error) return { ok: false, error: execError('scp 传入失败', r) };
@@ -334,6 +338,9 @@ export async function takeFileFromEnv(
   if (!resolved.ok) {
     return { ok: false, error: `环境 "${entry.id}"（kind=${entry.kind}）不支持取回——${resolved.error}（与 environment/extract 同覆盖面）` };
   }
+  // 2.0.4：只密码设备的文件传输 v1 不支持（明确报错，不挂起在 BatchMode 上）。
+  const blocked = sshFileChannelUnsupported(resolved.target, '文件取回（get-file/extract）');
+  if (blocked) return { ok: false, error: blocked };
   const exec = opts.exec ?? defaultEnvExec;
   const r = await exec(buildScpArgv(resolved.target, envPath, destDir), TRANSFER_TIMEOUT_MS);
   if (r.exitCode !== 0 || r.error) return { ok: false, error: execError('scp 取回失败', r) };

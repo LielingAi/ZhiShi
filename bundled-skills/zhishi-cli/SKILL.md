@@ -202,6 +202,8 @@ zhishi env add --kind ssh --id dev --host H [--port N] [--user U] [--key-path K]
                                                   # --port 是目标主机 ssh 端口（进环境条目）；
                                                   # 1.5.4 起它不再被全局 --port（sidecar 端口覆盖）抢走
                                                   # 1.5.10 起还可透传 --recipe-ids a,b / --os-family linux|windows / --vmx <模板.vmx>
+                                                  # 2.0.4 只密码设备（推不进公钥）：--password-ref env:VAR 登记密码引用
+                                                  #   （执行机环境变量/<数据目录>/secrets.env 供值；与 --key-path 同给则密钥优先）
 
 zhishi env open <id>                                  # 嵌终端接入环境（ssh / docker exec / vm ssh）
 

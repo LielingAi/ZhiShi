@@ -4,6 +4,7 @@ import { fileResponse, sniffMime } from './utils/file-response';
 import { serve as honoServe } from '@hono/node-server';
 import { isAbsolute, join, resolve, sep } from 'path';
 import { getZhiShiDataDir } from './utils/app-dirs';
+import { loadSecretsEnv } from './utils/secrets-env';
 import { randomUUID } from 'crypto';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
 import { scanAgents } from './agents/agent-loader';
@@ -506,6 +507,13 @@ const { agentDir, initialPrompt, port, sessionId: initialSessionId, host } = par
   startupBeacon(`args parsed, port=${port}, host=${host}, agentDir=${dirDisplay}`);
 const currentAgentDir = await ensureAgentDir(agentDir);
   startupBeacon('ensureAgentDir done');
+  // 2.0.4 只密码设备：secrets.env（<数据目录>/secrets.env，权限建议 600）
+  // 启动加载进进程环境——passwordRef（env:VAR）引用由此命中；已存在的同名
+  // 真实环境变量优先（详见 utils/secrets-env.ts）。失败不阻断启动（警告级）。
+  {
+    const loaded = loadSecretsEnv(getZhiShiDataDir(), (message) => console.warn(`[secrets] ${message}`));
+    if (loaded > 0) startupBeacon(`secrets.env loaded (${loaded} vars)`);
+  }
 // Initialize unified logging system (intercepts console.log and sends to SSE)
   // PRD #132 — wire the stdio-broken probe + marker so the logger wrapper
   // stops calling originalConsole.* once a stdio EPIPE has marked the sink

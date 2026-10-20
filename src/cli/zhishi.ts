@@ -143,6 +143,8 @@ Examples:
   zhishi env add --kind ssh --id dev-box --host 10.0.0.8 --user root --key-path ~/.ssh/id_ed25519
                                             # 1.5.10 起还可透传 --recipe-ids a,b --os-family linux|windows --vmx <模板.vmx>
                                             # 1.6.5：缺 --key-path 时现场输入一次登录密码即可自动配置密钥（密码不落盘）
+                                            # 2.0.4 只密码设备（推不进公钥）：--password-ref env:VAR 登记密码引用
+                                            #   （执行机环境变量/<数据目录>/secrets.env 供值；与 --key-path 同给则密钥优先）
   zhishi env open dev-box                   # open env in embedded terminal (term open --cmd)
   zhishi env remove dev-box
   zhishi env rename dev-box "旧靶机"       # 改名/别名（1.6.6：只动显示名，id 不变；空名清除别名）
@@ -1890,6 +1892,9 @@ const group = positional[0];
       body &&
       ((body as Record<string, unknown>).kind === 'ssh' || (body as Record<string, unknown>).kind === 'vm') &&
       !(body as Record<string, unknown>).keyPath &&
+      // 2.0.4：--password-ref（只密码设备，推不进公钥）是显式的免引导声明——
+      // 别再问引导密码（问了也推不进，徒增困惑）。
+      !(body as Record<string, unknown>).passwordRef &&
       process.stdin.isTTY
     ) {
       const bootstrapPw = await promptHiddenInput('未提供 --key-path。输入登录密码以自动配置密钥（生成密钥对并推公钥进目标；密码现场使用不落盘，直接回车跳过）: ');
@@ -2450,6 +2455,9 @@ function buildRequestBody(
         address: flags.address,
         user: flags.user,
         keyPath: flags.keyPath,
+        // 2.0.4 只密码设备：密码引用透传（引用不是本体，D-T4 可以走 flag；
+        // 与 --key-path 同给时由 sshAuthMethod 定序——keyPath 优先）。
+        passwordRef: flags.passwordRef,
         port: flags.port,
         recipeIds: typeof flags.recipeIds === 'string'
           ? (flags.recipeIds as string).split(',').map(s => s.trim()).filter(Boolean)

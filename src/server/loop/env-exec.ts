@@ -15,17 +15,28 @@
  * 实现不稳（实测 master 即建即断、首个会话 stdout 被吞），win32 默认
  * 每命令一次握手（见 buildSshArgv 注释）。BatchMode 禁交互、
  * accept-new 免首次主机确认。
- * 凭据纪律（D-T4）：只用 keyPath 引用私钥，绝不接受/传递密码。
+ * 凭据纪律（D-T4）：keyPath 引用私钥 / passwordRef 引用密码（env:VAR），
+ * 本体永不落盘。2.0.4 起 ssh 通道支持只密码设备（推不进公钥的嵌入式/
+ * 网络设备/老服务器）：无 keyPath 有 passwordRef → 密码执行通道
+ * （win32 plink -pw / posix SSH_ASKPASS，见 sshAuthMethod 与
+ * execInEnvironment 密码分支）；文件传输与 attach 暂不支持（明确报错，
+ * 见 sshFileChannelUnsupported）。
  *
  * kind=docker 的条目走 docker exec 通道（resolveExecTarget 分派，
  * buildDockerExecArgv 组参）——2026-08-17 接通,不再是 M1 断点。
  */
 
-import { mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 
+import { getZhiShiDataDir } from '../../shared/app-dirs';
 import type { EnvironmentEntry } from '../../shared/config-types';
+import {
+  buildPlinkArgs,
+  ensurePlinkAvailable,
+  resolveHostKeyFingerprints,
+} from '../environment/vm-adopt';
 import { vmGuestExec } from '../environment/vm-guest-exec';
 import { osFamilyOf, psEmbedCommand, psEncode, psShellWrapper } from '../environment/os-family';
 import type { VmExec } from '../environment/vm-lifecycle';
@@ -56,7 +67,13 @@ export interface EnvExecProcessResult {
   error?: string;
 }
 
-export type EnvExec = (argv: string[], timeoutMs: number) => Promise<EnvExecProcessResult>;
+export type EnvExec = (
+  argv: string[],
+  timeoutMs: number,
+  /** 2.0.4：密码引用通道的额外子进程环境（SSH_ASKPASS 三件套）——
+   * 缺省 undefined = 与既有调用逐字节同形。 */
+  opts?: { env?: Record<string, string> },
+) => Promise<EnvExecProcessResult>;
 
 export interface EnvExecOptions {
   exec?: EnvExec;
@@ -68,6 +85,17 @@ export interface EnvExecOptions {
   controlMaster?: boolean;
   /** 测试注入:guest 通道(断网 VM)的 vmrun exec(绝不真调 vmrun)。 */
   guestExec?: VmExec;
+  /**
+   * 2.0.4 密码通道测试注入（生产缺省走真实实现）：
+   * - passwordStrategy 显式选 plink/askpass（缺省 win32→plink、其余→askpass）；
+   * - sshPasswordChannel 覆盖 plink 可用性/hostkey 指纹/askpass 脚本路径。
+   */
+  passwordStrategy?: 'plink' | 'askpass';
+  sshPasswordChannel?: {
+    ensurePlink(): Promise<{ ok: true; path: string } | { ok: false; error: string }>;
+    resolveHostKeyFingerprints(host: string): Promise<string[] | undefined>;
+    askpassScriptPath(): string;
+  };
 }
 
 export interface SshTarget {
@@ -77,6 +105,13 @@ export interface SshTarget {
   user?: string;
   port?: number;
   keyPath?: string;
+  /**
+   * 2.0.4 只密码设备：密码引用（D-T4，引用不落盘）。语义（sshAuthMethod）：
+   * 有 keyPath → 密钥认证（passwordRef 对 ssh 通道不生效，VM 条目可借此
+   * 双通道共存）；无 keyPath 有 passwordRef → 密码执行通道；两者皆无 →
+   * 走 ssh 缺省（agent/默认密钥）。
+   */
+  passwordRef?: string;
 }
 
 export const DEFAULT_TIMEOUT_MS = 120_000;
@@ -129,7 +164,8 @@ export function resolveExecTarget(entry: EnvironmentEntry): EnvResult<{ execTarg
 
 /**
  * guest 密码外部引用解析(D-T4:不落盘、不存本体)。v1 只支持 `env:VAR_NAME`
- * ——从宿主进程环境现场取。无引用/变量未设/空值 → null(调用方给指引)。
+ * ——从宿主进程环境现场取（secrets.env 启动加载后同样命中）。无引用/
+ * 变量未设/空值 → null(调用方给指引)。
  */
 export function resolvePasswordRef(ref: string | undefined): string | null {
   if (!ref) return null;
@@ -137,6 +173,134 @@ export function resolvePasswordRef(ref: string | undefined): string | null {
   if (!m) return null;
   const v = process.env[m[1]];
   return v ? v : null;
+}
+
+// ---------------------------------------------------------------------------
+// 2.0.4 只密码设备 —— ssh 密码执行通道（纯函数层）
+// ---------------------------------------------------------------------------
+
+/**
+ * ssh 通道认证方式分派（纯函数）：
+ * - key：有 keyPath——密钥认证（passwordRef 存在也不生效；VM 条目的
+ *   passwordRef 是 guest 通道的，双通道共存合法）；
+ * - password：无 keyPath 有 passwordRef——只密码设备，走密码执行通道；
+ * - agent：两者皆无——ssh 缺省（agent / 默认密钥），行为与 2.0.4 前一致。
+ */
+export function sshAuthMethod(target: SshTarget): 'key' | 'password' | 'agent' {
+  if (target.keyPath) return 'key';
+  if (target.passwordRef) return 'password';
+  return 'agent';
+}
+
+/** ASKPASS 脚本读取的密码环境变量名（子进程注入，不进 argv/日志）。 */
+export const SSH_ASKPASS_PASSWORD_ENV = 'ZHISHI_SSH_ASKPASS_PASSWORD';
+
+/**
+ * 幂等落盘 SSH_ASKPASS 助手脚本（posix 密码通道用）：ssh 无 TTY 时经
+ * SSH_ASKPASS 收集密码，脚本只负责把本次执行注入的环境变量打出来。
+ * 脚本本身不含任何秘密——秘密在每次 spawn 的子进程环境里。
+ */
+export function ensureAskpassScript(dataDir: string): string {
+  const path = join(dataDir, 'ssh-askpass.sh');
+  const content =
+    '#!/bin/sh\n' +
+    '# ZhiShi SSH_ASKPASS helper（2.0.4 密码引用通道）：打印本次执行注入的密码环境变量。\n' +
+    `printf '%s' "$${SSH_ASKPASS_PASSWORD_ENV}"\n`;
+  try {
+    let current: string | null = null;
+    try {
+      current = readFileSync(path, 'utf-8');
+    } catch {
+      current = null; // 缺失或断链——重写（writeFileSync 跟随 symlink 的失败形态可接受：数据目录本机可信）
+    }
+    if (current !== content) writeFileSync(path, content, { mode: 0o700 });
+  } catch {
+    // best-effort：写不进时 spawn 会给出清晰错误（ENOENT/权限）。
+  }
+  return path;
+}
+
+/** posix 密码通道的子进程环境三件套（SSH_ASKPASS / REQUIRE=force / 密码载体）。 */
+export function buildSshPasswordEnv(password: string, askpassScriptPath: string): Record<string, string> {
+  return {
+    SSH_ASKPASS: askpassScriptPath,
+    SSH_ASKPASS_REQUIRE: 'force',
+    [SSH_ASKPASS_PASSWORD_ENV]: password,
+  };
+}
+
+/** OS 家族分派的远端命令包装（buildSshArgv / buildSshPasswordArgv 同口径）。 */
+function wrapRemoteCommand(command: string, family?: 'linux' | 'windows'): string {
+  return family === 'windows'
+    ? `powershell -NoProfile -EncodedCommand ${psEncode(psShellWrapper(command))}`
+    : command;
+}
+
+/**
+ * posix 宿主的密码执行 argv（纯函数）：与 buildSshArgv 的差别——
+ * 无 BatchMode（BatchMode=yes 会让 ssh 拒绝一切交互，ASKPASS 永不被
+ * 咨询），加 NumberOfPasswordPrompts=1（密码错时一次即败，不循环问），
+ * 无 -i（密码通道不携带密钥）。accept-new / ConnectTimeout / ControlMaster
+ * 平台缺省与远端包装与 buildSshArgv 严格同口径。
+ */
+export function buildSshPasswordArgv(
+  target: SshTarget,
+  command: string,
+  opts?: { controlMaster?: boolean; osFamily?: 'linux' | 'windows' },
+): string[] {
+  const controlMaster = opts?.controlMaster ?? process.platform !== 'win32';
+  const argv = [
+    'ssh',
+    '-o', 'NumberOfPasswordPrompts=1',
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', 'ConnectTimeout=10',
+  ];
+  if (controlMaster) {
+    argv.push(
+      '-o', 'ControlMaster=auto',
+      '-o', `ControlPath=${join(controlSocketDir(), '%r@%h:%p')}`,
+      '-o', `ControlPersist=${CONTROL_PERSIST}`,
+    );
+  }
+  if (target.port) argv.push('-p', String(target.port));
+  argv.push(target.destination, wrapRemoteCommand(command, opts?.osFamily));
+  return argv;
+}
+
+/**
+ * win32 宿主的密码执行 argv（纯函数）：plink 密码通道（与密钥引导同一
+ * 套纪律：-batch 禁交互 + -hostkey 钉指纹）。user 缺省取当前用户名
+ * （与 ssh 的 destination 语义对齐）。buildPlinkArgsWithPort 的同构
+ * 实现（避免 loop → key-bootstrap 的反向依赖），改动须同步两处。
+ */
+export function buildPlinkPasswordArgv(
+  plinkPath: string,
+  target: SshTarget,
+  command: string,
+  password: string,
+  hostkeyFingerprints: string[],
+): string[] {
+  const user = target.user ?? userInfo().username;
+  const args = buildPlinkArgs(plinkPath, user, target.host, password, command, hostkeyFingerprints);
+  if (target.port !== undefined) {
+    const targetIdx = args.indexOf(`${user}@${target.host}`);
+    if (targetIdx > 0) args.splice(targetIdx, 0, '-P', String(target.port));
+  }
+  return args;
+}
+
+/**
+ * 文件传输 / attach 的密码通道护栏：v1 只密码设备仅命令执行可用，
+ * scp（双向）与交互终端对密码条目给**明确错误**而不是默默挂起在
+ * BatchMode/密码提示上。返回 null = 不受限；否则为错误文案。
+ */
+export function sshFileChannelUnsupported(target: SshTarget, what: string): string | null {
+  if (sshAuthMethod(target) !== 'password') return null;
+  return (
+    `该环境走密码引用认证（D-T4），${what}暂不支持密码通道（v1 仅命令执行）。\n` +
+    '方案：给条目配 keyPath（zhishi env add 可现场输一次密码自动推公钥），' +
+    `或先用「环境内命令」完成任务后再取结果。`
+  );
 }
 
 /** docker 执行 argv:docker exec <container> bash -lc <command>(配方镜像的
@@ -296,6 +460,12 @@ export function buildPtySpawnSpec(
     }
     return { ok: true, spec: { file: 'sh', args: ['-c', LINUX_INTERACTIVE_SHELL_SCRIPT], family } };
   }
+  if (resolved.execTarget.channel === 'ssh') {
+    // 2.0.4：只密码设备的 attach 暂不支持（v1 仅命令执行）——明确报错，
+    // 不让 BatchMode 密钥 argv 挂在密码提示上。
+    const blocked = sshFileChannelUnsupported(resolved.execTarget.target, '交互终端 attach');
+    if (blocked) return { ok: false, error: blocked };
+  }
   return {
     ok: true,
     spec: { file: 'ssh', args: buildPtySshArgv(resolved.execTarget.target, family, opts), family },
@@ -333,6 +503,7 @@ export function resolveSshTarget(entry: EnvironmentEntry): EnvResult<{ target: S
       user: entry.user,
       port: Number.isFinite(port) ? port : undefined,
       keyPath: entry.keyPath,
+      passwordRef: entry.passwordRef,
     },
   };
 }
@@ -371,12 +542,7 @@ export function buildSshArgv(
   }
   if (target.keyPath) argv.push('-i', target.keyPath);
   if (target.port) argv.push('-p', String(target.port));
-  // OS 家族分派:windows → powershell -EncodedCommand(退出码透传);
-  // linux → 命令原样(远端 shell 解释)。
-  const remote = opts?.osFamily === 'windows'
-    ? `powershell -NoProfile -EncodedCommand ${psEncode(psShellWrapper(command))}`
-    : command;
-  argv.push(target.destination, remote);
+  argv.push(target.destination, wrapRemoteCommand(command, opts?.osFamily));
   return argv;
 }
 
@@ -435,12 +601,16 @@ export function truncateOutput(text: string, limit: number = OUTPUT_LIMIT_BYTES)
 // I/O — default exec（照 defaultVmrunExec 的形状）
 // ---------------------------------------------------------------------------
 
-export async function defaultEnvExec(argv: string[], timeoutMs: number): Promise<EnvExecProcessResult> {
+export async function defaultEnvExec(
+  argv: string[],
+  timeoutMs: number,
+  opts?: { env?: Record<string, string> },
+): Promise<EnvExecProcessResult> {
   // ControlPath 目录需预先存在（ssh 不会自建多级目录）。
   try { mkdirSync(controlSocketDir(), { recursive: true }); } catch { /* best-effort */ }
 
   const proc = spawnSubprocess([resolveCommand(argv[0]), ...argv.slice(1)], {
-    env: augmentedProcessEnv(),
+    env: { ...augmentedProcessEnv(), ...opts?.env },
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
@@ -603,32 +773,83 @@ export async function execInEnvironment(
   // （见该函数注释——直 spawn 没有「远端 shell 再解析一步」的口径可用），
   // 故 local 跳过下方 ssh/docker 的末位替换。
   const isLocal = execTarget.channel === 'local';
-  const argv = execTarget.channel === 'docker'
+
+  // 2.0.4 只密码设备：ssh 密码执行通道（D-T4：passwordRef 现场解析，本体
+  // 不落盘/不进 argv 日志——posix 走 SSH_ASKPASS 子进程环境，win32 走
+  // plink -pw + hostkey 钉指纹，与密钥引导同一套纪律）。密码 argv 的远端
+  // 命令在此自带超时杀包装（两个通道的命令都在末位，同一替换口径）。
+  let execEnv: Record<string, string> | undefined;
+  let passwordArgv: string[] | null = null;
+  if (execTarget.channel === 'ssh' && sshAuthMethod(execTarget.target) === 'password') {
+    const target = execTarget.target;
+    const password = resolvePasswordRef(target.passwordRef);
+    if (!password) {
+      return {
+        ok: false,
+        error:
+          `环境 "${entry.id}" 是只密码设备（ssh 密码引用认证，D-T4 不落盘），但引用解析不到密码。\n` +
+          `passwordRef=${target.passwordRef ?? '（空）'}——确认执行机（团队大脑 = 服务器侧）已设该环境变量，` +
+          '或集中维护 <数据目录>/secrets.env（启动自动加载）后重试。',
+      };
+    }
+    const wrappedCommand = buildRemoteTimeoutWrapper(command, timeoutMs, family);
+    const strategy = options.passwordStrategy ?? (process.platform === 'win32' ? 'plink' : 'askpass');
+    if (strategy === 'plink') {
+      const channel = options.sshPasswordChannel;
+      const plink = channel ? await channel.ensurePlink() : await ensurePlinkAvailable(exec);
+      if (!plink.ok) return { ok: false, error: plink.error };
+      const fps = channel
+        ? await channel.resolveHostKeyFingerprints(target.host)
+        : await resolveHostKeyFingerprints(exec, target.host);
+      if (!fps || fps.length === 0) {
+        return {
+          ok: false,
+          error:
+            `取不到 ${target.host}:${target.port ?? 22} 的 host key 指纹——` +
+            '设备 sshd 在跑且网络可达吗？（密码通道的 plink -batch 必须钉指纹，取不到就只能干等超时）',
+        };
+      }
+      passwordArgv = buildPlinkPasswordArgv(plink.path, target, wrappedCommand, password, fps);
+    } else {
+      const scriptPath = options.sshPasswordChannel
+        ? options.sshPasswordChannel.askpassScriptPath()
+        : ensureAskpassScript(getZhiShiDataDir());
+      execEnv = buildSshPasswordEnv(password, scriptPath);
+      passwordArgv = buildSshPasswordArgv(target, wrappedCommand, {
+        controlMaster: options.controlMaster,
+        osFamily: family,
+      });
+    }
+  }
+
+  const argv = passwordArgv ?? (execTarget.channel === 'docker'
     ? buildDockerExecArgv(execTarget.container, command)
     : isLocal
       ? buildLocalExecArgv(command, family, timeoutMs)
       : buildSshArgv(execTarget.target, command, {
           controlMaster: options.controlMaster,
           osFamily: family,
-        });
+        }));
 
   // 1.6.9 #2：远端超时杀——本地超时只杀宿主 CLI，远端进程照跑（实机事故：
   // 容器内 runaway 进程拖死 docker API，通道自堵 76 分钟）。远端侧包装让
   // 进程到点即死；本地超时留 +10s 余量（远端先答，本地兜底）。
   // 1.7.8：local 通道同一包装语义——windows 作业包装的 Start-Job 脱离
   // 调用会话，宿主话里跑的 runaway 一样到点被杀（组装点见上）。
-  const wrappedArgv = isLocal
-    ? argv
-    : (() => {
-        const wrappedCommand = buildRemoteTimeoutWrapper(command, timeoutMs, family);
-        const next = [...argv];
-        next[next.length - 1] = wrappedCommand; // ssh/docker builder 的命令都在末位
-        return next;
-      })();
+  const wrappedArgv = passwordArgv !== null
+    ? passwordArgv
+    : isLocal
+      ? argv
+      : (() => {
+          const wrappedCommand = buildRemoteTimeoutWrapper(command, timeoutMs, family);
+          const next = [...argv];
+          next[next.length - 1] = wrappedCommand; // ssh/docker builder 的命令都在末位
+          return next;
+        })();
 
   let result: EnvExecProcessResult;
   try {
-    result = await exec(wrappedArgv, timeoutMs + 10_000);
+    result = await exec(wrappedArgv, timeoutMs + 10_000, execEnv ? { env: execEnv } : undefined);
   } catch (err) {
     noteExecOutcome(entry.id, true);
     return { ok: false, error: `环境执行异常：${err instanceof Error ? err.message : String(err)}` };
