@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-10-20
+
+> **团队大脑成员零配置**：远端 GUI 直连大脑，不再需要手工 SSH 隧道。
+
+### Added
+
+- **远端中继（remote relay）**：把 `ssh -L` 做成应用内建能力——成员机自起只绑回环的哑 TCP 管道（`src-tauri/resources/relay.cjs`，纯 `node:net`），webview 全程连 `http://127.0.0.1:<中继端口>`，fetch / SSE / 终端 WebSocket / `/refs/` 大文件全透明。动机：webview 安全上下文下浏览器混合内容拦截掐死页面向 `http://<局域网IP>` 发起的一切请求，auth 开启后服务端 CORS allowlist 又只放行 Tauri origin 与回环 origin——不碰 HTTPS 时唯一活路是让 GUI 请求目标保持回环。Rust 侧 `remote_relay` 模块管生命周期（进入远端 spawn；换目标/离开远端/应用退出收尸；幂等 ensure + 失败冷却防轮询变 spawn 风暴）；`get_sidecar_port(remote_url)` 远端模式改返回中继端口（本机路径一字节不变）；服务端零改动。SSH 隧道降级为旧版应用 / 浏览器 dev 的备选路径（user-guide §10）
+- 设计/验收见 `docs/design/2.0.3-remote-relay.md`：relay.cjs 端到端契约 5 例（READY 行/echo 往返/半关闭传播/目标拒绝语义/参数退出码——实测钉死 `allowHalfOpen` 与 `destroySoon` 两个真 bug）+ 中继轮询逻辑 5 例；全量 unit 池 2880 绿 + typecheck/eslint 干净。动工前复核修正一处架构误述：GUI 流量并非「大部分走 Rust 代理」，而是全部 webview 直连（`src/server/auth/cors.ts` 头注释的 Rust 代理层不存在）——中继因此按「全量流量隧道」设计
+
 ## [2.0.2] - 2026-10-18
 
 > **三大实机问题修复**：任务假死（渲染层）、busy 切环境被拒（引擎层）、切环境档案丢失（订阅层）。每条带实测数据/单测/真机验证。
