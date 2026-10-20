@@ -88,6 +88,25 @@ describe('GuiSidecarClient.openSse', () => {
     expect(out[1].payload).toBe('hello');
   });
 
+  it('2.0.5：401/403 立即上抛且只请求一次（鉴权失败不再静默退避重试）', async () => {
+    let calls = 0;
+    const fetchImpl: GuiFetch = async () => {
+      calls++;
+      return {
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        headers: { get: () => '' },
+        json: async () => ({}),
+        text: async () => '',
+        body: null,
+      };
+    };
+    const client = new GuiSidecarClient({ base: 'http://x', fetchImpl });
+    await expect(client.openSse('/chat/stream').next()).rejects.toBeInstanceOf(GuiHttpError);
+    expect(calls).toBe(1);
+  });
+
   it('EOF 后自动重连（onReconnect 被调）', async () => {
     let connects = 0;
     const fetchImpl: GuiFetch = async () => {

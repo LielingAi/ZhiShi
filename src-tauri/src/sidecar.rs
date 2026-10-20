@@ -355,6 +355,12 @@ const STARTUP_CLEANUP_PATTERNS: &[crate::process_cleanup::ProcessPattern] = &[
     crate::process_cleanup::ProcessPattern::new("nodejs", "/zhishi/nodejs/"),
 ];
 
+/// 2.0.5 `zhishi brain serve`（团队大脑）的 argv 标记：用户级常驻服务，
+/// 启动/退出/更新清扫一律不得触碰（排除语义见 process_cleanup::
+/// kill_stale_processes 的 exclude 参数）。server-dist 侧对未知参数本就不解析，
+/// 该旗标纯作进程身份标记。
+pub(crate) const BRAIN_SERVE_MARKER: &str = "--zhishi-brain";
+
 // ===== Sidecar stderr classification =====
 //
 // Node.js writes to stderr from a few intentional informational paths
@@ -767,7 +773,10 @@ pub fn cleanup_stale_sidecars(had_prior_instance: bool) {
         return;
     }
 
-    let report = crate::process_cleanup::kill_stale_processes(STARTUP_CLEANUP_PATTERNS);
+    let report = crate::process_cleanup::kill_stale_processes(
+        STARTUP_CLEANUP_PATTERNS,
+        &[BRAIN_SERVE_MARKER],
+    );
     if report.total_targets() == 0 {
         ulog_info!(
             "[sidecar] Startup cleanup complete in {:?} (no stale processes found)",
@@ -4356,7 +4365,10 @@ pub fn shutdown_for_update(manager: &ManagedSidecarManager) -> Result<(), String
 
         if start.elapsed() > max_wait {
             ulog_warn!("[sidecar] Update shutdown timeout, force killing remaining...");
-            let report = crate::process_cleanup::kill_stale_processes(STARTUP_CLEANUP_PATTERNS);
+            let report = crate::process_cleanup::kill_stale_processes(
+                STARTUP_CLEANUP_PATTERNS,
+                &[BRAIN_SERVE_MARKER],
+            );
             ulog_info!(
                 "[sidecar] Force-kill final pass: killed {}, residual {} ({:?})",
                 report.killed,
@@ -4386,7 +4398,12 @@ pub fn shutdown_for_update(manager: &ManagedSidecarManager) -> Result<(), String
 /// [`stop_all_sidecars`]. Sweeping by marker here would risk killing a
 /// concurrent ZhiShi instance's sidecars during any overlap window.
 fn cleanup_child_processes() {
-    let report = crate::process_cleanup::kill_stale_processes(CHILD_CLEANUP_PATTERNS);
+    // 2.0.5：app 退出清扫同样不得碰团队大脑（BRAIN_SERVE_MARKER）——它是
+    // 用户级常驻服务，不是本应用的孤儿子进程。
+    let report = crate::process_cleanup::kill_stale_processes(
+        CHILD_CLEANUP_PATTERNS,
+        &[BRAIN_SERVE_MARKER],
+    );
     if report.total_targets() == 0 {
         ulog_info!(
             "[sidecar] Shutdown cleanup: nothing to kill ({:?})",

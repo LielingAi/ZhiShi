@@ -277,6 +277,11 @@ export class GuiSidecarClient {
         }
       } catch (err) {
         if (signal?.aborted) return;
+        // 2.0.5：鉴权失败（401/403）重试无药可救——立即上抛，由调用方
+        // 落 connectionState=failed 并回显真实错误。此前静默线性退避重试，
+        // auth 开启而客户端没带 token 时 UI 永远「连接中」，排障无门
+        // （团队模式实机事故）。
+        if (err instanceof GuiHttpError && (err.status === 401 || err.status === 403)) throw err;
         cause = err;
       }
       if (signal?.aborted) return;

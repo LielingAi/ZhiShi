@@ -178,6 +178,11 @@ zhishi env engines [--fresh]                          # 探测 docker/Hyper-V/VB
 
 zhishi env recipes                                    # 环境配方（bundled：dev/pwn/fuzz docker + pwn-vm）
 
+zhishi brain serve [--host 10.0.0.8] [--port 7411] [--agent-dir <工作区>]
+                                                  # 2.0.5 团队大脑一等命令：内置 node 直起 server-dist，前台
+                                                  # 常驻 Ctrl+C 停；自动带清扫免疫标记（GUI 重启/退出不误杀）；
+                                                  # 绑非回环地址前须先 zhishi auth enable
+
 zhishi env up <recipe> [--vm-base X.vmx] [--user U] [--key-path K]   # 从配方起环境（docker build+run / VM 直连启动，D22 不拷贝）
 
 zhishi env ps                                         # 运行中实例合集（docker + vmware + hyperv + vbox，带 DRIVER 列）

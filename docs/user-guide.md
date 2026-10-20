@@ -340,18 +340,26 @@ MCP 工具在会话里以 `mcp__<server>__<tool>` 命名，与内置工具同受
 
 > 1.8.7 起。拓扑：一个团队大脑（服务器上唯一的 sidecar）+ 远端客户端（应用 / CLI）。线、档案、claims、知识、蒸馏、环境全部集中在服务器上；成员机器上只保留宿主 shell 与自己的文件。**单机用户不需要这一章**——不配 `--host`、不开 auth，一切与旧版一致。
 
-### 起大脑
+### 起大脑（2.0.5 起：一条命令）
 
 ```bash
-# ① 回环模式发 token（secret 只打印一次，立刻保存）
+# ① 发 token（secret 只打印一次，立刻保存）
 zhishi auth add --name wren --role reviewer     # 给把关的人
 zhishi auth add --name alice --role operator    # 给干活的成员
 zhishi auth add --name guest --role readonly    # 给只看的人
-# ② 启用鉴权
+# ② 启用鉴权（未启用就绑非回环会被拒绝启动）
 zhishi auth enable
-# ③ 以 --host <内网地址> 起 sidecar（未启用鉴权就绑非回环会被拒绝启动）
-# 源码：npm run server -- --host 192.168.x.x --port 7411 --agent-dir <数据目录>
-# 安装版：node "<安装目录>/resources/server-dist.js" --host 192.168.x.x --port 7411 --agent-dir <数据目录>
+# ③ 起大脑：内置 node 直起 server-dist，前台常驻（Ctrl+C 停止），
+#    自动带清扫免疫标记——GUI 重启/退出不会误杀它。
+zhishi brain serve --host 10.0.93.49 --port 7411 --agent-dir <工作区目录>
+# 缺省 127.0.0.1:7411 + 当前目录；源码开发态照旧：
+# npm run server -- --host 192.168.x.x --port 7411 --agent-dir <工作区>
+```
+
+防火墙放行 7411 入站（一次性，管理员 cmd）：
+
+```cmd
+netsh advfirewall firewall add rule name="ZhiShi Brain 7411" dir=in action=allow protocol=TCP localport=7411
 ```
 
 注意：`auth enable` 之后，**大脑所在机器上原有的 GUI/CLI 也要带 token**（GUI 设置 → 连接里填，CLI 用 `--token` / `ZHISHI_TOKEN`）。**桌面宿主（Tauri 应用）的内部调度请求**（cron 定时任务、session-state 轮询、trust/event 上报）同样过统一鉴权闸：给宿主进程配置 `ZHISHI_TOKEN` 环境变量（建议 operator 档 token），应用启动时继承即可；未配置则定时任务会被 401 拒绝（日志可见），不静默绕过。

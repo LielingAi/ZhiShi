@@ -935,7 +935,14 @@ export const useGuiStore = create<GuiState>()((set, get) => ({
         return;
       }
       set({ connectionState: 'connecting', connectError: null });
-      client = new GuiSidecarClient({ base: `http://127.0.0.1:${port}` });
+      // 2.0.5：本机模式同样携带连接设置里的 token——auth 开启后本机
+      // sidecar 一样过鉴权闸（回环无豁免），本机模式客户端此前不带
+      // token 导致 401 死循环「连接中」。auth 未启用时多一个请求头无害
+      // （服务端忽略）。
+      client = new GuiSidecarClient({
+        base: `http://127.0.0.1:${port}`,
+        token: conn.token.trim() ? conn.token.trim() : undefined,
+      });
       void get().refreshSidebar();
       void loadModels(get, set);
       get().reconnect();

@@ -84,9 +84,15 @@ fn normalize(s: &str) -> String {
 /// it for both startup-time stale cleanup and shutdown-time orphan
 /// cleanup. Always excludes the current process PID.
 ///
+/// 2.0.5 `exclude`：命令行含任一排除子串的进程及其整个子树**不受清扫**
+/// —— `zhishi brain serve` 起的团队大脑是用户刻意常驻的独立服务，不是
+/// 本应用实例的孤儿（它的 cmdline 带 `--zhishi-brain` 标记），GUI 每次
+/// 启动/退出的清扫都不能碰它（实机事故：手工起的 LAN 大脑被启动清扫
+/// 当孤儿杀掉，表现为「server 自己会挂」）。
+///
 /// Wait budget for confirmed termination: **3 s**. Any process still alive
 /// after that is counted in `residual` and logged by callers.
-pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport {
+pub fn kill_stale_processes(patterns: &[ProcessPattern], exclude: &[&str]) -> CleanupReport {
     let started = Instant::now();
     let mut system = System::new();
     // Refresh with CMD info so Process::cmd() is populated.
@@ -101,6 +107,13 @@ pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport {
     );
 
     let self_pid = Pid::from_u32(std::process::id());
+    let excludes_normalized: Vec<String> = exclude.iter().map(|s| normalize(s)).collect();
+
+    // cmdline 命中任一排除子串 → 该进程受保护（不进清扫名单）。
+    let is_protected = |cmd: &str| -> bool {
+        let n = normalize(cmd);
+        excludes_normalized.iter().any(|e| n.contains(e.as_str()))
+    };
 
     // Build PPID → children map once (sysinfo gives us flat list).
     let mut children_of: HashMap<Pid, Vec<Pid>> = HashMap::new();
@@ -113,10 +126,41 @@ pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport {
     // Pre-normalize patterns once — saves per-process string allocation.
     let norm_patterns: Vec<String> = patterns.iter().map(|p| normalize(p.pattern)).collect();
 
-    // Find root matches by command-line pattern.
+    // 2.0.5：先算受保护集合——cmdline 命中排除子串的进程 + 它们的全部
+    // 子树（大脑 spawn 出的 CLI 等子进程自身不带标记，也在保护范围内）。
+    let mut protected: HashSet<Pid> = HashSet::new();
+    if !excludes_normalized.is_empty() {
+        let mut queue: Vec<Pid> = Vec::new();
+        for (pid, proc) in system.processes() {
+            if *pid == self_pid {
+                continue;
+            }
+            let cmd_raw: String = proc
+                .cmd()
+                .iter()
+                .map(|os| os.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !cmd_raw.is_empty() && is_protected(&cmd_raw) {
+                protected.insert(*pid);
+                queue.push(*pid);
+            }
+        }
+        while let Some(p) = queue.pop() {
+            if let Some(kids) = children_of.get(&p) {
+                for kid in kids {
+                    if protected.insert(*kid) {
+                        queue.push(*kid);
+                    }
+                }
+            }
+        }
+    }
+
+    // Find root matches by command-line pattern（受保护进程永不进清扫名单）。
     let mut roots: HashSet<Pid> = HashSet::new();
     for (pid, proc) in system.processes() {
-        if *pid == self_pid {
+        if *pid == self_pid || protected.contains(pid) {
             continue;
         }
         let cmd_raw: String = proc
@@ -138,13 +182,13 @@ pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport {
     }
     let matched_roots = roots.len();
 
-    // BFS: collect all descendants of matched roots.
+    // BFS: collect all descendants of matched roots（受保护子树剪枝）。
     let mut to_kill: HashSet<Pid> = roots.clone();
     let mut queue: Vec<Pid> = roots.iter().copied().collect();
     while let Some(p) = queue.pop() {
         if let Some(kids) = children_of.get(&p) {
             for kid in kids {
-                if *kid == self_pid {
+                if *kid == self_pid || protected.contains(kid) {
                     continue;
                 }
                 if to_kill.insert(*kid) {

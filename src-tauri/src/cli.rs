@@ -23,6 +23,8 @@ use std::process::{Command, Stdio};
 const CLI_COMMANDS: &[&str] = &[
     "mcp", "model", "agent", "config", "status", "reload", "version",
     "skill", "task", "widget",
+    // 2.0.5 团队大脑一等命令（本地 spawn，不经 GUI；缺了会被当 GUI 启动参数吞掉）
+    "brain",
     // Env / domain / research / intel / expert / help — added 2026-08-26 audit
     // (B1): these command groups exist in zhishi.ts TOP_HELP but were missing
     // here, so `ZhiShi.exe expert list` silently launched the GUI.

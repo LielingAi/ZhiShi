@@ -36,6 +36,7 @@ import { collectRefs, fetchRefBody, formatRefHints, isValidRefId, type RefFetch 
 // 1.8.7 P4 团队大脑——env put-file / get-file（客户端磁盘 ↔ 服务器侧环境）。
 import { downloadRefToFile, uploadFileToServer, type TransferFetch } from './file-transfer';
 import { isSidecarPortOverride, parseArgs } from './cli-args';
+import { runBrainCommand } from './brain';
 import { probeRemoteHealth, resolveRemoteServer, resolveRemoteToken } from './remote';
 import { ensureCliSidecar } from './sidecar-ensure';
 import { buildExpertDoc, expertEditRoundTrip, parseExpertDoc } from './expert-edit';
@@ -151,6 +152,10 @@ Examples:
   zhishi env bind-recipes dev-box --recipes pwn,fuzz
                                             # 整体替换环境的多配方绑定集合（主配方恒在，1.5.10）
   zhishi env recipes                        # environment recipes (valid + invalid reasons)
+  zhishi brain serve [--host 10.0.0.8] [--port 7411] [--agent-dir <工作区>]
+                                            # 2.0.5 团队大脑一等命令：内置 node 直起 server-dist（前台常驻，
+                                            # Ctrl+C 停）；自动带清扫免疫标记，GUI 重启/退出不再误杀；
+                                            # 绑非回环前须先 zhishi auth enable
   zhishi env up web-recon                   # build + start a recipe container (workspace mounted)
   zhishi env up pwn-vm --vm-base "C:\\VMs\\ubuntu\\ubuntu.vmx" --user researcher
                                             # VM recipe: direct to the real VM via vmrun (D22: revert snapshot, no copy)
@@ -1866,6 +1871,11 @@ const group = positional[0];
       console.log(`✓ ${envId}:${envPath} → ${localPath}（${dl.bytes} 字节，sha256 ${dl.sha256.slice(0, 12)}… 已校验）`);
     }
     return;
+  }
+  // 2.0.5 团队大脑一等命令：本地 spawn server-dist（不经 admin API、不
+  // 拉本地 sidecar——它自己就是 sidecar）。缺子命令打用法。
+  if (group === 'brain') {
+    process.exit(await runBrainCommand(positional[1], flags));
   }
   // Simple commands (no subcommand)
   let result: Record<string, unknown>;
