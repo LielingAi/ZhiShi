@@ -235,15 +235,24 @@ export async function* runLoop(options: RunLoopOptions): AsyncIterable<LoopEvent
 
   // 1.5.13 模型静默看门狗（实机：deepseek API 挂起 99s 零 token——GUI 永远
   // 「思考中」）：模型流式阶段连续无事件 → 判挂起，中断并报明确错误。
-  // 工具执行阶段不计时（tool_execution_start→end 之间——长 env_exec/下载
-  // 合法地分钟级无事件）。
+  // 工具执行阶段不计时（全部工具都在飞期间——长 env_exec/下载合法地分钟级
+  // 无事件）。**按在飞数量判定，不是布尔**：pi 并发执行同批工具、各自收尾，
+  // 详见下方 inFlightTools 注释。
   // 1.7.2 分层：收到任意事件前按首事件预算计时（prefill 期——大上下文
   // 首 token 90-130s 属正常,90s 流间看门狗误杀实机实证）；收到后恢复
   // 流间静默阈值。
   const silenceMs = options.modelSilenceTimeoutMs ?? MODEL_SILENCE_TIMEOUT_MS;
   const firstEventMs = options.modelFirstEventTimeoutMs ?? MODEL_FIRST_EVENT_TIMEOUT_MS;
   const iter = stream[Symbol.asyncIterator]();
-  let inToolExecution = false;
+  // 2.0.7 实机修复（delegate_task 必挂）：工具边界必须**计数**，不能用布尔。
+  // pi 的 tool call 是并发执行的（agent-loop.js 里 Promise.all + 每个工具各自
+  // emit tool_execution_end），同一条 assistant 消息里的多个工具按**完成顺序**
+  // 收尾——布尔开关会被先完成的那个关掉，剩下还在跑的工具（典型：delegate_task
+  // 跑几分钟）就失去豁免：90s 静默一到整 turn 被误杀。
+  // 现场证据（2026-10-21 22:27~22:29）：call_00=delegate_task 与 call_01=env_exec
+  // 同批下发，env_exec 9s 后结束，delegate 继续跑 5 分钟，22:29:40 报「90s 无任何
+  // 数据流回」——而子代理此时仍在正常产出。
+  let inFlightTools = 0;
   let receivedAny = false;
   // 持久 next 句柄：race 超时绝不丢弃在途 next——异步生成器的 next() 串行化，
   // 对已挂起的 next 再发 next 只会排队，后到的 agent_end 会被吞进被丢弃的
@@ -254,16 +263,16 @@ export async function* runLoop(options: RunLoopOptions): AsyncIterable<LoopEvent
   // 共享事件处理（主循环与宽限排空同一口径）：边界切换 + 映射产出，
   // agent_end 视为终局。
   async function* handleEvent(event: AgentEvent): AsyncGenerator<LoopEvent, boolean> {
-    if (event.type === 'tool_execution_start') inToolExecution = true;
-    else if (event.type === 'tool_execution_end') inToolExecution = false;
+    if (event.type === 'tool_execution_start') inFlightTools += 1;
+    else if (event.type === 'tool_execution_end') inFlightTools = Math.max(0, inFlightTools - 1);
     for (const mapped of mapAgentEvent(event)) yield mapped;
     return event.type === 'agent_end';
   }
 
   for (;;) {
     let result: IteratorResult<AgentEvent>;
-    if (inToolExecution) {
-      // 工具执行期：纯等，不看门狗
+    if (inFlightTools > 0) {
+      // 工具执行期（任一工具在飞）：纯等，不看门狗
       result = await pending;
       if (!result.done) advance();
     } else {
@@ -295,8 +304,8 @@ export async function* runLoop(options: RunLoopOptions): AsyncIterable<LoopEvent
         const graceMs = options.modelWatchdogGraceMs ?? MODEL_WATCHDOG_GRACE_MS;
         const graceDeadline = Date.now() + graceMs;
         for (;;) {
-          if (inToolExecution) {
-            // 工具执行期：纯等，不看宽限（与主循环同规则）
+          if (inFlightTools > 0) {
+            // 工具执行期（任一工具在飞）：纯等，不看宽限（与主循环同规则）
             const r = await pending;
             if (!r.done) advance();
             if (r.done) return;

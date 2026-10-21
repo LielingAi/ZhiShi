@@ -224,8 +224,28 @@ describe('runLoop', () => {
     expect(events.some((e) => e.type === 'error')).toBe(false);
   });
 
-  // ── 1.7.2 看门狗分层（首事件 prefill 预算 / 流间静默） ──────────────────
+  // 2.0.7 实机（delegate_task 必挂）：pi 并发跑同批工具、各自 emit end——
+  // 先结束的那个不得关掉「工具执行期不计时」的豁免。
+  it('并行工具：先完成的那个不关豁免（delegate_task 与 env_exec 同批下发）', async () => {
+    agentLoopMock.mockReset();
+    agentLoopMock.mockReturnValue((async function* () {
+      yield { type: 'tool_execution_start', toolCallId: 't1', toolName: 'delegate_task', args: {} } as unknown as AgentEvent;
+      yield { type: 'tool_execution_start', toolCallId: 't2', toolName: 'env_exec', args: {} } as unknown as AgentEvent;
+      yield { type: 'tool_execution_end', toolCallId: 't2', toolName: 'env_exec', result: {}, isError: false } as unknown as AgentEvent;
+      // 子代理还在跑：静默 200ms 远超 silence 预算 50ms，但 delegate_task 仍在飞
+      await new Promise((r) => setTimeout(r, 200));
+      yield { type: 'tool_execution_end', toolCallId: 't1', toolName: 'delegate_task', result: {}, isError: false } as unknown as AgentEvent;
+      yield { type: 'agent_end', messages: [assistantMessage('done')] } as unknown as AgentEvent;
+    })());
+    const events = [];
+    for await (const e of runLoop({
+      prompt: 'x', model: fakeModel, models: fakeModels, modelSilenceTimeoutMs: 50, modelWatchdogGraceMs: 50,
+    })) events.push(e);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(events[events.length - 1].type).toBe('done');
+  });
 
+  // ── 1.7.2 看门狗分层（首事件 prefill 预算 / 流间静默） ──────────────────
   it('首 token 前按 firstEvent 预算计时：prefill 超时 → error 带「无首 token」文案，晚到 done 照收（1.8.4 宽限排空）', async () => {
     agentLoopMock.mockReset();
     agentLoopMock.mockReturnValue((async function* () {
