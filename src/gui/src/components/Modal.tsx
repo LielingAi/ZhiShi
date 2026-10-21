@@ -512,6 +512,15 @@ function NewEnvModal(): React.JSX.Element | null {
                   onChange={(e) => wizardSetParam('discoveredPassword', e.target.value)}
                 />
               </div>
+              <div>
+                <div className="f-label">密码引用（可选——推不进公钥的设备填这个，如防火墙/网络设备）</div>
+                <input
+                  className="f-input"
+                  placeholder="env:VSRX_ROOT_PW（执行机 secrets.env 里的变量名）"
+                  value={p.discoveredPasswordRef}
+                  onChange={(e) => wizardSetParam('discoveredPasswordRef', e.target.value)}
+                />
+              </div>
             </>
           )}
           {recipeSelect(p.discoveredRecipeIds, 'discoveredRecipeIds', '绑定配方（可选——决定域归属）')}

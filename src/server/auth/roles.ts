@@ -74,6 +74,7 @@ export const ADMIN_ROUTE_ROLE: Record<string, AuthRole> = {
   'environment/build': 'operator',
   'environment/rm': 'operator',
   'environment/rename': 'operator',
+  'environment/set': 'operator',
   'environment/exec': 'operator',
   'environment/snapshot': 'operator',
   'environment/rollback': 'operator',

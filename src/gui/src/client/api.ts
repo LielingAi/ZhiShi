@@ -247,6 +247,9 @@ export type EnvironmentAddInput =
       keyPath?: string;
       /** 1.6.12：瞬传密码（VM 密钥引导——有 address 走 plink、断网有 vmx 走 vmrun；不落盘）。 */
       password?: string;
+      /** 2.0.6：只密码设备（推不进公钥的防火墙/网络设备）——密码引用
+       *  （env:VAR，D-T4 本体不落盘；vm 条目的双通道：联网走密钥/断网走它）。 */
+      passwordRef?: string;
       recipeIds?: string[];
     };
 

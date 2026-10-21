@@ -60,7 +60,7 @@ GUI 打开**正门**（全幅启动台）——有环境时启动直接回昨天
 
 - **环境卡片**（运行中 / 已停止 / 本机已有三组横铺）：点击切入该环境自己的工作线（已停止拦截提示先启动）；行尾 ⋯ 菜单有启动/停止/重建/重置/补齐/详情/删除。
 - **台账条**（2.0）：发现同名环境重复登记时给合并入口（type-name 确认）；「清理」按钮列出僵尸环境（已停止 + 零使用痕迹）勾选删除。
-- **本机已有（未注册）**：自动发现宿主机的 Docker 镜像（zhishi-env-*）与 VM——镜像行一键「启动为环境」，VM 登记需补 guest 地址。1.5.10 起容器不可认领（接进来是半成品；zhishi 建的容器经 up 回写自动进登记）。
+- **本机已有（未注册）**：自动发现宿主机的 Docker 镜像（zhishi-env-*）与 VM——镜像行一键「启动为环境」，VM 登记需补 guest 地址，凭据三选一：密钥路径 / guest 登录密码（一次性密钥引导，不落盘）/ **密码引用 `env:VAR`**（推不进公钥的防火墙、网络设备走这个）。1.5.10 起容器不可认领（接进来是半成品；zhishi 建的容器经 up 回写自动进登记）。
 - **新建环境**：「＋ 新建环境」四步向导——docker 配方（一次性容器）/ VM 配方（持久可回滚）/ 接入已有 / 手动 SSH。
 
 ### 只密码设备（推不进公钥）
@@ -93,7 +93,15 @@ zhishi env up pwn-vm                            # 从环境类型建环境（首
 zhishi env adopt pwn-vm --vm <vmx路径> --user <用户>   # 纳管已有 VM
 zhishi env list                                 # 已登记环境
 zhishi env ps                                   # 运行中实例
+zhishi env set vsrx-133                         # 回显单条字段（凭据/端口/OS 家族）
+zhishi env set vsrx-133 --clear key-path --password-ref env:VSRX_PW
+                                                # 改条目字段（2.0.6）：只认密码的设备必须
+                                                #   摘掉 keyPath——密钥优先会让密码通道静默失效
 ```
+
+> **凭据二选一**：`keyPath`（公钥）与 `passwordRef`（`env:VAR` 密码引用）在
+> `kind=ssh` 条目上互斥；`kind=vm` 允许并存（联网走密钥、断网走 vmrun 密码），
+> 但**联网时仍是密钥优先**——对着只认密码的防火墙/网络设备，要 `--clear key-path`。
 
 ### GUI 操作
 
@@ -433,7 +441,9 @@ HTTPS 仍列为后续选项（服务端本体不碰 TLS，设计上架一层 ter
 
 **环境连不上 / 认证失败**
 - VM：确认 guest 里 sshd 在跑、端口 22 可达；公钥不通时 `zhishi env adopt` 会提示现场输入 guest 密码（不落盘）。
-- 网络层问题优先查本机到 guest 的连通性（`ping` / `ssh`）。
+- 网络层问题优先查**执行机**到 guest 的连通性（团队模式执行机 = 大脑服务器，不是你面前的成员机——成员机上 ssh 那个 VMnet 地址必然不通，那不能当证据）。
+- `Permission denied (publickey,password,keyboard-interactive)` 是「客户端没交出凭据」，不是密码错：先 `zhishi env set <id>` 看 `keyPath`——它存在时 `passwordRef` 不生效。只认密码的设备（防火墙 / 交换机 / Junos、FreeBSD 类）：`zhishi env set <id> --clear key-path --password-ref env:XXX`，密码放执行机的 `<数据目录>/secrets.env`（`KEY=VALUE`，**启动时加载，改完要重启 sidecar**）。
+- 非 Linux guest（Junos / FreeBSD / OpenWrt）：远端命令包装按能力自适应（有 `timeout` 就包、没有就裸跑，不依赖 bash/base64），但 Junos 的命令形态是 `cli -c 'show version'`，不是 Unix 命令。
 
 **模型报 403 / 配额不足**
 - 换一家已配 key 的供应商：状态栏模型切换器里直接选，或 CLI `zhishi model set-default`。

@@ -212,6 +212,13 @@ zhishi env add --kind ssh --id dev --host H [--port N] [--user U] [--key-path K]
 
 zhishi env open <id>                                  # 嵌终端接入环境（ssh / docker exec / vm ssh）
 
+zhishi env set <id> [--user U] [--key-path K | --password-ref env:VAR]
+                   [--host H] [--address A] [--port N] [--os-family F]
+                   [--clear key-path,password-ref]     # 2.0.6 条目字段部分更新：给值=改、空值/--clear=摘
+                                                  # 不带任何字段 = 回显当前字段（env show 不存在，用这个看）
+                                                  # 只认密码的设备必须 --clear key-path：ssh 通道密钥优先，
+                                                  # 两者并存时 passwordRef 静默失效（登记也会拒 ssh 条目两者同给）
+
 zhishi env remove <id>
 
 zhishi env bind-recipes <id> --recipes a,b,c          # 整体替换环境的多配方绑定集合（主配方恒在，1.5.10）

@@ -146,6 +146,9 @@ Examples:
                                             # 1.6.5：缺 --key-path 时现场输入一次登录密码即可自动配置密钥（密码不落盘）
                                             # 2.0.4 只密码设备（推不进公钥）：--password-ref env:VAR 登记密码引用
                                             #   （执行机环境变量/<数据目录>/secrets.env 供值；与 --key-path 同给则密钥优先）
+  zhishi env set vsrx-133 --clear key-path --password-ref env:VSRX_PW
+                                            # 2.0.6 改条目字段（唯一能摘 keyPath 的路）：--user/--host/
+                                            #   --address/--port/--os-family 同用；不带参数 = 回显当前字段
   zhishi env open dev-box                   # open env in embedded terminal (term open --cmd)
   zhishi env remove dev-box
   zhishi env rename dev-box "旧靶机"       # 改名/别名（1.6.6：只动显示名，id 不变；空名清除别名）
@@ -417,6 +420,28 @@ if (!result.success) {
   if (group === 'env' && action === 'list') {
     const data = (result.data as { environments?: Array<Record<string, unknown>> }) ?? {};
     printEnvList(data.environments ?? []);
+    return;
+  }
+  if (group === 'env' && action === 'set') {
+    // 2.0.6：条目字段回显（同时也是「看单条」的入口——environment/show 一直
+    // 没有实现，env list 又不显示凭据字段，排障时看不到 keyPath/passwordRef）。
+    const data = (result.data as { entry?: Record<string, unknown>; changed?: boolean }) ?? {};
+    const entry = data.entry ?? {};
+    const kind = String(entry.kind ?? '');
+    const target = kind === 'vm'
+      ? (entry.address ?? entry.vmName)
+      : kind === 'ssh'
+        ? entry.host
+        : (entry.container ?? entry.vmName);
+    console.log(`id: ${String(entry.id ?? '')}`);
+    console.log(`kind: ${kind}`);
+    if (target !== undefined) console.log(`target: ${String(target)}`);
+    console.log(`user: ${String(entry.user ?? '（未设——按执行机当前用户名）')}`);
+    console.log(`keyPath: ${String(entry.keyPath ?? '（无）')}`);
+    console.log(`passwordRef: ${String(entry.passwordRef ?? '（无）')}`);
+    if (entry.port !== undefined) console.log(`port: ${String(entry.port)}`);
+    if (entry.osFamily !== undefined) console.log(`osFamily: ${String(entry.osFamily)}`);
+    if (data.changed === false) console.log('（未改动——仅回显）');
     return;
   }
   if (group === 'line' && action === 'list') {
@@ -2475,6 +2500,19 @@ function buildRequestBody(
         osFamily: flags.osFamily,
         vmx: flags.vmx,
       };
+    }
+    if (action === 'set') {
+      // 2.0.6 条目改字段：zhishi env set <id> [--key-path P|--password-ref env:VAR]
+      // [--user U] [--host H] [--address A] [--port N] [--os-family F]
+      // [--clear key-path,password-ref]；不带任何字段 = 只读回显。
+      const body: Record<string, unknown> = {
+        id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'id', 'env set', 'id'),
+      };
+      for (const field of ['user', 'keyPath', 'passwordRef', 'host', 'address', 'osFamily', 'port']) {
+        if (flags[field] !== undefined) body[field] = flags[field];
+      }
+      if (flags.clear !== undefined) body.clear = String(flags.clear);
+      return body;
     }
     if (action === 'bind-recipes') {
       // 1.5.10 一致性补齐：zhishi env bind-recipes <id> --recipes a,b,c →

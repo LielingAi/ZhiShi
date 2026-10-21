@@ -2112,6 +2112,96 @@ export async function handleEnvironmentRename(payload: {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
+/**
+ * `environment/set` — 条目字段的部分更新（2.0.6）。
+ *
+ * 存在理由：`environment/add` 只增不改、也没有 update 路由——`keyPath` 一旦
+ * 被写进条目（VM 模板会带出来）就再也摘不掉，而 `sshAuthMethod` 密钥优先，
+ * 只认密码的设备永远走不通（2026-10 Junos vSRX 实机：模板塞的 keyPath 让
+ * passwordRef 永久失效，用户只能删条目重登，丢 vmx/配方/快照锚）。
+ *
+ * 语义：
+ * - 只收「引用/连接」字段（ENV_SETTABLE_FIELDS）；密码本体仍拒（D-T4）。
+ * - 给值 = 改；给空串或 null = 清除；`--clear key-path,password-ref` 同效。
+ * - 没有任何变更 = 只读回显（补上缺失的「看单条」入口）。
+ * - 落盘前用 validateEnvironmentEntry 校验合并结果（kind 必填、凭据二选一）。
+ */
+export const ENV_SETTABLE_FIELDS = ['user', 'keyPath', 'passwordRef', 'host', 'address', 'osFamily', 'port'] as const;
+
+export async function handleEnvironmentSet(payload: {
+  id?: string;
+  clear?: string | string[];
+  user?: string | null;
+  keyPath?: string | null;
+  passwordRef?: string | null;
+  host?: string | null;
+  address?: string | null;
+  osFamily?: string | null;
+  port?: number | string | null;
+}): Promise<AdminResponse> {
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!id) return { success: false, error: 'Missing required argument: <id>（zhishi env list 查看已有环境）' };
+  if (id === LOCAL_ENV_ID) {
+    return { success: false, error: `环境 "${LOCAL_ENV_ID}" 是内置本机条目（1.7.8）——字段固定，不可改` };
+  }
+  const config = loadConfig();
+  const entry = findEnvironmentEntry(listEnvironments(config), id);
+  if (!entry) return { success: false, error: `未找到环境 "${id}"（zhishi env list 查看已有环境）` };
+
+  const clearList = (Array.isArray(payload.clear)
+    ? payload.clear
+    : typeof payload.clear === 'string' ? payload.clear.split(',') : [])
+    // CLI 惯用 kebab（--clear key-path），条目字段是 camel——两种写法都收
+    .map((f) => f.trim().replace(/^--/, '').replace(/-([a-z])/g, (_, c: string) => c.toUpperCase()))
+    .filter(Boolean);
+  const unknown = clearList.find((f) => !(ENV_SETTABLE_FIELDS as readonly string[]).includes(f));
+  if (unknown) {
+    return { success: false, error: `--clear 不支持字段 "${unknown}"（可选：${ENV_SETTABLE_FIELDS.join(' / ')}）` };
+  }
+
+  const next = { ...entry } as Record<string, unknown>;
+  let changed = false;
+  for (const field of ENV_SETTABLE_FIELDS) {
+    const raw = (payload as Record<string, unknown>)[field];
+    if (raw === undefined) continue;
+    const blank = raw === null || (typeof raw === 'string' && raw.trim() === '');
+    if (blank) {
+      if (field in next) { delete next[field]; changed = true; }
+      continue;
+    }
+    if (field === 'osFamily' && raw !== 'linux' && raw !== 'windows') {
+      return {
+        success: false,
+        error:
+          `osFamily 只接受 linux / windows（收到：${String(raw)}）。` +
+          '防火墙/网络设备（Junos、FreeBSD、OpenWrt）保持 linux 即可——远端超时包装按实际能力自适应。',
+      };
+    }
+    next[field] = field === 'port' ? Number(String(raw).trim()) : String(raw).trim();
+    changed = true;
+  }
+  for (const field of clearList) {
+    if (field in next) { delete next[field]; changed = true; }
+  }
+
+  if (!changed) return { success: true, data: { entry, changed: false } };
+
+  const validated = validateEnvironmentEntry(next);
+  if (!validated.ok) return { success: false, error: validated.error };
+  try {
+    const saved = await atomicModifyConfig((cfg) => {
+      const all = listEnvironments(cfg);
+      const idx = all.findIndex((e) => e.id === id);
+      if (idx < 0) throw new Error(`未找到环境 "${id}"（可能在本次修改期间被删除）`);
+      const entries = [...all];
+      entries[idx] = next as unknown as EnvironmentEntry;
+      return { ...cfg, environments: entries };
+    });
+    return { success: true, data: { environments: saved.environments, entry: next, changed: true } };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
 /** `environment/open` — resolve the entry to an access command and open it in
  * the embedded terminal via the same panel proxy path as `term open --cmd`.
  * Response carries the panel's data (terminalId) plus the resolved command.

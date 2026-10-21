@@ -60,6 +60,11 @@ export interface WizardParams {
    *  自动生成密钥对并推公钥——有 address 走 plink、断网有 vmx 走 vmrun；
    *  不落 config.json，条目只落生成的 keyPath）。 */
   discoveredPassword: string;
+  /** 2.0.6 只密码设备接到 VM 登记：密码引用（env:VAR，D-T4 本体不落盘）。
+   *  与 SSH 接入同语义——防火墙/网络设备推不进公钥，登记时就得声明永久
+   *  密码引用；与 keyPath 同给时服务端密钥优先（ssh 条目会被 registration
+   *  校验拦，vm 条目允许并存）。 */
+  discoveredPasswordRef: string;
   /** 本机已有：可选绑定的配方 id 集合（1.5.10 多选——1.3.8 起环境可承载多配方；决定域归属，登记 payload 附带）。 */
   discoveredRecipeIds: string[];
   sshHost: string;
@@ -96,6 +101,7 @@ export function initialWizardParams(): WizardParams {
     discoveredUser: '',
     discoveredKeyPath: '',
     discoveredPassword: '',
+    discoveredPasswordRef: '',
     discoveredRecipeIds: [],
     sshHost: '',
     sshUser: '',
@@ -170,10 +176,16 @@ export function wizardStepError(
     }
     if (state.source === 'discovered') {
       if (!p.discoveredKey) return '请勾选一个本机条目';
-      // 1.6.12：VM 登记 keyPath 与 password 至少其一（仿 1.6.5 SSH 放宽——
-      // 缺 keyPath 时服务端用 password 现场密钥引导）。
-      if (opts?.discoveredIsVm && !p.discoveredKeyPath.trim() && !p.discoveredPassword.trim()) {
-        return '密钥路径 / guest 登录密码 至少其一';
+      // 1.6.12 / 2.0.6：VM 登记 keyPath / password（引导）/ passwordRef（永久
+      // 密码引用）至少其一——只认密码的防火墙设备走最后一种，不必登记后
+      // 再用 env set 补刀。
+      if (
+        opts?.discoveredIsVm
+        && !p.discoveredKeyPath.trim()
+        && !p.discoveredPassword.trim()
+        && !p.discoveredPasswordRef.trim()
+      ) {
+        return '密钥路径 / guest 登录密码 / 密码引用 至少其一';
       }
       return null;
     }
@@ -323,6 +335,8 @@ export function buildWizardPayload(state: EnvWizardState): WizardPayload | null 
       ...(p.discoveredKeyPath.trim() ? { keyPath: p.discoveredKeyPath.trim() } : {}),
       // 1.6.12：VM 密钥引导瞬传密码（空串不下发）。
       ...(p.discoveredPassword.trim() ? { password: p.discoveredPassword.trim() } : {}),
+      // 2.0.6：只密码设备——永久密码引用（env:VAR，本体不落盘）。
+      ...(p.discoveredPasswordRef.trim() ? { passwordRef: p.discoveredPasswordRef.trim() } : {}),
       ...(p.discoveredRecipeIds.length > 0 ? { recipeIds: p.discoveredRecipeIds } : {}),
     };
     return {
@@ -461,6 +475,9 @@ export function wizardSummaryRows(
     if (state.params.discoveredUser.trim()) rows.push({ label: 'guest 用户', value: state.params.discoveredUser.trim() });
     if (state.params.discoveredKeyPath.trim()) {
       rows.push({ label: '密钥路径', value: state.params.discoveredKeyPath.trim() });
+    } else if (state.params.discoveredPasswordRef.trim()) {
+      // 2.0.6 只密码设备：引用本身不是秘密，直接回显（同 SSH 确认页）。
+      rows.push({ label: '密码引用', value: state.params.discoveredPasswordRef.trim() });
     } else if (state.params.discoveredPassword.trim()) {
       // 1.6.12 密钥引导：只显引导说明行，不回显密码本体（同 1.6.5 SSH 确认页）。
       rows.push({ label: '凭据', value: '密码引导（自动生成密钥，密码不落盘）' });

@@ -479,6 +479,9 @@ export interface RegisterExtras {
   keyPath?: string;
   /** 1.6.12：guest 登录密码（瞬传——VM 密钥引导用，不落盘）。 */
   password?: string;
+  /** 2.0.6：只密码设备的密码引用（env:VAR，D-T4 本体不落盘）——防火墙/
+   *  网络设备推不进公钥，登记时就得声明，否则只能事后 env set 补刀。 */
+  passwordRef?: string;
   recipeIds?: string[];
 }
 
@@ -524,6 +527,8 @@ export function buildRegisterPayload(d: DiscoveredLike, extras?: RegisterExtras)
         ...(extras.keyPath ? { keyPath: extras.keyPath } : {}),
         // 1.6.12：瞬传密码随凭据字段进 VM 分支（docker 语义不通，不下发）。
         ...(extras.password ? { password: extras.password } : {}),
+        // 2.0.6：只密码设备的引用（防火墙/网络设备）——同样只对 VM 分支有意义。
+        ...(extras.passwordRef ? { passwordRef: extras.passwordRef } : {}),
       }
     : {};
   const name = d.name?.trim();

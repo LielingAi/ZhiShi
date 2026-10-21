@@ -345,7 +345,7 @@ describe('payload 构造', () => {
   it('1.6.12：keyPath 与 password 双空 → VM 校验拦；docker 条目（不传 isVm）不拦', () => {
     const params = { ...initialWizardParams(), discoveredKey: 'vmware-/vms/a.vmx' };
     expect(wizardStepError(stateAt(2, { source: 'discovered', params }), { discoveredIsVm: true })).toBe(
-      '密钥路径 / guest 登录密码 至少其一',
+      '密钥路径 / guest 登录密码 / 密码引用 至少其一',
     );
     // 缺省 opts（docker 无凭据语义）——保持旧行为不拦
     expect(wizardStepError(stateAt(2, { source: 'discovered', params }))).toBeNull();
@@ -374,6 +374,43 @@ describe('payload 构造', () => {
     expect(map['凭据']).toBe('密码引导（自动生成密钥，密码不落盘）');
     expect(map['密钥路径']).toBeUndefined();
     expect(Object.values(map).some((v) => v.includes('pw'))).toBe(false);
+  });
+
+  // ===== 2.0.6 只密码设备接到 VM 登记（防火墙/网络设备） =====
+
+  it('2.0.6：VM 登记只给 passwordRef → 校验放行，extras 带 passwordRef 不带 keyPath/password', () => {
+    const params = {
+      ...initialWizardParams(),
+      discoveredKey: 'vmware-/vms/vsrx.vmx',
+      discoveredAddress: '192.168.88.133',
+      discoveredUser: 'root',
+      discoveredPasswordRef: ' env:VSRX_ROOT_PW ',
+    };
+    expect(wizardStepError(stateAt(2, { source: 'discovered', params }), { discoveredIsVm: true })).toBeNull();
+    const p = buildWizardPayload(stateAt(4, { source: 'discovered', params }));
+    expect(p?.type).toBe('register');
+    if (p?.type === 'register') {
+      expect(p.extras).toMatchObject({ address: '192.168.88.133', user: 'root', passwordRef: 'env:VSRX_ROOT_PW' });
+      expect(p.extras).not.toHaveProperty('keyPath');
+      expect(p.extras).not.toHaveProperty('password');
+    }
+  });
+
+  it('2.0.6：确认页——passwordRef 行优先于引导说明，且直接回显引用（引用不是秘密）', () => {
+    const s = stateAt(3, {
+      source: 'discovered',
+      params: {
+        ...initialWizardParams(),
+        discoveredKey: 'vmware-/vms/vsrx.vmx',
+        discoveredAddress: '192.168.88.133',
+        discoveredPasswordRef: 'env:VSRX_ROOT_PW',
+      },
+    });
+    const map = Object.fromEntries(
+      wizardSummaryRows(s, { recipes: RECIPES, domains: DOMAINS }).map((r) => [r.label, r.value]),
+    );
+    expect(map['密码引用']).toBe('env:VSRX_ROOT_PW');
+    expect(map['凭据']).toBeUndefined();
   });
 });
 
