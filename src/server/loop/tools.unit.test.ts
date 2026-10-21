@@ -36,10 +36,12 @@ const VM_ENTRY: EnvironmentEntry = {
   createdAt: '2026-01-01T00:00:00Z',
 };
 
-/** 1.6.9 #2：剥远端超时杀包装还原原命令（calls 内容断言先剥再断）。 */
+/** 2.0.6：剥远端超时杀包装还原原命令（calls 内容断言先剥再断）。
+ *  包装形态 = `sh -c "C=\"<两层转义>\"; …"`。 */
 function unwrapRemote(cmd: string): string {
-  const m = /\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d\)/.exec(cmd);
-  return m ? Buffer.from(m[1], 'base64').toString('utf8') : cmd;
+  const m = /C=\\"([\s\S]*?)\\"; /.exec(cmd);
+  if (!m) return cmd;
+  return m[1].replace(/\\(["\\$`])/g, '$1').replace(/\\(["\\$`])/g, '$1');
 }
 
 function okExec(stdout: string, exitCode = 0): { exec: EnvExec; commands: string[] } {

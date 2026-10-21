@@ -100,6 +100,23 @@ describe('validateEnvironmentEntry', () => {
     expect(validateEnvironmentEntry({ id: 'x', kind: 'ssh', host: 'example.com' }).ok).toBe(true);
   });
 
+  it('ssh 条目 keyPath 与 passwordRef 二选一（密码通道不会静默失效）', () => {
+    const both = validateEnvironmentEntry({
+      id: 'fw', kind: 'ssh', host: 'h', keyPath: '~/.ssh/id_ed25519', passwordRef: 'env:FW_PW',
+    });
+    expect(both.ok).toBe(false);
+    if (!both.ok) {
+      expect(both.error).toContain('keyPath');
+      expect(both.error).toContain('passwordRef');
+    }
+    expect(validateEnvironmentEntry({ id: 'fw', kind: 'ssh', host: 'h', passwordRef: 'env:FW_PW' }).ok).toBe(true);
+    // kind=vm 的双通道是设计：联网 ssh 用密钥、断网 vmrun 用密码引用
+    expect(validateEnvironmentEntry({
+      id: 'v', kind: 'vm', vmName: 'vsrx', address: '192.168.88.133',
+      keyPath: '~/.ssh/id_ed25519', passwordRef: 'env:VSRX_PW',
+    }).ok).toBe(true);
+  });
+
   it('docker requires container', () => {
     const bad = validateEnvironmentEntry({ id: 'x', kind: 'docker' });
     expect(bad.ok).toBe(false);

@@ -42,11 +42,12 @@ function scriptedExec(results: Array<string | EnvExecProcessResult>): { exec: En
   return { exec, calls };
 }
 
-/** 1.6.9 #2：剥远端超时杀包装（timeout … bash -c "$(echo <b64>|base64 -d)"）
- *  还原原命令——calls 内容断言一律先剥再断。 */
+/** 2.0.6：剥远端超时杀包装（`sh -c "C=\"<两层转义>\"; …"`）还原原命令——
+ *  calls 内容断言一律先剥再断。 */
 function unwrapRemote(cmd: string): string {
-  const m = /\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d\)/.exec(cmd);
-  return m ? Buffer.from(m[1], 'base64').toString('utf8') : cmd;
+  const m = /C=\\"([\s\S]*?)\\"; /.exec(cmd);
+  if (!m) return cmd;
+  return m[1].replace(/\\(["\\$`])/g, '$1').replace(/\\(["\\$`])/g, '$1');
 }
 
 describe('validateTag', () => {

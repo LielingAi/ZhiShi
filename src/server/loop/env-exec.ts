@@ -185,11 +185,28 @@ export function resolvePasswordRef(ref: string | undefined): string | null {
  *   passwordRef 是 guest 通道的，双通道共存合法）；
  * - password：无 keyPath 有 passwordRef——只密码设备，走密码执行通道；
  * - agent：两者皆无——ssh 缺省（agent / 默认密钥），行为与 2.0.4 前一致。
+ *
+ * 注意「key 优先」对 kind=vm 是**设计**（断网时走 vmrun 的密码引用、联网时
+ * 走密钥），不是可以随手改的默认值；但对只认密码的目标它就是坑——所以
+ * 冲突要有声音，见 authConflictHint / registry 的 ssh 条目校验。
  */
 export function sshAuthMethod(target: SshTarget): 'key' | 'password' | 'agent' {
   if (target.keyPath) return 'key';
   if (target.passwordRef) return 'password';
   return 'agent';
+}
+
+/**
+ * 密钥与密码引用同时在场时的诊断句（null = 不冲突 / 非 ssh 目标）。
+ * 执行失败时贴进 stderr：用户对着「Permission denied (publickey...)」不会
+ * 想到是条目里一个自己没填过的 keyPath 在生效。
+ */
+export function authConflictHint(target: SshTarget | null): string | null {
+  if (!target || !target.keyPath || !target.passwordRef) return null;
+  return (
+    '（zhishi 提示：该条目同时配了 keyPath 与 passwordRef——ssh 通道密钥优先，passwordRef 不生效。' +
+    '目标若只认密码，先用 `zhishi env set <id> --clear key-path` 摘掉密钥引用。）'
+  );
 }
 
 /** ASKPASS 脚本读取的密码环境变量名（子进程注入，不进 argv/日志）。 */
@@ -688,10 +705,10 @@ export function resetExecTimeoutStreaksForTests(): void {
  * 自堵 76 分钟）。在环境内侧包一层：deadline 到了远端进程被强杀，与通道
  * 死活无关。
  *
- * posix：`timeout -k 5 <sec>s bash -c "$(echo <b64>|base64 -d)"`——coreutils
- * timeout 发 TERM 后 5s 补 KILL（runaway 也能死）；base64 封装保引号安全
- * （与 provision 同纪律）。超时退出码 124/137——调用方按「命令语义失败」
- * 原样带回，文案可辨。
+ * posix：外层 `sh -c`，内层按远端能力降级（有 coreutils timeout 就
+ * TERM 后 5s 补 KILL，没有就裸跑）——**不再假设 bash / base64**，
+ * 见 buildRemoteTimeoutWrapper 的注释。超时退出码 124/137——调用方按
+ * 「命令语义失败」原样带回，文案可辨。
  * windows：powershell 作业 Wait-Job -Timeout + Stop-Job 强杀（cmd /c 无超时
  * 语义），退出码经 $LASTEXITCODE 透传；超时按 1 标记并打标记行。
  * guest 通道（vmrun runProgramInGuest 等 Tools 自然终结）不包。
@@ -722,13 +739,48 @@ export function buildWindowsTimeoutEncodedCommand(command: string, timeoutMs: nu
   return psEncode(inner);
 }
 
+/**
+ * 双引号转义（`\` `"` `$` 反引号）——sh 与 csh 的共同子集。
+ *
+ * 包装串要过两层 shell：外层是**远端登录 shell**（Junos / FreeBSD 的 root
+ * 是 csh，不是 sh），内层是 sh。csh 在双引号内对这四个字符的处理与 sh
+ * 一致，单引号的 `'\''` 拼接则不通用——所以统一用双引号 + 反斜杠。
+ *
+ * 已知边界：csh 在双引号内仍做历史展开（`!`），命令含 `!` 的 csh 目标会
+ * 被吃掉；这类目标改走密码通道 + 单条 cli 命令，不做进一步的引号体操。
+ */
+function dqEscape(s: string): string {
+  return s.replace(/[\\"$`]/g, (c) => `\\${c}`);
+}
+
+/**
+ * 远端超时杀包装。
+ *
+ * 2.0.6 重写（2026-10 vsrx 实机）：旧实现是
+ * `timeout -k 5 <n>s bash -c "$(echo <b64>|base64 -d)"`——同时假设了 bash、
+ * GNU coreutils timeout 和 base64 三样东西。Junos / FreeBSD / OpenWrt 的
+ * 网络设备上三样都不保证有，结果是 ssh 连得上、命令 127，用户看到的是
+ * 「环境坏了」。
+ *
+ * 新形态：外层 `sh -c "<内层脚本>"`，内层按**远端能力**降级——
+ *   - 有 `timeout` → `timeout -k 5 <n>s sh -c "$C"`（Linux 语义不变：
+ *     TERM 后 5s 补 KILL，超时退出码 124/137）；
+ *   - 没有 `timeout` → 裸 `sh -c "$C"`（放弃强制杀，命令至少能跑）。
+ * 命令本体经两层双引号变量传递，不再依赖 base64；引号/换行/`$` 安全。
+ */
 export function buildRemoteTimeoutWrapper(command: string, timeoutMs: number, family: 'linux' | 'windows' = 'linux'): string {
   const secs = Math.max(1, Math.ceil(timeoutMs / 1000));
   if (family === 'windows') {
     return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${buildWindowsTimeoutEncodedCommand(command, timeoutMs)}`;
   }
-  const b64 = Buffer.from(command, 'utf8').toString('base64');
-  return `timeout -k 5 ${secs}s bash -c "$(echo ${b64} | base64 -d)"`;
+  // 命令体只需两层转义：内层 sh 的变量赋值 + 外层登录 shell（payload 里
+  // 再套一层就会把 `$`、引号原样送到命令里——多余的一层是静默的错误结果）。
+  const payload = dqEscape(command);
+  const script =
+    `C="${payload}"; ` +
+    `if command -v timeout >/dev/null 2>&1; then exec timeout -k 5 ${secs}s sh -c "$C"; fi; ` +
+    `exec sh -c "$C"`;
+  return `sh -c "${dqEscape(script)}"`;
 }
 
 export async function execInEnvironment(
@@ -877,10 +929,15 @@ export async function execInEnvironment(
 
   const stdout = truncateOutput(result.stdout, options.maxOutputBytes);
   const stderr = truncateOutput(result.stderr, options.maxOutputBytes);
+  // 凭据冲突提示（2026-10 vsrx 实机）：条目同时配了 keyPath 与 passwordRef
+  // 时 ssh 通道恒走密钥，passwordRef 静默失效——对着只认密码的设备，用户
+  // 看到的就是「密码错了」。失败时把这句话贴到 stderr，别再让人猜。
+  const conflictHint = authConflictHint(execTarget.channel === 'ssh' ? execTarget.target : null);
+  const stderrText = result.exitCode !== 0 && conflictHint ? `${stderr.text}\n${conflictHint}` : stderr.text;
   return {
     ok: true,
     stdout: stdout.text,
-    stderr: stderr.text,
+    stderr: stderrText,
     exitCode: result.exitCode,
     truncated: stdout.truncated || stderr.truncated,
   };

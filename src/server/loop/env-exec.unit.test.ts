@@ -25,6 +25,7 @@ import {
   buildSshArgv,
   buildSshPasswordArgv,
   buildSshPasswordEnv,
+  authConflictHint,
   ensureAskpassScript,
   execInEnvironment,
   interactiveShellScript,
@@ -275,12 +276,17 @@ describe('execInEnvironment', () => {
       expect(r.truncated).toBe(false);
     }
     expect(calls).toHaveLength(1);
-    // 1.6.9 #2：末位是远端超时杀包装（timeout + base64 载荷可解码回原命令）
+    // 1.6.9 #2 / 2.0.6：末位是远端超时杀包装（sh -c 外壳 + 能力探测，不依赖
+    // bash/base64），命令体经两层双引号转义可还原。
     const last = calls[0].argv[calls[0].argv.length - 1]!;
-    expect(last.startsWith('timeout -k 5 ')).toBe(true);
-    const b64 = /bash -c "\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d\)"/.exec(last)?.[1];
-    expect(b64).toBeTruthy();
-    expect(Buffer.from(b64!, 'base64').toString('utf8')).toBe('uname -a');
+    expect(last.startsWith('sh -c "')).toBe(true);
+    expect(last).toContain('timeout -k 5 120s');
+    expect(last).toContain('command -v timeout');
+    expect(last).not.toContain('base64');
+    const m = /C=\\"([\s\S]*?)\\"; /.exec(last);
+    expect(m).not.toBeNull();
+    const unescape = (s: string) => s.replace(/\\(["\\$`])/g, '$1');
+    expect(unescape(m![1]!)).toBe('uname -a');
     expect(calls[0].argv.join(' ')).toContain('researcher@192.168.152.129');
   });
 
@@ -414,14 +420,32 @@ describe('交互终端 argv（1.3.3 attach pty）', () => {
 });
 
 describe('1.6.9 #2：远端超时杀包装 + 自堵检测', () => {
-  it('posix：timeout -k 强杀 + base64 载荷可还原（引号/换行安全）', () => {
-    const cmd = 'echo "你好 $(whoami)"\nls /x';
-    const wrapped = buildRemoteTimeoutWrapper(cmd, 5000);
+  /** 反向剥双引号转义（`\X` → `X`，X ∈ \ " $ `）。包装里命令体过了三层：
+   *  两次用于内层 sh 的变量赋值、一次用于外层登录 shell。 */
+  const unescape = (s: string, times: number) => {
+    let r = s;
+    for (let i = 0; i < times; i++) r = r.replace(/\\(["\\$`])/g, '$1');
+    return r;
+  };
+
+  it('posix：timeout -k 强杀包在 sh -c 里，不依赖 bash/base64（Junos/FreeBSD 可跑）', () => {
+    const wrapped = buildRemoteTimeoutWrapper('uname -a', 5000);
+    expect(wrapped.startsWith('sh -c "')).toBe(true);
     expect(wrapped).toContain('timeout -k 5 5s');
-    const b64 = /echo ([A-Za-z0-9+/=]+) \| base64 -d/.exec(wrapped)?.[1];
-    expect(Buffer.from(b64!, 'base64').toString('utf8')).toBe(cmd);
+    // 能力探测：没有 coreutils timeout 的远端降级为裸跑，而不是 127
+    expect(wrapped).toContain('command -v timeout');
+    expect(wrapped).not.toContain('bash');
+    expect(wrapped).not.toContain('base64');
     // 1ms 下限 1s
     expect(buildRemoteTimeoutWrapper('id', 1)).toContain('timeout -k 5 1s');
+  });
+
+  it('posix：引号/换行/$/反引号的命令体两层转义后可还原', () => {
+    const cmd = 'echo "你好 $(whoami)"\nls /x \'q\' $HOME `date`';
+    const wrapped = buildRemoteTimeoutWrapper(cmd, 5000);
+    const m = /C=\\"([\s\S]*?)\\"; /.exec(wrapped);
+    expect(m).not.toBeNull();
+    expect(unescape(m![1]!, 2)).toBe(cmd);
   });
 
   it('windows：powershell 作业包装（双层 base64 可解；Stop-Job 强杀 + 标记行）', () => {
@@ -589,6 +613,15 @@ describe('sshAuthMethod（认证方式分派）', () => {
     expect(sshAuthMethod({ destination: 'h', host: 'h', passwordRef: 'env:X' })).toBe('password');
     expect(sshAuthMethod({ destination: 'h', host: 'h' })).toBe('agent');
   });
+
+  it('authConflictHint：两者同给才出声（否则 null）', () => {
+    expect(authConflictHint(null)).toBeNull();
+    expect(authConflictHint({ destination: 'h', host: 'h', keyPath: '/k' })).toBeNull();
+    expect(authConflictHint({ destination: 'h', host: 'h', passwordRef: 'env:X' })).toBeNull();
+    const hint = authConflictHint({ destination: 'h', host: 'h', keyPath: '/k', passwordRef: 'env:X' });
+    expect(hint).toContain('keyPath');
+    expect(hint).toContain('passwordRef');
+  });
 });
 
 describe('buildSshPasswordArgv（posix 密码通道）', () => {
@@ -695,9 +728,10 @@ describe('execInEnvironment：密码引用执行链', () => {
       expect(calls[0].argv).not.toContain('BatchMode=yes');
       expect(calls[0].env?.SSH_ASKPASS).toBe('/tmp/ask.sh');
       expect(calls[0].env?.[SSH_ASKPASS_PASSWORD_ENV]).toBe('s3cret');
-      // 远端命令末位 = 超时杀包装（linux 家族 = timeout 前缀）。
+      // 远端命令末位 = 超时杀包装（linux 家族 = sh -c 外壳 + timeout 前缀）。
       const last = calls[0].argv[calls[0].argv.length - 1];
-      expect(last.startsWith('timeout -k 5')).toBe(true);
+      expect(last.startsWith('sh -c "')).toBe(true);
+      expect(last).toContain('timeout -k 5');
     } finally {
       delete process.env.ZHISHI_TEST_PW_REF;
     }

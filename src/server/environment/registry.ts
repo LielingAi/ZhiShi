@@ -183,6 +183,17 @@ export function validateEnvironmentEntry(input: unknown): EnvResult<{ entry: Env
     return fail(`kind=${entry.kind} 缺少必填字段：${required}（--${required.toLowerCase()}）`);
   }
 
+  // 凭据二选一（2026-10 vsrx 实机）：ssh 条目没有「断网 guest 通道」这个
+  // 第二用途，keyPath 与 passwordRef 同时在场只会让后者静默失效
+  // （sshAuthMethod 密钥优先）——对着只认密码的设备表现为「密码错了」。
+  // kind=vm 不受此限：它的双通道是设计（联网 ssh 用密钥 / 断网 vmrun 用密码）。
+  if (entry.kind === 'ssh' && entry.keyPath && entry.passwordRef) {
+    return fail(
+      'ssh 条目不能同时给 keyPath 与 passwordRef——ssh 通道密钥优先，密码通道会静默失效。' +
+      '推不进公钥的设备（网络设备/防火墙）请只留 passwordRef。',
+    );
+  }
+
   return { ok: true, entry };
 }
 
