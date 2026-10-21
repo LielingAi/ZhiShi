@@ -18,6 +18,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.7] - 2026-10-21
+
+> **非 Linux 设备真的能用了**：远端命令包装不再假设 bash/base64/GNU timeout；凭据冲突不再静默；条目字段终于能改。起因是 Junos vSRX（vsrx3-133）实机排障——同一台设备手工 ssh 能连，zhishi 只回一句 `Permission denied (publickey,password,keyboard-interactive)`。
+
+### Added
+
+- **`zhishi env set`（`environment/set`）**：条目字段部分更新——`user / keyPath / passwordRef / host / address / osFamily / port` 给值即改、空值或 `--clear key-path` 即摘，不带任何字段 = 回显当前字段（顺带补上 `environment/show` 从未实现、`env list` 又不显示凭据字段的排障死角）。动机：`environment/add` 只增不改、没有 update 路由，vm 模板带出的 `keyPath` 再也摘不掉，而 `sshAuthMethod` 密钥优先会让只认密码的设备永久走不通，用户只能删条目重登——丢 vmx / 配方绑定 / 快照锚。落盘前跑 `validateEnvironmentEntry` 校验合并结果（kind 必填、凭据二选一），其余字段原样保留
+- **GUI「接入本机已有（VM）」新增密码引用字段**：推不进公钥的防火墙 / 网络设备登记时就能声明 `passwordRef`，不必登记完再 `env set` 补刀；确认页回显引用（引用不是秘密），凭据校验放宽成 `keyPath / password / passwordRef` 三选一
+
+### Fixed
+
+- **远端超时包装假设了 Linux**（Junos / FreeBSD / OpenWrt 上 ssh 连得上、命令 127）：旧实现 `timeout -k 5 <n>s bash -c "$(echo <b64>|base64 -d)"` 同时要求 bash、GNU coreutils `timeout`、`base64` 三样东西，网络设备上一样都不保证有。改为 `sh -c "C=…; 有 timeout 就包、没有就裸跑"`，命令体走双层双引号转义（**sh 与 csh 的共同子集**——Junos root 的登录 shell 是 csh，`'\''` 拼接不通用）。Linux 侧语义不变（TERM 后 5s KILL、124/137 退出码），另以 bash 实测九种命令形态（引号 / 管道 / 算术展开 / 反引号 / 多行）+ 无 timeout 降级路径
+- **`keyPath` 与 `passwordRef` 同给时静默走密钥**：执行失败时把「两者同给、passwordRef 不生效、用 `env set` 摘掉」贴进 stderr——此前用户对着 `Permission denied (publickey,password,keyboard-interactive)` 完全无从判断（服务端明明允许 password，是客户端一个都没交）。`ssh` 条目登记时改为硬校验二选一；`kind=vm` 保留并存语义（联网 ssh 用密钥 / 断网 vmrun 用密码引用是设计），只在失败时提示
+
+（验证：typecheck + eslint + depcruise 干净；全量 3158 通过 / 6 跳过，新增 `environment/set` 7 例、凭据冲突与包装转义用例、wizard 密码引用 2 例；`build:server` / `build:cli` / GUI 构建均通过。）
+
 ## [2.0.6] - 2026-10-20
 
 > **auth 开启后 GUI 全面「连接中」根治**：CORS 预检的 origin 白名单把自家 webview 锁死——allowlist 阻断降级为回显，真正的门交还 token。
