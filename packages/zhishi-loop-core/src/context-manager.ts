@@ -157,7 +157,13 @@ export function estimateTextTokens(text: string): number {
 }
 
 /** 消息 token 估算:文本按 CJK 校准;图片块按 pi 口径(4800 字符 ≈ 1200 tok/张)。 */
+/** 2.0.7：按消息对象身份缓存 token 估算（pi 的流式更新换对象而非原地改，
+ *  追加语义下旧消息复用同一引用——热循环里省掉重复的字数扫描）。 */
+const tokensCache = new WeakMap<object, number>();
+
 export function estimateMessageTokens(message: AgentMessage): number {
+  const cached = tokensCache.get(message as unknown as object);
+  if (cached !== undefined) return cached;
   const content = (message as { content?: unknown }).content;
   let images = 0;
   if (Array.isArray(content)) {
@@ -165,7 +171,9 @@ export function estimateMessageTokens(message: AgentMessage): number {
       if (b && typeof b === 'object' && (b as { type?: string }).type === 'image') images++;
     }
   }
-  return estimateTextTokens(messageText(message)) + images * 1200;
+  const tokens = estimateTextTokens(messageText(message)) + images * 1200;
+  tokensCache.set(message as unknown as object, tokens);
+  return tokens;
 }
 
 // ---------------------------------------------------------------------------
@@ -299,23 +307,49 @@ export interface ContextSegment {
  * MAX_SEGMENT_MESSAGES 的段在工具轮边界再切子段(见常量注释)。首个
  * user 之前的消息(异常输入)并入段 0;全程无 user(异常输入)则从
  * 消息 0 起切。空输入返回空数组。
+ *
+ * 2.0.7 增量续扫（`resume`）：消息只追加时，除**最后一段**外都已定型，
+ * 复用它、只重扫末段起点之后的尾巴——与全量扫描结果逐字段等价（单测
+ * 用随机追加序列对拍）。动机：窗口置换每次 LLM 调用都跑一遍全量分段，
+ * 829 条 / 2.79MB 的会话单次 ~64ms，热循环里是纯浪费。
  */
-export function segmentContext(messages: AgentMessage[]): ContextSegment[] {
+export interface SegmentResume {
+  /** 上一次的分段结果（全量）。 */
+  segments: ContextSegment[];
+  /** 上一次分段覆盖的消息数（前缀下标基准）。 */
+  messageCount: number;
+}
+
+export function segmentContext(messages: AgentMessage[], resume?: SegmentResume): ContextSegment[] {
+  // 续扫判定：消息数未减、且上次末段之前的段都可复用。
+  // 复用的前提是「段边界只由 user 消息与 chunkLen 决定」——两者在追加
+  // 语义下对已定型段是稳定的。
+  const reusable = resume !== undefined
+    && resume.segments.length > 0
+    && messages.length >= resume.messageCount
+    && resume.messageCount <= messages.length;
+  const stable = reusable ? resume!.segments.slice(0, -1) : [];
+  const resumeFrom = reusable ? resume!.segments[resume!.segments.length - 1]!.start : 0;
+
   // 子段起点候选:user 消息(段界)或带 toolCall 的 assistant(工具轮起点,
   // 仅当前子段已达上限才切);toolResult 永不作起点(配对不拆)。
   const starts: number[] = [];
   let chunkLen = 0;
-  for (let i = 0; i < messages.length; i++) {
+  for (let i = resumeFrom; i < messages.length; i++) {
     const m = messages[i];
     const isUser = m.role === 'user';
     const isToolTurn = toolCallIdsOf(m).length > 0;
-    if (isUser || (isToolTurn && chunkLen >= MAX_SEGMENT_MESSAGES)) {
+    if (reusable && i === resumeFrom) {
+      // 续扫起点本身就是段界（chunkLen 在该处由上一轮重置为 0）
+      starts.push(i);
+      chunkLen = 0;
+    } else if (isUser || (isToolTurn && chunkLen >= MAX_SEGMENT_MESSAGES)) {
       starts.push(i);
       chunkLen = 0;
     }
     chunkLen++;
   }
-  if (messages.length > 0) {
+  if (messages.length > 0 && !reusable) {
     if (starts.length === 0) starts.push(0);
     else starts[0] = 0; // 首个起点之前的消息并入段 0
   }
@@ -324,11 +358,17 @@ export function segmentContext(messages: AgentMessage[]): ContextSegment[] {
     end: i + 1 < starts.length ? starts[i + 1] : messages.length,
   }));
 
-  const segments: ContextSegment[] = [];
-  let previousPhase: ResearchPhase | undefined;
-  bounds.forEach(({ start, end }, index) => {
+  const segments: ContextSegment[] = [...stable];
+  // 相位链条要跨续扫边界接上：稳定段末段的 phase 就是重扫区间的 previousPhase
+  let previousPhase: ResearchPhase | undefined = stable.length > 0
+    ? stable[stable.length - 1]!.phase
+    : undefined;
+  const indexOffset = stable.length;
+  bounds.forEach(({ start, end }, i) => {
+    const index = indexOffset + i;
     const slice = messages.slice(start, end);
     const text = slice.map(messageText).join('\n');
+    // 段 0 的 anchor 语义只对全量扫描的首段成立（续扫不会重扫段 0）
     const phase = inferPhase(text, previousPhase, index === 0);
     previousPhase = phase;
     let tokens = 0;

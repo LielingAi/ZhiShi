@@ -11,6 +11,8 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import {
   buildWorkingWindow,
   buildWindowPointer,
+  clipMiddle,
+  isToolResultMessage,
   jsonlLineRange,
   makeWindowTransform,
 } from './window-transform';
@@ -141,3 +143,41 @@ describe('makeWindowTransform（transformContext 形态）', () => {
     expect(called).toBe(true); // 回调恒触发（info 携带 evicted:false）
   });
 });
+
+// ---------------------------------------------------------------------------
+// 2.0.7 窗口内工具输出截断 + 增量续扫
+// ---------------------------------------------------------------------------
+
+describe('clipMiddle / 大块工具输出截断（2.0.7）', () => {
+  it('clipMiddle：短文本原样；长文本留头尾 + 标记（带原长与 recall 指引）', () => {
+    expect(clipMiddle('短')).toBe('短');
+    const long = `HEAD${'x'.repeat(30_000)}TAIL`;
+    const clipped = clipMiddle(long, 4000, 1500);
+    expect(clipped.startsWith('HEAD')).toBe(true);
+    expect(clipped.endsWith('TAIL')).toBe(true);
+    expect(clipped).toContain('窗口截断');
+    expect(clipped).toContain('recall');
+    expect(clipped.length).toBeLessThan(6000);
+  });
+
+  it('置换后：最近 2 条 tool 结果原样，更早的被截断（预算内省 token）', () => {
+    const BIG = 'y'.repeat(30_000); // 单条 ~12k tok（chars/2.5）
+    const msgs: AgentMessage[] = [user('任务目标：审 vsrx')];
+    for (let i = 1; i <= 10; i++) {
+      msgs.push(user(`指令 #${i}`));
+      msgs.push(assistant(`分析 #${i}`, `c-${i}`, 'env_exec'));
+      msgs.push(toolResult(`c-${i}`, `RESULT-#${i}-${BIG}-END`));
+    }
+    const r = buildWorkingWindow(msgs, { contextWindow: 240_000 }); // 预算 60k
+    const keptTools = r.messages.filter((m) => isToolResultMessage(m)) as Array<{
+      content: Array<{ type: string; text: string }>; toolCallId: string;
+    }>;
+    expect(keptTools.length).toBeGreaterThanOrEqual(3);
+    const texts = keptTools.map((m) => m.content[0]!.text);
+    const clippedCount = texts.filter((t) => t.includes('窗口截断')).length;
+    expect(clippedCount).toBeGreaterThan(0);
+    // 最新两条（按 kept 顺序的末尾）保持原样
+    for (const t of texts.slice(-2)) expect(t).not.toContain('窗口截断');
+  });
+});
+

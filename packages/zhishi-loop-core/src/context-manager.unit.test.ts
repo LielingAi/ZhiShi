@@ -47,8 +47,7 @@ function toolCall(id: string, name: string, args: unknown): AgentMessage {
 
 /**
  * 标准超阈值会话(采样锚定/布局用):
- *   seg0 anchor  任务锚(小)
- *   seg1 recon   nmap 扫描,非 key,大 → 可压缩
+ *   seg0 anchor  任务锚(小) *   seg1 recon   nmap 扫描,非 key,大 → 可压缩
  *   seg2 analysis grep 审计 + exit=1 死路 → key 段(必保)
  *   seg3 construction payload 脚本,非 key,大 → 可压缩
  *   seg4 execution 运行 exploit(末尾段,当前阶段必保)
@@ -85,6 +84,33 @@ describe('segmentContext — 切分边界', () => {
     expect(segs).toHaveLength(1);
     expect([segs[0].start, segs[0].end]).toEqual([0, 3]);
     expect(segmentContext([])).toEqual([]);
+  });
+
+  // 2.0.7 增量续扫：与全量扫描逐字段等价（否则窗口置换会随追加漂移）
+  it('resume 续扫 == 全量扫描（按批追加对拍，含工具轮切子段）', () => {
+    const pool: AgentMessage[] = [user('任务锚：审 vsrx')];
+    for (let i = 0; i < 40; i++) {
+      if (i % 9 === 0) pool.push(user(`第 ${i} 轮指令`));
+      for (let k = 0; k < 6; k++) {
+        pool.push(toolCall(`c${i}_${k}`, 'env_exec', { command: `ls ${k}` }));
+        pool.push(toolResult(`out ${i}-${k} exit=0`, `c${i}_${k}`));
+        if (k === 2) pool.push(assistant(`小结 ${i}`));
+      }
+    }
+    const strip = (segs: ReturnType<typeof segmentContext>) =>
+      segs.map(({ index, start, end, phase, tokens, toolNames, keyHits, hasKey }) =>
+        ({ index, start, end, phase, tokens, toolNames, keyHits, hasKey }));
+    let resume: { segments: ReturnType<typeof segmentContext>; messageCount: number } | undefined;
+    for (let n = 1; n <= pool.length; n += 13) {
+      const slice = pool.slice(0, n);
+      const full = segmentContext(slice);
+      const inc = segmentContext(slice, resume);
+      expect(strip(inc)).toEqual(strip(full));
+      resume = { segments: full, messageCount: n };
+    }
+    // 收尾：再追加一小段，用上次 resume 续扫
+    const tail = pool.slice(0, pool.length);
+    expect(strip(segmentContext(tail, resume))).toEqual(strip(segmentContext(tail)));
   });
 });
 

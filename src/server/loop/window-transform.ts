@@ -46,6 +46,41 @@ export const CLAIM_INJECT_MAX_CHARS = 2000;
 export const CLAIM_FRESH_DAYS = 30;
 
 // ---------------------------------------------------------------------------
+// 2.0.7 窗口内工具输出截断
+// ---------------------------------------------------------------------------
+
+/** kept 里最近几条 tool 结果原样保留（模型当下要读的那几条）。 */
+export const KEEP_RECENT_TOOL_RESULTS = 2;
+/** 更早的 tool 结果：留头 head 字符。 */
+export const TOOL_RESULT_HEAD_CHARS = 4000;
+/** 更早的 tool 结果：留尾 tail 字符（错误摘要/结尾结论常在这里）。 */
+export const TOOL_RESULT_TAIL_CHARS = 1500;
+
+/** tool 结果消息判定（pi 的 toolResult：role='tool' 且带 toolName/toolCallId）。 */
+export function isToolResultMessage(m: AgentMessage): boolean {
+  const r = (m as { role?: string }).role;
+  if (r === 'tool' || r === 'toolResult') return true;
+  const t = m as { toolName?: unknown; toolCallId?: unknown };
+  return typeof t.toolName === 'string' || typeof t.toolCallId === 'string';
+}
+
+/**
+ * 头尾保留、中间挖掉（原文在 jsonl，recall 按行区间取回）。
+ * 标记里带原长与取回指引，让模型知道"这里被截了，不是没输出"。
+ */
+export function clipMiddle(text: string, head = TOOL_RESULT_HEAD_CHARS, tail = TOOL_RESULT_TAIL_CHARS): string {
+  const keep = head + tail;
+  if (text.length <= keep + 200) return text;
+  const dropped = text.length - keep;
+  return (
+    text.slice(0, head) +
+    `\n…[zhishi 窗口截断：中间 ${dropped} 字符未进上下文，原文在会话存档，` +
+    `可用 recall 按行区间取回]…\n` +
+    text.slice(text.length - tail)
+  );
+}
+
+// ---------------------------------------------------------------------------
 // M6 自动检索注入（纯函数;工作记忆组装时以当前轮内容检索 session-claims）
 // ---------------------------------------------------------------------------
 
@@ -109,6 +144,10 @@ export interface WorkingWindowOptions {
   keepRecentUser?: number;
   /** 系统提示字符数——预算先行扣除（与 estimateMessagesTokens 同口径 chars/2）。 */
   systemPromptChars?: number;
+  /** 2.0.7 增量续扫：上一次的分段结果（见 segmentContext 的 resume）。 */
+  resumeSegments?: import('zhishi-loop-core/context-manager').SegmentResume;
+  /** 2.0.7 大块工具输出截断开关（缺省开；关掉=旧行为，供对比/测试）。 */
+  truncateToolResults?: boolean;
 }
 
 export interface WorkingWindowResult {
@@ -124,6 +163,8 @@ export interface WorkingWindowResult {
   afterTokens: number;
   /** 预算（目标值）。 */
   budgetTokens: number;
+  /** 2.0.7 增量续扫：本次分段结果（未超预算时缺省——无需分段）。 */
+  segments?: import('zhishi-loop-core/context-manager').ContextSegment[];
 }
 
 /** jsonl 行区间（消息下标 i ↔ jsonl 行 i+2，与 harvest/recall 同口径）。 */
@@ -169,7 +210,7 @@ export function buildWorkingWindow(
     return { messages, evictedCount: 0, pointerCount: 0, evicted: false, afterTokens: total, budgetTokens };
   }
 
-  const segments = segmentContext(messages);
+  const segments = segmentContext(messages, options.resumeSegments);
   // anchor 段（段 0，任务目标）恒保留原文——其 tokens 与 user 计数先入账。
   const anchor = segments[0];
   const anchorUser = messages.slice(anchor.start, anchor.end).filter((m) => m.role === 'user').length;
@@ -191,6 +232,36 @@ export function buildWorkingWindow(
   // 第二遍收缩：指针块本身占 token（每块 ~55-130）——kept + 指针总量
   // 必须 ≤ 预算；超支则从 kept 最老段起再移出一段（-段体量 + +一块指针，
   // 单步净减），直到达标或 kept 清空。
+  /**
+   * 2.0.7 窗口内大块工具输出截断（原文在 jsonl，recall 按行区间可取回）。
+   *
+   * 实测（2026-10-21 会话）：toolResult 占 transcript 的 42%，单条常见
+   * 9–35KB——几个 `env_exec` 就能吃掉预算的一大截，把真正有决策价值的
+   * 最近几轮挤出窗口。策略：**最近的 K 条原样保留**（模型当下要用），
+   * 更早的只留头尾 + 取回指引。
+   */
+  const keptToolBudget = new Set<AgentMessage>();
+  const truncateToolResult = (m: AgentMessage): AgentMessage => {
+    if (options.truncateToolResults === false) return m;
+    if (keptToolBudget.has(m)) return m; // 最近 K 条原样
+    const c = (m as { content?: unknown }).content;
+    if (typeof c === 'string') {
+      const next = clipMiddle(c);
+      return next === c ? m : ({ ...m, content: next } as AgentMessage);
+    }
+    if (Array.isArray(c)) {
+      let changed = false;
+      const blocks = (c as Array<Record<string, unknown>>).map((b) => {
+        if (b?.type !== 'text' || typeof b.text !== 'string') return b;
+        const next = clipMiddle(b.text);
+        if (next === b.text) return b;
+        changed = true;
+        return { ...b, text: next };
+      });
+      return changed ? ({ ...m, content: blocks } as unknown as AgentMessage) : m;
+    }
+    return m;
+  };
   const buildOut = (keptSegs: ContextSegment[], evictedSegs: ContextSegment[]): AgentMessage[] => {
     const pointers = evictedSegs.map((seg) => ({
       role: 'user',
@@ -201,16 +272,38 @@ export function buildWorkingWindow(
     const out: AgentMessage[] = [];
     out.push(...messages.slice(anchor.start, anchor.end));
     out.push(...pointers);
-    for (const seg of keptSorted) out.push(...messages.slice(seg.start, seg.end));
+    for (const seg of keptSorted) {
+      for (const m of messages.slice(seg.start, seg.end)) {
+        out.push(isToolResultMessage(m) ? truncateToolResult(m) : m);
+      }
+    }
     return out;
   };
   let keptMutable = [...kept];
+  // 最近 K 条 tool 结果集合按当前 kept 计算（第二遍收缩会改 kept，重建一次）
+  const rebuildKeptToolSet = (keptSegs: ContextSegment[]): void => {
+    keptToolBudget.clear();
+    const flat: AgentMessage[] = [];
+    // 段序（时间序）拼接——kept 内部是「从新到旧」推入的，必须排序后再从尾部数
+    for (const seg of [...keptSegs].sort((a, b) => a.index - b.index)) {
+      flat.push(...messages.slice(seg.start, seg.end));
+    }
+    let seen = 0;
+    for (let i = flat.length - 1; i >= 0; i--) {
+      const m = flat[i]!;
+      if (!isToolResultMessage(m)) continue;
+      seen += 1;
+      if (seen <= KEEP_RECENT_TOOL_RESULTS) keptToolBudget.add(m);
+    }
+  };
+  rebuildKeptToolSet(keptMutable);
   let result = buildOut(keptMutable, evicted);
   while (result.length > 0
     && estimateMessagesTokens(result, options.systemPromptChars ?? 0) > budgetTokens
     && keptMutable.length > 0) {
     keptMutable = keptMutable.slice(0, -1); // 去掉最老 kept 段
     evicted = segments.filter((s) => s.index > 0 && !keptMutable.some((k) => k.index === s.index));
+    rebuildKeptToolSet(keptMutable);
     result = buildOut(keptMutable, evicted);
   }
 
@@ -226,6 +319,7 @@ export function buildWorkingWindow(
     evicted: true,
     afterTokens: estimateMessagesTokens(result, options.systemPromptChars ?? 0),
     budgetTokens,
+    segments,
   };
 }
 
@@ -264,10 +358,35 @@ export function makeWindowTransform(
   policy: WindowTransformPolicy,
   onWindow?: (info: WindowTransformInfo) => void,
 ): (messages: AgentMessage[], _signal?: AbortSignal) => Promise<AgentMessage[]> {
+  // 2.0.7 增量续扫状态：消息只追加，除末段外都已定型——只重扫尾巴。
+  // 校验用「上次覆盖的条数 + 该位置消息对象身份」，数组重建/历史被替换
+  // （reset/回滚）时自动退回全量扫描。
+  let segCache: { segments: ContextSegment[]; messageCount: number; lastRef: AgentMessage } | null = null;
   return async (messages) => {
     try {
       const before = estimateMessagesTokens(messages, policy.systemPromptChars ?? 0);
-      const result = buildWorkingWindow(messages, policy);
+      const canResume = segCache !== null
+        && segCache.messageCount > 0
+        && messages.length >= segCache.messageCount
+        && messages[segCache.messageCount - 1] === segCache.lastRef;
+      const result = buildWorkingWindow(messages, {
+        contextWindow: policy.contextWindow,
+        ...(policy.targetRatio !== undefined ? { targetRatio: policy.targetRatio } : {}),
+        ...(policy.keepRecentUser !== undefined ? { keepRecentUser: policy.keepRecentUser } : {}),
+        ...(policy.systemPromptChars !== undefined ? { systemPromptChars: policy.systemPromptChars } : {}),
+        ...(canResume
+          ? { resumeSegments: { segments: segCache!.segments, messageCount: segCache!.messageCount } }
+          : {}),
+      });
+      if (result.segments && messages.length > 0) {
+        segCache = {
+          segments: result.segments,
+          messageCount: messages.length,
+          lastRef: messages[messages.length - 1]!,
+        };
+      } else if (messages.length === 0) {
+        segCache = null;
+      }
       let injectedClaims = 0;
       if (policy.sessionId && result.messages.length > 0) {
         try {
