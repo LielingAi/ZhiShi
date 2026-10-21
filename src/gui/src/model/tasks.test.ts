@@ -9,6 +9,7 @@ import {
   applySubagentEvent,
   bgStatusSegments,
   buildTaskRows,
+  normalizeLoopTranscript,
 } from './tasks';
 
 describe('applyBgEvent（chat:bg-started / chat:bg-finished）', () => {
@@ -113,5 +114,47 @@ describe('bgStatusSegments（状态栏后台段 ⛁ name×N）', () => {
 
   it('全空 → 空段', () => {
     expect(bgStatusSegments([], [])).toEqual([]);
+  });
+});
+
+describe('normalizeLoopTranscript（2.0.7 实机：点已完成任务白屏）', () => {
+  it('服务端 LoopTranscript 对象 → 行数组（text→content、toolName→name）', () => {
+    const raw = {
+      loopSessionId: 'loop-1',
+      truncated: false,
+      totalMessages: 3,
+      meta: null,
+      entries: [
+        { role: 'user', text: '查一下 nmap 版本' },
+        { role: 'assistant', text: '好', toolCalls: [{ name: 'env_exec', argsSummary: '{}' }] },
+        { role: 'tool', toolName: 'env_exec', isError: true, text: 'exit 1' },
+      ],
+    };
+    expect(normalizeLoopTranscript(raw)).toEqual([
+      { role: 'user', content: '查一下 nmap 版本', name: undefined, isError: false },
+      { role: 'assistant', content: '好', name: undefined, isError: false },
+      { role: 'tool', content: 'exit 1', name: 'env_exec', isError: true },
+    ]);
+  });
+
+  it('旧 sidecar 的数组直给形态原样吃下（content/name 不变）', () => {
+    const raw = [{ role: 'user', content: 'hi' }, { role: 'tool', name: 'bash', isError: false }];
+    expect(normalizeLoopTranscript(raw)).toEqual([
+      { role: 'user', content: 'hi', name: undefined, isError: false },
+      { role: 'tool', content: undefined, name: 'bash', isError: false },
+    ]);
+  });
+
+  it('空 entries → 空数组（UI 显「transcript 为空」而不是崩）', () => {
+    expect(normalizeLoopTranscript({ entries: [] })).toEqual([]);
+  });
+
+  it('无法识别的形状 → null（等价无 transcript，不白屏）', () => {
+    expect(normalizeLoopTranscript(null)).toBeNull();
+    expect(normalizeLoopTranscript(undefined)).toBeNull();
+    expect(normalizeLoopTranscript('oops')).toBeNull();
+    expect(normalizeLoopTranscript(42)).toBeNull();
+    expect(normalizeLoopTranscript({})).toBeNull();
+    expect(normalizeLoopTranscript({ entries: 'nope' })).toBeNull();
   });
 });

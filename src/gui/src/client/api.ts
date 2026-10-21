@@ -19,6 +19,7 @@
 import type { GuiSidecarClient } from './sse-client';
 import type { Ref } from '../model/send';
 import type { ArchiveSnapshot } from '../model/archive';
+import { normalizeLoopTranscript } from '../model/tasks';
 
 // ---------------------------------------------------------------------------
 // 形状（与 server 侧契约一致的最小声明）
@@ -594,10 +595,12 @@ export function fetchLoopTranscript(
   loopSessionId: string,
 ): Promise<LoopTranscriptLine[] | null> {
   return client
-    .getJson<{ success: boolean; transcript?: LoopTranscriptLine[] | null }>(
+    .getJson<{ success: boolean; transcript?: unknown }>(
       `/api/loop-session/messages?loopSessionId=${encodeURIComponent(loopSessionId)}`,
     )
-    .then((r) => r.transcript ?? null);
+    // 2.0.7 实机修复：服务端返回的是 LoopTranscript **对象**（{ entries, ... }），
+    // 不是行数组——直接当数组用会在 SidePaneTasks 的 .map 处整页崩。
+    .then((r) => normalizeLoopTranscript(r.transcript));
 }
 
 // ---------------------------------------------------------------------------

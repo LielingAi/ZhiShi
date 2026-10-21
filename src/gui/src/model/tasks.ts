@@ -245,3 +245,53 @@ export function bgStatusSegments(
   }
   return [...map.entries()].map(([name, count]) => ({ name, count }));
 }
+
+// ---------------------------------------------------------------------------
+// transcript 归一（2.0.7 实机：点已完成子任务白屏 h.map is not a function）
+// ---------------------------------------------------------------------------
+
+/** 已归一的 transcript 行（结构兼容 `client/api.ts::LoopTranscriptLine`）。 */
+export interface TranscriptLineView {
+  role?: string;
+  content?: unknown;
+  name?: string;
+  isError?: boolean;
+}
+
+/**
+ * `/api/loop-session/messages` 的 transcript 归一成行数组。
+ *
+ * 两个形状都要吃：
+ *   - **当前服务端**返回的是对象 `{ loopSessionId, entries, truncated,
+ *     totalMessages, meta }`（`server/loop/transcript.ts` 的 LoopTranscript），
+ *     entry 字段是 `{ role, text, toolName, isError }`；
+ *   - 更早的 sidecar 可能直接给数组（`{ role, content, name }`）。
+ *
+ * 客户端曾直接 `r.transcript ?? null` 当成数组用，点任何带 loopSessionId 的
+ * 子任务行就在 `SidePaneTasks` 的 `.map` 处整页崩掉；这里做一次归一，把
+ * "形状漂移"降级为"没有 transcript / 少一行"，而不是白屏。
+ * 无法识别 → null（等价于无 transcript）。
+ */
+export function normalizeLoopTranscript(raw: unknown): TranscriptLineView[] | null {
+  if (raw === null || raw === undefined) return null;
+  const entries = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'object' && Array.isArray((raw as { entries?: unknown }).entries)
+      ? ((raw as { entries: unknown[] }).entries)
+      : null;
+  if (!entries) return null;
+  if (entries.length === 0) return [];
+  return entries.map((entry) => {
+    const e = (entry ?? {}) as Record<string, unknown>;
+    return {
+      role: typeof e.role === 'string' ? e.role : undefined,
+      // 服务端 entry 用 text；已归一的数组直给形态用 content
+      content: e.text !== undefined ? e.text : e.content,
+      name: typeof e.toolName === 'string'
+        ? e.toolName
+        : typeof e.name === 'string' ? e.name : undefined,
+      isError: e.isError === true,
+    };
+  });
+}
+
