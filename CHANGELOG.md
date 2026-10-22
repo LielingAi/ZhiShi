@@ -18,6 +18,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.8] - 2026-10-22
+
+> **三个实机 bug + 两条记忆回路修复**：点已完成任务白屏、delegate_task 必挂的假超时、上下文膨胀到 85 万 token；记忆侧的「注入不记账」和「蒸馏从未播种」也一并解决——记忆终于能自我更新了。
+
+### Fixed
+
+- **点「已完成的任务」白屏（`h.map is not a function`）**：服务端 `/api/loop-session/messages`（transcript 形状）返回的是对象 `{ loopSessionId, entries, truncated, totalMessages, meta }`，客户端 `fetchLoopTranscript` 却声明成数组直接透传——点任何带 `loopSessionId` 的子任务行都会在 `SidePaneTasks` 的 `.map` 处整页崩。新增 `normalizeLoopTranscript` 归一两种形状（对象包装 / 旧版数组直给），字段对齐（`text/toolName` → `content/name`），无法识别一律降级为 null
+- **`delegate_task` 必报「90s 无任何数据流回」**：看门狗用**布尔**标记「工具执行期」，而 pi 的同批工具是**并发执行**、各自 emit `tool_execution_end`——先完成的那个把开关关掉，仍在跑的 `delegate_task` 立刻失去豁免。实机证据（22:27:08 同批下发 `delegate_task` + `env_exec`，22:27:09 `env_exec` 结束，22:29:40 = 22:28:10+90s 报超时，而子代理一直正常工作到 22:32）。改为 `inFlightTools` 计数（start +1 / end -1），归零才恢复计时
+- **上下文膨胀到 85 万 token**：窗口置换每次 LLM 调用都全量重跑分段，单次 84ms；且大块工具输出（单条常见 9–35KB）把有决策价值的最近几轮挤出窗口
+
+### Changed
+
+- **窗口置换增量续扫**：`segmentContext` 接受上一次结果，只重扫末段之后的尾巴（追加语义下其余段已定型）。等价性由对拍用例锁死（按批追加 40 轮工具序列，逐字段比对全量 vs 续扫）；前缀用「上次条数 + 该位置消息对象身份」校验，历史被替换（reset/回滚）自动退回全量。实测 **segmentContext 66.6ms → 0.2ms，整轮 84ms → 1.5ms**
+- **窗口内 toolResult 截断**：kept 里最近 2 条原样（模型当下要读），更早的留头 4000 / 尾 1500 字符 + 「原文在会话存档，可 recall 按行区间取回」标记。实测该会话窗口 242,782 → 218,358 tokens（省 10%）；`truncateToolResults` 开关默认开
+- **每消息 token 估算缓存**（WeakMap 按对象身份）——pi 流式更新换对象而非原地改，追加语义下旧消息引用稳定
+
+### Fixed（记忆回路）
+
+- **`recall_events` 恒为 0 —— 注入不记账**：`logRecallEvents` 全仓只有一个调用点（手工检索路由 `memory/search`），真正影响模型的注入路径（系统提示的蒸馏四段 + 研究记忆三节）从不记账，于是 `usefulness` 恒 1.0、`salience` 从不衰减——「常用的上浮 / 久不碰下沉 / 被纠正降权」整套机制空转。新增注入即记账：30 分钟冷却 + 单次上限 8 条 + **超限按「最久没记过」轮转**（固定顺序会让尾巴永远轮不上），best-effort 不影响提示组装
+- **蒸馏弧从未被播种**：`seedArcTask` 要求「有一个绑定了 Agent 的工作区」，而蒸馏输入读取是**全局**的（`collectRecentSessions/_workspacePath` 参数没被使用）、模型解析走 provider 配置、任务创建允许 `workspaceId=''`——宿主只是执行位标签（弧在 `/cron/execute-sync` 里开会话前就短路）。改为**四级回退、永远有值**：默认工作区 → 环境工作区 → 带 Agent 的工程 → `<数据目录>/distill-host`（自动创建）；management API 不可用时不再静默 return
+- **蒸馏只依赖 Rust 调度器**（CLI 起的 sidecar 没有它，一次都不跑）：新增 sidecar 内受护定时器，每小时按节律跑认知弧（1h）与安全弧（6h），状态跨重启保持；与 cron 触发**共用一把文件锁**，两条入口不并发跑同一弧
+
+（验证：typecheck + eslint + depcruise 干净；全量 3182 通过 / 6 跳过——新增 transcript 归一 4 例、看门狗并发回归 1 例、窗口续扫等价性与截断 4 例、注入记账 7 例、宿主优先级与节律 9 例；`build:server` / `build:cli` / GUI 构建通过。真实数据验证：11 条记忆全部解析出 id，首轮记 8 条次轮补 3 条无重复无遗漏；宿主解析走 fallback 且目录已建。）
+
 ## [2.0.7] - 2026-10-21
 
 > **非 Linux 设备真的能用了**：远端命令包装不再假设 bash/base64/GNU timeout；凭据冲突不再静默；条目字段终于能改。起因是 Junos vSRX（vsrx3-133）实机排障——同一台设备手工 ssh 能连，zhishi 只回一句 `Permission denied (publickey,password,keyboard-interactive)`。
