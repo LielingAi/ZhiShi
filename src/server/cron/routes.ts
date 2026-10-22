@@ -151,7 +151,11 @@ if (!taskId || !prompt) {
         // agent turn。动态 import 保持冷启动不为这条每日一次的路径付费。
         if (isDistillArcPrompt(prompt)) {
           const { runDistillArc } = await import('../memory/distill-runner');
-          const distillResult = await runDistillArc({ workspacePath: agentDir, taskId });
+          const { runWithArcLock } = await import('../memory/distill-scheduler');
+          // 2.0.7：与 sidecar 定时器共锁——同一弧不并发两份。
+          const locked = await runWithArcLock(() => runDistillArc({ workspacePath: agentDir, taskId }));
+          if (!locked.ok) return jsonResponse({ success: true, skipped: 'arc-locked' });
+          const distillResult = locked.value;
           return jsonResponse(distillResult.body, distillResult.status);
         }
 // 安全蒸馏弧（安全研究员版 P1 D3，§1.4）— 与认知弧并列的独立弧：
@@ -159,7 +163,10 @@ if (!taskId || !prompt) {
         // LLM → keyed 覆盖写库 → 标记事件已蒸馏），不走普通 agent turn。
         if (isResearchDistillArcPrompt(prompt)) {
           const { runResearchDistillArc } = await import('../memory/distill-runner');
-          const researchDistillResult = await runResearchDistillArc({ workspacePath: agentDir, taskId });
+          const { runWithArcLock } = await import('../memory/distill-scheduler');
+          const locked = await runWithArcLock(() => runResearchDistillArc({ workspacePath: agentDir, taskId }));
+          if (!locked.ok) return jsonResponse({ success: true, skipped: 'arc-locked' });
+          const researchDistillResult = locked.value;
           return jsonResponse(researchDistillResult.body, researchDistillResult.status);
         }
 // Clear any existing cron context before switching sessions

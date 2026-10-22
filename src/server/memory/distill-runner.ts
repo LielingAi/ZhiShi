@@ -79,7 +79,7 @@ import {
 import { resolveSessionModelAliases } from '../utils/model-aliases';
 import { getZhiShiDataDir } from '../utils/app-dirs';
 import { ensureDirSync } from '../utils/fs-utils';
-import { loadConfig, loadProjects, findAgentByWorkspacePath, findEffectiveProvider, resolveProviderEnv } from '../utils/admin-config';
+import { loadConfig, loadProjects, findEffectiveProvider, resolveProviderEnv } from '../utils/admin-config';
 import { managementApi } from '../utils/management-api';
 import { withFileLock } from '../utils/file-lock';
 import { workspacePathsEqual } from '../../shared/workspacePath';
@@ -874,10 +874,12 @@ async function seedArcTask(opts: {
   try {
     if (!isDistillEnabled(loadConfig())) return;
 
-    // 宿主工作区：仅用于 provider/模型解析。优先默认工作区，否则第一个
-    // 绑定了 Agent 的工作区；都没有则放弃（没有模型可用，蒸馏无意义）。
+    // 宿主工作区：只是一个执行位标签（输入全局读、模型走 provider 配置、
+    // 弧在开会话前就短路）。四级回退保证永远有值——见 resolveDistillHostWorkspace。
     const host = resolveDistillHostWorkspace();
-    if (!host) return;
+    if (host.via === 'fallback') {
+      console.log(`${logTag} 无默认/环境/工程工作区可用，蒸馏宿主回落 ${host.path}（系统目录，可删）`);
+    }
 
     // 锁文件的父目录在全新机器上可能还不存在（蒸馏从未跑过时 writeDistilled
     // 才会创建它）——先确保存在，否则 ENOENT 静默失败（真机发现的既有 bug）。
@@ -885,17 +887,21 @@ async function seedArcTask(opts: {
     const lockPath = join(getZhiShiDataDir(), 'memory', 'distilled', '.seed.lock');
     await withFileLock({ lockPath }, async () => {
       const list = await managementApi('/api/task/list?includeSystem=true');
-      if (!list.ok || !Array.isArray(list.tasks)) return; // management API 未就绪——下次启动再播
+      if (!list.ok || !Array.isArray(list.tasks)) {
+        // 2.0.7：以前这里静默 return，用户完全看不到"蒸馏从未被播种"。
+        console.warn(`${logTag} task list 不可用（${String(list.error ?? 'unknown')}）——本轮不播种，下次启动/管理 API 就绪后重试`);
+        return;
+      }
       const exists = (list.tasks as Array<{ name?: unknown; deleted?: unknown; dispatchOrigin?: unknown }>)
         .some((t) => t?.name === cronName && t?.deleted !== true && t?.dispatchOrigin === 'system');
       if (exists) return;
 
-      const project = loadProjects().find((p) => workspacePathsEqual(p.path, host));
+      const project = loadProjects().find((p) => workspacePathsEqual(p.path, host.path));
       const created = await managementApi('/api/task/create-direct', 'POST', {
         name: cronName,
         executor: 'agent',
         workspaceId: project?.id ?? '',
-        workspacePath: host,
+        workspacePath: host.path,
         taskMdContent: cronPrompt,
         executionMode: 'recurring',
         intervalMinutes,
@@ -910,7 +916,7 @@ async function seedArcTask(opts: {
       // 武装：todo → running + 起调度器（arm_task 路径）。
       const run = await managementApi('/api/task/run', 'POST', { id: taskId });
       if (run.ok) {
-        console.log(`${logTag} seeded global recurring task 「${cronName}」 (every ${intervalMinutes}min, host=${host})`);
+        console.log(`${logTag} seeded global recurring task 「${cronName}」 (every ${intervalMinutes}min, host=${host.path} via=${host.via})`);
       } else {
         console.warn(`${logTag} task seed arming failed: ${String(run.error ?? 'unknown')}`);
       }
@@ -920,16 +926,78 @@ async function seedArcTask(opts: {
   }
 }
 
-/** 蒸馏宿主工作区：默认工作区优先，否则第一个有 Agent 的工作区。 */
-function resolveDistillHostWorkspace(): string | null {
+/** 蒸馏宿主工作区的来源（日志/诊断用）。 */
+export type DistillHostVia = 'default' | 'environment' | 'agent' | 'fallback';
+
+export interface DistillHost {
+  path: string;
+  via: DistillHostVia;
+}
+
+/**
+ * 纯函数：按优先级从候选里挑宿主（存在性由调用方保证）。
+ * 顺序：默认工作区 → 环境工作区 → 绑定 Agent 的工程 → 兜底目录。
+ * 抽成纯函数是为了能单测优先级，不引入 IO。
+ */
+export function pickDistillHost(candidates: {
+  defaultWorkspacePath?: string;
+  environmentWorkspaces?: readonly (string | undefined)[];
+  projectPaths?: readonly string[];
+  fallbackPath: string;
+  exists: (p: string) => boolean;
+}): DistillHost {
+  const ok = (p: string | undefined): p is string => Boolean(p && p.trim()) && candidates.exists(p!.trim());
+  if (ok(candidates.defaultWorkspacePath)) return { path: candidates.defaultWorkspacePath!.trim(), via: 'default' };
+  for (const w of candidates.environmentWorkspaces ?? []) {
+    if (ok(w)) return { path: w!.trim(), via: 'environment' };
+  }
+  for (const p of candidates.projectPaths ?? []) {
+    if (ok(p)) return { path: p.trim(), via: 'agent' };
+  }
+  return { path: candidates.fallbackPath, via: 'fallback' };
+}
+
+/**
+ * 蒸馏宿主工作区。
+ *
+ * 2.0.7 修（2026-10-22 复查）：此前要求"必须有一个绑定了 Agent 的工作区"，
+ * 而蒸馏的输入读取是**全局**的（`collectRecentSessions/_workspacePath` 参数
+ * 根本没用）、模型解析走 provider 配置、任务创建允许 `workspaceId=''`——
+ * 宿主只是一个**执行位标签**（弧在 execute-sync 里开任何会话之前就短路了，
+ * 不落文件、不落会话）。那个严格条件让播种在"没有工程绑定 Agent"的机器上
+ * 永久静默失败（memories 停在 2026-09-28 就是这么来的）。
+ *
+ * 现在四级回退，永远有值：默认工作区 → 环境工作区 → 带 Agent 的工程 →
+ * `<数据目录>/distill-host`（自动创建）。
+ */
+export function resolveDistillHostWorkspace(): DistillHost {
+  const dataDir = getZhiShiDataDir();
+  const fallbackPath = join(dataDir, 'distill-host');
   try {
-    const config = loadConfig() as { defaultWorkspacePath?: string };
-    if (config.defaultWorkspacePath && findAgentByWorkspacePath(config.defaultWorkspacePath)) {
-      return config.defaultWorkspacePath;
+    const config = loadConfig() as {
+      defaultWorkspacePath?: string;
+      environments?: Array<{ workspace?: string }>;
+    };
+    const envs = (config.environments ?? []).map((e) => e.workspace);
+    const projects = (() => {
+      try { return loadProjects().map((p) => p.path); } catch { return []; }
+    })();
+    const host = pickDistillHost({
+      ...(config.defaultWorkspacePath ? { defaultWorkspacePath: config.defaultWorkspacePath } : {}),
+      environmentWorkspaces: envs,
+      projectPaths: projects,
+      fallbackPath,
+      exists: (p) => {
+        try { return statSync(p).isDirectory(); } catch { return false; }
+      },
+    });
+    if (host.via === 'fallback') {
+      try { ensureDirSync(fallbackPath); } catch { /* 建不出目录也不影响任务记录 */ }
     }
-    for (const p of loadProjects()) {
-      if (findAgentByWorkspacePath(p.path)) return p.path;
-    }
-  } catch { /* fall through */ }
-  return null;
+    return host;
+  } catch (err) {
+    console.warn('[distill] host 解析异常，回落兜底宿主:', err instanceof Error ? err.message : String(err));
+    try { ensureDirSync(fallbackPath); } catch { /* best effort */ }
+    return { path: fallbackPath, via: 'fallback' };
+  }
 }

@@ -1656,6 +1656,15 @@ currentInitPhase = 'skill-seed';
           await m.seedResearchDistillArcTask(currentAgentDir);
         })
         .catch((err) => console.warn('[distill] seed failed (non-fatal):', err instanceof Error ? err.message : err));
+      // 2.0.7：sidecar 侧受护定时器——蒸馏不再只靠 Rust 调度器（CLI 起的
+      // sidecar 没有它，于是"用 CLI 干活"的机器上一次都不会跑）。与 cron
+      // 触发共用一把文件锁，不会并发跑两份。
+      void import('./memory/distill-scheduler')
+        .then((m) => {
+          m.startDistillTimer();
+          console.log(`[distill-timer] 已启动（每 ${Math.round(m.DISTILL_TIMER_INTERVAL_MS / 60000)} 分钟检查一次节律）`);
+        })
+        .catch((err) => console.warn('[distill-timer] start failed (non-fatal):', err instanceof Error ? err.message : err));
 // 1.7.2 会话 Claim 治理（设计 §7.2 调度）— 引擎内务受护定时器:
       // 周期性扫描活跃会话线,Event→Claim 增量提取/去重/冲突收敛/生命周期。
       // 幂等游标 + 文件锁,失败静默下轮重试;不阻塞启动。
