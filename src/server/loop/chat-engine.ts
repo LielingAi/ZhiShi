@@ -101,6 +101,7 @@ import {
 // 判定源；store 本体在 loop/line-ownership.ts）。
 import { ensureLineOwner, getLineOwnership } from './line-ownership';
 import { loadDistilledMemoryForPrompt } from '../memory/distill';
+import { distilledEntryIds, noteInjectedMemory, researchMemoryEntryIds } from '../memory/recall-injection';
 import { buildSystemPromptAppend, type InteractionScenario } from '../system-prompt';
 import { collectResearchMemory, collectSecurityCapabilities, resolveSessionDomain, type SecurityCapabilitiesData } from '../system-prompt-security';
 import type { ResearchTaskKind } from '../../shared/research-kinds';
@@ -1003,13 +1004,21 @@ class ChatEngine {
             sessionId: archiveSession,
           })
         : undefined;
+      const distilledMemory = loadDistilledMemoryForPrompt();
+      const securityResearchMemory = scenario.type === 'security' || scenario.type === 'auto-run'
+        ? collectResearchMemory()
+        : undefined;
+      // 2.0.7：注入即记账——judge 的素材来源（否则 recall_events 恒 0，
+      // usefulness/衰减/judge 全套空转）。冷却期内同一记忆不重复记。
+      noteInjectedMemory(
+        [...distilledEntryIds(distilledMemory), ...researchMemoryEntryIds(securityResearchMemory)],
+        lastUserTextOf(historyMessages),
+      );
       const append = buildSystemPromptAppend(scenario, {
         runtime: 'builtin',
-        distilledMemory: loadDistilledMemoryForPrompt(),
+        distilledMemory,
         securityCapabilities: caps,
-        securityResearchMemory: scenario.type === 'security' || scenario.type === 'auto-run'
-          ? collectResearchMemory()
-          : undefined,
+        securityResearchMemory,
         securityResearchDomain: domain,
         researchArchive,
         expertKnowledge,
