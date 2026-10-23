@@ -165,7 +165,7 @@ GUI 主窗口已整体删除（`src/gui/**`，历史版本仍在 git 里）。�
 | auto loop | 目标式研究循环：**策略治理**——策略 YAML 唯一治理源、全自主无人值守、同 envKey 互斥闸；TUI 交互模式保留（预算三选一、验收包人终审）。2.0：环境任选 + 终态全局回执 |
 | 认知内核 | 第一性原理五层认知（深度理解 → 对抗共情 → 溯因推理 → 认识论谦卑 → 远距类比）+ 置信度校准锚点（< 0.60 不报告）+ 硬排除清单 |
 | 专家知识 | `expert.db`——判据化的权威知识层（SOP/判定链/方法论，人审定才进库）：harness 邻域注入（档案焦点 + 最近消息为锚自动检索）、`expert_search` 检索兜底、留痕可挂 `expert_refs`；现成 JSON/YAML 直接 `zhishi expert import` 批量入库 |
-| 研究报告 | `/export` 一键出报告目录（report.md + evidence/ PoC 本体）：骨架事实钉死 + LLM 填肉、按域模板、显式脱敏可选 |
+| 研究报告 | `Alt+x` → 导出报告：目录化产物（`index.md` 摘要/漏洞清单 + `report.md` + `findings/` 单结论 + `evidence/` PoC + `report.zip` 下载）：骨架事实钉死 + LLM 填肉、按域模板、显式脱敏可选 |
 | 工具侧技能 | 4 个工具本体随包分发（agent-browser / download-anything / zhishi-cli / range-ops——发现 + .claude 兼容同步） |
 | 子代理 | bundled-agents：fuzz-runner / crash-triager / vuln-hunter / hypothesis-tester / critic；`Alt+t` 看工作现场与完整 transcript |
 | 域包 | `bundled-domains/<域>/domain.json` —— 域 = 研究知识维度，只由任务内容判定（配方默认 + 内容信号动态修正）；`zhishi domain check` 就绪自检 |

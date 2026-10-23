@@ -303,10 +303,22 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.LastErr = "导出失败：" + msg.err.Error()
 			return m, nil
 		}
-		m.LastNotice = fmt.Sprintf("报告已生成：%s（证据 %d 项）", msg.info.ReportDir, msg.info.EvidenceCount)
-		body := "reportDir: " + msg.info.ReportDir +
-			"\n证据回收: " + fmt.Sprintf("%d 项", msg.info.EvidenceCount) +
-			"\nsanitize: " + fmt.Sprintf("%v", msg.info.Sanitized)
+		m.LastNotice = fmt.Sprintf(
+			"报告已生成：结论 %d 条 · 证据 %d 项 → %s",
+			msg.info.FindingCount, msg.info.EvidenceCount, msg.info.ReportDir,
+		)
+		body := "目录: " + msg.info.ReportDir +
+			"\n入口: index.md（摘要 + 漏洞清单）" +
+			"\n结论文件: " + fmt.Sprintf("%d 份（findings/）", msg.info.FindingCount) +
+			"\n证据回收: " + fmt.Sprintf("%d 项（evidence/）", msg.info.EvidenceCount)
+		if msg.info.ArchivePath != "" {
+			body += "\n打包: " + msg.info.ArchivePath
+		}
+		if msg.info.DownloadID != "" {
+			body += "\n下载: " + strings.TrimSuffix(m.Server, "/") + "/report/download/" + msg.info.DownloadID +
+				"\n  （开鉴权时浏览器需带 token；curl 用 Authorization: Bearer）"
+		}
+		body += "\nsanitize: " + fmt.Sprintf("%v", msg.info.Sanitized)
 		if len(msg.info.Degraded) > 0 {
 			body += "\n降级 " + fmt.Sprintf("%d 项:", len(msg.info.Degraded)) +
 				"\n  " + strings.Join(msg.info.Degraded, "\n  ")

@@ -597,11 +597,17 @@ const httpServer = honoServe({
         // 1.8.7 P1 鉴权闸（唯一入口，包裹全部 HTTP 路由：admin/非 admin/SSE）。
         // auth.enabled=false 时 verifyHttpAuth 快速短路放行，与 1.8.6 行为
         // 一字节相同；CORS 收紧也只在 enabled 时生效（applyCorsDecision 内判）。
-        const pathname = new URL(request.url).pathname;
+        const gateUrl = new URL(request.url);
+        const pathname = gateUrl.pathname;
         const verdict = verifyHttpAuth({
           method: request.method,
           pathname,
           authorization: request.headers.get('authorization'),
+          // 报告下载要能在浏览器里直接点开：这条路由额外接受 ?token=。
+          // 其余路径不接受 query token（避免 token 进日志/Referer 的面扩大）。
+          queryToken: pathname.startsWith('/report/download/')
+            ? gateUrl.searchParams.get('token') ?? undefined
+            : undefined,
         });
         if (!verdict.ok) {
           const headers: Record<string, string> = {};
@@ -774,6 +780,24 @@ const httpServer = honoServe({
           return jsonResponse({ error: 'ref body missing' }, 404);
         }
         return fr;
+      }
+      // 2.1 报告打包下载：只认导出时登记的随机 id——请求方给不了路径，也就
+      // 没有路径穿越面。zip 由 report/export 的 createArchive 落盘。
+      if (pathname.startsWith('/report/download/') && request.method === 'GET') {
+        const id = pathname.slice('/report/download/'.length);
+        if (!/^[a-f0-9]{12}$/.test(id)) {
+          return jsonResponse({ error: 'invalid report id' }, 400);
+        }
+        const { getReportArtifact } = await import('./report/artifacts');
+        const artifact = getReportArtifact(id);
+        if (!artifact) {
+          return jsonResponse({ error: 'report not found or expired' }, 404);
+        }
+        const fr = await fileResponse(artifact.path, {
+          contentType: 'application/zip',
+          headers: { 'Content-Disposition': `attachment; filename="zhishi-report-${id}.zip"` },
+        });
+        return fr ?? jsonResponse({ error: 'report archive missing' }, 404);
       }
 // 1.8.7 P4 团队大脑——文件上传（客户端磁盘 → 服务器侧环境）：裸字节流 +
       // query（envId/envPath/name），本体在 environment/file-transfer.ts

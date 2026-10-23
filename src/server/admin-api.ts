@@ -53,6 +53,7 @@ import {
 import { taskRerun, taskRun, type RunOpResult } from './task/run-ops';
 // Localhost loopback timeout for management / sidecar self-calls.
 import { existsSync , mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, mkdtempSync } from 'fs';
+import AdmZip from 'adm-zip';
 import { tmpdir } from 'os';
 import { ensureDirSync } from './utils/fs-utils';
 import { resolveSshTarget, execInEnvironment, buildScpArgv, buildScpUploadArgv, sshFileChannelUnsupported } from './loop/env-exec';
@@ -129,7 +130,7 @@ import {
   type DomainCheckContext,
 } from './domains/manifest';
 import { augmentedProcessEnv, resolveCommand } from './utils/env-utils';
-import { resolve } from 'path';
+import { dirname, resolve } from 'path';
 import { connect } from 'net';
 import { setAgents } from './agent-session';
 import { getPiAgentState, getEnvSessionBinding, getPiLineMission, setPiLineMission, switchEnvSession, resolveSessionEnv, resolveSessionEnvKey } from './loop/chat-engine';
@@ -144,6 +145,7 @@ import { resolveLoopModel } from './loop/pi-provider';
 import { runLoopText } from 'zhishi-loop-core/loop';
 import { buildLoopTranscript } from './loop/transcript';
 import { exportReport } from './report/export';
+import { registerReportArtifact } from './report/artifacts';
 import { loadEnabledAgents } from './agents/agent-loader';
 import { getZhiShiDataDir } from './utils/app-dirs';
 import { join } from 'path';
@@ -3546,8 +3548,19 @@ export async function handleReportExport(payload: {
       writeOutputs: (reportDir, files) => {
         mkdirSync(reportDir, { recursive: true });
         for (const [name, content] of Object.entries(files)) {
-          writeFileSync(join(reportDir, name), content, 'utf-8');
+          const target = join(reportDir, name);
+          mkdirSync(dirname(target), { recursive: true });
+          writeFileSync(target, content, 'utf-8');
         }
+      },
+      // 2.1 打包：整目录压成 report.zip（evidence 一并带上）。旧 zip 先删，
+      // 否则同一分钟内重复导出会把上一版 zip 包进新 zip。
+      createArchive: (reportDir) => {
+        const zipPath = join(reportDir, 'report.zip');
+        rmSync(zipPath, { force: true });
+        const zip = new AdmZip();
+        zip.addLocalFolder(reportDir);
+        zip.writeZip(zipPath);
       },
       // 1.2.2 引用追踪：事件 expert_refs → expert.db 查 title/kind；库不存在/
       // 条目已删 → null（骨架按「不可考」渲染，不阻塞导出）。
@@ -3559,7 +3572,15 @@ export async function handleReportExport(payload: {
       },
     },
   );
-  return result;
+  if (!result.success) return result;
+  // 2.1 下载登记：只登记本次产物，下载端按随机 id 取——不给请求方任意路径能力。
+  const downloadId = result.data.archivePath
+    ? registerReportArtifact({ path: result.data.archivePath, reportDir: result.data.reportDir })
+    : undefined;
+  return {
+    ...result,
+    data: { ...result.data, ...(downloadId ? { downloadId } : {}) },
+  };
 }
 // ===== 1.4.1 / 1.7.7 auto loop agent（design docs/design/auto-redesign.md）=====
 // runner 本体在 loop/auto-run.ts（纯函数+注入依赖）；这里只做薄校验与调用。

@@ -233,6 +233,8 @@ export function requiredRoleFor(pathname: string, method: string): RouteAccess {
   }
   if (m === 'POST' && NON_ADMIN_OPERATOR_POSTS.has(pathname)) return 'operator';
   if (m === 'GET' && pathname.startsWith('/refs/')) return 'readonly';
+  // 2.1 报告打包下载（只认登记过的随机 id；readonly 档可下载自己看得到的报告）。
+  if (m === 'GET' && pathname.startsWith('/report/download/')) return 'readonly';
   // 1.8.7 P4 文件传输上传：写落在环境内（界内，与 environment/push 同
   // boundary 口径，不设第二层 ask）+ 受管 spill 目录；下载第一步是 admin
   // 路由 environment/extract-file，字节取回走上面 /refs/:id（readonly）。

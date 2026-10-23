@@ -454,6 +454,9 @@ func (c *Client) AutoRunStop(ctx context.Context, id string) error {
 type ReportExportInfo struct {
 	ReportDir     string   `json:"reportDir"`
 	EvidenceCount int      `json:"evidenceCount"`
+	FindingCount  int      `json:"findingCount"`
+	ArchivePath   string   `json:"archivePath"`
+	DownloadID    string   `json:"downloadId"`
 	Degraded      []string `json:"degraded"`
 	Sanitized     bool     `json:"sanitized"`
 }

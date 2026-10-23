@@ -254,3 +254,55 @@ describe('exportReport sanitize', () => {
     expect(meta.evidence.note).toContain('evidence 文件本体未脱敏');
   });
 });
+
+// 2.1 目录化：index + 单结论文件 + zip
+describe('2.1 目录化导出', () => {
+  const ARCHIVE = {
+    sessionId: 's',
+    updatedAt: '',
+    corrections: [],
+    entities: [
+      {
+        id: 'C#1', kind: 'finding' as const,
+        text: '登录口 SQL 注入可窃取会话', status: 'established', findingType: 'bug_class' as const,
+        links: ['V#1'], anchorLabel: '第 3 轮', createdAt: '', updatedAt: '',
+      },
+      { id: 'V#1', kind: 'evidence' as const, text: 'sqlmap 回显', status: 'valid', links: [], createdAt: '', updatedAt: '' },
+    ],
+  };
+
+  it('写 index.md + findings/C-001.md；meta 记结论；createArchive 收到调用', async () => {
+    let archiveCalls = 0;
+    const { deps, captured } = makeDeps({
+      loadArchive: () => ARCHIVE as never,
+      createArchive: () => { archiveCalls += 1; },
+      narrate: async () => ({ text: '<<<SECTION:tldr>>>\n- 打通登录口注入\n<<<END>>>' }),
+    });
+    const result = await exportReport({ workspace: WS, env: { envId: 'pwn-vm', entry: SSH_ENTRY } }, deps);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    const files = captured.wrote!.files;
+    expect(files['index.md']).toContain('## 漏洞清单');
+    expect(files['index.md']).toContain('[C#1](findings/C-001.md)');
+    expect(files['index.md']).toContain('打通登录口注入');
+    expect(files['findings/C-001.md']).toContain('# C#1 · 登录口 SQL 注入可窃取会话');
+    expect(files['findings/C-001.md']).toContain('- 状态：已确立');
+    expect(files['report.md']).toContain('# 安全研究报告（渗透测试）');
+
+    const meta = JSON.parse(files['meta.json']!);
+    expect(meta.findings).toEqual({ count: 1, ids: ['C#1'] });
+    expect(result.data.findingCount).toBe(1);
+    expect(result.data.archivePath).toBe(join(result.data.reportDir, 'report.zip'));
+    expect(archiveCalls).toBe(1);
+  });
+
+  it('未注入 createArchive → 不产生 zip 路径（宿主保持原行为）', async () => {
+    const { deps } = makeDeps();
+    const result = await exportReport({ workspace: WS, env: { envId: 'pwn-vm', entry: SSH_ENTRY } }, deps);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.findingCount).toBe(0);
+    expect(result.data.archivePath).toBeUndefined();
+  });
+});

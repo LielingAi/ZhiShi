@@ -25,6 +25,7 @@ import type { EnvExec } from '../loop/env-exec';
 import type { LoopTranscript } from '../loop/transcript';
 import type { ResearchEvent } from '../memory/store';
 import { recoverEvidenceBatch } from './evidence';
+import { renderFindingDocs, renderReportIndex } from './findings';
 import { buildNarrationPrompt, NARRATION_SYSTEM_PROMPT, parseNarratedSections } from './narrate';
 import { formatSensitiveSummary, sanitizeSensitiveText, scanSensitiveHits } from './sensitive';
 import {
@@ -68,8 +69,13 @@ export interface ExportReportDeps {
   narrate(prompt: string, systemPrompt: string): Promise<NarrationOutcome>;
   /** meta.json 的模型标识（如 'provider/model'；无可用模型 → null）。 */
   modelId: string | null;
-  /** 落盘（report.md / meta.json；目录由实现侧 mkdir -p）。 */
+  /** 落盘（report.md / index.md / findings/*.md / meta.json；目录由实现侧 mkdir -p）。 */
   writeOutputs(reportDir: string, files: Record<string, string>): void;
+  /**
+   * 2.1 打包：把已落盘的报告目录压成 report.zip（实现侧负责排除旧 zip）。
+   * 缺省不打包（单测/无 zip 依赖的宿主保持原行为）。
+   */
+  createArchive?: (reportDir: string) => void;
   /** 证据回收 exec 注入（测试）；缺省 defaultEnvExec。 */
   exec?: EnvExec;
   /** 时钟注入（测试钉目录名与生成时间）。 */
@@ -91,6 +97,12 @@ export interface ExportReportData {
   reportDir: string;
   /** 成功回收到 evidence/ 的文件数（去重后）。 */
   evidenceCount: number;
+  /** 2.1：档案结论（C#n）转成的单漏洞文件数。 */
+  findingCount: number;
+  /** 2.1：打包产物路径（未打包时 undefined）。 */
+  archivePath?: string;
+  /** 2.1：下载登记 id（host 层登记后回填；无 zip 时 undefined）。 */
+  downloadId?: string;
   /** 降级标注（回收失败/docker/不可达/未润色……），同步进 meta.json。 */
   degraded: string[];
   sanitized: boolean;
@@ -204,14 +216,20 @@ export async function exportReport(
   if (unpolished) headerNotes.push(unpolished);
   if (skeleton.truncated) headerNotes.push('骨架超预算已截断：事件层完整保留，transcript 原始摘录从尾部裁减');
 
-  // ---- 6. 落盘 ----------------------------------------------------------
-  let markdown = renderReportMarkdown(skeleton, {
+  // ---- 6. 落盘（目录化：index + report + 单结论文件 + meta + zip）--------
+  const findingDocs = renderFindingDocs(archive);
+  const rawMarkdown = renderReportMarkdown(skeleton, {
     ...(narration ? { narration } : {}),
     headerNotes,
   });
-  if (sanitize) {
-    markdown = sanitizeSensitiveText(markdown).text;
-  }
+  const markdown = sanitize ? sanitizeSensitiveText(rawMarkdown).text : rawMarkdown;
+  const rawIndex = renderReportIndex({
+    skeleton,
+    findings: findingDocs,
+    ...(narration ? { narration } : {}),
+    headerNotes,
+  });
+  const indexMarkdown = sanitize ? sanitizeSensitiveText(rawIndex).text : rawIndex;
 
   const meta = {
     generatedAt: new Date(skeleton.generatedAt).toISOString(),
@@ -219,6 +237,10 @@ export async function exportReport(
     envId: input.env.envId,
     model: deps.modelId,
     eventIds: skeleton.eventIds,
+    findings: {
+      count: findingDocs.length,
+      ids: findingDocs.map((f) => f.id),
+    },
     ...(skeleton.expertRefs.length > 0
       ? {
           expertRefs: skeleton.expertRefs.map((c) => ({
@@ -235,14 +257,35 @@ export async function exportReport(
     evidence: {
       recovered: evidenceCount,
       degraded: skeleton.evidenceRefs.length - (skeleton.evidenceResults ?? []).filter((r) => r.status === 'recovered').length,
-      ...(sanitize && evidenceCount > 0 ? { note: 'evidence 文件本体未脱敏（脱敏只作用于 report.md 文本）' } : {}),
+      ...(sanitize && evidenceCount > 0 ? { note: 'evidence 文件本体未脱敏（脱敏只作用于 markdown 文本）' } : {}),
     },
   };
 
-  deps.writeOutputs(reportDir, {
+  const files: Record<string, string> = {
+    'index.md': indexMarkdown,
     'report.md': markdown,
     'meta.json': `${JSON.stringify(meta, null, 2)}\n`,
-  });
+  };
+  for (const doc of findingDocs) {
+    files[doc.filename] = sanitize ? sanitizeSensitiveText(doc.markdown).text : doc.markdown;
+  }
 
-  return { success: true, data: { reportDir, evidenceCount, degraded, sanitized: sanitize } };
+  deps.writeOutputs(reportDir, files);
+  let archivePath: string | undefined;
+  if (deps.createArchive) {
+    deps.createArchive(reportDir);
+    archivePath = join(reportDir, 'report.zip');
+  }
+
+  return {
+    success: true,
+    data: {
+      reportDir,
+      evidenceCount,
+      findingCount: findingDocs.length,
+      ...(archivePath ? { archivePath } : {}),
+      degraded,
+      sanitized: sanitize,
+    },
+  };
 }
