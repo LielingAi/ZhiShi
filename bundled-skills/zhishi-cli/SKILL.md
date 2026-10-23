@@ -311,7 +311,7 @@ zhishi task delete <taskId>                               # 删除
 
 ```bash
 
-zhishi task list [--status X --workspaceId X --tag X --includeDeleted]
+zhishi task list [--status X --workspaceId X --tag X --includeDeleted] [--includeSystem]
 
 zhishi task get <taskId>                              # 详情 + statusHistory + 各 .md 文档路径
 
@@ -386,6 +386,7 @@ zhishi memory search '<关键词>' [--kind reminder --limit N] [--json]
 **何时用：**
 
 - "看我还有啥没做完的" → `task list --status running` / `task list`
+- 系统任务（蒸馏弧这类内置调度）缺省不出现在 `task list` 里（与 Rust 侧同语义）；要看全量加 `--includeSystem`
 
 - "这个想法派发出去" → `task create-from-alignment <sessionId> --name "..." --run`
 

@@ -21,9 +21,29 @@
 
 ---
 
+> **2.1 形态变更**：GUI 主窗口已删除，交互面只剩 TUI（`zhishi` 裸命令）。本文
+> §5「GUI 操作」及安装章节里的桌面安装器描述均已过时，待整体重写；命令与业务
+> 口径（环境 / 模型 / 记忆 / 团队）仍然有效。
+
 ## 1. 安装与启动
 
-### 发行包（Windows）
+### npm（2.1 起的方式）
+
+```bash
+npm i -g @lielingai/zhishi     # 需要 Node >= 22.5（SQLite 驱动依赖 node:sqlite）
+zhishi                          # 进 TUI（首次会自动拉起本地 sidecar）
+zhishi --help                   # 子命令（环境 / 任务 / 专家 / 团队……）
+```
+
+- 平台 TUI 二进制走 optionalDependencies（`@lielingai/zhishi-tui-<platform>-<arch>`），
+  装不上的平台会在启动时明确提示，并给出 `ZHISHI_TUI_BIN` 覆盖方式。
+- sidecar 与内置资源（skill / subagent / 域清单 / 专家种子 / 环境配方）都随主包分发，
+  单机开箱可用；`npm i -g` 后不需要另装 Tauri 桌面应用。
+- **TUI 里输入 `/` 开头 = 直接跑 CLI 子命令**（输出贴成一个块）：
+  `/model list`、`/model set-key deepseek sk-xxx`、`/env add --kind ssh …`、`/help`。
+  命令面板 `Ctrl+K` 是这些命令的模板，选中只填入输入框，不直接执行。
+
+### 发行包（Windows，1.x–2.0 历史形态）
 
 - 到 [GitHub Releases](https://github.com/LielingAi/ZhiShi/releases/latest) 下载 `ZhiShi_<版本>_x64-setup.exe`（NSIS）安装，或便携 ZIP 解压即用。
 - **安装后 `zhishi` 命令直接可用**（1.2.10 起）：安装器把 CLI 落到 `~/.zhishi/bin` 并注册进用户 PATH——新开一个终端就能敲 `zhishi --version`、`zhishi expert list` 等（已开着的终端要重开才刷新 PATH）。
@@ -370,7 +390,7 @@ zhishi brain serve --host 10.0.93.49 --port 7411 --agent-dir <工作区目录>
 netsh advfirewall firewall add rule name="ZhiShi Brain 7411" dir=in action=allow protocol=TCP localport=7411
 ```
 
-注意：`auth enable` 之后，**大脑所在机器上原有的 GUI/CLI 也要带 token**（GUI 设置 → 连接里填，CLI 用 `--token` / `ZHISHI_TOKEN`）。**桌面宿主（Tauri 应用）的内部调度请求**（cron 定时任务、session-state 轮询、trust/event 上报）同样过统一鉴权闸：给宿主进程配置 `ZHISHI_TOKEN` 环境变量（建议 operator 档 token），应用启动时继承即可；未配置则定时任务会被 401 拒绝（日志可见），不静默绕过。
+注意：`auth enable` 之后，**大脑所在机器上原有的 GUI/CLI 也要带 token**（GUI 设置 → 连接里填，CLI 用 `--token` / `ZHISHI_TOKEN`）。**2.0.8 起定时任务的 owner 是 sidecar**（`ZHISHI_TASK_SCHEDULER` 缺省 node，`rust`/`off` 是显式降级），所以**sidecar 所在机器**需要 `ZHISHI_TOKEN`；桌面宿主的内部请求（session-state 轮询、trust/event 上报）同样过统一鉴权闸：给宿主进程配置 `ZHISHI_TOKEN` 环境变量（建议 operator 档 token），应用启动时继承即可；未配置则定时任务会被 401 拒绝（日志可见），不静默绕过。
 
 ### 角色与权限（严格递增：readonly < operator < reviewer）
 

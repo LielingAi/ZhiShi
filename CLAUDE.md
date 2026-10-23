@@ -272,7 +272,11 @@ Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**不**�
 
 ### 定时任务系统
 
-Rust `CronTaskManager` 统一管理所有定时任务（独立创建 / AI 工具 / Heartbeat；Chat 定时与 IM Cron 已随 GUI / IM 删除）。AI 驱动的 cron run 的退出由 per-session cron context map（`src/server/tools/cron-tools.ts`）判定。新增 `CronTask` 字段 MUST 带 `#[serde(default)]`。详见 ARCHITECTURE「定时任务系统」。
+**2.0.8 起 owner 是 Node sidecar**（`src/server/task/`）：`store.ts` 存储层（`tasks.jsonl` / `task_runtime.json` / `task_runs/`）、`ops.ts` 读写路由、`scheduler.ts` 调度内核（wall-clock 30s 轮询 + past-due 补偿 + Ralph 退避 + per-invoke 工作区）、`cron.ts` cron 表达式（`croner`）。执行入口 `src/server/cron/routes.ts::runCronExecuteSync`（HTTP 与调度器共用）。
+
+**Rust 侧的调度启动已删除**（`src-tauri/src/lib.rs` 不再调用 `initialize_task_scheduler`；`task_scheduler.rs` 代码留作历史参考与对拍，无启动路径）。归属开关 `ZHISHI_TASK_SCHEDULER=node|rust|off`，**缺省 node**；`rust` 只用于"还要跑旧 Tauri 安装包"的过渡期降级，`off` 用于只保留手动 `task run`。不要用"探测 Rust 是否在场"来判归属——那是竞态判断，不如显式参数。
+
+数据格式与 Rust 完全兼容（camelCase JSONL），迁移是"读同一批文件"而不是导入。AI 驱动的 cron run 的退出由 per-session cron context map（`src/server/tools/cron-tools.ts`）判定。
 
 
 
@@ -462,10 +466,15 @@ npm start                         # 别名 npm run server（sidecar 直接启动
 
 node --import tsx/esm src/server/index.ts --agent-dir <dir>   # sidecar（--agent-dir 必填；dev 态可用系统 node——tsx loader）
 
-# 编译产物直跑（server-dist.js）必须用内置 node——sqlite-runtime 预编译按内置 ABI 构建，系统 node 会 ABI 不匹配导致 research_log/记忆库全挂（1.4.6 实证；启动探测会显式报错）
+# 编译产物直跑（server-dist.js）：内置 node 与系统 node（>= 22.5）都可以——SQLite 驱动
+# node:sqlite 优先，不随 Node 换 ABI；better-sqlite3 只在 Node < 22.5 兜底（启动日志说明）。
 src-tauri/resources/nodejs/node.exe src-tauri/resources/server-dist.js --agent-dir <dir> --port <port>
 
-node --import tsx/esm src/cli/zhishi.ts agent                  # 1.3.9 起 TUI 退役：打印引导（交互会话请用 GUI 主窗口）；`agent <subcommand>` 管理子代理
+node --import tsx/esm src/cli/zhishi.ts                        # 交互式 TUI（2.1 起唯一交互面；非 TTY 打印帮助）
+node --import tsx/esm src/cli/zhishi.ts agent <subcommand>     # 管理子代理（list/show/enable/disable/...）
+
+node scripts/build/npm-package.mjs                # 装配 npm 包到 dist/npm（当前平台 TUI 二进制）
+node scripts/build/npm-package.mjs --all-platforms --pack   # 发版：5 平台二进制 + tgz
 
 npm run tauri:dev                 # Tauri 开发模式（GUI 窗口 + sidecar + vite HMR）
 
