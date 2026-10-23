@@ -351,3 +351,40 @@ describe('1.4.5 审计修复：人纠正未决问题 → abandoned', () => {
     expect(out.corrections[0]).toMatchObject({ id: 'R#1', by: 'human' });
   });
 });
+
+// 2.2 结构化评级（研究员视角）
+describe('结构化评级字段', () => {
+  it('finding 保存 severity/cvss/vector/asset/impact/remediation，读回后仍在', async () => {
+    await addEvidence(sessionId, { text: 'sqlmap 回显会话' }, { dir });
+    const snap = await addFinding(sessionId, {
+      text: '登录口 SQL 注入',
+      refs: 'V#1',
+      findingType: 'bug_class',
+      severity: 'high',
+      cvss: 8.1,
+      cvssVector: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N',
+      asset: '/api/login',
+      impact: '可读取任意用户会话',
+      remediation: '改用参数化查询',
+    }, { dir });
+    const c = snap.entities.find((e) => e.id === 'C#1')!;
+    expect(c).toMatchObject({
+      severity: 'high',
+      cvss: 8.1,
+      cvssVector: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N',
+      asset: '/api/login',
+      impact: '可读取任意用户会话',
+      remediation: '改用参数化查询',
+    });
+
+    const reloaded = loadArchive(sessionId, { dir });
+    expect(reloaded.entities.find((e) => e.id === 'C#1')).toMatchObject({ severity: 'high', cvss: 8.1 });
+  });
+
+  it('非 finding 实体不落评级字段（即使调用方误传）', async () => {
+    const snap = await addHypothesis(sessionId, { text: '假设', severity: 'high', cvss: 9.8 }, { dir });
+    const h = snap.entities[0]!;
+    expect(h.severity).toBeUndefined();
+    expect(h.cvss).toBeUndefined();
+  });
+});

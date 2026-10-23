@@ -45,6 +45,7 @@ import {
   resolveHypothesis,
   resolveQuestion,
   type BroadcastFn,
+  type FindingSeverity,
   type FindingType,
 } from './archive';
 
@@ -415,6 +416,27 @@ const archiveParameters = Type.Object({
     enum: ARCHIVE_FINDING_TYPES,
     description: `结论类型(op=finding 可选):${ARCHIVE_FINDING_TYPES.join(' / ')}`,
   })),
+  severity: Type.Optional(Type.String({
+    enum: ['critical', 'high', 'medium', 'low', 'info'],
+    description: '严重度(op=finding 可选):critical / high / medium / low / info。拿不准就不填——报告会显式标「未评定」，不要编。',
+  })),
+  cvss: Type.Optional(Type.Number({
+    minimum: 0,
+    maximum: 10,
+    description: 'CVSS 基础分(op=finding 可选,0.0–10.0):与 cvssVector 同一口径;拿不准就不填。',
+  })),
+  cvssVector: Type.Optional(Type.String({
+    description: 'CVSS 向量(op=finding 可选,如 CVSS:3.1/AV:N/AC:L/...):原样记录，不改写。',
+  })),
+  asset: Type.Optional(Type.String({
+    description: '受影响资产/端点(op=finding 可选):如 /api/login、某二进制、某主机端口。',
+  })),
+  impact: Type.Optional(Type.String({
+    description: '影响(op=finding 可选):拿到什么权限、能读到什么、后果一句话。',
+  })),
+  remediation: Type.Optional(Type.String({
+    description: '修复建议(op=finding 可选):具体到可执行（参数化查询 / 升级版本 / 关闭端点）。',
+  })),
   refs: Type.Optional(Type.String({
     description: '实体引用,逗号分隔(op 新增类可选):假设/问题挂派生依据,证据挂由哪个假设驱动(H#N),结论挂支持证据(V#N)与结晶来源(H#N)——正反推论的机械锚',
   })),
@@ -529,9 +551,29 @@ export function createArchiveTool(
               + '反证也是证据：先 op=evidence 记录它，再 against 挂 V# 引用。',
             );
           }
+          // 2.2 结构化评级：向量格式在工具层拦；缺失允许（报告标「未评定」），
+          // 但不接受畸形向量/越界分数。
+          const cvssVector = params.cvssVector?.trim();
+          if (cvssVector && !/^CVSS:(3\.[01]|4\.0)\//.test(cvssVector)) {
+            throw new Error('research_archive: cvssVector 需为 CVSS:3.0/3.1/4.0 向量（如 CVSS:3.1/AV:N/AC:L/...）');
+          }
+          const assessment = {
+            ...(params.severity ? { severity: params.severity as FindingSeverity } : {}),
+            ...(typeof params.cvss === 'number' ? { cvss: params.cvss } : {}),
+            ...(cvssVector ? { cvssVector } : {}),
+            ...(params.asset?.trim() ? { asset: params.asset.trim() } : {}),
+            ...(params.impact?.trim() ? { impact: params.impact.trim() } : {}),
+            ...(params.remediation?.trim() ? { remediation: params.remediation.trim() } : {}),
+          };
           const snap = await addFinding(
             sid,
-            { text: params.text, findingType: params.findingType as FindingType | undefined, ...(against.length > 0 ? { againstRefs: against.join(',') } : {}), ...base },
+            {
+              text: params.text,
+              findingType: params.findingType as FindingType | undefined,
+              ...(against.length > 0 ? { againstRefs: against.join(',') } : {}),
+              ...assessment,
+              ...base,
+            },
             common(),
           );
           const e = snap.entities.at(-1)!;

@@ -335,7 +335,7 @@ func reportExportCmd(ctx context.Context, admin adminAPI, workspace string) tea.
 		}
 		reqCtx, cancel := context.WithTimeout(ctx, 7*time.Minute)
 		defer cancel()
-		info, err := admin.ReportExport(reqCtx, workspace, false)
+		info, err := admin.ReportExport(reqCtx, workspace)
 		return reportExportDoneMsg{info: info, err: err}
 	}
 }

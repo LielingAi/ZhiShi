@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/lielingai/zhishi/tui/internal/store"
 )
 
 // PaletteAction 是面板里的**本地**动作（不发给 sidecar）。
@@ -28,6 +30,10 @@ const (
 	PaletteChoices
 	PaletteHistory
 	PaletteHelp
+	PaletteToggleBlock
+	PaletteCopyBlock
+	PaletteRewind
+	PaletteFork
 )
 
 // PaletteItem 是一条面板条目。
@@ -36,6 +42,11 @@ type PaletteItem struct {
 	Desc   string
 	Insert string        // 非空 = 把这条命令模板填进输入框（不直接执行）
 	Action PaletteAction // Insert 为空时执行
+	// Arg 是动作参数（如 rewind/fork 的消息 id）。
+	Arg string
+	// Disabled 表示当前上下文不可用；选中时只显示 Why，不执行。
+	Disabled bool
+	Why      string
 }
 
 // paletteItems 是动作 + 命令模板。
@@ -64,12 +75,56 @@ func paletteItems() []PaletteItem {
 	}, commandTemplates()...)
 }
 
+// contextPaletteItems 是「针对当前块」的动作——不另开快捷键，进动作中心。
+func contextPaletteItems(m *Model) []PaletteItem {
+	if m == nil {
+		return nil
+	}
+	b, ok := m.targetBlock()
+	if !ok {
+		return nil
+	}
+	items := []PaletteItem{
+		{Name: "展开 / 折叠选中块", Desc: "当前：" + blockLabel(b) + "（Alt+r）", Action: PaletteToggleBlock},
+		{Name: "复制选中块", Desc: "把这一块正文复制到剪贴板（Alt+y）", Action: PaletteCopyBlock},
+	}
+	id, kind := selectedWireMessage(*m)
+	if id != "" && kind == store.KindUser {
+		items = append(items, PaletteItem{
+			Name: "回退到选中消息之前", Desc: "截断到这条用户消息之前（这条及之后会被丢弃）",
+			Action: PaletteRewind, Arg: id,
+		})
+	} else {
+		items = append(items, PaletteItem{
+			Name: "回退到选中消息之前", Desc: "需要选中一条历史用户消息",
+			Action: PaletteRewind, Disabled: true, Why: "当前块不是用户消息（或不是历史重放块）",
+		})
+	}
+	if id != "" && kind == store.KindAssistant {
+		items = append(items, PaletteItem{
+			Name: "从选中消息分叉", Desc: "以这条助手消息为起点开新线",
+			Action: PaletteFork, Arg: id,
+		})
+	} else {
+		items = append(items, PaletteItem{
+			Name: "从选中消息分叉", Desc: "需要选中一条历史助手消息",
+			Action: PaletteFork, Disabled: true, Why: "当前块不是助手消息（或不是历史重放块）",
+		})
+	}
+	return items
+}
+
+// allPaletteItems = 当前块动作 + 全局动作 + 命令模板。
+func allPaletteItems(m *Model) []PaletteItem {
+	return append(contextPaletteItems(m), paletteItems()...)
+}
+
 // filterPalette 按查询做模糊过滤，保持原始顺序。
 //
 // 只过滤不重排：输入一两个字符时按分数重排会让列表在手底下跳，选中项位置
 // 不稳定比"不够聪明"更烦人。
-func filterPalette(query string) []PaletteItem {
-	all := paletteItems()
+func filterPalette(query string, m *Model) []PaletteItem {
+	all := allPaletteItems(m)
 	q := strings.TrimSpace(strings.ToLower(query))
 	if q == "" {
 		return all
@@ -140,7 +195,7 @@ func (o *paletteOverlay) Handle(m *Model, msg tea.KeyMsg) tea.Cmd {
 			o.sel = 0
 		}
 	}
-	if n := len(filterPalette(o.query)); o.sel >= n {
+	if n := len(filterPalette(o.query, m)); o.sel >= n {
 		o.sel = n - 1
 	}
 	if o.sel < 0 {
@@ -151,7 +206,7 @@ func (o *paletteOverlay) Handle(m *Model, msg tea.KeyMsg) tea.Cmd {
 
 // run 执行选中项并关面板。
 func (o *paletteOverlay) run(m *Model) tea.Cmd {
-	items := filterPalette(o.query)
+	items := filterPalette(o.query, m)
 	if len(items) == 0 {
 		return nil
 	}
@@ -162,6 +217,10 @@ func (o *paletteOverlay) run(m *Model) tea.Cmd {
 	it := items[sel]
 	m.PopOverlay()
 
+	if it.Disabled {
+		m.LastNotice = it.Why
+		return nil
+	}
 	if it.Insert != "" {
 		// 只填模板、不执行：需要补参数的命令（set-key / env add）直接跑会报错。
 		m.Input.Reset()
@@ -172,6 +231,14 @@ func (o *paletteOverlay) run(m *Model) tea.Cmd {
 		return nil
 	}
 	switch it.Action {
+	case PaletteToggleBlock:
+		return m.toggleTargetBlock()
+	case PaletteCopyBlock:
+		return m.copyTargetBlock()
+	case PaletteRewind:
+		return sessionOpCmd(m.Ctx, m.sessionClient(), "rewind", it.Arg)
+	case PaletteFork:
+		return sessionOpCmd(m.Ctx, m.sessionClient(), "fork", it.Arg)
 	case PaletteSessionActions:
 		m.PushOverlay(newSessionOverlay(m))
 		return nil
@@ -224,10 +291,15 @@ func (o *paletteOverlay) run(m *Model) tea.Cmd {
 }
 
 func (o *paletteOverlay) Render(m Model, width, height int) string {
-	items := filterPalette(o.query)
+	items := filterPalette(o.query, &m)
 	rows := make([]row, len(items))
 	for i, it := range items {
-		rows[i] = row{Key: it.Name, Title: it.Name, Desc: it.Desc}
+		r := row{Key: it.Name, Title: it.Name, Desc: it.Desc}
+		if it.Disabled {
+			r.Desc = it.Why
+			r.Dim = true
+		}
+		rows[i] = r
 	}
 	l := list{state: loadReady, rows: rows, sel: o.sel}
 	l.clamp()
@@ -243,7 +315,7 @@ func (o *paletteOverlay) Render(m Model, width, height int) string {
 }
 
 func (o *paletteOverlay) Summary() Summary {
-	items := filterPalette(o.query)
+	items := filterPalette(o.query, nil)
 	s := Summary{Kind: "palette", Title: "动作中心", State: "ready", Count: len(items)}
 	if len(items) > 0 {
 		s.First = items[0].Name

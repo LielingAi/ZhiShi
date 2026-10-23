@@ -438,7 +438,7 @@ func TestPaletteFilterSelectExecute(t *testing.T) {
 	if ov.query != "set-key" {
 		t.Fatalf("输入应进面板查询串，实际 %q", ov.query)
 	}
-	items := filterPalette(ov.query)
+	items := filterPalette(ov.query, &m)
 	if len(items) != 1 || items[0].Name != "/model set-key " {
 		t.Fatalf("set-key 应只命中写 key 的模板，实际 %+v", items)
 	}

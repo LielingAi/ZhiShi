@@ -13,7 +13,7 @@ import (
 func TestReportExportFromSessionPanel(t *testing.T) {
 	m := testModel()
 	m.Admin = &fakeAdmin{reportInfo: client.ReportExportInfo{
-		ReportDir: "/ws/output/report-1", EvidenceCount: 3, Sanitized: true,
+		ReportDir: "/ws/output/report-1", EvidenceCount: 3,
 		Degraded: []string{"evidence 404"},
 	}}
 	m.Workspace = "/ws"

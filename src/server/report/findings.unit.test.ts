@@ -66,7 +66,7 @@ describe('renderFindingDocs', () => {
     expect(doc.markdown).toContain('## 反证');
     expect(doc.markdown).toContain('WAF 对单引号返回 403');
     // 不编评级。
-    expect(doc.markdown).toContain('严重度 / CVSS 未记录');
+    expect(doc.markdown).toContain('评级未记录（严重度 / CVSS 未评定）');
   });
 
   it('无档案 / 空档案 → 空数组（导出零变化）', () => {
@@ -90,7 +90,7 @@ describe('renderReportIndex', () => {
     expect(index).toContain('可读取任意用户会话');
     expect(index).toContain('## 漏洞清单');
     expect(index).toContain('[C#1](findings/C-001.md)');
-    expect(index).toContain('| 漏洞类别 | 已确立 | 2 |');
+    expect(index).toContain('| 漏洞类别 | 未评定 | — | 已确立 | 2 |');
     expect(index).toContain('[完整报告（叙述 + 事实骨架）](report.md)');
     expect(index).toContain('[打包下载](report.zip)');
     expect(index).toContain('[导出元数据](meta.json)');
@@ -105,5 +105,35 @@ describe('renderReportIndex', () => {
     expect(index).toContain('sql-injection：SQLi 拿到管理员会话');
     // 没有叙述时结论节给确定性统计，不留空节。
     expect(index).toContain('共 1 条研究事件');
+  });
+});
+
+// 2.2 结构化评级（研究员视角）
+describe('结构化评级渲染', () => {
+  it('单结论文件与清单表都带严重度 / CVSS / 资产 / 影响 / 修复建议', () => {
+    const base = snapshot();
+    const finding = {
+      ...base.entities.find((e) => e.id === 'C#1')!,
+      severity: 'high' as const,
+      cvss: 8.1,
+      cvssVector: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N',
+      asset: '/api/login',
+      impact: '可读取任意用户会话',
+      remediation: '改用参数化查询',
+    };
+    const rated = { ...base, entities: [finding, ...base.entities.filter((e) => e.id !== 'C#1')] };
+    const docs = renderFindingDocs(rated);
+    const md = docs[0]!.markdown;
+    expect(md).toContain('- 严重度：高 · CVSS 8.1（CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N）');
+    expect(md).toContain('- 受影响资产：/api/login');
+    expect(md).toContain('- 影响：可读取任意用户会话');
+    expect(md).toContain('- 修复建议：改用参数化查询');
+    expect(md).not.toContain('评级未记录');
+
+    const skeleton = buildReportSkeleton({
+      workspace: WS, envId: 'pwn-vm', events: EVENTS, transcript: TRANSCRIPT, now: 1000,
+    });
+    const index = renderReportIndex({ skeleton, findings: docs });
+    expect(index).toContain('| 高 | 8.1 |');
   });
 });

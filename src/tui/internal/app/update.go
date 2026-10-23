@@ -318,7 +318,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			body += "\n下载: " + strings.TrimSuffix(m.Server, "/") + "/report/download/" + msg.info.DownloadID +
 				"\n  （开鉴权时浏览器需带 token；curl 用 Authorization: Bearer）"
 		}
-		body += "\nsanitize: " + fmt.Sprintf("%v", msg.info.Sanitized)
 		if len(msg.info.Degraded) > 0 {
 			body += "\n降级 " + fmt.Sprintf("%d 项:", len(msg.info.Degraded)) +
 				"\n  " + strings.Join(msg.info.Degraded, "\n  ")
@@ -750,33 +749,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 
 	case ActionToggleExpand:
-		b, ok := m.targetBlock()
-		if !ok {
-			return m, noticeCmd("还没有可折叠的块")
-		}
-		if !render.FoldsByDefault(b.Kind) {
-			// 助手正文/用户消息完整显示，不参与折叠（见 render.FoldsByDefault）。
-			return m, noticeCmd(fmt.Sprintf("「%s」是正文，完整显示，不需要折叠", blockLabel(b)))
-		}
-		lines := bodyLineCount(b.Body)
-		if render.FoldedBodyLines(b.Kind, lines) >= lines {
-			// 折叠前后一模一样——必须给一句话，否则用户只会以为按键坏了。
-			return m, noticeCmd(fmt.Sprintf("「%s」只有 %d 行，无需折叠", blockLabel(b), lines))
-		}
-		m.toggleExpand(b.ID)
-		state := "已展开"
-		if cur, ok := m.Store.Get(b.ID); ok && !cur.Expanded {
-			state = "已折叠"
-		}
-		m.LastNotice = fmt.Sprintf("%s「%s」（%d 行）", state, blockLabel(b), lines)
-		return m, nil
+		return m, m.toggleTargetBlock()
 
 	case ActionCopy:
-		b, ok := m.targetBlock()
-		if !ok {
-			return m, noticeCmd("没有选中的块")
-		}
-		return m, copyCmd(b.Body)
+		return m, m.copyTargetBlock()
 
 	case ActionOpenExternal:
 		b, ok := m.targetBlock()
@@ -1587,6 +1563,39 @@ func (m *Model) addLocalUserEcho(text string) {
 // 光标没被显式移动过时，作用于**最新一块**——用户刚看完输出，按 Alt+r 想展开的
 // 就是它。此前默认 Cursor=0（第一块），按下去改的是屏幕顶上那条消息，看起来
 // 就是"展开不了"（而且光标在画面上没有标记，无从判断）。
+// toggleTargetBlock 展开/折叠当前块——Alt+r 与动作中心共用这一份逻辑。
+func (m *Model) toggleTargetBlock() tea.Cmd {
+	b, ok := m.targetBlock()
+	if !ok {
+		return noticeCmd("还没有可折叠的块")
+	}
+	if !render.FoldsByDefault(b.Kind) {
+		// 助手正文/用户消息完整显示，不参与折叠（见 render.FoldsByDefault）。
+		return noticeCmd(fmt.Sprintf("「%s」是正文，完整显示，不需要折叠", blockLabel(b)))
+	}
+	lines := bodyLineCount(b.Body)
+	if render.FoldedBodyLines(b.Kind, lines) >= lines {
+		// 折叠前后一模一样——必须给一句话，否则用户只会以为按键坏了。
+		return noticeCmd(fmt.Sprintf("「%s」只有 %d 行，无需折叠", blockLabel(b), lines))
+	}
+	m.toggleExpand(b.ID)
+	state := "已展开"
+	if cur, ok := m.Store.Get(b.ID); ok && !cur.Expanded {
+		state = "已折叠"
+	}
+	m.LastNotice = fmt.Sprintf("%s「%s」（%d 行）", state, blockLabel(b), lines)
+	return nil
+}
+
+// copyTargetBlock 复制当前块正文——Alt+y 与动作中心共用。
+func (m *Model) copyTargetBlock() tea.Cmd {
+	b, ok := m.targetBlock()
+	if !ok {
+		return noticeCmd("没有选中的块")
+	}
+	return copyCmd(b.Body)
+}
+
 func (m Model) targetBlock() (store.Block, bool) {
 	vb := m.VisibleBlocks()
 	if len(vb) == 0 {

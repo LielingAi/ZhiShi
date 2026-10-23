@@ -4,8 +4,7 @@
  * 状态机（admin handler 的组织顺序即此）：
  *
  *   组装（骨架）
- *     → 敏感扫描（骨架全文）
- *     → 一次边界批准（落点 + N 个证据文件 + 敏感项计数，全列清）
+ *     → 一次边界批准（落点 + N 个证据文件，全列清）
  *     → 证据回收（已批准前提下的批量 scp；失败/docker/不可达 → 降级标注）
  *     → LLM 填肉（一次性 loop；不可用/失败 → 整份退化为纯骨架）
  *     → 落盘（report.md + meta.json）
@@ -27,7 +26,6 @@ import type { ResearchEvent } from '../memory/store';
 import { recoverEvidenceBatch } from './evidence';
 import { renderFindingDocs, renderReportIndex } from './findings';
 import { buildNarrationPrompt, NARRATION_SYSTEM_PROMPT, parseNarratedSections } from './narrate';
-import { formatSensitiveSummary, sanitizeSensitiveText, scanSensitiveHits } from './sensitive';
 import {
   buildReportSkeleton,
   formatReportTimestamp,
@@ -89,7 +87,6 @@ export interface ExportReportDeps {
 
 export interface ExportReportInput {
   workspace: string;
-  sanitize?: boolean;
   env: ReportEnvContext;
 }
 
@@ -105,7 +102,6 @@ export interface ExportReportData {
   downloadId?: string;
   /** 降级标注（回收失败/docker/不可达/未润色……），同步进 meta.json。 */
   degraded: string[];
-  sanitized: boolean;
 }
 
 export type ExportReportResult =
@@ -123,7 +119,6 @@ export async function exportReport(
   deps: ExportReportDeps,
 ): Promise<ExportReportResult> {
   const now = deps.now ?? Date.now;
-  const sanitize = input.sanitize === true;
 
   // ---- 1. 组装 ---------------------------------------------------------
   const events = deps.listWorkspaceEvents(input.workspace);
@@ -164,11 +159,7 @@ export async function exportReport(
   );
   const evidenceDir = join(reportDir, 'evidence');
 
-  // ---- 2. 敏感扫描（骨架全文）------------------------------------------
-  const baselineMarkdown = renderReportMarkdown(skeleton);
-  const hits = scanSensitiveHits(baselineMarkdown);
-
-  // ---- 3. 一次边界批准（落点 + 全部证据文件 + 敏感项计数）--------------
+  // ---- 2. 一次边界批准（落点 + 全部证据文件）--------------------------
   const objects: string[] = [
     `报告落点：${reportDir}`,
     ...(skeleton.evidenceRefs.length === 0
@@ -177,7 +168,6 @@ export async function exportReport(
           `证据回收：${skeleton.evidenceRefs.length} 个文件 → ${evidenceDir}`,
           ...skeleton.evidenceRefs.map((ref) => `  #${ref.eventId} ${ref.guestPath}`),
         ]),
-    `敏感项命中：${formatSensitiveSummary(hits)}`,
   ];
   const approved = await deps.requestApproval(objects);
   if (!approved) {
@@ -218,18 +208,16 @@ export async function exportReport(
 
   // ---- 6. 落盘（目录化：index + report + 单结论文件 + meta + zip）--------
   const findingDocs = renderFindingDocs(archive);
-  const rawMarkdown = renderReportMarkdown(skeleton, {
+  const markdown = renderReportMarkdown(skeleton, {
     ...(narration ? { narration } : {}),
     headerNotes,
   });
-  const markdown = sanitize ? sanitizeSensitiveText(rawMarkdown).text : rawMarkdown;
-  const rawIndex = renderReportIndex({
+  const indexMarkdown = renderReportIndex({
     skeleton,
     findings: findingDocs,
     ...(narration ? { narration } : {}),
     headerNotes,
   });
-  const indexMarkdown = sanitize ? sanitizeSensitiveText(rawIndex).text : rawIndex;
 
   const meta = {
     generatedAt: new Date(skeleton.generatedAt).toISOString(),
@@ -253,11 +241,9 @@ export async function exportReport(
       : {}),
     degraded,
     truncated: skeleton.truncated,
-    sanitized: sanitize,
     evidence: {
       recovered: evidenceCount,
       degraded: skeleton.evidenceRefs.length - (skeleton.evidenceResults ?? []).filter((r) => r.status === 'recovered').length,
-      ...(sanitize && evidenceCount > 0 ? { note: 'evidence 文件本体未脱敏（脱敏只作用于 markdown 文本）' } : {}),
     },
   };
 
@@ -267,7 +253,7 @@ export async function exportReport(
     'meta.json': `${JSON.stringify(meta, null, 2)}\n`,
   };
   for (const doc of findingDocs) {
-    files[doc.filename] = sanitize ? sanitizeSensitiveText(doc.markdown).text : doc.markdown;
+    files[doc.filename] = doc.markdown;
   }
 
   deps.writeOutputs(reportDir, files);
@@ -285,7 +271,6 @@ export async function exportReport(
       findingCount: findingDocs.length,
       ...(archivePath ? { archivePath } : {}),
       degraded,
-      sanitized: sanitize,
     },
   };
 }

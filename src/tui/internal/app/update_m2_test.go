@@ -664,7 +664,7 @@ func (f *fakeAdmin) AutoRunStop(_ context.Context, id string) error {
 	return f.autoRunStopErr
 }
 
-func (f *fakeAdmin) ReportExport(_ context.Context, workspace string, sanitize bool) (client.ReportExportInfo, error) {
+func (f *fakeAdmin) ReportExport(_ context.Context, workspace string) (client.ReportExportInfo, error) {
 	f.reportWorkspaces = append(f.reportWorkspaces, workspace)
 	if f.reportErr != nil {
 		return client.ReportExportInfo{}, f.reportErr

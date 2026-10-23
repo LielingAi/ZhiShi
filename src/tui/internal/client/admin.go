@@ -458,17 +458,15 @@ type ReportExportInfo struct {
 	ArchivePath   string   `json:"archivePath"`
 	DownloadID    string   `json:"downloadId"`
 	Degraded      []string `json:"degraded"`
-	Sanitized     bool     `json:"sanitized"`
 }
 
-// ReportExport 导出研究报告（admin report/export {workspace, sanitize}）。
+// ReportExport 导出研究报告（admin report/export {workspace}）。2.2 起不做脱敏。
 //
 // 这个调用可能**阻塞很久**：服务端会先发一条 host-write 越界审批（等人批），
 // 批准后才做证据回收 + LLM 叙述（叙述自身 180s 上限）。调用方要给足预算。
-func (c *Client) ReportExport(ctx context.Context, workspace string, sanitize bool) (ReportExportInfo, error) {
+func (c *Client) ReportExport(ctx context.Context, workspace string) (ReportExportInfo, error) {
 	res, err := c.Admin(ctx, "report/export", map[string]any{
 		"workspace": workspace,
-		"sanitize":  sanitize,
 	})
 	if err != nil {
 		return ReportExportInfo{}, err

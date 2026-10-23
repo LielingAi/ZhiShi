@@ -11,12 +11,12 @@ import (
 
 // 2.2 — Ctrl+K 动作中心：动作可搜索、可执行；状态行给「下一步」提示。
 func TestPaletteSearchesDescriptions(t *testing.T) {
-	items := filterPalette("attach")
+	items := filterPalette("attach", nil)
 	if len(items) == 0 || items[0].Name != "attach 到环境" {
 		t.Fatalf("输入 attach 应命中 attach 动作，实际 %+v", items)
 	}
 	// 中文动词也能命中（名称子序列）。
-	if got := filterPalette("环境"); len(got) == 0 {
+	if got := filterPalette("环境", nil); len(got) == 0 {
 		t.Fatal("输入「环境」应有命中")
 	}
 }
@@ -64,5 +64,36 @@ func TestSecondLineContextHints(t *testing.T) {
 	m.layout()
 	if line := m.secondLine(); !strings.Contains(line, "Alt+r 展开这一块") {
 		t.Fatalf("选中可折叠块时应提示展开键，实际 %q", line)
+	}
+}
+
+// 动作中心里的「针对当前块」动作：不新增快捷键，上下文自动判定。
+func TestPaletteContextActions(t *testing.T) {
+	m := testModel()
+	m.Store.Upsert(store.Block{ID: "msg:7", Kind: store.KindUser, Version: 1, Body: "看这个端点"})
+	m.Store.Upsert(store.Block{
+		ID: "t1", Kind: store.KindTool, Title: "env_exec", Version: 1,
+		Body: "exit=0\n" + strings.Repeat("output\n", 10),
+	})
+	m.layout()
+
+	// 当前块是工具块：回退/分叉不可用，且说明原因；展开可用。
+	back := filterPalette("回退", &m)
+	if len(back) == 0 || !back[0].Disabled || !strings.Contains(back[0].Why, "用户消息") {
+		t.Fatalf("工具块上「回退」应置灰并说明原因，实际 %+v", back)
+	}
+	fork := filterPalette("分叉", &m)
+	if len(fork) == 0 || !fork[0].Disabled {
+		t.Fatalf("工具块上「分叉」应置灰，实际 %+v", fork)
+	}
+
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	for _, r := range "展开" {
+		m2, _ = m2.Update(runes(string(r)))
+	}
+	m2, _ = m2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	b, ok := m2.Store.Get("t1")
+	if !ok || !b.Expanded {
+		t.Fatalf("动作中心执行「展开」应展开当前块，实际 expanded=%v", b.Expanded)
 	}
 }

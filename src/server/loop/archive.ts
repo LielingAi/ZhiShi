@@ -56,6 +56,9 @@ export type QuestionStatus = 'open' | 'resolved' | 'abandoned';
 /** 结论类型（成果面的分类，报告按此分组呈现）。 */
 export type FindingType = 'bug_class' | 'primitive' | 'constraint' | 'fact';
 
+/** 2.2 漏洞评级（研究员视角；空 = 未评定，报告显式标注而不是补默认值）。 */
+export type FindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+
 /** 纠正者：human = 人（GUI 行内纠正 / API）；model = 模型自证伪。 */
 export type CorrectionBy = 'human' | 'model';
 
@@ -76,6 +79,18 @@ export interface ArchiveEntity {
   against?: string[];
   /** 结论类型（仅 finding）。 */
   findingType?: FindingType;
+  /** 2.2 漏洞评级（仅 finding；空 = 未评定，报告不补默认值）。 */
+  severity?: FindingSeverity;
+  /** CVSS 基础分 0.0–10.0（仅 finding；与 cvssVector 同时给才有意义）。 */
+  cvss?: number;
+  /** CVSS 向量（CVSS:3.1/... ；原样记录，不改写）。 */
+  cvssVector?: string;
+  /** 受影响资产 / 端点。 */
+  asset?: string;
+  /** 影响（能做什么、后果）。 */
+  impact?: string;
+  /** 修复建议。 */
+  remediation?: string;
   /** 1.7.2 M4 双时间:事实有效时间窗（ISO;可空 = 未知/无限）——
    *  createdAt/updatedAt 即记录时间,二者合为 bitemporal。 */
   validFrom?: string;
@@ -341,6 +356,13 @@ export interface AddEntityInput {
   anchorMessageId?: string;
   anchorLabel?: string;
   findingType?: FindingType;
+  /** 2.2 漏洞评级（仅 finding；空 = 未评定）。 */
+  severity?: FindingSeverity;
+  cvss?: number;
+  cvssVector?: string;
+  asset?: string;
+  impact?: string;
+  remediation?: string;
   /** 1.7.2 M4 双时间:事实有效时间窗（ISO;可空 = 未知/无限）。 */
   validFrom?: string;
   validTo?: string;
@@ -366,6 +388,16 @@ function buildEntity(
   if (input.anchorMessageId) entity.anchorMessageId = input.anchorMessageId;
   if (input.anchorLabel) entity.anchorLabel = input.anchorLabel.trim();
   if (kind === 'finding' && input.findingType) entity.findingType = input.findingType;
+  if (kind === 'finding') {
+    // 2.2 结构化评级：只在 finding 上落；空字段不写（报告按「未评定」渲染，
+    // 不用默认值伪造成已评级）。
+    if (input.severity) entity.severity = input.severity;
+    if (typeof input.cvss === 'number') entity.cvss = input.cvss;
+    if (input.cvssVector?.trim()) entity.cvssVector = input.cvssVector.trim();
+    if (input.asset?.trim()) entity.asset = input.asset.trim();
+    if (input.impact?.trim()) entity.impact = input.impact.trim();
+    if (input.remediation?.trim()) entity.remediation = input.remediation.trim();
+  }
   if (input.validFrom) entity.validFrom = input.validFrom;
   if (input.validTo) entity.validTo = input.validTo;
   if (kind === 'finding') {

@@ -29,6 +29,13 @@ export interface FindingDoc {
   findingType?: string;
   /** 支持证据条数（links 里 V# 的数量）。 */
   evidenceCount: number;
+  /** 2.2 结构化评级（研究员视角；缺失 → 报告标「未评定」）。 */
+  severity?: string;
+  cvss?: number;
+  cvssVector?: string;
+  asset?: string;
+  impact?: string;
+  remediation?: string;
   markdown: string;
 }
 
@@ -50,6 +57,19 @@ const FINDING_TYPE: Record<string, string> = {
   constraint: '限制条件',
   fact: '事实',
 };
+
+const SEVERITY: Record<string, string> = {
+  critical: '严重',
+  high: '高',
+  medium: '中',
+  low: '低',
+  info: '信息',
+};
+
+function severityLabel(value: string | undefined): string {
+  if (!value) return '未评定';
+  return SEVERITY[value] ?? value;
+}
 
 function label(map: Record<string, string>, value: string | undefined): string {
   if (!value) return '未标注';
@@ -86,6 +106,13 @@ export function renderFindingDocs(snapshot?: ArchiveSnapshot): FindingDoc[] {
     lines.push('');
     lines.push(`- 结论类型：${label(FINDING_TYPE, f.findingType)}`);
     lines.push(`- 状态：${label(FINDING_STATUS, f.status)}`);
+    const cvss = typeof f.cvss === 'number'
+      ? ` · CVSS ${f.cvss.toFixed(1)}${f.cvssVector ? `（${f.cvssVector}）` : ''}`
+      : '';
+    lines.push(`- 严重度：${severityLabel(f.severity)}${cvss}`);
+    if (f.asset) lines.push(`- 受影响资产：${f.asset}`);
+    if (f.impact) lines.push(`- 影响：${f.impact}`);
+    if (f.remediation) lines.push(`- 修复建议：${f.remediation}`);
     if (f.anchorLabel) lines.push(`- 来源：${f.anchorLabel}`);
     else if (f.anchorMessageId) lines.push(`- 来源消息：${f.anchorMessageId}`);
     if (f.validFrom || f.validTo) {
@@ -110,8 +137,10 @@ export function renderFindingDocs(snapshot?: ArchiveSnapshot): FindingDoc[] {
     const related = f.links.filter((id) => !id.startsWith('V#'));
     lines.push(...(related.length > 0 ? related.map((id) => entityLine(id, byId)) : ['- （无）']));
     lines.push('');
-    lines.push('> 严重度 / CVSS 未记录——本文件只陈述档案中已举证的事实，不补评级。');
-    lines.push('');
+    if (!f.severity && typeof f.cvss !== 'number') {
+      lines.push('> 评级未记录（严重度 / CVSS 未评定）——本文件只陈述档案中已举证的事实。');
+      lines.push('');
+    }
     return {
       id: f.id,
       filename,
@@ -119,6 +148,12 @@ export function renderFindingDocs(snapshot?: ArchiveSnapshot): FindingDoc[] {
       status: f.status,
       ...(f.findingType ? { findingType: f.findingType } : {}),
       evidenceCount: supportive.length,
+      ...(f.severity ? { severity: f.severity } : {}),
+      ...(typeof f.cvss === 'number' ? { cvss: f.cvss } : {}),
+      ...(f.cvssVector ? { cvssVector: f.cvssVector } : {}),
+      ...(f.asset ? { asset: f.asset } : {}),
+      ...(f.impact ? { impact: f.impact } : {}),
+      ...(f.remediation ? { remediation: f.remediation } : {}),
       markdown: `${lines.join('\n').trimEnd()}\n`,
     };
   });
@@ -168,16 +203,17 @@ export function renderReportIndex(input: RenderIndexInput): string {
   lines.push('## 漏洞清单');
   lines.push('');
   if (findings.length > 0) {
-    lines.push('| 编号 | 结论 | 类型 | 状态 | 支持证据 |');
-    lines.push('|---|---|---|---|---|');
+    lines.push('| 编号 | 结论 | 类型 | 严重度 | CVSS | 状态 | 支持证据 |');
+    lines.push('|---|---|---|---|---|---|---|');
     for (const f of findings) {
       const type = f.findingType ? label(FINDING_TYPE, f.findingType) : '—';
+      const cvss = typeof f.cvss === 'number' ? f.cvss.toFixed(1) : '—';
       lines.push(
-        `| [${f.id}](${f.filename}) | ${escapeCell(f.title)} | ${type} | ${label(FINDING_STATUS, f.status)} | ${f.evidenceCount} |`,
+        `| [${f.id}](${f.filename}) | ${escapeCell(f.title)} | ${type} | ${severityLabel(f.severity)} | ${cvss} | ${label(FINDING_STATUS, f.status)} | ${f.evidenceCount} |`,
       );
     }
     lines.push('');
-    lines.push('> 严重度 / CVSS 未记录——本报告只列已举证的事实与证据链。');
+    lines.push('> 评级为档案记录值；未记录的标「未评定」，不补默认值。');
   } else {
     const bugEvents = skeleton.events.filter((e) => e.bugClass);
     if (bugEvents.length === 0) {

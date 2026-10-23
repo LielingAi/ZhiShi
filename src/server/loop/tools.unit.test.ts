@@ -591,3 +591,40 @@ describe('createArchiveTool — 1.4.6 举证强度（finding 强制证据引用�
     expect((ok.content[0] as { text: string }).text).toContain('证据 V#1');
   });
 });
+
+// 2.2 结构化评级：工具层校验 + 落档
+describe('createArchiveTool — 结构化评级（2.2）', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'zhishi-archive-rating-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  function tool() {
+    return createArchiveTool({ getSessionId: () => 's-r', dir });
+  }
+
+  it('finding 带评级字段 → 落进档案；畸形 CVSS 向量被拒', async () => {
+    const t = tool();
+    await t.execute('t1', { op: 'evidence', text: '证据' });
+    const r = await t.execute('t2', {
+      op: 'finding',
+      text: 'SQL 注入',
+      refs: 'V#1',
+      severity: 'high',
+      cvss: 8.1,
+      cvssVector: 'CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:N',
+      asset: '/api/login',
+      impact: '读取任意会话',
+      remediation: '参数化查询',
+    });
+    const snap = loadArchive('s-r', { dir });
+    const c = snap.entities.find((e) => e.id === r.details?.entityId)!;
+    expect(c).toMatchObject({ severity: 'high', cvss: 8.1, asset: '/api/login', remediation: '参数化查询' });
+
+    await expect(
+      t.execute('t3', { op: 'finding', text: 'x', refs: 'V#1', cvssVector: 'AV:N/AC:L' }),
+    ).rejects.toThrow('CVSS');
+  });
+});

@@ -81,11 +81,7 @@ describe('exportReport 快乐路径', () => {
     expect(objects[0]).toContain(join('output', 'reports'));
     expect(objects.some((o) => o.includes('证据回收：1 个文件'))).toBe(true);
     expect(objects.some((o) => o.includes('#2 /work/flag.txt'))).toBe(true);
-    const sensitiveLine = objects.find((o) => o.startsWith('敏感项命中：'))!;
-    // flag{abc123} 在 事件#2 summary(recon/exploit-chain 两行) + transcript 摘录 各出现
-    expect(sensitiveLine).toMatch(/^敏感项命中：flag×\d+$/);
-    expect(sensitiveLine).not.toContain('内网 IP'); // 骨架不含 host(环境条目不进报告文本)
-    expect(result.data.sanitized).toBe(false);
+
     expect(result.data.degraded).toEqual([]);
     expect(result.data.evidenceCount).toBe(1);
 
@@ -104,7 +100,6 @@ describe('exportReport 快乐路径', () => {
     expect(meta.eventIds).toEqual([1, 2]);
     expect(meta.degraded).toEqual([]);
     expect(meta.truncated).toBe(false);
-    expect(meta.sanitized).toBe(false);
     expect(meta.evidence.recovered).toBe(1);
     expect(meta.generatedAt).toBe(new Date(NOW).toISOString());
     // 无 expert_refs 的事件 → meta 不出 expertRefs 字段,报告不出引用节(旧行为零变化)
@@ -236,22 +231,6 @@ describe('exportReport 降级路径', () => {
     expect(result.data.evidenceCount).toBe(0);
     expect(result.data.degraded.some((d) => d.includes('Permission denied'))).toBe(true);
     expect(captured.wrote!.files['report.md']).toContain('降级：scp 提取失败(exit=1)');
-  });
-});
-
-describe('exportReport sanitize', () => {
-  it('sanitize:true → 报告敏感项遮蔽为 [redacted:类别],meta 标注 evidence 未脱敏', async () => {
-    const { deps, captured } = makeDeps();
-    const result = await exportReport({ workspace: WS, sanitize: true, env: { envId: 'pwn-vm', entry: SSH_ENTRY } }, deps);
-    expect(result.success).toBe(true);
-    if (!result.success) return;
-    expect(result.data.sanitized).toBe(true);
-    const md = captured.wrote!.files['report.md'];
-    expect(md).toContain('[redacted:flag]');
-    expect(md).not.toContain('flag{abc123}');
-    const meta = JSON.parse(captured.wrote!.files['meta.json']);
-    expect(meta.sanitized).toBe(true);
-    expect(meta.evidence.note).toContain('evidence 文件本体未脱敏');
   });
 });
 

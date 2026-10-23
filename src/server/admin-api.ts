@@ -3483,11 +3483,11 @@ export async function handleEnvironmentExtractFile(payload: {
  * 引擎单例会话线）；模型取工作区当前配置（resolveLoopModel）。 */
 export async function handleReportExport(payload: {
   workspace?: string;
-  sanitize?: boolean;
+  // 2.2 起不再支持脱敏（报告受众 = 研究团队内部）。
 }): Promise<AdminResponse> {
   const workspace = typeof payload.workspace === 'string' ? payload.workspace.trim() : '';
   if (!workspace) return { success: false, error: 'Missing required argument: <workspace>' };
-  const sanitize = payload.sanitize === true;
+  // 2.2：报告只进研究团队内部，不做脱敏、不做敏感扫描（用户明确要求）。
   const entry = resolveSessionEnv(workspace);
   const envKey = resolveSessionEnvKey(workspace);
   const envId = entry?.id ?? envKey.replace(/^(env|recipe):/, '');
@@ -3503,7 +3503,7 @@ export async function handleReportExport(payload: {
     return { success: false, error: 'forbidden' };
   }
   const result = await exportReport(
-    { workspace, sanitize, env: { envId, entry } },
+    { workspace, env: { envId, entry } },
     {
       // 1.6.3 #6：workspace 过滤前置到查询层（store listResearchEvents 的
       // workspace 参数）——旧口径「limit 1000 先截断再事后 filter」在长研究里

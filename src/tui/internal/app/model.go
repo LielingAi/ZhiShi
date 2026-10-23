@@ -69,7 +69,7 @@ type adminAPI interface {
 	AutoRunList(ctx context.Context, workspace string) ([]client.AutoRunInfo, error)
 	AutoRunStop(ctx context.Context, id string) error
 	AutoRunStart(ctx context.Context, name, goal, envKey, budgetKind string, budgetLimit float64, criteria []string) (string, error)
-	ReportExport(ctx context.Context, workspace string, sanitize bool) (client.ReportExportInfo, error)
+	ReportExport(ctx context.Context, workspace string) (client.ReportExportInfo, error)
 	EnvDown(ctx context.Context, id string) error
 	EnvRm(ctx context.Context, id string) error
 	EnvRename(ctx context.Context, id, name string) error
