@@ -18,6 +18,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-23
+
+> **破坏性版本**：移除内置交互终端（attach），报告目录化并加结构化评级，TUI 交互收敛为动作中心。交互终端统一改用外部 SSH / docker exec。
+
+### Breaking
+
+- **移除内置 attach**：TUI `Alt+s`、环境面板 `s`、动作中心入口、sidecar WS 端点 `/api/admin/environment/term` 与 `node-pty` 依赖全部删除。npm 包不再含任何原生模块
+- **`report/export` 不再接受 `sanitize`**：不做脱敏、不做敏感扫描（报告受众 = 研究团队内部）
+- **报告产物结构变化**：`report.md` 之外新增 `index.md`、`findings/C-001.md`、`report.zip`
+
+### Added
+
+- **报告结构化评级**：finding 支持 `severity` / `cvss` / `cvssVector` / `asset` / `impact` / `remediation`；工具层校验 CVSS 向量格式，缺省标「未评定」、不补默认值
+- **报告目录化**：`index.md`（摘要 + 先看结论 + 漏洞清单 + 目录）、每条结论一份 `findings/C-00N.md`、`report.zip` 打包；下载端点 `/report/download/<id>`（24h、只读档可下载、只认登记过的随机 id）
+- **输出可读性**：报告「先看结论」（3–5 条、动词开头）与「术语表」；交互回答统一为「结论 → 依据 → 下一步」
+- **动作中心**（`Ctrl+K`）：动作可直接执行；先列当前块的展开 / 复制 / 回退 / 分叉，不可用时置灰并说明原因
+- **Linux/macOS 本机工具链探测**：gcc / clang / gdb / python3 / git / objdump / readelf / nm / strace / nmap / afl-fuzz / r2
+- **VM 维护制度**：支持矩阵（Windows: VMware + Hyper-V；Linux/macOS: VMware best-effort）+ 只读 smoke 脚本（`scripts/dev/vm-smoke.ps1` / `.sh`），纳入发版检查
+
+### Changed
+
+- 状态行改为上下文提示（空闲 `Ctrl+K`、运行中 `Ctrl+C`、选中可折叠块 `Alt+r`），不再常驻键位清单；旧快捷键全部保留
+- 报告叙述规则：缩写首现解释、去空话、技术事实不改写
+
+### Fixed
+
+- **内置 local 环境按宿主平台判 osFamily**：Linux 上不再把本机当 Windows（此前会 spawn `cmd.exe`）
+- 旧配置里已落盘的 local 副本在读取时按宿主纠正（能力状态字段保留）
+
 ## [2.1.0] - 2026-10-23
 
 > **形态切换**：GUI 退役，TUI（Go + Bubble Tea）成为唯一交互面；任务存储与调度从 Rust 下沉到 Node sidecar；npm 支持「单文件安装」。
