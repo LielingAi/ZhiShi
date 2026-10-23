@@ -558,7 +558,7 @@ CI（`.github/workflows/test.yml`）在 PR + push 到 `dev/*`/`main` 时自动�
 
 - **Commit message 写什么**：diff 已经说清「改了什么」，message 别重复它，专心写「为什么」——为什么要改、为什么这么改而不用那个更显然的办法、有哪些后人不能踩的坑。它是写给半年后来翻这段历史的人（或 AI）看的，不是写给此刻的自己。内容必须和真正提交的代码一致，别写没做、或后来又改掉的事。长短随改动而定：错别字一行就够，微妙的 bug、架构取舍值得写一段。别写 `fix`、`update`、`wip` 这种等于没写的，也别一次提交里混进好几件不相干的事。
 
-- **发布流程**：先更新 CHANGELOG.md → `npm version` → `./scripts/build/build_macos.sh` → `./scripts/release/publish_release.sh` → push tag
+- **发布流程**：先更新 CHANGELOG.md → `npm version` → `./scripts/build/build_macos.sh` → `./scripts/release/publish_release.sh` → push tag。**触及 VM（vmrun / Hyper-V / vm-lifecycle）时**先跑 `scripts/dev/vm-smoke.ps1 -Strict`（Windows，VMware + Hyper-V 各一次）或 `scripts/dev/vm-smoke.sh --strict`（Linux/macOS）——只读探测，不启动 VM。
 
 
 

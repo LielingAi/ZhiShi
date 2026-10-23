@@ -214,6 +214,17 @@ TUI 里输入 `/` 开头就是跑 CLI 子命令（`/model list`、`/env list`、
 
 ### 环境管理
 
+VM 支持矩阵（2.2 起，纳入每版发布检查）：
+
+| 宿主 | hypervisor | 能力 |
+|---|---|---|
+| Windows | VMware Workstation | 生命周期 / 快照回滚 / `.vmx` 纳管 / 断网 guest-exec / 文件传输 |
+| Windows | Hyper-V | 生命周期 / 快照回滚 / 导入导出；断网 guest-exec 不走 Hyper-V（条目需带 address 走 SSH） |
+| Linux | VMware Workstation | 同上，best-effort（发布前跑 `bash scripts/dev/vm-smoke.sh --strict`） |
+| macOS | VMware Fusion | 同上，best-effort |
+
+发版前在对应宿主跑 `scripts/dev/vm-smoke.ps1 -Strict` / `scripts/dev/vm-smoke.sh --strict`——只读探测，不启动 VM。
+
 ```bash
 zhishi env recipes                    # 内置环境类型：dev / pwn / fuzz / rev / code-audit / pentest / ai-security + VM 变体
 zhishi env up pwn-vm                  # 从环境类型建环境
