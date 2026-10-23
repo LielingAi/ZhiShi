@@ -19,11 +19,11 @@
 > 📦 **安装（2.1 起唯一形态）**：
 >
 > ```bash
-> npm i -g https://github.com/LielingAi/ZhiShi/releases/download/v2.1.0/lielingai-zhishi-2.1.0.tgz
+> npm i -g https://github.com/LielingAi/ZhiShi/releases/latest/download/zhishi-latest.tgz
 > zhishi
 > ```
 >
-> 一个 tgz 内嵌 5 平台二进制；需要 Node ≥ 22.5。全部版本见 [Releases](https://github.com/LielingAi/ZhiShi/releases/latest)。
+> 一个 tgz 内嵌 5 平台二进制；需要 Node ≥ 22.5。该链接始终指向最新版；历史版本见 [Releases](https://github.com/LielingAi/ZhiShi/releases)。
 
 > 以实战出发的**漏洞研究专用 harness**。
 
@@ -176,22 +176,23 @@ GUI 主窗口已整体删除（`src/gui/**`，历史版本仍在 git 里）。�
 ### 安装（推荐）
 
 ```bash
-npm i -g https://github.com/LielingAi/ZhiShi/releases/download/v2.1.0/lielingai-zhishi-2.1.0.tgz
+npm i -g https://github.com/LielingAi/ZhiShi/releases/latest/download/zhishi-latest.tgz
 zhishi
 ```
 
 - 需要 **Node ≥ 22.5**（`node -v` 确认）
 - 单文件包内嵌 Windows / macOS（Intel + Apple Silicon）/ Linux（x64 + arm64）二进制，装完即用
 - 首次启动自动拉起本地 sidecar；没有环境就从 TUI 正门新建
-- 校验用 Release 页上的 sha256；升级重跑同一条命令（换版本号）
-- 网络拉 GitHub 慢时，先下载 tgz 再 `npm i -g ./lielingai-zhishi-2.1.0.tgz`
+- `zhishi-latest.tgz` 是固定别名，始终指向最新版；校验用 Release 页上的 sha256，升级重跑同一条命令（不用改版本号）
+- 网络拉 GitHub 慢时，先下载 tgz 再 `npm i -g ./zhishi-latest.tgz`
 - **Linux / Kali 报 `npm error code EALLOWREMOTE`**：npm ≥ 11 的 `allow-remote=none` 策略会拒绝 URL 安装。先下载再装，不要为此放宽全局策略：
 
   ```bash
-  curl -fL -o lielingai-zhishi-2.1.0.tgz \
-    https://github.com/LielingAi/ZhiShi/releases/download/v2.1.0/lielingai-zhishi-2.1.0.tgz
-  echo "c91186314cfff8537e4423b9585a4f2abf89091b8619f68be05583136ca3dd07  lielingai-zhishi-2.1.0.tgz" | sha256sum -c -
-  sudo npm i -g ./lielingai-zhishi-2.1.0.tgz
+  curl -fL -o zhishi-latest.tgz \
+    https://github.com/LielingAi/ZhiShi/releases/latest/download/zhishi-latest.tgz
+  # 校验：哈希见 Release 页
+  sha256sum zhishi-latest.tgz
+  sudo npm i -g ./zhishi-latest.tgz
   ```
 
   或只对这条命令放开：`npm i -g --allow-remote=all <url>`（取值 `all | none | root`）。
@@ -309,7 +310,7 @@ npm 包内不含 `better-sqlite3`；Node 低于 22.5 时装得上、TUI 能起�
 ```powershell
 node -v                                  # 必须 >= 22.5
 Remove-Item -Recurse -Force "$env:USERPROFILE\.zhishi\bin" -ErrorAction SilentlyContinue
-npm i -g https://github.com/LielingAi/ZhiShi/releases/download/v2.1.0/lielingai-zhishi-2.1.0.tgz
+npm i -g https://github.com/LielingAi/ZhiShi/releases/latest/download/zhishi-latest.tgz
 where zhishi                             # 第一条应为 %APPDATA%\npm\zhishi.cmd
 zhishi tui --probe                       # health / SSE / 首帧自检
 ```
