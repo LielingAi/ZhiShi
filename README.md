@@ -253,6 +253,48 @@ zhishi domain list             # 域包清单
 zhishi domain check binary     # 就绪自检
 ```
 
+## 从旧版本升级（1.x–2.0 桌面版 → 2.1）
+
+数据目录（Windows `C:\Users\<你>\.zhishi`）不会被覆盖：`config.json`、`tasks.jsonl`、SQLite 库格式均向后兼容。需要清理的是**旧桌面版留在系统里的三样东西**。
+
+### 1. 旧 CLI shim 抢 PATH
+
+旧安装器把 `~/.zhishi\bin` 追加到用户 PATH，并在里面放一个写死了安装目录 node 的 `zhishi.cmd`。旧应用卸载后文件可能残留——`zhishi` 要么指向已删除的路径（“系统找不到指定的路径”），要么跑成 2.0.x 的旧 CLI（没有 `tui` 子命令）。
+
+```powershell
+where zhishi        # 第一条若是 %USERPROFILE%\.zhishi\bin\zhishi.cmd，就是被抢了
+Remove-Item -Recurse -Force "$env:USERPROFILE\.zhishi\bin"
+```
+
+npm 安装的 shim 在 `%APPDATA%\npm`，本来就在 PATH 里，删掉旧目录后自然生效。
+
+### 2. 旧桌面应用还在跑 → 调度双跑
+
+2.1 起任务 owner 是 sidecar；旧桌面版的 Rust 调度器若还活着，两边会 tick 同一批任务（token 翻倍、状态互踩）。另外旧版 `/health` 不带 version，CLI 会把“没上报版本”当成同版本**直接复用**，于是 TUI 连上 2.0.x 的 sidecar，任务等新路由 404。
+
+```powershell
+# 先退出旧应用（含托盘），能卸载就直接卸载；确认没有残留 sidecar：
+Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+  Where-Object { $_.CommandLine -match 'server-dist' } |
+  Select-Object ProcessId, CommandLine
+```
+
+### 3. Node ≥ 22.5 是硬门槛
+
+npm 包内不含 `better-sqlite3`；Node 低于 22.5 时装得上、TUI 能起，但记忆库 / 专家库 / 情报库不可用（启动日志会报 SQLite 驱动不可用）。
+
+### 升级步骤
+
+```powershell
+node -v                                  # 必须 >= 22.5
+Remove-Item -Recurse -Force "$env:USERPROFILE\.zhishi\bin" -ErrorAction SilentlyContinue
+npm i -g https://github.com/LielingAi/ZhiShi/releases/download/v2.1.0/lielingai-zhishi-2.1.0.tgz
+where zhishi                             # 第一条应为 %APPDATA%\npm\zhishi.cmd
+zhishi tui --probe                       # health / SSE / 首帧自检
+```
+
+**团队模式**：先把团队大脑升到 2.1.0，再升成员机器。客户端连远端只探 `/health` 是否 2xx，**不比对版本**——顺序反了不会报错，而是任务面板等新路由 404。
+
 ## 编译与打包
 
 ```bash
