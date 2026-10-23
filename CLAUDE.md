@@ -2,7 +2,7 @@
 
 
 
-安全研究员 harness（环境融合 / 原生工具 / 原生代码 / 研究档案），形态为 **GUI 主窗口（`src/gui/`，React + zustand）+ `zhishi` CLI**——1.3.9 起 TUI 退役，1.4.0 GUI 正式发版（文末「安全研究员版转型」节的 TUI 形态描述为历史）。核心 loop 自研（`src/server/loop/`，pi 底座；Claude Agent SDK 已随 D25 废弃删除）。开源（AGPL-3.0），Conventional Commits，不提交敏感信息。
+安全研究员 harness（环境融合 / 原生工具 / 原生代码 / 研究档案），形态为 **TUI（`src/tui/`，Go + Bubble Tea，唯一交互面）+ `zhishi` CLI**——GUI 主窗口已于 2.1 删除（`src/gui/**` 仅存 git 历史；1.3.9–2.0 的 GUI 形态描述为历史）。核心 loop 自研（`src/server/loop/`，pi 底座；Claude Agent SDK 已随 D25 废弃删除）。任务存储与调度自 2.0.8 起归 sidecar（`src/server/task/`）。开源（AGPL-3.0），Conventional Commits，不提交敏感信息。
 
 
 

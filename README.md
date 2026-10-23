@@ -11,12 +11,19 @@
 
 [![Version](https://img.shields.io/github/v/tag/LielingAi/ZhiShi)](https://github.com/LielingAi/ZhiShi/tags)
 [![License](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Windows%2010+-blue.svg)]()
-[![Node](https://img.shields.io/badge/Node-%3E%3D22-green.svg)]()
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue.svg)]()
+[![Node](https://img.shields.io/badge/Node-%3E%3D22.5-green.svg)]()
 [![Homepage](https://img.shields.io/badge/Homepage-zhishi.help-blue)](https://zhishi.help)
 
-> 📖 **新用户从这里开始：[使用指南](docs/user-guide.md)** —— 安装、选环境、配模型、GUI 操作、常见问题。
-> 📦 **Windows 安装包：[GitHub Releases 下载最新版](https://github.com/LielingAi/ZhiShi/releases/latest)**（NSIS 安装包 / 便携 ZIP）。
+> 📖 **新用户从这里开始：[使用指南](docs/user-guide.md)** —— 安装、选环境、配模型、TUI 操作、常见问题。
+> 📦 **安装（2.1 起唯一形态）**：
+>
+> ```bash
+> npm i -g https://github.com/LielingAi/ZhiShi/releases/download/v2.1.0/lielingai-zhishi-2.1.0.tgz
+> zhishi
+> ```
+>
+> 一个 tgz 内嵌 5 平台二进制；需要 Node ≥ 22.5。全部版本见 [Releases](https://github.com/LielingAi/ZhiShi/releases/latest)。
 
 > 以实战出发的**漏洞研究专用 harness**。
 
@@ -88,54 +95,61 @@ ZhiShi 是给安全研究员的工作台：二进制利用、渗透测试、白�
    跳 win 拿到 flag{ret2win_pwned_successfully}
 ```
 
-## 2.0 有什么新东西
+## 2.1 有什么新东西
 
-### 多环境：环境 = 场地，线 = 活
+### TUI 成为唯一交互面
 
-- **环境面板**：底栏单入口点开——一行一环境：全名 / 状态 / **在干什么**（auto loop 任务名 + 状态）/ **最近完成**；点行即切。auto-run 收口时不管在哪个环境都会收到回执
-- **注视语义**：忙碌环境切过去 = **只读查看**（PeekView），原线照跑、Esc 回无损——切换永不被拒
-- **跨环境直达** `/xfer 源环境:路径 目标环境:路径`：docker cp / vmrun / scp 全 kind 一条命令
-- **台账治理**：同名环境合并（双守卫 + 线映射迁移）、僵尸清理、auto-run 派活到任意环境
-- **术语统一**：工作线程统一叫**线**；档案里的假设→证据→结论链条叫**假设链**
+GUI 主窗口已整体删除（`src/gui/**`，历史版本仍在 git 里）。交互面只剩一个用 Go + Bubble Tea 重写的全屏 TUI（`src/tui/`）：
 
-### GUI 操作系统骨架
+- **会话流**：用户输入是块首，工具调用折叠成块（行数、exit code、`Alt+r` 展开/收起），结论聚合亮顶
+- **指令面**：`/` 开头直接跑 CLI 子命令（输出贴成块）；`Ctrl+K` 命令面板；`@` 文件补全；`Alt+Enter` 换行
+- **观察与干预**：队列查看/撤销（`Alt+q`）、决策与越界回执（`Alt+d`）、任务详情与终止（`Alt+t`）、auto-run 观察与启动表单（`Alt+w`）、环境面板（`Alt+e`）、研究档案（`Alt+a`）、线管理（`Alt+l`）
+- **搜索**：`Ctrl+F` 跨会话 / 记忆 / 专家 / 情报；鼠标默认接管（滚轮 + 点块头），`F2` 或 `Alt+m` 释放给终端原生拖选
+- **非 TTY 不劫持**：脚本 / cron / AI 调用方跑裸 `zhishi` 仍然打印帮助，不会挂进全屏界面
 
-- **正门**：全幅启动台——环境卡片横铺、同名台账条、清理入口；有环境时启动直接回昨天现场
-- **三列骨架**：menubar（当前线 / 任务形态 / 系统计量）· 会话流（唯一主角）· 检查面板四页签（任务 / 线 / 档案 / 检查器）
-- **命令中枢 Ctrl+K**：动词目录（`/resume` `/kill` `/mission` `/use` `/xfer`…）+ 最近历史 + 对象补全；与输入行 `/` 同引擎
-- **回执双轨**：成功动作状态行 ✓（不外弹），错误/进行中才弹 toast
-- **Markdown 消息渲染**：标题/列表/代码块/表格/任务列表仪器感定制；日志报错维持原文不错杀
-- **WebView2 缓存根治**：版本化数据目录——升级后必然看到新界面
+### 任务存储与调度下沉 sidecar
+
+- 任务从 Rust `CronTaskManager` 整体移交 Node sidecar（`src/server/task/`）：`tasks.jsonl` 存储层（启动崩溃恢复 + 自环审计）、读写路由、30s 轮询调度器（past-due 补偿、Ralph 退避）、per-invoke 工作区
+- `/cron/execute-sync` 与调度 tick 共用同一执行入口；**唯一 owner** 是硬约束，两端同时 tick 会让 token 翻倍、状态互踩。`ZHISHI_TASK_SCHEDULER=node|rust|off`，缺省 node
+- 任务在 A 环境、sidecar 起在 B 时不再错挂 B 的环境（per-invoke workspace）
+
+### npm 单文件安装
+
+- `npm i -g <tgz>` 即可，二进制内嵌在包内 `dist/tui/<platform>-<arch>/bin/`，不再依赖 registry 解析 optionalDependencies
+- 平台包形态仍保留（按平台只装一个，约 8 MB）；单文件包 5 平台约 17.9 MB
+- CLI/TUI 复用已有 sidecar 前先比对 `/health.version`，避免连上旧版本后按新协议对话
+
+### 记忆与存储
+
+- SQLite 驱动 `node:sqlite` 优先（Node ≥ 22.5，不随宿主 Node 换 ABI），`better-sqlite3` 只在旧 Node 兜底
+- 蒸馏分节超限按整条淘汰（旧的先走），不再把 bullet 切半回喂模型
+- sidecar 受护定时器检测到 Rust 调度者在场时让位，防止同一条蒸馏弧双跑
 
 ## 核心特性
 
-### 控制面：GUI 主窗口（1.3.9 起 TUI 退役，2.0 骨架定型）
-
-![正门启动台：环境卡片横铺 + 台账合并条 + 右侧检查面板](assets/gui.png)
+### 控制面：TUI（`zhishi`）
 
 - 正门选/建环境（docker 配方 / VM 配方 / 接入已有 / 手动 SSH）+ 本机发现登记/去重 + 台账治理
 - 块化会话流（输入=块首、结论聚合亮顶、thought/工具卡折叠、抽屉详情）+ 运行中输入即纠偏
-- 检查面板四页签：任务（战役对象卡：FSM 轨道/墙钟预算/信号流）· 线（分线清单/共享/切线）· 档案（假设链看板）· 检查器（崩溃件 + 一键挂证据到档案）
+- 任务面板、线清单、研究档案看板、检查器（崩溃件 + 一键挂证据到档案）
 - 环境准入闸（已停止不可进入，先启动）+ 三态判定统一
 - 决策面板（模型方向分歧提请人拍板 + 专家依据区 + 决策块落流可追溯）
 - **研究档案**（假设/证据/结论/未决问题随研究实时生长，行内纠正，档案锚↔流双向互跳；结论必须有证据支撑——finding 强制挂 V# 证据引用，证伪走 falsify/correct 留痕）
 - **auto loop agent**（目标式研究循环：启动表单任选环境/目标/预算/验收条件，运行期只观察，验收包人终审，达成自动出报告；**CLI 策略模式**——策略 YAML 唯一治理源，无人值守全程自主）
 - **历史线**（线清单/搜索/只读回看/载回续跑/重命名/置顶/归档/删除）
-- attach 真终端（xterm + WS pty：docker exec -it / ssh -tt）+ 一次性命令执行双模式
+- attach 真终端（docker exec -it / ssh -tt）+ 一次性命令执行双模式
 - 越界动作模态（写宿主等四类，逐次问人，无「永远允许」）+ 后台任务状态栏可见（`⛁ fuzz · 跑着`）
-- 桌面图标/托盘/二次实例 → 聚焦 GUI 主窗口（自启静默不弹窗）
 
 ### 团队协作：团队大脑（1.8.7）
 
-一个团队大脑（服务器上唯一的 sidecar）+ 远端客户端（应用 / CLI）——线、档案、claims、知识、蒸馏、环境全部集中在服务器上；成员机器上只保留宿主 shell 与自己的文件。
+一个团队大脑（服务器上唯一的 sidecar）+ 远端客户端（TUI / CLI）——线、档案、claims、知识、蒸馏、环境全部集中在服务器上；成员机器上只保留宿主 shell 与自己的文件。
 
-- **客户端远端模式**：CLI `zhishi --server http://host:port --token …`（或 `ZHISHI_SERVER`/`ZHISHI_TOKEN`）；GUI 设置 → 连接（本机 / 团队大脑，地址 + token）
+- **客户端远端模式**：`zhishi --server http://host:port --token …`（或 `ZHISHI_SERVER` / `ZHISHI_TOKEN`），TUI 与 CLI 同一入口
 - **大脑**：`--host <内网地址>` 起 sidecar + `zhishi auth add/enable` 发 token（只存 SHA-256 哈希）；非回环地址未启用鉴权**拒绝启动**；角色三档（只读 / 操作员 / 审定人），100+ 路由逐条分类
 - **双线制**：私有线默认（owner 读写），共享线显式开（`zhishi line share/unshare <id>`）；多条线可同时跑 turn 互不阻塞（多引擎，空闲回收不丢历史）；SSE 按线分流
 - **身份贯穿**：档案纠正 / 专家审定 / claims / 研究留痕 / boundary 应答全部署名到具体的人
 - **文件传输**：`zhishi env put-file / get-file`——成员笔记本 ↔ 服务器环境端到端（sha256 校验）
-- **模式角标**：状态栏常驻「本机 / 团队大脑 · host / 连接失败」——当前操作落在哪个大脑上一眼可见
-- **传输约束（实证）**：成员 GUI 不能直接填 `http://<服务器IP>`（Chrome 混合内容拦截）——用 SSH 隧道或 HTTPS
+- **模式角标**：TUI 状态行常驻「本机 / 团队大脑 · host / 连接失败」——当前操作落在哪个大脑上一眼可见
 
 ### 引擎：自研 loop（harness 本体）
 
@@ -146,35 +160,45 @@ ZhiShi 是给安全研究员的工作台：二进制利用、渗透测试、白�
 | 上下文 | 工作记忆窗口置换（预算 0.25×窗口、指针块 + recall 取回——1.18M 上下文稳态与看门狗误杀实机根治）+ Claim 治理（Event→Claim 提取/去重/冲突收敛/双时间/遗忘）+ 自动检索注入 |
 | 记忆闭环 | research_events → 按研究域蒸馏（经验不跨域，置信度 0.xx 分级）→ 逐 turn 反喂系统提示 |
 | 研究档案 | 研究 = 过程 + 成果：实体三要素（来源锚 + 状态 + 链接）全程举证、可推论/反推论/可纠正；每轮注回模型上下文；报告从同一档案派生（成果章节带证据锚、证伪与纠正独立成节） |
-| auto loop | 目标式研究循环：**策略治理**——策略 YAML 唯一治理源、全自主无人值守、同 envKey 互斥闸；GUI 交互模式保留（预算三选一、验收包人终审）。2.0：环境任选 + 终态全局回执 |
+| auto loop | 目标式研究循环：**策略治理**——策略 YAML 唯一治理源、全自主无人值守、同 envKey 互斥闸；TUI 交互模式保留（预算三选一、验收包人终审）。2.0：环境任选 + 终态全局回执 |
 | 认知内核 | 第一性原理五层认知（深度理解 → 对抗共情 → 溯因推理 → 认识论谦卑 → 远距类比）+ 置信度校准锚点（< 0.60 不报告）+ 硬排除清单 |
 | 专家知识 | `expert.db`——判据化的权威知识层（SOP/判定链/方法论，人审定才进库）：harness 邻域注入（档案焦点 + 最近消息为锚自动检索）、`expert_search` 检索兜底、留痕可挂 `expert_refs`；现成 JSON/YAML 直接 `zhishi expert import` 批量入库 |
 | 研究报告 | `/export` 一键出报告目录（report.md + evidence/ PoC 本体）：骨架事实钉死 + LLM 填肉、按域模板、显式脱敏可选 |
 | 工具侧技能 | 4 个工具本体随包分发（agent-browser / download-anything / zhishi-cli / range-ops——发现 + .claude 兼容同步） |
-| 子代理 | bundled-agents：fuzz-runner / crash-triager / vuln-hunter / hypothesis-tester / critic；`/tasks` 面板看工作现场与完整 transcript |
+| 子代理 | bundled-agents：fuzz-runner / crash-triager / vuln-hunter / hypothesis-tester / critic；`Alt+t` 看工作现场与完整 transcript |
 | 域包 | `bundled-domains/<域>/domain.json` —— 域 = 研究知识维度，只由任务内容判定（配方默认 + 内容信号动态修正）；`zhishi domain check` 就绪自检 |
-| 模型 | 8 家内置供应商端点（kimi / deepseek / openai / moonshot / 通义 / 智谱 / 硅基流动…），`zhishi model set-key <id> <key>` 后自动拉模型列表，GUI 状态栏切换（只显示已配置供应商） |
+| 模型 | 8 家内置供应商端点（kimi / deepseek / openai / moonshot / 通义 / 智谱 / 硅基流动…），`zhishi model set-key <id> <key>` 后自动拉模型列表，TUI 里 `Alt+x` 切换（只显示已配置供应商） |
 
 ## 快速开始
 
-> 发行版（推荐）：[GitHub Releases](https://github.com/LielingAi/ZhiShi/releases/latest) 下载 Windows 安装包/便携 ZIP → 安装 → 点击图标即开 GUI 主窗口（后台宿主管理 sidecar 生命周期）。要求 Node.js ≥ 22（安装包已内置）。
+### 安装（推荐）
 
-开发态直跑源码：
+```bash
+npm i -g https://github.com/LielingAi/ZhiShi/releases/download/v2.1.0/lielingai-zhishi-2.1.0.tgz
+zhishi
+```
+
+- 需要 **Node ≥ 22.5**（`node -v` 确认）
+- 单文件包内嵌 Windows / macOS（Intel + Apple Silicon）/ Linux（x64 + arm64）二进制，装完即用
+- 首次启动自动拉起本地 sidecar；没有环境就从 TUI 正门新建
+- 校验用 Release 页上的 sha256；升级重跑同一条命令（换版本号）
+- 网络拉 GitHub 慢时，先下载 tgz 再 `npm i -g ./lielingai-zhishi-2.1.0.tgz`
+
+### 开发态直跑源码
 
 ```bash
 npm install
 
-# 一条命令：Tauri 开发壳（GUI 窗口 + sidecar + vite HMR）
-npm run tauri:dev
-
-# 或分开跑——终端 1：sidecar（引擎 + admin API）
+# 终端 1：sidecar（引擎 + admin API）
 node --import tsx/esm src/server/index.ts --agent-dir "$PWD"
 
-# 终端 2：GUI（vite dev server，浏览器/窗口连 sidecar）
-npm run dev:gui
+# 终端 2：构建 TUI 二进制后直接从源码起 TUI
+cd src/tui && go build ./cmd/zhishi-tui && cd ../..
+node --import tsx/esm src/cli/zhishi.ts            # 裸命令进 TUI；--help 看子命令
+node --import tsx/esm src/cli/zhishi.ts tui --probe # 非 TTY 自检（health / SSE / 首帧）
 ```
 
-GUI 打开即**正门**：选环境（没有就从向导新建），之后一切研究都在环境内进行。工作区里 `Ctrl+K` 是命令中枢，底栏环境 chip 点开即多环境面板。
+TUI 里输入 `/` 开头就是跑 CLI 子命令（`/model list`、`/env list`、`/help`…），输出贴成一个块。
 
 ### 环境管理
 
@@ -211,7 +235,7 @@ zhishi auto-run list      # 状态 + 报告路径
 
 ### CLI 自立 + 一机多 run
 
-**无 GUI 跑**：`zhishi auto-run` 在服务器/计划任务里脱离 GUI 使用——首条命令自动拉起本地 sidecar（探测 + `/health`，活着就复用）。
+**无 TUI 跑**：`zhishi auto-run` 在服务器/计划任务里脱离界面使用——首条命令自动拉起本地 sidecar（探测 + `/health`，活着就复用）。
 
 **一机多 run**：同一 sidecar 并行跑多条 auto-run（批跑常态）——各 run 独立线/记录/事件；唯一互斥是**同 envKey**（执行现场互斥）。要并行，每条 run 绑不同环境。容量瓶颈依次是 provider 并发配额、WSL2 内存、CPU 核数——i5-9300H/40GB 舒服并行 3–4 条。
 
@@ -227,9 +251,7 @@ zhishi domain list             # 域包清单
 zhishi domain check binary     # 就绪自检
 ```
 
-## 编译与运行
-
-### 编译（Node 侧产物，esbuild 打包）
+## 编译与打包
 
 ```bash
 npm run build:server        # sidecar → src-tauri/resources/server-dist.js（ESM）
@@ -238,20 +260,30 @@ npm run build:tsx-runtime   # 插件 TS 转译运行时 → src-tauri/resources/
 npm run sync:bundled-skills # 内置 skills 同步
 ```
 
-### 发行包（Windows：NSIS 安装包 + 便携 ZIP）
+### TUI 二进制
 
 ```bash
-npm run tauri:build   # 或 scripts/build/build_windows.ps1（完整发布流程）
+cd src/tui
+go build ./cmd/zhishi-tui          # 产物 src/tui/zhishi-tui[.exe]（dev 兜底查找位置）
+go test ./...                       # app / client / render / store / style
 ```
 
-产物在 `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/`。安装后：Tauri 壳负责 GUI 窗口 + sidecar 生命周期与自更新，`zhishi` 命令同步到 `~/.zhishi/bin/`。构建细节见 `docs/spec/windows-release-build.md`。
+### npm 包
+
+```bash
+node scripts/build/npm-package.mjs --all-platforms --pack   # 平台包 + 主包 → dist/npm
+node scripts/build/npm-package.mjs --bundle --pack          # 单文件包 → dist/npm-bundle
+node scripts/release/publish-npm.mjs                        # dry-run（--yes 才发 npmjs）
+```
+
+`--bundle` 会把 5 个平台的 TUI 二进制塞进主包并删掉 `optionalDependencies`，产出一个可直接 `npm i -g <tgz|URL>` 的 tarball；不加 `--bundle` 则是主包 + 平台包（registry 按平台装一个）。
 
 ## 架构
 
 ```mermaid
 flowchart LR
-    U[研究员] <-->|GUI 主窗口| G[GUI webview<br/>React + SSE]
-    G <-->|HTTP + SSE + WS| S[Sidecar]
+    U[研究员] <-->|TUI · Go/Bubble Tea| T[zhishi-tui]
+    T <-->|HTTP + SSE| S[Sidecar]
     S --> L[自研 loop 引擎]
     L --> M[LLM 供应商<br/>kimi / deepseek / …]
     L -->|env_exec / env_bg| E1[Docker 环境]
@@ -259,46 +291,48 @@ flowchart LR
     L -->|env_exec / env_bg| E3[SSH 靶机]
     L -->|code_query| J[joern CPG<br/>语义查询]
     L --> DB[(research_events<br/>记忆蒸馏 + 研究档案)]
+    S --> TASK[任务存储与调度<br/>tasks.jsonl]
     S --> CFG[(config.json · env-sessions.json · loop-sessions)]
 ```
 
 | 模块 | 位置 |
 |---|---|
+| TUI（Bubble Tea：会话流 / 面板 / 补全 / 附件 / attach） | `src/tui/` |
 | 引擎（loop / 工具 / 边界 / 蒸馏 / code_query） | `src/server/loop/`、`src/server/memory/` |
+| 任务存储与调度（sidecar owner） | `src/server/task/`、`src/server/cron/` |
 | 环境层（探测 / 生命周期 / 纳管 / 台账 / 传输） | `src/server/environment/` |
 | admin API（sidecar HTTP 面） | `src/server/admin-api.ts`、`src/server/index.ts` |
-| GUI（React + zustand + xterm；正门/会话流/检查面板/环境面板） | `src/gui/` |
 | CLI 统一入口（model/env/expert/term/auto-run/line/…） | `src/cli/zhishi.ts` |
+| 桌面壳（保留打包与 sidecar 生命周期；不再启动 Rust 调度器） | `src-tauri/` |
 | 内置环境类型 / 工具侧技能 / 域包 / 子代理 / 专家条目 | `bundled-environments/`、`bundled-skills/`、`bundled-domains/`、`bundled-agents/`、`bundled-expert/` |
 
 ## 验证状态
 
 | 项 | 状态 |
 |---|---|
-| 单元测试 | **2853 全绿（2.0.0）**；`tsc --noEmit` / `eslint` 零错 / depcruise 架构边界强制；Rust `cargo test` 184 + clippy 零警告 |
+| 单元测试（2.1.0） | TypeScript **200 文件 / 2756 通过 / 6 跳过**；Go TUI `go test ./...` 5 包全绿；`tsc --noEmit` / `eslint --max-warnings=0` / depcruise 架构边界 |
 | 活体回归 | `npm run smoke` 一键（真端点 + 真 VM，m1-m4 全链路）；产物级 smoke（打包产物跑关键路径） |
 | 活体 dogfood | ret2win 全程打通；三域实战验证（whitebox 埋雷审计全中 / pentest 全链拿 flag / ai-security 注入探针全拒）；cJSON 四轮 dogfood 实证 |
 | code_query E2E | joern 4.0.656 真链路三问重放全绿（净荷 9.5KB/9.5KB/2.4KB，时延 ~8s）+ 六处版本兼容钉正 |
 | 多环境（2.0）实机 | 六轮真机迭代验收：环境面板 / 注视语义 / 台账合并与清理 / 跨环境 xfer / 术语统一 / 切线修复 |
+| 发行形态（2.1） | 单文件 tgz 干净安装后 `zhishi tui --probe` 通过（无平台包、无 dev 构建）；主包 + 平台包两包安装同验证 |
 | 域内容件 | 四域齐备（binary / pentest / whitebox / ai-security）并经实战验证 |
 
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
-| `docs/roadmap.md` | 版本任务池（当前线：**2.0.x——多环境**；历史大版本见文件内台账） |
-| `docs/user-guide.md` | 使用指南（安装、选环境、配模型、GUI 操作、常见问题） |
-| `docs/design/multi-env-design.md` | 2.0 多环境设计稿（多环境可用/单环境专注；注视语义/xfer/台账） |
-| `docs/design/gui-v4-skeleton-design.md` | GUI 操作系统骨架设计稿（正门/三列/命令中枢/回执） |
-| `docs/design/gui-v4-capability-audit.md` | GUI 业务能力审查清单（9 域 74 项不丢项底账） |
-| `docs/design/code-search-design.md` | code_query 语义查询设计稿（joern/CPG 工具化 + E2E 判据） |
+| `docs/user-guide.md` | 使用指南（安装、选环境、配模型、TUI 操作、常见问题） |
+| `docs/roadmap.md` | 版本任务池（当前线：**2.1——TUI 唯一交互面 / 任务下沉**；历史大版本见文件内台账） |
 | `docs/auto-run-policy.md` | auto loop 策略 YAML 文档（schema / 逐节语义 / 校验规则） |
 | `docs/auto-run-cli.md` | auto loop 命令行用法（命令 / 旗标 / 脚本模式 / 退出码） |
 | `examples/auto-run/` | 策略示例三档（conservative / balanced / full-auto） |
 | `docs/expert-import-guide.md` | 专家知识导入指南；社区条目仓库：[ZhiShiExpertKnowledge](https://github.com/LielingAi/ZhiShiExpertKnowledge) |
+| `docs/design/multi-env-design.md` | 2.0 多环境设计稿（多环境可用/单环境专注；注视语义/xfer/台账） |
+| `docs/design/code-search-design.md` | code_query 语义查询设计稿（joern/CPG 工具化 + E2E 判据） |
+| `docs/design/gui-v4-*.md` | GUI 时代设计稿（2.1 起为历史记录，产品形态已切换为 TUI） |
 | `docs/design/` | 各版本设计与分析稿 |
 | `docs/spec/` | 长期契约与专项设计（产品设计 D1–D31、技术方案、交互契约、发行清单等） |
-| `docs/design/discovery-campaign.md` | 战役原语设计稿（发现式搜索的状态机与信号源） |
 | `CLAUDE.md` | 开发红线与命令（开发前先读） |
 
 ## 开发
@@ -308,6 +342,7 @@ npm run typecheck    # tsc --noEmit
 npm run lint         # eslint + depcruise
 npm run test:unit    # vitest 单测
 npm run test         # 全量测试
+cd src/tui && go test ./...   # TUI
 ```
 
 提交遵循 Conventional Commits；不提交敏感信息。
