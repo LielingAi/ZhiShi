@@ -19,6 +19,7 @@ import {
   hasLocalEnvironment,
   listEnvironments,
   listEnvironmentsWithBuiltin,
+  normalizeLocalEntry,
   removeEnvironmentEntry,
   renameEnvironmentEntry,
   resolveEnvOpenCommand,
@@ -392,11 +393,12 @@ describe('legacy config compatibility (no environments field)', () => {
 });
 
 describe('1.7.8 内置本机条目（kind=local）', () => {
-  it('builtinLocalEntry：id=local / kind=local / osFamily=windows / 无凭据字段', () => {
+  it('builtinLocalEntry：id=local / kind=local / osFamily 按宿主平台 / 无凭据字段', () => {
     const e = builtinLocalEntry();
     expect(e.id).toBe('local');
     expect(e.kind).toBe('local');
-    expect(e.osFamily).toBe('windows');
+    // Linux/macOS 上必须是 linux 家族——否则 attach 本机会 spawn cmd.exe。
+    expect(e.osFamily).toBe(process.platform === 'win32' ? 'windows' : 'linux');
     expect(e.keyPath).toBeUndefined();
     expect(e.passwordRef).toBeUndefined();
     expect(e.host).toBeUndefined();
@@ -418,6 +420,20 @@ describe('1.7.8 内置本机条目（kind=local）', () => {
     expect(list.filter((e) => e.id === 'local')).toHaveLength(1);
     // 落盘副本优先（状态字段不丢）。
     expect(list.find((e) => e.id === 'local')!.capabilityDomains).toEqual(['binary']);
+  });
+
+  it('listEnvironmentsWithBuiltin：旧副本 osFamily=windows → 按宿主纠正（状态字段不丢）', () => {
+    const persisted = {
+      ...builtinLocalEntry(),
+      osFamily: 'windows' as const,
+      name: '本机（Windows 宿主）',
+      capabilityDomains: ['binary'],
+    };
+    const local = listEnvironmentsWithBuiltin({ environments: [persisted] }).find((e) => e.id === 'local')!;
+    expect(local.osFamily).toBe(process.platform === 'win32' ? 'windows' : 'linux');
+    expect(local.capabilityDomains).toEqual(['binary']);
+    // 自动生成的显示名跟着宿主改；用户自定义名不动。
+    if (process.platform !== 'win32') expect(local.name).toBe('本机（Linux/macOS 宿主）');
   });
 
   it('listEnvironments（写回口径）不含内置条目——add 不把它 persisted 进 config', () => {
@@ -444,10 +460,29 @@ describe('1.7.8 内置本机条目（kind=local）', () => {
     expect(envTagForEntry(builtinLocalEntry())).toBe('local');
   });
 
-  it('resolveEnvOpenCommand：local → cmd.exe（宿主 PTY）', () => {
+  it('resolveEnvOpenCommand：local 按 osFamily 选 shell（Linux 不再是 cmd.exe）', () => {
     const r = resolveEnvOpenCommand(builtinLocalEntry());
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.cmd).toBe('cmd.exe');
+    if (r.ok) expect(r.cmd).toBe(process.platform === 'win32' ? 'cmd.exe' : 'bash');
+
+    // 落盘的 local 副本（可能来自 Windows 时代）按自身字段走，不看当前宿主。
+    const persistedLinux = { ...builtinLocalEntry(), osFamily: 'linux' as const };
+    const linux = resolveEnvOpenCommand(persistedLinux);
+    expect(linux.ok).toBe(true);
+    if (linux.ok) expect(linux.cmd).toBe('bash');
+  });
+
+  it('normalizeLocalEntry：宿主家族可注入——windows 副本在 linux 宿主上被纠正', () => {
+    const stale = { ...builtinLocalEntry(), osFamily: 'windows' as const, name: '本机（Windows 宿主）' };
+    const linux = normalizeLocalEntry(stale, 'linux');
+    expect(linux.osFamily).toBe('linux');
+    expect(linux.name).toBe('本机（Linux/macOS 宿主）');
+    // 非 local 条目原样返回。
+    const ssh = sshEntry();
+    expect(normalizeLocalEntry(ssh, 'linux')).toBe(ssh);
+    // 用户自定义名不覆盖。
+    const renamed = { ...stale, name: '我的攻击机' };
+    expect(normalizeLocalEntry(renamed, 'linux').name).toBe('我的攻击机');
   });
 
   it('findEnvironmentEntry 在伴随清单里按 id 找到内置条目', () => {

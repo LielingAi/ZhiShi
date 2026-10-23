@@ -31,13 +31,21 @@ export const ENVIRONMENT_KINDS: readonly Exclude<EnvironmentKind, 'local'>[] = [
  */
 export const LOCAL_ENV_ID = 'local';
 
+/** 宿主平台 → 内置本机条目的 osFamily（linux 家族覆盖 Linux / macOS）。 */
+function hostOsFamily(): 'windows' | 'linux' {
+  return process.platform === 'win32' ? 'windows' : 'linux';
+}
+
 /** 构造内置本机条目（每次返回新对象，调用方可安全展开改写）。 */
 export function builtinLocalEntry(): EnvironmentEntry {
+  const family = hostOsFamily();
   return {
     id: LOCAL_ENV_ID,
     kind: 'local',
-    name: '本机（Windows 宿主）',
-    osFamily: 'windows',
+    name: family === 'windows' ? '本机（Windows 宿主）' : '本机（Linux/macOS 宿主）',
+    // 必须按宿主平台判：2.1.0 及更早硬编码 'windows'，导致 Linux 上 attach
+    // 本机会去 spawn cmd.exe（ENOENT），env open local 也给出 cmd.exe。
+    osFamily: family,
     createdAt: '',
   };
 }
@@ -53,12 +61,32 @@ export function hasLocalEnvironment(entries: readonly EnvironmentEntry[] | undef
  * 只读消费方（list/select/能力清单/会话锚定）；写回一律用 listEnvironments
  * 的原始 config 口径，防止把虚拟条目 persisted 进 config.json。
  */
+/** local 条目按宿主家族归一（显示名只覆盖自动生成的那两个）。 */
+export function normalizeLocalEntry(
+  entry: EnvironmentEntry,
+  hostFamily: 'windows' | 'linux' = hostOsFamily(),
+): EnvironmentEntry {
+  if (entry.id !== LOCAL_ENV_ID) return entry;
+  const autoNames = new Set(['本机（Windows 宿主）', '本机（Linux/macOS 宿主）']);
+  const name = !entry.name || autoNames.has(entry.name)
+    ? hostFamily === 'windows'
+      ? '本机（Windows 宿主）'
+      : '本机（Linux/macOS 宿主）'
+    : entry.name;
+  return { ...entry, osFamily: hostFamily, name };
+}
+
 export function listEnvironmentsWithBuiltin(config: {
   environments?: EnvironmentEntry[];
   [key: string]: unknown;
 }): EnvironmentEntry[] {
   const entries = listEnvironments(config);
-  return hasLocalEnvironment(entries) ? entries : [builtinLocalEntry(), ...entries];
+  const builtin = builtinLocalEntry();
+  if (!hasLocalEnvironment(entries)) return [builtin, ...entries];
+  // 落盘副本优先（能力状态等字段不丢），但 local 的 OS 家族与自动生成的
+  // 显示名必须跟宿主走：2.1.0 及更早把 local 写死成 windows，Linux 上升级后
+  // 旧副本仍在，attach 本机就会去 spawn cmd.exe。
+  return entries.map((e) => normalizeLocalEntry(e));
 }
 
 export type EnvResult<T> = { ok: true } & T | { ok: false; error: string };
@@ -335,7 +363,9 @@ export function envTagForEntry(entry: EnvironmentEntry): string {
 export function resolveEnvOpenCommand(entry: EnvironmentEntry): EnvResult<{ cmd: string }> {
   switch (entry.kind) {
     case 'local':
-      return { ok: true, cmd: 'cmd.exe' };
+      // 与 buildPtySpawnSpec 的 local 通道同口径：windows 家族 cmd.exe，
+      // 其余走 bash（Linux/macOS 宿主）。
+      return { ok: true, cmd: osFamilyOf(entry) === 'windows' ? 'cmd.exe' : 'bash' };
     case 'ssh':
       return { ok: true, cmd: buildSshCommand(entry.host!, entry.user, entry.keyPath, entry.port) };
     case 'docker': {
