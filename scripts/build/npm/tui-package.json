@@ -1,0 +1,15 @@
+{
+  "name": "@lielingai/zhishi-tui-__PLATFORM__",
+  "version": "__VERSION__",
+  "description": "zhishi TUI binary (__PLATFORM__) — installed automatically by @lielingai/zhishi on matching platforms",
+  "license": "AGPL-3.0",
+  "os": [
+    "__OS__"
+  ],
+  "cpu": [
+    "__CPU__"
+  ],
+  "files": [
+    "bin"
+  ]
+}

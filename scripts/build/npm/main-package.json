@@ -1,0 +1,43 @@
+{
+  "name": "@lielingai/zhishi",
+  "version": "__VERSION__",
+  "description": "ZhiShi — 安全研究员专属智能体：TUI 交互会话 + zhishi CLI + 研究环境编排",
+  "type": "module",
+  "license": "AGPL-3.0",
+  "bin": {
+    "zhishi": "bin/zhishi.js"
+  },
+  "files": [
+    "bin",
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "author": "ZhiShi Team <xunzhaonn@126.com>",
+  "homepage": "https://zhishi.help",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LielingAi/ZhiShi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LielingAi/ZhiShi/issues"
+  },
+  "keywords": [
+    "security",
+    "pentest",
+    "agent",
+    "tui",
+    "zhishi"
+  ],
+  "dependencies": {
+    "@lydell/node-pty": "^1.2.0-beta.15"
+  },
+  "optionalDependencies": {
+    "@lielingai/zhishi-tui-win32-x64": "__VERSION__",
+    "@lielingai/zhishi-tui-darwin-arm64": "__VERSION__",
+    "@lielingai/zhishi-tui-darwin-x64": "__VERSION__",
+    "@lielingai/zhishi-tui-linux-x64": "__VERSION__",
+    "@lielingai/zhishi-tui-linux-arm64": "__VERSION__"
+  }
+}
