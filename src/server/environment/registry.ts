@@ -358,13 +358,12 @@ export function envTagForEntry(entry: EnvironmentEntry): string {
  *            容器没有 bash，给 cmd.exe）
  *   vm     → address ? ssh [-i keyPath] [user@]address（同 ssh 的默认 shell 纪律）
  *            : error（指向 env exec 的 guest-exec 通道）
- *   local  → cmd.exe（宿主 PTY——交互式 WinDbg/cdb 会话的落点，design §2）
+ *   local  → cmd.exe / bash（按宿主家族；宿主即环境）
  */
 export function resolveEnvOpenCommand(entry: EnvironmentEntry): EnvResult<{ cmd: string }> {
   switch (entry.kind) {
     case 'local':
-      // 与 buildPtySpawnSpec 的 local 通道同口径：windows 家族 cmd.exe，
-      // 其余走 bash（Linux/macOS 宿主）。
+      // 与 env 执行通道同口径：windows 家族 cmd.exe，其余走 bash（Linux/macOS 宿主）。
       return { ok: true, cmd: osFamilyOf(entry) === 'windows' ? 'cmd.exe' : 'bash' };
     case 'ssh':
       return { ok: true, cmd: buildSshCommand(entry.host!, entry.user, entry.keyPath, entry.port) };

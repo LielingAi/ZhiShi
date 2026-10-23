@@ -123,7 +123,7 @@ const TARGETS = {
      *   node_modules 会直接加载失败)。
      */
 
-    external: ['@lydell/node-pty', 'bufferutil', 'utf-8-validate'],
+    external: ['bufferutil', 'utf-8-validate'],
 
     /** Post-build: catch hardcoded `__dirname = "<dev-machine path>"` leaks.
 

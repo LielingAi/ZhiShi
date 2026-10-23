@@ -135,15 +135,15 @@ describe('auth enabled → 角色层级 enforcement', () => {
 });
 
 describe('WS query token 兜底 + lastUsedAt', () => {
-  it('queryToken 命中放行（WS upgrade 路径）', () => {
+  it('queryToken 命中放行（报告下载路径）', () => {
     const d = deps(ENABLED);
-    const v = verifyHttpAuth({ method: 'GET', pathname: '/api/admin/environment/term', queryToken: SEC_OP }, d);
+    const v = verifyHttpAuth({ method: 'GET', pathname: '/report/download/abc', queryToken: SEC_RO }, d);
     expect(v.ok).toBe(true);
   });
 
-  it('readonly token 过 WS 闸 → 403（term 是 operator 档）', () => {
+  it('readonly token 过 operator 档 → 403', () => {
     const d = deps(ENABLED);
-    const v = verifyHttpAuth({ method: 'GET', pathname: '/api/admin/environment/term', queryToken: SEC_RO }, d);
+    const v = verifyHttpAuth({ method: 'POST', pathname: '/api/files/upload', queryToken: SEC_RO }, d);
     expect(v).toEqual({ ok: false, status: 403 });
   });
 

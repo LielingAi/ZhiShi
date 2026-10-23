@@ -41,7 +41,7 @@ zhishi --help                   # 子命令（环境 / 任务 / 专家 / 团队�
   单机开箱可用；`npm i -g` 后不需要另装 Tauri 桌面应用。
 - **TUI 里输入 `/` 开头 = 直接跑 CLI 子命令**（输出贴成一个块）：
   `/model list`、`/model set-key deepseek sk-xxx`、`/env add --kind ssh …`、`/help`。
-  动作中心 `Ctrl+K` 里动作可以直接执行（attach / 环境 / 任务 / 报告…），命令模板同样可搜，选中只填入输入框。
+  动作中心 `Ctrl+K` 里动作可以直接执行（环境 / 任务 / 报告…），命令模板同样可搜，选中只填入输入框。
 
 ### 发行包（Windows，1.x–2.0 历史形态）
 
@@ -89,7 +89,7 @@ GUI 打开**正门**（全幅启动台）——有环境时启动直接回昨天
 
 - **登记**：新建向导「手动 SSH」的**密码引用 passwordRef** 填 `env:变量名`（如 `env:CAM01_PW`）；CLI 等价：`zhishi env add --kind ssh --id cam01 --host 192.168.1.50 --user admin --password-ref env:CAM01_PW`。与 keyPath 同给时**密钥优先**（passwordRef 被忽略）。
 - **供值**（执行机 = 跑 zhishi 的那台；团队模式 = 大脑服务器）：一是执行机的环境变量；二是集中维护 `<数据目录>/secrets.env`（`KEY=VALUE` 每行一个，建议 `chmod 600`）——sidecar 启动自动加载，同名真实环境变量优先。多台设备 = 每行一个变量、条目各指各的。
-- **能力边界**（v1）：命令执行（`env_exec` / 环境内一次性执行 / 探测补装）全可用；**文件传输（put/get/extract）与终端 attach 暂不支持**——会给出明确错误而不是挂起，需要时先给条目配 keyPath（可用 `zhishi env add --password` 现场推一次公钥自动配置）。
+- **能力边界**（v1）：命令执行（`env_exec` / 环境内一次性执行 / 探测补装）全可用；**文件传输（put/get/extract）暂不支持**；内置终端 attach 已于 2.2 移除，交互终端请直接用外部 SSH——会给出明确错误而不是挂起，需要时先给条目配 keyPath（可用 `zhishi env add --password` 现场推一次公钥自动配置）。
 - **手动接入 SSH 主机**：host / 用户 + 凭据（密钥路径**或**一次登录密码）+ 端口/配方绑定。1.6.5 起缺密钥时可用**密码引导**：现场输入一次登录密码（不落盘），自动生成密钥对并推进公钥——「一次密码，永久密钥」。断网 Windows VM 同样支持（vmrun 客户机通道）。
 
 **多环境**（2.0）：底栏环境 chip（`● 当前环境 ·N ▾`）点开**环境面板**——一行一环境：状态 / **在干什么**（auto loop 任务与状态、战役状态）/ **最近完成**；点行即切。**任务跑切环境不打断**（2.0.2：引擎按线各跑各的，原任务原地跑完，auto loop 收口有全局回执）。跨环境传文件：`/xfer 源环境:路径 目标环境:路径`（一条命令）。
@@ -131,7 +131,6 @@ zhishi env set vsrx-133 --clear key-path --password-ref env:VSRX_PW
 | ⋯ 菜单 | 启动 / 停止（有损确认）/ 重推能力集合 / 详情（配方绑定管理）/ 删除 |
 | `/snapshot [名]` | 给当前环境打快照（干净现场，反复回滚的底气） |
 | `/rollback <快照名>` | 回滚到快照 |
-| attach 页 | 真终端接管环境 shell（xterm + WS pty）+ 一次性命令执行双模式 |
 | `/extract <环境内路径>` | 回收环境内文件到宿主 |
 | `/xfer <源:路径> <目标:路径>` | 跨环境传文件（2.0：docker cp/vmrun/scp 一条命令） |
 
@@ -213,7 +212,7 @@ zhishi model set-default deepseek deepseek-v4-pro   # 设置默认模型
 |---|---|
 | `Enter` | 发送；turn 进行中发送 = 纠偏注入（不打断，下一轮接住） |
 | `Alt+Enter` | 换行 |
-| `Ctrl+K` | 动作中心：搜索并直接执行（attach / 环境 / 任务 / 报告 / 搜索…）；命令模板同样可搜 |
+| `Ctrl+K` | 动作中心：搜索并直接执行（环境 / 任务 / 报告 / 搜索…）；命令模板同样可搜 |
 | `/` | 斜杠命令：直接跑 CLI 子命令，输出贴成块 |
 | `@` | 文件 / 环境补全 |
 | `Alt+j` / `Alt+k` | 移动块光标 |

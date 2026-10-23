@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -611,19 +610,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case wireMsg:
 		return m.handleWire(msg)
-
-	case attachDoneMsg:
-		switch {
-		case msg.err == nil:
-			// exit 帧：远端自己退出了，把 code 报出来（落到状态行，不直接写终端
-			// ——attach 结束后终端归 bubbletea 管，写 stdout 会被重绘吃掉）。
-			m.LastNotice = fmt.Sprintf("[attach 结束 code=%d] %s", msg.code, msg.envID)
-		case errors.Is(msg.err, errDetached):
-			m.LastNotice = "已断开 attach（Ctrl-]）"
-		default:
-			m.LastErr = "attach：" + msg.err.Error()
-		}
-		return m, nil
 	}
 	return m, nil
 }
@@ -827,14 +813,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	case ActionHistoryOverlay:
 		return m, m.openHistoryOverlay()
-
-	case ActionAttach:
-		// 目标环境：面板里光标指着的优先，否则用 chat:init 锚定的当前环境。
-		target := m.SelectedEnvID
-		if target == "" {
-			target = m.EnvironmentID
-		}
-		return m, attachCmd(m.Ctx, m.Client, target)
 
 	case ActionTabComplete:
 		// 斜杠候选在场时 Tab = 接受（路由已先行拦截）；否则仍是桩：

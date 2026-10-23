@@ -102,8 +102,6 @@ import { pendingDecisions, respondDecision, getDecision } from './loop/decision'
 import { appendLoopMessages, defaultLoopSessionDir, loadLoopSession, loopSessionFile } from 'zhishi-loop-core/session';
 // 1.3.3:历史面板 wire 回放(loop jsonl → 完整 wire 消息,含决策块)。
 import { buildLoopWireMessages } from './loop/wire-replay';
-// 1.3.3:attach 交互式 pty 端点(WS upgrade)。
-import { installTermUpgradeHandler } from './loop/term-pty';
 // 1.8.7 P1 团队大脑:绑址参数化 + 鉴权闸 + 角色分类 + CORS 收紧 + auth 管理面。
 import { isLoopbackHost, resolveBindHost } from './auth/bind-host';
 import { verifyHttpAuth } from './auth/gate';
@@ -578,7 +576,7 @@ const currentAgentDir = await ensureAgentDir(agentDir);
     process.exit(1);
   }
 console.log(`[startup] HTTP server binding to ${host}:${port}...`);
-const httpServer = honoServe({
+honoServe({
     // Explicit 127.0.0.1 for Rust proxy compatibility (IPv4).
     port,
     hostname: host,
@@ -632,7 +630,6 @@ const httpServer = honoServe({
   // 1.3.3:attach 交互式 pty——在 node http.Server 上挂 WS upgrade
   // (HTTP fetch handler 管不到 upgrade 请求,honoServe 返回的 server 是
   // 同一实例)。
-  installTermUpgradeHandler(httpServer as unknown as import('node:http').Server);
 /**
    * Pattern 6 helper: short stable id for HTTP request correlation.
    * crypto.randomUUID is ~36 chars; we collapse to 8 hex for grep-ability.

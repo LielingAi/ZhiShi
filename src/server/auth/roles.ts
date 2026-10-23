@@ -86,7 +86,6 @@ export const ADMIN_ROUTE_ROLE: Record<string, AuthRole> = {
   'environment/extract-file': 'operator',
   'environment/select': 'operator', // 写 env-selection.json
   'environment/current': 'readonly',
-  'environment/term': 'operator', // WS upgrade 端点（实际过 term-pty 的闸，此处防御性登记）
   // ── 域包清单：只读 ──
   'domain/list': 'readonly',
   'domain/check': 'readonly',

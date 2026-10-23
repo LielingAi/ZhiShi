@@ -11,13 +11,12 @@ import (
 
 // 2.2 — Ctrl+K 动作中心：动作可搜索、可执行；状态行给「下一步」提示。
 func TestPaletteSearchesDescriptions(t *testing.T) {
-	items := filterPalette("attach", nil)
-	if len(items) == 0 || items[0].Name != "attach 到环境" {
-		t.Fatalf("输入 attach 应命中 attach 动作，实际 %+v", items)
+	items := filterPalette("环境", nil)
+	if len(items) == 0 || items[0].Name != "打开环境面板" {
+		t.Fatalf("输入环境应命中环境面板动作，实际 %+v", items)
 	}
-	// 中文动词也能命中（名称子序列）。
-	if got := filterPalette("环境", nil); len(got) == 0 {
-		t.Fatal("输入「环境」应有命中")
+	if got := filterPalette("报告", nil); len(got) == 0 {
+		t.Fatal("输入「报告」应有命中")
 	}
 }
 

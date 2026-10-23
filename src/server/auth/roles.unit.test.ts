@@ -7,7 +7,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  ADMIN_ROUTE_ROLE,
   DEFAULT_ADMIN_ROLE,
   DEFAULT_ROLE,
   isAuthRole,
@@ -65,9 +64,6 @@ describe('admin 路由分类（每档代表）', () => {
     expect(requiredRoleFor('/api/admin/some/future-route', 'POST')).toBe('reviewer');
   });
 
-  it('term WS 端点按 operator 登记', () => {
-    expect(ADMIN_ROUTE_ROLE['environment/term']).toBe('operator');
-  });
 });
 
 describe('非 admin 路由分类', () => {

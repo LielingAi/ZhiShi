@@ -19,7 +19,7 @@
  * 本体永不落盘。2.0.4 起 ssh 通道支持只密码设备（推不进公钥的嵌入式/
  * 网络设备/老服务器）：无 keyPath 有 passwordRef → 密码执行通道
  * （win32 plink -pw / posix SSH_ASKPASS，见 sshAuthMethod 与
- * execInEnvironment 密码分支）；文件传输与 attach 暂不支持（明确报错，
+ * execInEnvironment 密码分支）；文件传输暂不支持（明确报错，
  * 见 sshFileChannelUnsupported）。
  *
  * kind=docker 的条目走 docker exec 通道（resolveExecTarget 分派，
@@ -307,8 +307,8 @@ export function buildPlinkPasswordArgv(
 }
 
 /**
- * 文件传输 / attach 的密码通道护栏：v1 只密码设备仅命令执行可用，
- * scp（双向）与交互终端对密码条目给**明确错误**而不是默默挂起在
+ * 文件传输的密码通道护栏：v1 只密码设备仅命令执行可用，
+ * scp（双向）对密码条目给**明确错误**而不是默默挂起在
  * BatchMode/密码提示上。返回 null = 不受限；否则为错误文案。
  */
 export function sshFileChannelUnsupported(target: SshTarget, what: string): string | null {
@@ -358,135 +358,6 @@ export function buildLocalExecArgv(
     return ['bash', '-c', buildRemoteTimeoutWrapper(command, timeoutMs, 'linux')];
   }
   return ['bash', '-c', command];
-}
-
-// ---------------------------------------------------------------------------
-// Pure — 交互终端(pty attach)argv 组装(1.3.3)
-// ---------------------------------------------------------------------------
-
-/** linux 交互 shell 脚本:优先 bash,缺失回退 sh(`[ -x ]` 探测,先探测
- *  后 exec——探测失败时 stderr 干净,不脏用户终端首屏)。 */
-export const LINUX_INTERACTIVE_SHELL_SCRIPT = '[ -x /bin/bash ] && exec /bin/bash; exec sh';
-
-/**
- * 交互 shell 选择(OS 家族分派,1.3.3 attach):
- * - linux → sh 包装的 bash 回退链(容器可能是 alpine 系,没有 bash);
- * - windows → cmd.exe(所有 Windows 容器/主机都必有;powershell 在
- *   nanoserver 系容器缺席,不做默认)。
- * 返回值按通道有两种用法:docker 拆成 argv 元素(`sh -c <script>`),
- * ssh 作为**单元素**远端命令(远端登录 shell 解释,与 buildSshArgv 同口径)。
- */
-export function interactiveShellScript(family: 'linux' | 'windows'): string {
-  return family === 'windows' ? 'cmd.exe' : LINUX_INTERACTIVE_SHELL_SCRIPT;
-}
-
-/**
- * docker 交互终端 argv（不含程序名——调用方以 spec.file 单独传，与
- * node-pty spawn(file, args) 契约一致）：`exec -it <container> <shell...>`。
- * `-it` 分配 TTY + 保持 stdin——真终端的先决条件(与 resolveEnvOpenCommand
- * 的 `docker exec -it ... bash` 同语义,但 shell 带 sh 回退链)。
- * linux 形态 shell 拆为 argv 元素(sh -c <script>);windows 形态直接 cmd.exe。
- */
-export function buildPtyDockerExecArgv(container: string, family: 'linux' | 'windows' = 'linux'): string[] {
-  if (family === 'windows') {
-    return ['exec', '-it', container, 'cmd.exe'];
-  }
-  return ['exec', '-it', container, 'sh', '-c', LINUX_INTERACTIVE_SHELL_SCRIPT];
-}
-
-/**
- * ssh 交互终端 argv（不含程序名——调用方以 spec.file 单独传，与
- * node-pty spawn(file, args) 契约一致）：与 buildSshArgv 同口径
- * (BatchMode/accept-new/ConnectTimeout/ControlMaster 平台缺省/keyPath/
- * port),差别:
- * - `-tt` 强制远端分配 TTY(缺了远端 shell 不带终端,vim/top 不可用);
- * - 命令位是交互 shell 脚本(单元素),不是一次性命令。
- * BatchMode=yes 保持(D-T4:keyPath 认证,禁交互密码提示——attach 若
- * 密钥未配置会立即失败并回显,不会卡在密码输入)。
- */
-export function buildPtySshArgv(
-  target: SshTarget,
-  family: 'linux' | 'windows' = 'linux',
-  opts?: { controlMaster?: boolean },
-): string[] {
-  const controlMaster = opts?.controlMaster ?? process.platform !== 'win32';
-  const argv = [
-    '-tt',
-    '-o', 'BatchMode=yes',
-    '-o', 'StrictHostKeyChecking=accept-new',
-    '-o', 'ConnectTimeout=10',
-  ];
-  if (controlMaster) {
-    argv.push(
-      '-o', 'ControlMaster=auto',
-      '-o', `ControlPath=${join(controlSocketDir(), '%r@%h:%p')}`,
-      '-o', `ControlPersist=${CONTROL_PERSIST}`,
-    );
-  }
-  if (target.keyPath) argv.push('-i', target.keyPath);
-  if (target.port) argv.push('-p', String(target.port));
-  argv.push(target.destination, interactiveShellScript(family));
-  return argv;
-}
-
-/** pty.spawn 的宿主二进制 + argv(纯函数,file 是裸命令名——调用方经
- *  resolveCommand 解析全路径,与 defaultEnvExec 同一口径)。 */
-export interface PtySpawnSpec {
-  file: string;
-  args: string[];
-  /** guest shell 家族(调用方选择 pty 语义/终端名时用)。 */
-  family: 'linux' | 'windows';
-}
-
-/**
- * EnvironmentEntry → 交互终端 spawn 规格(1.3.3 attach)。
- * 分派口径与 execInEnvironment 的 resolveExecTarget 完全一致:
- * - docker → `docker exec -it`(buildPtyDockerExecArgv);
- * - vm/ssh → `ssh -tt`(buildPtySshArgv);
- * - guest(断网隔离 VM)→ 明确拒绝:vmrun 客户机通道无 TTY,交互终端
- *   结构性不存在(与 environment/exec 的 guest 一次性通道不同级)。
- */
-export function buildPtySpawnSpec(
-  entry: EnvironmentEntry,
-  opts?: { controlMaster?: boolean },
-): EnvResult<{ spec: PtySpawnSpec }> {
-  const resolved = resolveExecTarget(entry);
-  if (!resolved.ok) return resolved;
-
-  const family = osFamilyOf(entry);
-  if (resolved.execTarget.channel === 'guest') {
-    return {
-      ok: false,
-      error:
-        `环境 "${entry.id}" 是断网隔离 VM——guest-exec 通道(vmrun)没有 TTY,` +
-        '交互终端结构性不可用。给 VM 配好网络并补 address 后走 SSH 通道 attach。',
-    };
-  }
-  if (resolved.execTarget.channel === 'docker') {
-    return {
-      ok: true,
-      spec: { file: 'docker', args: buildPtyDockerExecArgv(resolved.execTarget.container, family), family },
-    };
-  }
-  if (resolved.execTarget.channel === 'local') {
-    // 1.7.8：宿主 PTY（design §2——交互式 WinDbg/cdb 会话的落点）。
-    // windows 家族直接 cmd.exe（无参数即交互 shell）；linux 家族走
-    // bash 回退链（与 docker linux 容器同形状，单元素脚本）。
-    if (family === 'windows') {
-      return { ok: true, spec: { file: 'cmd.exe', args: [], family } };
-    }
-    return { ok: true, spec: { file: 'sh', args: ['-c', LINUX_INTERACTIVE_SHELL_SCRIPT], family } };
-  }
-  if (resolved.execTarget.channel === 'ssh') {
-    // 2.0.4：只密码设备的 attach 暂不支持（v1 仅命令执行）——明确报错，
-    // 不让 BatchMode 密钥 argv 挂在密码提示上。
-    const blocked = sshFileChannelUnsupported(resolved.execTarget.target, '交互终端 attach');
-    if (blocked) return { ok: false, error: blocked };
-  }
-  return {
-    ok: true,
-    spec: { file: 'ssh', args: buildPtySshArgv(resolved.execTarget.target, family, opts), family },
-  };
 }
 
 /**

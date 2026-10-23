@@ -66,7 +66,7 @@ func TestPaletteOverlayShowsSelection(t *testing.T) {
 	if strings.Contains(out, "▸ 会话操作") {
 		t.Fatalf("移动后第一项不该还是选中态：\n%s", out)
 	}
-	if !strings.Contains(out, "▸ attach 到环境") {
+	if !strings.Contains(out, "▸ 打开环境面板") {
 		t.Fatalf("第二项应被选中：\n%s", out)
 	}
 }

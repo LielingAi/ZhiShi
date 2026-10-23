@@ -30,9 +30,6 @@
     "tui",
     "zhishi"
   ],
-  "dependencies": {
-    "@lydell/node-pty": "^1.2.0-beta.15"
-  },
   "optionalDependencies": {
     "@lielingai/zhishi-tui-win32-x64": "__VERSION__",
     "@lielingai/zhishi-tui-darwin-arm64": "__VERSION__",

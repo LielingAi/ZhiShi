@@ -98,11 +98,41 @@ export function buildLocalToolchainProbeScript(): string {
     .join(' & ');
 }
 
+/**
+ * 2.2 — Linux/macOS 宿主工具链探测面（`command -v` 语义）。
+ * 与 Windows 面同一 OK:/MISS: 协议，覆盖二进制 / pwn / 渗透最常用的宿主工具。
+ */
+export const LINUX_LOCAL_TOOLCHAIN_PROBE: ReadonlyArray<{ key: string; label: string; probe: string }> = [
+  { key: 'gcc', label: 'gcc', probe: 'command -v gcc' },
+  { key: 'clang', label: 'clang', probe: 'command -v clang' },
+  { key: 'gdb', label: 'gdb', probe: 'command -v gdb' },
+  { key: 'python3', label: 'python3', probe: 'command -v python3' },
+  { key: 'git', label: 'git', probe: 'command -v git' },
+  { key: 'objdump', label: 'objdump', probe: 'command -v objdump' },
+  { key: 'readelf', label: 'readelf', probe: 'command -v readelf' },
+  { key: 'nm', label: 'nm', probe: 'command -v nm' },
+  { key: 'strace', label: 'strace', probe: 'command -v strace' },
+  { key: 'nmap', label: 'nmap', probe: 'command -v nmap' },
+  { key: 'afl-fuzz', label: 'afl-fuzz', probe: 'command -v afl-fuzz' },
+  { key: 'r2', label: 'radare2（r2）', probe: 'command -v r2' },
+];
+
+/** Linux/macOS 本机工具链探测脚本（sh 语义，OK:/MISS: 协议行）。 */
+export function buildLinuxLocalToolchainProbeScript(): string {
+  return LINUX_LOCAL_TOOLCHAIN_PROBE
+    .map(({ key, probe }) => `${probe} >/dev/null 2>&1 && echo OK:${key} || echo MISS:${key}`)
+    .join('; ');
+}
+
 /** 探测输出 → 本机工具链在场/缺失清单（按探测面声明序，纯函数）。 */
-export function parseLocalToolchainProbe(stdout: string): { present: string[]; missing: string[] } {
+export function parseLocalToolchainProbe(
+  stdout: string,
+  family: 'windows' | 'linux' = 'windows',
+): { present: string[]; missing: string[] } {
+  const probeList = family === 'linux' ? LINUX_LOCAL_TOOLCHAIN_PROBE : LOCAL_TOOLCHAIN_PROBE;
   const present: string[] = [];
   const missing: string[] = [];
-  for (const { key } of LOCAL_TOOLCHAIN_PROBE) {
+  for (const { key } of probeList) {
     const ok = new RegExp(`^OK:${key}$`, 'm').test(stdout);
     (ok ? present : missing).push(key);
   }
@@ -357,10 +387,11 @@ export async function probeEnvironmentCapabilities(
   const surface = collectProbeSurface(deps.recipes);
   const family = osFamilyOf(entry);
   // 1.7.8：本机条目追加工具链探测面（vswhere MSVC / clang / cdb / WinDbg /
-  // python / git / WSL / 符号路径）——仅 windows 家族（本机环境定位就是
-  // Windows 宿主；vswhere 等探测在 cmd 语义下才有意义）。
-  const toolchainScript =
-    entry.kind === 'local' && family === 'windows' ? buildLocalToolchainProbeScript() : null;
+  // 2.2：本机条目按宿主家族追加工具链探测面——Windows 用 cmd 语义
+  // （vswhere/WSL/符号路径），Linux/macOS 用 `command -v` 面。
+  const toolchainScript = entry.kind === 'local'
+    ? (family === 'windows' ? buildLocalToolchainProbeScript() : buildLinuxLocalToolchainProbeScript())
+    : null;
   let probed: string[] = [];
   let missing: string[] | undefined;
   let pending: string[] | undefined;
@@ -371,7 +402,7 @@ export async function probeEnvironmentCapabilities(
     if (toolchainScript !== null) scriptParts.push(toolchainScript);
     let stdout: string;
     try {
-      const r = await deps.exec(entry, scriptParts.join(' & '), {
+      const r = await deps.exec(entry, scriptParts.join(family === 'windows' ? ' & ' : '; '), {
         timeoutMs: CAPABILITY_PROBE_TIMEOUT_MS,
       });
       if (!r.ok) return undefined; // 通道失败 → 不写能力字段（pending 同样不动）
@@ -386,7 +417,7 @@ export async function probeEnvironmentCapabilities(
       deps.manifests,
     );
     if (toolchainScript !== null) {
-      localToolchain = parseLocalToolchainProbe(stdout);
+      localToolchain = parseLocalToolchainProbe(stdout, family);
     }
     // 1.4.9：MISS 清单随探测落盘——「声明了但环境里没有」是元数据可信的
     // 另一半（adopt 环境此前永远看不到缺失）。

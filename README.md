@@ -139,7 +139,7 @@ GUI 主窗口已整体删除（`src/gui/**`，历史版本仍在 git 里）。�
 - **研究档案**（假设/证据/结论/未决问题随研究实时生长，行内纠正，档案锚↔流双向互跳；结论必须有证据支撑——finding 强制挂 V# 证据引用，证伪走 falsify/correct 留痕）
 - **auto loop agent**（目标式研究循环：启动表单任选环境/目标/预算/验收条件，运行期只观察，验收包人终审，达成自动出报告；**CLI 策略模式**——策略 YAML 唯一治理源，无人值守全程自主）
 - **历史线**（线清单/搜索/只读回看/载回续跑/重命名/置顶/归档/删除）
-- attach 真终端（docker exec -it / ssh -tt）+ 一次性命令执行双模式
+- 一次性命令执行（`env_exec`）；交互终端从 2.2 起不再内置，直接用外部 SSH（TUI 只做研究编排）
 - 越界动作模态（写宿主等四类，逐次问人，无「永远允许」）+ 后台任务状态栏可见（`⛁ fuzz · 跑着`）
 
 ### 团队协作：团队大脑（1.8.7）
@@ -351,7 +351,7 @@ flowchart LR
 
 | 模块 | 位置 |
 |---|---|
-| TUI（Bubble Tea：会话流 / 面板 / 补全 / 附件 / attach） | `src/tui/` |
+| TUI（Bubble Tea：会话流 / 面板 / 补全 / 附件） | `src/tui/` |
 | 引擎（loop / 工具 / 边界 / 蒸馏 / code_query） | `src/server/loop/`、`src/server/memory/` |
 | 任务存储与调度（sidecar owner） | `src/server/task/`、`src/server/cron/` |
 | 环境层（探测 / 生命周期 / 纳管 / 台账 / 传输） | `src/server/environment/` |

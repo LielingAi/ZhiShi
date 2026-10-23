@@ -40,8 +40,7 @@ const (
 	ActionLineOverlay
 	ActionTaskOverlay
 	ActionArchiveOverlay
-	// attach（全屏接管远端 pty）与历史回看（M2b）。
-	ActionAttach
+	// 历史回看（M2b）。
 	ActionHistoryOverlay
 	// 鼠标捕获开关：关掉后终端可以原生拖选复制（Alt+m）。
 	ActionToggleMouse
@@ -163,8 +162,6 @@ func globalKey(msg tea.KeyMsg) (Action, bool) {
 		return ActionTaskOverlay, true
 	case "alt+a":
 		return ActionArchiveOverlay, true
-	case "alt+s":
-		return ActionAttach, true
 	case "alt+h":
 		return ActionHistoryOverlay, true
 	case "pgup":

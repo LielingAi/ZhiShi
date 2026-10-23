@@ -15,12 +15,14 @@ import type { EnvironmentRecipe } from './recipes';
 import {
   boundDomainsForEntry,
   boundRecipeIdsForEntry,
+  buildLinuxLocalToolchainProbeScript,
   buildLocalToolchainProbeScript,
   buildRecipeDomainMap,
   buildToolDomainIndex,
   capabilityMissingInScope,
   capabilityScopeTools,
   collectProbeSurface,
+  LINUX_LOCAL_TOOLCHAIN_PROBE,
   LOCAL_TOOLCHAIN_PROBE,
   mergeCapabilityDomains,
   parseLocalToolchainProbe,
@@ -520,5 +522,22 @@ describe('1.7.8 — 本机工具链探测面（kind=local）', () => {
       exec: () => Promise.resolve({ ok: false as const, stdout: '' }),
     });
     expect(r).toBeUndefined();
+  });
+});
+
+// 2.2 Linux/macOS 本机工具链面
+describe('Linux 本机工具链探测面（2.2）', () => {
+  it('command -v 语义 + 分号连接，解析按 Linux 列表', () => {
+    const script = buildLinuxLocalToolchainProbeScript();
+    expect(script).toContain('command -v gcc >/dev/null 2>&1');
+    expect(script).toContain('command -v afl-fuzz >/dev/null 2>&1');
+    expect(script.split('; ')).toHaveLength(LINUX_LOCAL_TOOLCHAIN_PROBE.length);
+
+    const parsed = parseLocalToolchainProbe('OK:gcc\nMISS:gdb\nOK:afl-fuzz', 'linux');
+    expect(parsed.present).toEqual(['gcc', 'afl-fuzz']);
+    expect(parsed.missing).toContain('gdb');
+    expect(parsed.missing).toContain('r2');
+    // Windows 列表不参与 Linux 解析（msvc 不出现在结果里）。
+    expect(parsed.missing).not.toContain('msvc');
   });
 });

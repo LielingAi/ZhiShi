@@ -229,8 +229,7 @@ loop:
 
 // runM2bProbe 验的是两条只读链路：GET /sessions 与 wire 回看。
 //
-// attach 不在这里跑：它要接管真终端（raw mode + 全屏），管道里没有终端可
-// 接管，跑了也证明不了什么。这一行明文写出来，免得看输出的人以为漏了。
+// 只验只读链路：GET /sessions 与 wire 回看（管道里没有可接管的终端）。
 func runM2bProbe(c *client.Client, server string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -284,7 +283,6 @@ func runM2bProbe(c *client.Client, server string) error {
 		}
 	}
 
-	fmt.Println("attach    需真终端，已跳过")
 	return nil
 }
 

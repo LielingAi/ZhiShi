@@ -23,7 +23,7 @@ go run ./cmd/zhishi-tui --server http://127.0.0.1:38002
 | `--token` | `$ZHISHI_TOKEN` | 鉴权 token；空 = 不带 Authorization（auth 关闭的本机模式） |
 | `--probe` | `false` | 非 TTY 自检：订阅 SSE 3 秒，打印事件计数、块表、画面尾部 |
 | `--probe-overlays` | `false` | 非 TTY 自检：四个数据覆盖层各打开一次 |
-| `--probe-m2b` | `false` | 非 TTY 自检：`/sessions` + wire 回看全链路（attach 跳过） |
+| `--probe-m2b` | `false` | 非 TTY 自检：`/sessions` + wire 回看全链路 |
 | `--probe-cli` | 空 | 非 TTY 自检：把一条 `/命令` 走完整路径跑一次并打印输出 |
 
 检查：
@@ -56,9 +56,8 @@ INSERT 模式——输入框永远聚焦，没有 NORMAL 模式。bubbletea 的 
 | `Alt+y` | 复制当前块正文（OSC52，不支持时落临时文件） |
 | `Alt+o` | 外部打开当前块正文（`$PAGER` / 系统默认程序） |
 | `Alt+f` | 只看失败块（切换） |
-| `Alt+s` | **attach**：全屏接管当前/选中环境的远端 pty |
 | `Alt+h` | **历史回看**：选一条线 → 只读回看它的 wire 消息 |
-| `Alt+e` | 环境面板：`↑↓` 选、`Enter` 切环境、`s` attach、`d` 停止、`x` 删除（二次确认）、`n` 重命名、`l` 配方清单、`r` 刷新 |
+| `Alt+e` | 环境面板：`↑↓` 选、`Enter` 切环境、`d` 停止、`x` 删除（二次确认）、`n` 重命名、`l` 配方清单、`r` 刷新 |
 | `Alt+l` | 线面板：`↑↓` 选、`Enter` 切线、`a` 归档/取消、`n` 重命名、`x` 删除（二次确认）、`r` 刷新 |
 | `Alt+t` | 任务面板：`↑↓` 选、`Enter` 看详情（描述/工作区/模型/状态历史/文档路径；详情里 `c` 续命、`x` 终止）、`c` 续命、`x` 终止（二次确认）、`r` 刷新 |
 | `Alt+a` | 研究档案：按 kind 分组，`↑↓` 选、`Enter` 看详情（全文/链接/反证；详情里 `v`/`c`/`a` 同样可用）、`v` 证实/解决、`c` 纠正、`a` 搁置、`r` 刷新 |
@@ -210,7 +209,6 @@ cmd/zhishi-tui/main.go       参数、TUI 启动、四个探针
 internal/protocol/           Envelope/Event/Snapshot + SSE 行解析
 internal/client/client.go    HTTP + SSE 订阅（chat 面）
 internal/client/admin.go     admin 面 + /sessions + wire 消息
-internal/client/term.go      attach 的 WS 客户端（coder/websocket）
 internal/store/              Block 表：按 ID + Version upsert，保插入序
 internal/render/             块渲染缓存 + 高度缓存
 internal/app/model.go        状态（无 IO）
@@ -219,8 +217,7 @@ internal/app/view.go         View：虚拟滚动窗口 + 四段布局 + 叠绘�
 internal/app/keys.go         键路由（三段式）
 internal/app/overlay.go      覆盖层接口 / 栈工具 / 列表骨架 / 提示空壳
 internal/app/overlay_data.go 四个数据面板（环境/线/任务/档案）
-internal/app/palette.go      命令面板
-internal/app/attach.go       attach 字节泵 runAttachPump + tea.Exec 接管
+internal/app/palette.go      动作中心（动作执行 + 命令模板）
 internal/app/history.go      只读回看：replayWire + 历史列表 + 回看视图
 ```
 
@@ -228,30 +225,10 @@ Elm 边界：`model.go` 不产生 IO，`view.go` 没有副作用，`Init`/`Updat
 `Overlay.Handle` 只**返回** `tea.Cmd`，执行永远在 update 的调用栈里。
 没有包级可变状态：渲染缓存、管理面客户端、opener 都挂在 Model。
 
-### attach（M2b）
+### attach（已移除）
 
-契约（`src/server/loop/term-pty.ts` 头注释，权威）：
-
-- `WS /api/admin/environment/term?env=<envKey>`，token 走 `?token=`（WS upgrade
-  认 query 兜底）+ `Authorization` 头，两条都发；
-- 帧是 **JSON 文本帧**：客户端→`{type:'input',data}` / `{type:'resize',cols,rows}`
-  / `{type:'ping'}`；服务端→`{type:'output',data}` / `{type:'exit',code,signal?}`
-  / `{type:'error',message}` / `{type:'pong'}`。
-
-接管走 `tea.Exec`（不是 `tea.ExecProcess`——这里没有子进程可起，"进程"就是 WS
-泵；ExecProcess 只是 Exec + exec.Cmd 的语法糖，两者机制一样）：bubbletea 先
-`ReleaseTerminal` 放出终端，`Run()` 里 `term.MakeRaw(os.Stdin)` → 泵 → `defer`
-`term.Restore` → Run 返回后 bubbletea `RestoreTerminal` 重绘。**不清屏、不写
-stdout**：结束提示走状态行（`[attach 结束 code=N]` / `已断开 attach（Ctrl-]）`）。
-
-- 退出键是 **两次 `Ctrl-]`（2 秒内）**，`Ctrl-C` 原样透传给远端——attach 是
-  "接管远端 shell"，本地抢 Ctrl-C 会让 vim/less 的行为跟远端不一致；
-- 尺寸：进入时先发一次；之后 500ms 轮询（Windows 没有 SIGWINCH，只能轮询），
-  只有真的变了才发；
-- 字节泵 `runAttachPump(attachOpts)` 的全部依赖（`io.Reader`/`io.Writer`/
-  `frameConn`/尺寸/时钟）都是注入的，单测用假 conn + `bytes.Buffer` 跑；
-- 收尾三种：远端 `exit` 帧 → `(code, nil)`；两次 Ctrl-] → `(-1, errDetached)`；
-  `error` 帧 / 连接断 → `(-1, err)`。
+2.2 起移除内置终端：研究员直接用外部 SSH / docker exec，TUI 只做研究编排。
+原 WS 端点（`/api/admin/environment/term`）、`node-pty` 依赖与字节泵一并删除。
 
 ### 历史回看（M2b，只读）
 
@@ -273,7 +250,6 @@ format=wire&loopSessionId=<loopSessionId>` → `replayWire` 灌进**独立的 St
 |---|---|---|
 | 环境 | `POST /api/admin/environment/list` | `{success, data:{environments:[{id,kind,name,host,container,address,user,capabilityDomains[]}]}}` |
 | 环境切换 | `POST /api/admin/environment/select` | 请求 `{workspace, selection:{kind:"env",id}}` |
-| attach | `WS /api/admin/environment/term?env=` | 见上 |
 | 线/回看列表 | `GET /sessions` | `{success, sessions:[{id,title,loopSessionId,lastActiveAt,archived,stats:{messageCount}}]}` |
 | 线切换 | `POST /sessions/switch` | 请求 `{sessionId}` |
 | 回看消息 | `GET /api/loop-session/messages?format=wire` | `{success, messages:[{id,role,content,timestamp,name?,ok?,kind?,choice?}], totalMessages, truncated}` |
@@ -313,7 +289,7 @@ INSERT  deepseek-flash · ctx 41% · 168k/250k · Σ 12k · 队列 0 · 5m12s ·
 - 面板写操作：任务续命/终止、环境停止/删除/重命名/配方、档案证实/纠正/搁置、线归档/重命名/删除
 - auto-run：观察（阶段/轮次/预算）+ 启动表单 + 终止
 - 附件：图片按路径附加（base64 直传 images）
-- attach（WS + raw mode + 字节泵）、只读历史回看、四个探针
+- 只读历史回看、四个探针
 
 **仍是桩**
 
@@ -323,10 +299,12 @@ INSERT  deepseek-flash · ctx 41% · 168k/250k · Σ 12k · 队列 0 · 5m12s ·
 
 **没做**
 
-- 多线并存视图、重连退避、生成式 UI 标签、列级叠绘、attach 断线重连
+- 多线并存视图、重连退避、生成式 UI 标签、列级叠绘
 - 环境新增/认领（多字段表单，走 CLI）、`archive/op` 举证挂链、报告内嵌查看、运行时主题切换
 
 ## 已知偏差（对着服务端源码 + 实跑核过的）
+
+> 2.2 移除了 attach：下列涉及 attach 的条目保留为历史记录，不再适用。
 
 1. **环境面板的 `Enter` 仍是"切环境"，attach 用 `s`。** M2b 需求写的是"面板里
    对选中行按 Enter 也可以 attach"，但 `Enter` 在 M2a 已被接受为"切环境"
@@ -380,7 +358,6 @@ python scripts/dev/render-tui-frame.py /tmp/frame.ansi assets/tui.png
 
 ## 下一步
 
-1. attach 断线重连 + 远端尺寸/标题上报（`{type:'resize'}` 已通，标题还缺协议）。
 2. 环境面板的"当前环境"标记与环境/线联动（要 `environment/current`）。
 3. 任务面板的终止/续命（`task/update-status` + actor 署名）。
 4. 重放对账（`msg:` 前缀块与 live 块收敛）。

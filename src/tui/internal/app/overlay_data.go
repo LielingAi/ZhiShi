@@ -77,16 +77,6 @@ func (o *envOverlay) Handle(m *Model, msg tea.KeyMsg) tea.Cmd {
 		return o.reload(m)
 	case "d", "x", "n", "l":
 		return o.handleWriteKeys(m, msg)
-	case "s":
-		// attach 选中环境。
-		//
-		// 为什么不是 Enter：Enter 在 M2a 已经定为"切环境"（切会话线），
-		// 一个键不能既是"换环境"又是"进终端"——误按的代价差太远。
-		// 全局 Alt+s 是同一入口的快捷键形态。
-		if r, ok := o.selected(); ok {
-			return attachCmd(m.Ctx, m.Client, r.Key)
-		}
-		return nil
 	case "enter":
 		r, ok := o.selected()
 		if !ok || o.state != loadReady {
@@ -106,7 +96,7 @@ func (o *envOverlay) Handle(m *Model, msg tea.KeyMsg) tea.Cmd {
 
 func (o *envOverlay) Render(m Model, width, height int) string {
 	return listBody("环境", o.list, width, listOverlayRows(height),
-		"↑↓ 选择  Enter 切换  s attach  r 刷新  Esc 关闭")
+		"↑↓ 选择  Enter 切换  r 刷新  Esc 关闭")
 }
 
 func (o *envOverlay) Summary() Summary {

@@ -24,7 +24,6 @@ const (
 	PaletteOpenTask
 	PaletteOpenArchive
 	PaletteSessionActions
-	PaletteAttach
 	PaletteSearch
 	PaletteAutoRun
 	PaletteChoices
@@ -58,7 +57,6 @@ type PaletteItem struct {
 func paletteItems() []PaletteItem {
 	return append([]PaletteItem{
 		{Name: "会话操作", Desc: "重置 / 回退 / 分叉 / 切模型 / 权限 / 导出报告（Alt+x）", Action: PaletteSessionActions},
-		{Name: "attach 到环境", Desc: "进选中环境的远端终端；Ctrl-] 两次退出（Alt+s）", Action: PaletteAttach},
 		{Name: "打开环境面板", Desc: "切换 / 启动 / 停止 / 删除环境（Alt+e）", Action: PaletteOpenEnv},
 		{Name: "打开任务面板", Desc: "计划任务清单与详情（Alt+t）", Action: PaletteOpenTask},
 		{Name: "打开研究档案", Desc: "假设 / 证据 / 结论 / 未决问题（Alt+a）", Action: PaletteOpenArchive},
@@ -132,7 +130,7 @@ func filterPalette(query string, m *Model) []PaletteItem {
 	out := make([]PaletteItem, 0, len(all))
 	for _, it := range all {
 		// 斜杠命令允许"没打斜杠也能搜到"：输入 export 也命中 /export。
-		// 描述用子串匹配（输入 attach / 环境 / 任务都能命中动作），
+		// 描述用子串匹配（输入 环境 / 任务 / 报告 都能命中动作），
 		// 名称仍用子序列——名称短，容忍拼写；描述长，子序列噪声太大。
 		name := strings.ToLower(it.Name)
 		desc := strings.ToLower(it.Desc)
@@ -242,13 +240,6 @@ func (o *paletteOverlay) run(m *Model) tea.Cmd {
 	case PaletteSessionActions:
 		m.PushOverlay(newSessionOverlay(m))
 		return nil
-	case PaletteAttach:
-		// 与 Alt+s 同一目标规则：面板光标优先，否则当前锚定环境。
-		target := m.SelectedEnvID
-		if target == "" {
-			target = m.EnvironmentID
-		}
-		return attachCmd(m.Ctx, m.Client, target)
 	case PaletteSearch:
 		m.PushOverlay(newSearchOverlay())
 		return nil
@@ -306,7 +297,7 @@ func (o *paletteOverlay) Render(m Model, width, height int) string {
 
 	input := "› " + o.query + "▏"
 	if o.query == "" {
-		input = "› " + dimStyle.Render("搜索动作或命令…（如 attach / 环境 / 报告）") + "▏"
+		input = "› " + dimStyle.Render("搜索动作或命令…（如 环境 / 报告 / 搜索）") + "▏"
 	}
 	lines := []string{headerStyle.Render("动作中心"), input, ""}
 	lines = append(lines, renderList(l, width, listOverlayRows(height)-3)...)
