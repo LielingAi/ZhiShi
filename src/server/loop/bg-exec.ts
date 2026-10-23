@@ -333,6 +333,10 @@ export async function envBgStart(
   const r = await execInEnvironment(entry, buildBgStartRemote(command, tag, osFamilyOf(entry)), {
     exec: options.exec,
     timeoutMs: options.timeoutMs ?? 30_000,
+    // 后台启动的前台部分只做 mkdir/拉起/回写 pid，设计上秒回；不需要远端
+    // timeout 包装（那层 `sh -c "C=\"…\""` 在 Node 直接 spawn ssh 时会
+    // 被引号解析吃掉，正是「stdout 为空、exit=0」的实机来源）。
+    skipRemoteTimeout: true,
   });
   if (!r.ok) return { ok: false, error: r.error };
   const { pid } = parseBgStart(r.stdout);

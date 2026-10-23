@@ -171,6 +171,9 @@ describe('编排(注入 exec,薄包)', () => {
     expect(calls).toHaveLength(2); // poll + start
     expect(unwrapRemote(calls[0].slice(-1)[0])).toContain('ps -p');
     expect(unwrapRemote(calls[1].slice(-1)[0])).toContain('base64');
+    expect(unwrapRemote(calls[1].slice(-1)[0])).toContain('setsid');
+    // 即时返回的启动命令不套远端 timeout 包装（引号层会在 spawn 路径被吃）。
+    expect(calls[1].slice(-1)[0]).not.toContain('timeout -k');
   });
 
   it('start:tag 已被运行中进程占用 → 拒绝', async () => {

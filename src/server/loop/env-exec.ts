@@ -83,6 +83,13 @@ export interface EnvExecOptions {
   maxOutputBytes?: number;
   /** 显式覆盖 ControlMaster 开关（默认：win32 关、POSIX 开，见 buildSshArgv）。 */
   controlMaster?: boolean;
+  /**
+   * 2.2.1：跳过远端 `timeout` 包装（默认 false = 包装）。
+   * 只给「设计上立即返回」的命令用（env_bg start：后台进程已脱离，
+   * 前台 pid 回写秒回）。包装层是 `sh -c "C=\"…\""` 的逃逸引号形态，
+   * 在 Node 直接 spawn MSYS ssh 时会被引号解析吃掉；即时命令不需要它。
+   */
+  skipRemoteTimeout?: boolean;
   /** 测试注入:guest 通道(断网 VM)的 vmrun exec(绝不真调 vmrun)。 */
   guestExec?: VmExec;
   /**
@@ -763,7 +770,9 @@ export async function execInEnvironment(
     ? passwordArgv
     : isLocal
       ? argv
-      : (() => {
+      : options.skipRemoteTimeout
+        ? argv
+        : (() => {
           const wrappedCommand = buildRemoteTimeoutWrapper(command, timeoutMs, family);
           const next = [...argv];
           next[next.length - 1] = wrappedCommand; // ssh/docker builder 的命令都在末位
