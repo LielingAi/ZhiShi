@@ -18,6 +18,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-23
+
+> **形态切换**：GUI 退役，TUI（Go + Bubble Tea）成为唯一交互面；任务存储与调度从 Rust 下沉到 Node sidecar；npm 支持「单文件安装」。
+
+### Added
+
+- **TUI 成为唯一交互面**（`src/tui/`）：会话流与工具块（折叠 / 过滤 / 复制）、队列查看与撤销、决策与越界面板、任务详情与续命、环境面板、档案详情、搜索、`@` 文件补全、图片附件、auto-run 观察与启动表单、attach 恢复。裸 `zhishi` / `zhishi agent` / `zhishi tui` 直接进入；**非 TTY 仍打印帮助**（脚本 / cron / AI 调用方不会被挂进全屏界面）
+- **npm 单文件安装**：`npm i -g <tgz|Release 资产>` 即可，二进制内嵌在包内 `dist/tui/<platform>-<arch>/bin/`，不再依赖 registry 解析 optionalDependencies（`--bundle` 产物，5 平台约 17.9 MB）。平台包形态仍保留（按平台只装一个，约 8 MB）
+- **任务 owner 下沉到 sidecar**（`src/server/task/`）：`tasks.jsonl` 存储层（启动崩溃恢复 + 自环审计）、读写路由、30s 轮询调度器（past-due 补偿、Ralph 退避）、per-invoke 工作区。`/cron/execute-sync` 与 tick 共用同一执行入口。归属开关 `ZHISHI_TASK_SCHEDULER=node|rust|off`，缺省 node
+- `/health` 返回 `version`：CLI/TUI 复用已有 sidecar 前先比对，避免连上旧桌面版后按新协议对话
+
+### Changed
+
+- **SQLite 驱动**：`node:sqlite` 优先（Node >= 22.5，不随宿主 Node 换 ABI），`better-sqlite3` 只在旧 Node 兜底；memory / expert / intel 三库共用同一加载器
+- 蒸馏分节超限**按整条淘汰（旧的先走）**，不再按字符硬切——`reminders` 的 bullet 被切半后回喂模型会越写越歪
+- `task list` 支持 `--includeSystem`（系统任务缺省隐藏，看全量加旗标）；bundled skill 同步到 v42
+
+### Removed
+
+- **GUI 全量删除**（`src/gui/**`，144 文件）：产品只保留 TUI，历史版本可从 git 历史取回
+- **Rust 侧不再启动任务调度器**：`initialize_task_scheduler` 的启动路径删除（`task_scheduler.rs` 代码留作历史参考与对拍）。两端同时 tick 会导致 token 翻倍、progress 并发互写
+
+### Fixed
+
+- **单包形态找不到 TUI**：查找路径少了 `bin/` 一层（实际布局 `dist/tui/<platform>-<arch>/bin/zhishi-tui`），装好了也报「未找到 zhishi TUI 二进制」
+- **`tui-launch` 的注入 `exists` 没走到平台包 / dev 兜底分支**：测试不可控（真实磁盘状态决定结果）
+- **蒸馏弧双跑**：sidecar 的受护定时器检测到 Rust 调度者在场（`ZHISHI_MANAGEMENT_PORT`）就让位，避免同一条弧被两套节律各跑一遍
+
 ## [2.0.8] - 2026-10-22
 
 > **三个实机 bug + 两条记忆回路修复**：点已完成任务白屏、delegate_task 必挂的假超时、上下文膨胀到 85 万 token；记忆侧的「注入不记账」和「蒸馏从未播种」也一并解决——记忆终于能自我更新了。
