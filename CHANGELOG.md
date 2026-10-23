@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-10-24
+
+> **修复 VM/SSH 上 `env_bg` 无法启动**：后台启动命令被远端超时包装的引号层破坏，表现为 `stdout` 为空、没有 pid。
+
+### Fixed
+
+- **`env_bg start` 在 VM / SSH 环境上必然失败**：启动命令被套了 `sh -c "C=…"` 的远端 timeout 包装，Node 直接 spawn MSYS `ssh` 时逃逸引号被 argv 解析吃掉，远端脚本被破坏 → `exit=0`、stdout 只有一个空格、无 pid。后台启动的前台部分（mkdir/拉起/回写 pid）本就秒回，不需要远端 timeout；新增 `skipRemoteTimeout` 仅用于这条路径，本地 exec 超时仍在
+- **`env_bg` 启动失败的报错不可读**：只报「stdout 为空」。docker 容器未运行时错误在 stderr（`is not running`），现在错误行带 `exit=N` 与 stderr 片段
+
+### Docs
+
+- 安装/升级链接改用 `releases/latest/download/zhishi-latest.tgz` 固定别名，不再硬编码版本号；发布流程要求每次 Release 同时上传该别名
+
 ## [2.2.0] - 2026-10-23
 
 > **破坏性版本**：移除内置交互终端（attach），报告目录化并加结构化评级，TUI 交互收敛为动作中心。交互终端统一改用外部 SSH / docker exec。
