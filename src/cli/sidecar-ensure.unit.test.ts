@@ -57,6 +57,38 @@ describe('ensureCliSidecar', () => {
     expect(calls).toBe(1);
   });
 
+  it('版本一致 → 复用', async () => {
+    writeFileSync(join(dataDir, 'sidecar.port'), '31415');
+    const port = await ensureCliSidecar({
+      fetchHealth: async () => ({ ok: true, version: '2.0.8' }),
+      localVersion: '2.0.8',
+    });
+    expect(port).toBe(31415);
+  });
+
+  it('旧 sidecar 没上报版本（2.0.x）→ 按可复用处理（向后兼容）', async () => {
+    writeFileSync(join(dataDir, 'sidecar.port'), '31415');
+    const port = await ensureCliSidecar({
+      fetchHealth: async () => ({ ok: true }),
+      localVersion: '2.1.0',
+    });
+    expect(port).toBe(31415);
+  });
+
+  it('版本漂移 → 不复用，走自立（脚本缺失 → null）+ 日志说明', async () => {
+    writeFileSync(join(dataDir, 'sidecar.port'), '31415');
+    const logs: string[] = [];
+    const port = await ensureCliSidecar({
+      log: (m) => logs.push(m),
+      fetchHealth: async () => ({ ok: true, version: '2.0.8' }),
+      localVersion: '2.1.0',
+      execPath: FAKE_NODE,
+      cwd: tmpdir(),
+    });
+    expect(port).toBeNull();
+    expect(logs.some((m) => m.includes('2.0.8') && m.includes('2.1.0') && m.includes('不复用'))).toBe(true);
+  });
+
   it('port 文件在但 health 死 → 走自立路径（脚本缺失 → null，秒回）', async () => {
     writeFileSync(join(dataDir, 'sidecar.port'), '31415');
     const logs: string[] = [];

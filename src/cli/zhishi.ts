@@ -19,7 +19,6 @@
  */
 import { homedir } from 'os';
 import { readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { Agent, fetch as undiciFetch } from 'undici';
 import { getZhiShiDataDir } from '../shared/app-dirs';
@@ -39,6 +38,7 @@ import { isSidecarPortOverride, parseArgs } from './cli-args';
 import { runBrainCommand } from './brain';
 import { probeRemoteHealth, resolveRemoteServer, resolveRemoteToken } from './remote';
 import { ensureCliSidecar } from './sidecar-ensure';
+import { launchTui } from './tui-launch';
 import { buildExpertDoc, expertEditRoundTrip, parseExpertDoc } from './expert-edit';
 import { importExpertEntries, parseExpertImport } from './expert-import';
 import { EXPERT_ENTRY_KINDS, EXPERT_PROVENANCES, validateEntry, type ValidateResult } from '../shared/expert-validate';
@@ -102,8 +102,9 @@ function requirePositional(
 // Help text
 // ---------------------------------------------------------------------------
 const TOP_HELP = `zhishi — ZhiShi Self-Configuration CLI
-Usage: zhishi <command> [options]
+Usage: zhishi [command] [options]        # 裸命令 = 交互式 TUI
 Commands:
+  tui       Interactive TUI (default when stdin is a TTY; extra flags are forwarded, e.g. --probe)
   model     Manage model providers
   agent     Manage agents (+ 'agent show <id>' for effective defaults)
             会话引擎: pi(M4c 起唯一引擎,SDK 已删除);
@@ -1720,8 +1721,17 @@ async function main(): Promise<void> {
   const passthroughArgs = dashDash >= 0 ? rawArgs.slice(dashDash + 1) : [];
   const { positional, flags } = parseArgs(dashDash >= 0 ? rawArgs.slice(0, dashDash) : rawArgs);
   const jsonMode = !!flags.json;
+// 交互式 TUI（2.1 起唯一交互面）：裸 `zhishi` / 裸 `zhishi agent` / 显式
+  // `zhishi tui`。非 TTY（脚本 / cron / AI 调用方）下裸命令仍打印帮助——
+  // 不能让一次管道调用挂进全屏界面等输入。
+  const explicitTui = positional[0] === 'tui';
+  const bareInteractive =
+    positional.length === 0 || (positional[0] === 'agent' && positional.length === 1);
+  const wantsTui =
+    !flags.help && !jsonMode &&
+    (explicitTui || (bareInteractive && !!process.stdin.isTTY && !!process.stdout.isTTY));
 // Top-level help (no args, or bare --help)
-  if (positional.length === 0) {
+  if (positional.length === 0 && !wantsTui) {
     console.log(TOP_HELP);
     return;
   }
@@ -1752,9 +1762,10 @@ async function main(): Promise<void> {
     // token 值不打印——只说「已启用」。
     console.error(`[zhishi] 远端模式：${remoteServer}${TOKEN ? '（Bearer token 已启用）' : ''}`);
   } else {
-// Resolve port: --port flag overrides env; 1.4.0 起 ZHISHI_PORT 未设时回落
-// sidecar.port 文件（应用启动即写，`~/.zhishi/sidecar.port`）——PATH 安装的
-// zhishi 在应用运行时独立可用，不用手动设端口。文件缺失/损坏 → 保持原报错。
+// Resolve port: --port / ZHISHI_PORT 显式指定优先；否则交给 ensureCliSidecar
+// 统一处理——它读 sidecar.port、探 /health、比对版本，都活且同版本才复用，
+// 否则自立一个。1.4.0 那版直接读 port 文件就信，会连到已漂移/已死的旧
+// sidecar（2.1 起版本探测必须在复用之前）。
 // 例外：`env add --kind ssh --port N` 的 --port 是目标主机端口（进请求体），
 // 不做 sidecar 覆盖（1.5.4 审计 A1-4：曾无条件覆盖导致该用法必然
 // ECONNREFUSED）。
@@ -1762,37 +1773,28 @@ async function main(): Promise<void> {
     PORT = (flags.port as string) || PORT;
   }
   if (!PORT) {
-    try {
-      const portFile = join(getZhiShiDataDir(), 'sidecar.port');
-      const raw = readFileSync(portFile, 'utf-8').trim();
-      const p = Number(raw);
-      if (Number.isInteger(p) && p > 0 && p < 65536) PORT = String(p);
-    } catch {
-      /* 无端口文件 → 1.8.2 起尝试 CLI 自立 sidecar（下段） */
-    }
-  }
-  if (!PORT) {
-    // 1.8.2：无 GUI 场景（服务器/cron/pipeline）CLI 自立 sidecar——探测
-    // 失败才落报错。显式 --port / ZHISHI_PORT 的场景不经过这里（调用方负责）。
     const ensured = await ensureCliSidecar({ log: (m) => console.error(m) });
     if (ensured) PORT = String(ensured);
   }
   if (!PORT) {
-    console.error('Error: 无法连接 ZhiShi 引擎（GUI 未运行，且 CLI 自立 sidecar 失败）。');
-    console.error('  排查：① 启动 GUI 一次（初始化 CLI 与 bundled node）；② 或确认 <data-dir>/bin/zhishi 与 resources/server-dist.js 在位。');
+    console.error('Error: 无法连接 ZhiShi 引擎（没有可复用的 sidecar，且 CLI 自立 sidecar 失败）。');
+    console.error('  排查：① 确认 Node >= 22.5（node -v）；② 确认包内 dist/server-dist.js 存在（npm i -g @lielingai/zhishi 重装）；');
+    console.error('        ③ 看 <data-dir>/logs 下最近一次启动日志；④ 或设 --server 连远端团队大脑。');
     process.exit(3);
   }
   BASE = `http://127.0.0.1:${PORT}/api/admin`;
   ROOT_BASE = `http://127.0.0.1:${PORT}`;
   }
-// 1.3.9 TUI 退役：bare `zhishi agent` 不再进入交互式 TUI——打印引导并以
-  // 非零退出（防 AI 调用方/脚本误判「会话已启动」）。`agent` 子命令
-  // (list/show/enable/disable/...) 继续走 Admin API。交互会话请用 GUI。
-  if (positional[0] === 'agent' && positional.length === 1 && !flags.help) {
-    console.error('交互式 TUI 已退役（1.3.9）——交互会话请用 GUI 主窗口。');
-    console.error('`zhishi agent <subcommand>`（list/show/enable/disable/set/...）继续可用；');
-    console.error('其余环境/模型/专家等运维操作见 `zhishi --help`。');
-    process.exitCode = 1;
+// TUI：sidecar 地址已解析（本地自立 / 远端复用）→ 前台交给 Go 二进制。
+  // 退出码原样透传（Ctrl-C 由 TUI 自己收尾，本层只做状态回传）。
+  if (wantsTui) {
+    const serverUrl = remoteServer ?? `http://127.0.0.1:${PORT}`;
+    const extraArgs = explicitTui ? rawArgs.slice(1) : [];
+    process.exitCode = await launchTui({
+      server: serverUrl,
+      ...(TOKEN ? { token: TOKEN } : {}),
+      extraArgs,
+    });
     return;
   }
 // Help flag for sub-commands
@@ -2597,6 +2599,10 @@ function buildRequestBody(
         status: flags.status,
         tag: flags.tag,
         includeDeleted: flags.includeDeleted,
+        // 服务端 task/list 一直支持 includeSystem（Rust 同口径），但 CLI 此前
+        // 没转发过这个标志 —— `--includeSystem` 会被解析成 flag 再被丢掉，
+        // 于是系统内置任务（蒸馏弧等）在 CLI 视角下永远不可见。
+        includeSystem: flags.includeSystem,
       };
     }
     if (action === 'get') return { id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'task-id', 'task get', 'id') };
