@@ -185,6 +185,16 @@ zhishi
 - 首次启动自动拉起本地 sidecar；没有环境就从 TUI 正门新建
 - 校验用 Release 页上的 sha256；升级重跑同一条命令（换版本号）
 - 网络拉 GitHub 慢时，先下载 tgz 再 `npm i -g ./lielingai-zhishi-2.1.0.tgz`
+- **Linux / Kali 报 `npm error code EALLOWREMOTE`**：npm ≥ 11 的 `allow-remote=none` 策略会拒绝 URL 安装。先下载再装，不要为此放宽全局策略：
+
+  ```bash
+  curl -fL -o lielingai-zhishi-2.1.0.tgz \
+    https://github.com/LielingAi/ZhiShi/releases/download/v2.1.0/lielingai-zhishi-2.1.0.tgz
+  echo "c91186314cfff8537e4423b9585a4f2abf89091b8619f68be05583136ca3dd07  lielingai-zhishi-2.1.0.tgz" | sha256sum -c -
+  sudo npm i -g ./lielingai-zhishi-2.1.0.tgz
+  ```
+
+  或只对这条命令放开：`npm i -g --allow-remote=all <url>`（取值 `all | none | root`）。
 
 ### 开发态直跑源码
 
