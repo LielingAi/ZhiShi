@@ -38,6 +38,7 @@ import {
   initSocksBridgeFromEnv,
 } from './agent-session';
 import { getHomeDirOrNull } from './utils/platform';
+import { resolveSidecarVersion } from './version';
 import { atomicModifyConfig, findEffectiveProvider, getAllEffectiveProviders, isProviderDisabled, loadConfig, resolveKimiApiKey } from './utils/admin-config';
 // 1.3.7 场景 1：存量 vm 环境条目「实例即环境」一次性迁移（幂等，失败不炸启动）。
 import { runLegacyVmEntryMigration } from './environment/vm-entry-migration';
@@ -703,7 +704,9 @@ const httpServer = honoServe({
       // immediately, otherwise probes can't distinguish "still warming up"
       // from "wedged".
       if (pathname === '/health' && request.method === 'GET') {
-        return jsonResponse({ status: 'ok', timestamp: Date.now() });
+        // version 是给客户端用的：CLI/TUI 复用已有 sidecar 前先比对版本，
+        // 避免连上桌面版旧 sidecar（2.0.x）后按新协议对话、现场一脸懵。
+        return jsonResponse({ status: 'ok', timestamp: Date.now(), version: resolveSidecarVersion() });
       }
       if (pathname === '/health/ready' && request.method === 'GET') {
         const { status, body } = buildReadyResponseBody();
@@ -1565,17 +1568,19 @@ return new Response('Not Found', { status: 404 });
       currentInitPhase = 'cleanup';
       setDeferredInitPhase(currentInitPhase);
       initPhaseStarted = nowMs();
-      // 1.4.6 环境坑防护：better-sqlite3 ABI 启动探测——系统 node 起 sidecar
-      // 时（137/127 不匹配）research_log/记忆库/情报库全挂,启动即显式报错,
-      // 不再等第一次调用才暴雷（cJSON dogfood 第 2 轮实证）。
+      // 启动探测：sqlite 驱动可用性。node:sqlite 优先（不随 Node 换 ABI），
+      // 仅当宿主 Node < 22.5 才轮到 better-sqlite3 兜底。两条路都不通则启动
+      // 即显式报错，不等第一次调用才暴雷（cJSON dogfood 第 2 轮实证）。
       {
         const { probeSqliteAvailable } = await import('./memory/store');
         const probe = probeSqliteAvailable();
         if (!probe.ok) {
           console.error(
-            `[boot] better-sqlite3 不可用：${probe.error} —— research_log / 记忆库 / 情报库调用将全部报错。` +
-              '请用内置 Node 启动 sidecar（src-tauri/resources/nodejs/node.exe 或安装版 nodejs/node.exe——' +
-              'sqlite-runtime 预编译按内置 Node ABI 构建，系统 Node 与其不匹配）。',
+            `[boot] SQLite 驱动不可用：${probe.error} —— research_log / 记忆库 / 情报库调用将全部报错。`,
+          );
+        } else if (probe.backend === 'better-sqlite3') {
+          console.log(
+            `[boot] node:sqlite 不可用（Node ${process.versions.node} < 22.5？）→ 使用 better-sqlite3 兜底`,
           );
         }
       }
@@ -1656,13 +1661,57 @@ currentInitPhase = 'skill-seed';
           await m.seedResearchDistillArcTask(currentAgentDir);
         })
         .catch((err) => console.warn('[distill] seed failed (non-fatal):', err instanceof Error ? err.message : err));
+      // S2 任务读路径本地化：启动就先做一次任务索引加载（内含崩溃恢复）。
+      //
+      // 为什么必须在任何读之前跑完：tasks.jsonl 里可能留着上次进程被杀时的
+      // Running 残留态，崩溃恢复要把它们按矩阵改写（recurring/loop 保持
+      // running + 补一条自环审计，其余转 blocked）。懒加载的后果是 sidecar
+      // 起来后第一次 `task list` 读到的还是没恢复的旧状态 —— 用户看到"正在跑"
+      // 但其实那次执行早就随进程一起断了。Rust 侧一直在 app setup 阶段做这件事
+      // （TaskStore::new），这里补上同样的时机。
+      //
+      // fire-and-forget：任务面板不该拖垮启动，失败只 warn（下一次读会重试恢复）。
+      //
+      // S5：恢复跑完再启动调度器（顺序不能反 —— 反了会让调度器在恢复前
+      // arm 一条 `running × once` 的残留行）。调度器内部有所有权闸：不是
+      // `ZHISHI_TASK_SCHEDULER=node` 时只打一行让位日志，不启动任何 loop。
+      //
+      // 为什么缺省让位：桌面壳活着时 Rust 在跑调度，两边同时 arm 同一条
+      // recurring 任务会让 token 翻倍、还会让两个写者同时整表重写
+      // tasks.jsonl。Rust 侧退场后这个开关才会翻成缺省 node。
+      //
+      // 用 `getTaskScheduler()` 单例而不是 `new TaskScheduler(...)`：executing
+      // 占位集 / loop 代数 / triggerNow 互斥都是进程内状态，多造一个实例就
+      // 等于放弃"同一任务同刻只跑一次"（S6 的 task/run 路由也要拿同一个实例）。
+      void import('./task/store')
+        .then(async (storeModule) => {
+          const store = storeModule.createTaskStore();
+          const tasks = await store.load();
+          console.log(`[task-store] 启动加载 ${tasks.length} 个任务（已跑崩溃恢复）`);
+          const { getTaskScheduler } = await import('./task/scheduler');
+          const report = await getTaskScheduler(store).initialize();
+          if (report.owner === 'node') {
+            // 2.0.8：Rust 侧已不再启动调度器，这里就是接管点。日志写明"从谁手里
+            // 接过来 + 接管了多少条"，出问题时第一眼能看到迁移是否发生。
+            console.log(
+              `[task-scheduler] 任务调度由 sidecar 接管（Rust 调度器已退场）：` +
+              `候选 ${report.candidates} 条 running，re-arm ${report.armed} 条，失败 ${report.failed} 条`
+            );
+          } else if (report.owner === 'off') {
+            console.log('[task-scheduler] 调度已显式关闭（ZHISHI_TASK_SCHEDULER=off）——只保留手动 task run/rereun');
+          }
+        })
+        .catch((err) => console.warn('[task-store] 启动加载失败 (non-fatal):', err instanceof Error ? err.message : err));
       // 2.0.7：sidecar 侧受护定时器——蒸馏不再只靠 Rust 调度器（CLI 起的
       // sidecar 没有它，于是"用 CLI 干活"的机器上一次都不会跑）。与 cron
       // 触发共用一把文件锁，不会并发跑两份。
       void import('./memory/distill-scheduler')
         .then((m) => {
-          m.startDistillTimer();
-          console.log(`[distill-timer] 已启动（每 ${Math.round(m.DISTILL_TIMER_INTERVAL_MS / 60000)} 分钟检查一次节律）`);
+          // 有 Rust 调度者在场时 startDistillTimer 自己让位并返回 null（防双跑）。
+          const timer = m.startDistillTimer();
+          if (timer) {
+            console.log(`[distill-timer] 已启动（每 ${Math.round(m.DISTILL_TIMER_INTERVAL_MS / 60000)} 分钟检查一次节律）`);
+          }
         })
         .catch((err) => console.warn('[distill-timer] start failed (non-fatal):', err instanceof Error ? err.message : err));
 // 1.7.2 会话 Claim 治理（设计 §7.2 调度）— 引擎内务受护定时器:

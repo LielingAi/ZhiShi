@@ -505,6 +505,8 @@ export interface AutoRunDeps {
     envKey?: string;
     /** 1.7.5:显式工作区锚(record.workspace)——research_log 事件归属。 */
     workspaceAnchor?: string;
+    /** S6:per-invoke 工作区(环境锚解析用)。缺省回落引擎 agentDir。 */
+    workspace?: string;
   }) => Promise<{ text: string; error?: string; loopSessionId: string }>;
   /** loop 线全量消息(loadLoopSession(...).messages)。 */
   loadMessages: (loopSessionId: string) => AgentMessage[];
@@ -661,7 +663,18 @@ export async function runAutoRunLoop(
     try {
       result = await deps.invoke(
         { text },
-        { loopSessionId, scenario: autoRunScenario(record.id), timeoutMs: deps.turnTimeoutMs, envKey: record.envKey, workspaceAnchor: record.workspace },
+        {
+          loopSessionId,
+          scenario: autoRunScenario(record.id),
+          timeoutMs: deps.turnTimeoutMs,
+          envKey: record.envKey,
+          workspaceAnchor: record.workspace,
+          // S6：与 cron 同一条修法 —— envKey 没命中时，环境锚要按**本 run 的
+          // 工作区**解析，而不是引擎的启动工作区（否则 run 在 A、sidecar 起在
+          // B 时 env_exec 挂到 B 的环境上，静默错）。auto-run.unit.test 的
+          // 注入断言只比对 options 字段，故一并补上。
+          workspace: record.workspace,
+        },
       );
     } catch (err) {
       result = { text: '', error: err instanceof Error ? err.message : String(err) };

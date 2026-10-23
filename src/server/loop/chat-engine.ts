@@ -380,6 +380,38 @@ export function resolveSessionEnv(dir: string): EnvironmentEntry | null {
   return findEntry(alt);
 }
 
+/**
+ * S6：invoke 线的环境锚解析（原 `ChatEngine#resolveInvokeLineEnv`，抽成模块级
+ * 纯函数以便 characterization 测试）。审查 #1 的语义原样保留：
+ *   - 目标线已在 env-sessions 映射里挂过环境键 → 按该键解析（映射即线的环境锚，
+ *     战役介入 / cron 跨线 invoke 不再吃全局选择）
+ *   - 无映射（全新一次性线）→ 回落**该工作区**的环境选定
+ *   - 映射命中但条目已删 / 键为 host → null（线锚如此，不拿全局选择顶替）
+ *
+ * `workspace` 由调用方给（S6 起 invoke 可传 per-invoke workspace）；老调用方
+ * 传引擎 agentDir 时与抽出前逐字节等价。
+ */
+export function resolveInvokeLineEnvFor(
+  workspace: string,
+  loopSessionId?: string,
+): EnvironmentEntry | null {
+  if (loopSessionId) {
+    const lineKey = findEnvKeyForLoopSession(loadEnvSessionsMap(), workspace, loopSessionId);
+    if (lineKey) return envEntryForEnvKey(lineKey);
+  }
+  return resolveSessionEnv(workspace);
+}
+
+/**
+ * S6：per-invoke 工作区选择。
+ *   - 未传 / 空串 / 纯空白 → `agentDir`（**交互线与老调用方逐字节不变**）
+ *   - 传了 → trim 后作为本 invoke 的工作区
+ */
+export function resolveInvokeWorkspace(requested: string | undefined, agentDir: string): string {
+  const trimmed = typeof requested === 'string' ? requested.trim() : '';
+  return trimmed === '' ? agentDir : trimmed;
+}
+
 /** 当前工作区选定对应的环境分线键(1.1.6 #4)。与 resolveSessionEnv 同一
  *  双形态兜底(无记录/env 条目悬空 → 回退另一斜杠形态),两形态都落空 → host。 */
 export function resolveSessionEnvKey(dir: string): string {
@@ -1922,12 +1954,8 @@ class ChatEngine {
    * 再吃全局选择);无映射(全新一次性线)→ 回落工作区选择(创线语义)。
    * 映射命中但条目已删/键为 host → null(线锚如此,不拿全局选择顶替)。
    */
-  private resolveInvokeLineEnv(loopSessionId?: string): EnvironmentEntry | null {
-    if (loopSessionId) {
-      const lineKey = findEnvKeyForLoopSession(loadEnvSessionsMap(), this.agentDir, loopSessionId);
-      if (lineKey) return envEntryForEnvKey(lineKey);
-    }
-    return resolveSessionEnv(this.agentDir);
+  private resolveInvokeLineEnv(loopSessionId: string | undefined, workspace: string): EnvironmentEntry | null {
+    return resolveInvokeLineEnvFor(workspace, loopSessionId);
   }
 
   /**
@@ -1969,6 +1997,15 @@ class ChatEngine {
        * agentDir 是临时目录，不锚 = 事件戳错地方,报告导出/空转检测全瞎）。
        */
       workspaceAnchor?: string;
+      /**
+       * S6：本 invoke 的工作区意图（cron 传任务工作区；auto-run 可传
+       * record.workspace）。用于**环境锚解析**（env-sessions 映射 + 工作区环境
+       * 选定）与安全能力收集——这两处原来吃引擎的 `this.agentDir`，对
+       * "任务在 A、sidecar 起在 B"的场景会静默挂到 B 的环境上。
+       *
+       * 缺省 / 空串 → 逐字节回落 `this.agentDir`（交互线与老调用方行为不变）。
+       */
+      workspace?: string;
     } = {},
   ): Promise<{ text: string; error?: string; loopSessionId: string }> {
     const loopSessionId = options.loopSessionId ?? newLoopSessionId();
@@ -1992,9 +2029,11 @@ class ChatEngine {
     // 线的 env-sessions 映射反查该线绑定的环境键(战役介入回合/cron 跨线
     // invoke 的线已绑定环境锚,工作区全局选择不许覆盖);线无映射(全新线,
     // 尚未写映射)才回落全局选择——选择只用于选线/创线。
+    // S6：本 invoke 的工作区（未传/空串 → 引擎 agentDir，交互线逐字节不变）。
+    const invokeWorkspace = resolveInvokeWorkspace(options.workspace, this.agentDir);
     const env = options.envKey
       ? findEnvironmentEntry(listEnvironmentsWithBuiltin(loadConfig()), options.envKey) ?? null
-      : this.resolveInvokeLineEnv(options.loopSessionId);
+      : this.resolveInvokeLineEnv(options.loopSessionId, invokeWorkspace);
     // 1.8.7 P5 环境占用：headless invoke 线同样登记（起跑人 + 本线），run
     // 完成即释放（含 timeoutMs detach 后后台跑完——占用跟到真实收尾）。
     const invokeOccupancyToken: OccupancyToken | null = env
@@ -2036,13 +2075,24 @@ class ChatEngine {
       }
     }
     const caps = scenario.type === 'security' || scenario.type === 'auto-run'
-      ? await collectSecurityCapabilities(this.agentDir)
+      // S6：与 env 解析用同一个工作区（顺带一致，别留半套）。
+      ? await collectSecurityCapabilities(invokeWorkspace)
       : undefined;
     const domain = caps ? resolveSessionDomain(history, caps) : undefined;
     const { tools, beforeToolCall, afterToolCall, blockedToolNames } =
       // 1.4.4 档案来源锚:headless 线无 wire user 消息,锚恒 undefined——
       // 经参数下传,不碰引擎单例字段(A1-2)。
-      this.buildTurnStack(env, resolution, toolNames, false, loopSessionId, domain, () => undefined, options.workspaceAnchor);
+      this.buildTurnStack(
+        env,
+        resolution,
+        toolNames,
+        false,
+        loopSessionId,
+        domain,
+        () => undefined,
+        // S6：research_log 归属锚 = 显式锚 > 本 invoke 工作区 > engine agentDir。
+        options.workspaceAnchor ?? invokeWorkspace,
+      );
     const systemPrompt = await this.assemblePiSystemPrompt(
       env,
       scenario,
@@ -2834,7 +2884,9 @@ export async function sendPiChatMessage(input: PiSendInput): Promise<PiSendResul
 /** B2(1.2.6)— cron 独立 invoke 通道(不碰单例会话/steering/队列)。 */
 export async function invokePiSession(
   input: PiSendInput,
-  options: { loopSessionId?: string; scenario?: InteractionScenario; timeoutMs?: number; envKey?: string; workspaceAnchor?: string } = {},
+  // S6：`workspace` = 本 invoke 的工作区（环境锚解析用）。缺省/空串回落引擎
+  // agentDir，所以老的调用点（auto-run / 决策注入 / 交互）无需改动。
+  options: { loopSessionId?: string; scenario?: InteractionScenario; timeoutMs?: number; envKey?: string; workspaceAnchor?: string; workspace?: string } = {},
 ): Promise<{ text: string; error?: string; loopSessionId: string }> {
   return getActiveEngine().invokePiSession(input, options);
 }

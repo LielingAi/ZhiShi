@@ -415,11 +415,20 @@ pub fn run() {
             ulog_info!("[App] Sidecar terminal-event forwarder spawned");
 
             // Initialize cron task manager with app handle
-            let cron_app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                task_scheduler::initialize_task_scheduler(cron_app_handle).await;
-            });
-            ulog_info!("[App] Cron task manager initialization scheduled");
+            //
+            // 2.0.8：任务调度已**整体移交** Node sidecar（`src/server/task/`：
+            // 存储层 / 读写路由 / 调度器 / 执行器 / per-invoke 工作区）。
+            //
+            // 这里不再启动 `initialize_task_scheduler` —— 不是"用环境变量关掉"，
+            // 而是这个进程不再是调度者。两端同时驱动会各按各的节律 tick 同一个
+            // 任务（token 翻倍、progress 并发互写、状态机互踩），所以保留唯一
+            // owner 是硬约束。
+            //
+            // `task_scheduler.rs` / `task.rs` 的代码先留着（历史参考、迁移对拍），
+            // 但没有任何启动路径。要临时回退到 Rust 调度：
+            //   ZHISHI_TASK_SCHEDULER=rust（Node 侧同名字段会让位），
+            // 并把下面这行恢复成 spawn(initialize_task_scheduler)。
+            ulog_info!("[App] 任务调度归 sidecar（Node）—— 本进程不启动 cron 调度器");
 
             // Start Global Sidecar health monitor
             // Periodically checks if the Global Sidecar is alive and auto-restarts it

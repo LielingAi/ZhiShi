@@ -36,7 +36,7 @@ use crate::{ulog_info, ulog_warn};
 // matching exclusion list in src/server/skills-config.ts MUST be kept
 // in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "41";
+const SYSTEM_SKILLS_VERSION: &str = "42";
 
 /// Skills that ship with the app and MUST stay at the bundled version —
 /// the app's flows depend on them, users are not meant to customise.
@@ -51,6 +51,10 @@ const SYSTEM_SKILLS_VERSION: &str = "41";
 /// v41（2.0.6）：zhishi-cli 的 SKILL.md 补 `env set`（条目字段部分更新——
 /// 摘 keyPath / 设 passwordRef 的唯一入口）。CLI surface 变了就必须 bump，
 /// 否则存量安装拿不到新文档，AI 会继续用已失效的写法排障。
+///
+/// v42（2.0.8）：`task list --includeSystem` 真正转发（之前 flag 解析了却
+/// 从不进请求体，纯 no-op）——系统任务（蒸馏弧这类）缺省隐藏，要看全量必须
+/// 带这个旗标。CLI surface 变了，同上 bump。
 const SYSTEM_SKILLS: &[&str] = &[
     // v10: ultra-research removed — not generic enough to ship as system
     // skill. Existing installs retain the dir at ~/.zhishi/skills/

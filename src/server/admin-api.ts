@@ -23,9 +23,34 @@ import {
   type AdminAppConfig,
   type AgentConfigSlim,
 } from './utils/admin-config';
-import { managementApi } from './utils/management-api';
+
 // 1.3.2 任务二 #5：task/list 行 conclusion 字段的数据源（cron 结论登记）。
 import { taskConclusionFor } from './cron/task-conclusions';
+import { resolveSidecarVersion } from './version';
+// S2 任务读路径本地化：list / get / read-doc 直接读 Node 侧 TaskStore。
+import {
+  assertSafeTaskId,
+  buildTaskDocs,
+  createTaskStore,
+  type Task,
+  type TaskDocKind,
+  type TaskStatus,
+  type TaskStore,
+} from './task/store';
+// S3：任务写路径本地实现（语义照 Rust task.rs / management_api.rs）。
+import {
+  taskAppendSession,
+  taskArchive,
+  taskCreateDirect,
+  taskCreateFromAlignment,
+  taskDelete,
+  taskUpdate,
+  taskUpdateStatus,
+  taskWriteDoc,
+  type TaskOpResult,
+} from './task/ops';
+// S6：task/run + task/rerun 的本地实现（ops + 调度器）。
+import { taskRerun, taskRun, type RunOpResult } from './task/run-ops';
 // Localhost loopback timeout for management / sidecar self-calls.
 import { existsSync , mkdirSync, writeFileSync, unlinkSync, readFileSync, readdirSync, rmSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
@@ -265,51 +290,9 @@ import {
   HOST_SELECTION,
 } from './environment/selection';
 // ---------------------------------------------------------------------------
-// Management API forwarding (Node Sidecar → Rust) — the `managementApi()`
-// loopback helper and the Hub-intervention primitives moved to the leaf
-// module ./utils/management-api (PRD 0.2.36 §6.5: agent-session needs them
-// too, and importing admin-api from agent-session would close an ESM cycle).
-// Handlers below keep calling the same names — they are imported from there.
-// ---------------------------------------------------------------------------
-/**
- * Build an AdminResponse error from a Management API failure, preserving any
- * `recoveryHint` the helper attached (currently: unreachable-backend cases).
- *
- * Use this instead of `{ success: false, error: String(resp.error ?? 'X') }`
- * in handlers that transform the shape (e.g. list handlers that unwrap
- * `resp.tasks` / `resp.runs`) — those bypass `wrapMgmtResponse` but still
- * deserve the hint propagation. Sites that already go through
- * `wrapMgmtResponse` don't need to change.
- */
-function mgmtError(resp: Record<string, unknown>, fallbackMsg: string): AdminResponse {
-  const response: AdminResponse = {
-    success: false,
-    error: String(resp.error ?? fallbackMsg),
-  };
-  const hint = resp.recoveryHint;
-  if (hint && typeof hint === 'object' && !Array.isArray(hint)) {
-    response.recoveryHint = hint as RecoveryHint;
-  }
-  return response;
-}
-/** Convert Management API response ({ ok, ... }) to Admin API response ({ success, data, error }) */
-function wrapMgmtResponse(mgmt: Record<string, unknown>): AdminResponse {
-  if (mgmt.ok) {
-    const { ok: _ok, recoveryHint: _rh, ...rest } = mgmt;
-    return { success: true, data: rest };
-  }
-  const response: AdminResponse = {
-    success: false,
-    error: String(mgmt.error ?? 'Unknown error'),
-  };
-  // Propagate the `recoveryHint` if the Management API helper attached one
-  // (currently only for unreachable-backend scenarios — see `managementApi`).
-  const maybeHint = mgmt.recoveryHint;
-  if (maybeHint && typeof maybeHint === 'object' && !Array.isArray(maybeHint)) {
-    response.recoveryHint = maybeHint as RecoveryHint;
-  }
-  return response;
-}
+// 任务路由已全部本地化（S2 读 → S3 写 → S6 run/rerun）：admin-api 不再向 Rust
+// Management API 转发任何任务请求。剩下仍走 loopback 的地方（会话/引擎）用
+// ./utils/management-api 的 leaf 助手，不经本文件。
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -985,70 +968,166 @@ Leaf commands:
 // Compile-time injected by esbuild (scripts/esbuild-bundle.mjs `define`).
 // In dev (`npm run server` via tsx, no esbuild), the identifier is undefined
 // at runtime — the `?? process.env.…` chain below reaches the env fallback.
-declare const __ZHISHI_VERSION__: string | undefined;
+// 解析链（esbuild 常量 → npm_package_version → ZHISHI_VERSION → 'dev'）收进
+// ./version.ts：/health 也要报版本，CLI 据此判断复用的 sidecar 是否同版本。
 export function handleVersion(): AdminResponse {
-  // Resolution order:
-  //   1. esbuild-injected `__ZHISHI_VERSION__` (production sidecar bundle).
-  //   2. `npm_package_version` (set by npm in dev when launched via scripts).
-  //   3. `ZHISHI_VERSION` env override (build system / tests).
-  //   4. 'dev' sentinel — visibly NOT a release version, so anyone reading
-  //      `zhishi version` knows they're on an un-stamped build instead of
-  //      seeing a stale hardcoded number that lies about which build is
-  //      installed (issue #149: users had no way to tell whether the dmg they
-  //      reinstalled actually contained the patched CLI/sidecar — the old
-  //      hardcoded '0.1.70' fallback shipped in every release).
-  const version = (typeof __ZHISHI_VERSION__ !== 'undefined' ? __ZHISHI_VERSION__ : undefined)
-    ?? process.env.npm_package_version
-    ?? process.env.ZHISHI_VERSION
-    ?? 'dev';
-  return { success: true, data: { version } };
+  return { success: true, data: { version: resolveSidecarVersion() } };
 }
 // ---------------------------------------------------------------------------
 // Task Center forwarding (v0.1.69)
 //
 // Trust-boundary note: the CLI stamps `actor` + `source` from its own env
 // (AI subprocess = agent/cli, user terminal = user/cli) BEFORE posting here.
-// We forward these fields verbatim to the Rust Management API. The renderer-
-// originated path (Tauri IPC) never reaches this module — it goes through
-// `cmd_task_update_status` in Rust which stamps `user/ui` authoritatively.
+// S3 起 update-status 在本模块直接消费这两个字段（不再转发 Rust）；只有
+// `task/run` / `task/rerun` 仍把 payload 原样转给 Rust Management API。
+// The renderer-originated path (Tauri IPC) never reaches this module — it
+// went through `cmd_task_update_status` in Rust, which stamped `user/ui`
+// authoritatively; that path is gone with the GUI.
 // ---------------------------------------------------------------------------
-function qsFrom(params: Record<string, string | number | boolean | undefined>): string {
-  const parts: string[] = [];
-  for (const [k, v] of Object.entries(params)) {
-    if (v === undefined) continue;
-    parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`);
-  }
-  return parts.length ? `?${parts.join('&')}` : '';
+
+// ---------------------------------------------------------------------------
+// 任务读路径（S2 本地化：list / get / read-doc）
+//
+// 这三条不再转发 Rust Management API，改为直接读 Node 侧 TaskStore
+// （`<数据目录>/tasks.jsonl` 与 `tasks/<id>/*.md`）。原因：转发的路要求 Tauri
+// 应用在场，而产品现在只剩 Go TUI 直连裸 sidecar —— 应用不在时任务面板永远
+// `failed: Management API not available`，等于任务能力不存在。
+//
+// **写路径已本地化（S3）**：create-direct / create-from-alignment / update /
+// update-status / append-session / archive / delete / write-doc 八条走
+// `src/server/task/ops.ts` 直接改本地 store（语义照 Rust `task.rs`）。
+// 仍然转发 Rust 的只有 `task/run` 与 `task/rerun` —— 它们要做的是"武装调度器
+// 并派发一次执行"，Node 侧调度器要到 S4/S5 才有。别把这两条也当成本地实现。
+//
+// 过滤/排序口径逐条照 Rust `task.rs::TaskStore::list`（`management_api.rs` 只
+// 负责把 query 解析成 TaskListFilter 再交给它）。CLI / TUI / AI 都依赖这套
+// 语义，其中 includeDeleted / includeSystem 缺省 false 是**用户视图口径**
+// （系统内置任务如蒸馏弧不是用户资产，不该出现在列表里），不是漏写。
+// ---------------------------------------------------------------------------
+
+/** 每次请求现构造 store：S1 的 TaskStore 无缓存（每次直读盘），构造只是拼路径；
+ *  不在模块加载时固化数据目录，测试换 `ZHISHI_DATA_DIR` 才生效。 */
+function taskStoreForRead(): TaskStore {
+  return createTaskStore();
 }
+
+const TASK_STATUS_VALUES: readonly TaskStatus[] = [
+  'todo',
+  'running',
+  'verifying',
+  'done',
+  'blocked',
+  'stopped',
+  'archived',
+  'deleted',
+];
+
+/**
+ * status 过滤解析（照 Rust `parse_status_filter`）：逗号分隔 → 多值，单值也能用；
+ * 无法识别的值丢弃，**丢空了就不过滤**（Rust 返回 `None` 的语义）。
+ * 即 `status=bogus` 返回全表而不是空表 —— 这是 Rust 既有行为，改它会让
+ * "手滑打错状态"从"看到全部"变成"看到空列表"，反而更难排查。
+ */
+function parseStatusFilter(raw: string | undefined): TaskStatus[] | null {
+  if (typeof raw !== 'string') return null;
+  const valid = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s): s is TaskStatus => (TASK_STATUS_VALUES as readonly string[]).includes(s));
+  return valid.length > 0 ? valid : null;
+}
+
+/** 布尔入参归一：JSON body 里是 boolean，查询串/表单里是字符串。 */
+function flagEnabled(value: unknown): boolean {
+  return value === true || value === 'true' || value === 1;
+}
+
+/** 列表过滤 + 排序（口径照 Rust `TaskStore::list`，顺序也一致）。 */
+function filterTaskRows(
+  rows: Task[],
+  payload: {
+    workspaceId?: string;
+    status?: string;
+    tag?: string;
+    includeDeleted?: unknown;
+    includeSystem?: unknown;
+  }
+): Task[] {
+  let out = rows;
+  if (!flagEnabled(payload.includeDeleted)) out = out.filter((t) => t.deleted !== true);
+  if (!flagEnabled(payload.includeSystem)) out = out.filter((t) => t.dispatchOrigin !== 'system');
+  if (typeof payload.workspaceId === 'string') {
+    const ws = payload.workspaceId;
+    out = out.filter((t) => t.workspaceId === ws);
+  }
+  const statuses = parseStatusFilter(payload.status);
+  if (statuses) out = out.filter((t) => statuses.includes(t.status));
+  if (typeof payload.tag === 'string') {
+    // Rust 逐条 `to_lowercase` 再比：标签匹配是**大小写不敏感的精确匹配**，
+    // 不是子串包含（`pwn` 不该命中 `pwn-vm`）。
+    const needle = payload.tag.toLowerCase();
+    out = out.filter((t) => (t.tags ?? []).some((x) => x.toLowerCase() === needle));
+  }
+  // updatedAt 降序（最近动过的排前面）。Rust 的 sort_by 是稳定排序，同刻顺序
+  // 取决于 HashMap 迭代；这里输入序由 `TaskStore.load` 保证为 createdAt 升序，
+  // JS sort 也是稳定的 → 同刻按 createdAt 升序，比 Rust 更确定。
+  return [...out].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/**
+ * Rust Management API 的 `{ok, ...}` → Admin API 的 `{success, data, error}`
+ * （等价于原来的 `wrapMgmtResponse`，只是换成接本地 ops 的返回值）。
+ */
+function toAdminResponse(result: TaskOpResult): AdminResponse {
+  if (!result.ok) return { success: false, error: result.error };
+  const { ok: _ok, ...rest } = result;
+  return { success: true, data: rest };
+}
+
+/** run/rerun 的结果体更具体（带 scheduler / hint），单独转一次（形状同上）。 */
+function runOpToAdminResponse(result: RunOpResult): AdminResponse {
+  if (!result.ok) return { success: false, error: result.error };
+  const { ok: _ok, ...rest } = result;
+  return { success: true, data: rest };
+}
+
+function taskErrText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export async function handleTaskList(payload: {
   workspaceId?: string;
   status?: string;
   tag?: string;
   includeDeleted?: boolean;
+  includeSystem?: boolean;
 }): Promise<AdminResponse> {
-  const resp = await managementApi(`/api/task/list${qsFrom(payload)}`);
-  if (resp.ok) {
-    // 1.3.2 任务二 #5：行补 conclusion 字段(有结论就带,没有 → null)。
-    // Rust Task 无此字段;结论来自 sidecar 的 cron 执行登记(task-conclusions)。
-    const rawTasks = (resp as Record<string, unknown>).tasks;
-    if (Array.isArray(rawTasks)) {
-      const tasks = rawTasks.map((t) => {
-        const row = (t && typeof t === 'object' ? t : {}) as Record<string, unknown>;
-        const id = typeof row.id === 'string' ? row.id : '';
-        return { ...row, conclusion: id ? taskConclusionFor(id) : null };
-      });
-      return { success: true, data: tasks };
-    }
-    return { success: true, data: (resp as Record<string, unknown>).tasks ?? [] };
+  try {
+    const rows = filterTaskRows(await taskStoreForRead().load(), payload);
+    // 1.3.2 任务二 #5：行补 conclusion 字段（有结论就带，没有 → null）。
+    // Task 本体没有这个字段；结论来自 sidecar 的 cron 执行登记
+    // （task-conclusions），只活在进程内存里，所以只能在读出时贴上去。
+    return {
+      success: true,
+      data: rows.map((task) => ({ ...task, conclusion: taskConclusionFor(task.id) })),
+    };
+  } catch (err) {
+    return { success: false, error: `读取任务索引失败：${taskErrText(err)}` };
   }
-  return mgmtError(resp, 'Failed to list tasks');
 }
-export async function handleTaskGet(payload: { id: string }): Promise<AdminResponse> {
-  const resp = await managementApi(`/api/task/get${qsFrom({ id: payload.id })}`);
-  if (resp.ok) {
-    return { success: true, data: (resp as Record<string, unknown>).task };
+
+export async function handleTaskGet(payload: { id?: string }): Promise<AdminResponse> {
+  const id = typeof payload?.id === 'string' ? payload.id.trim() : '';
+  if (!id) return { success: false, error: '缺少任务 id' };
+  try {
+    const store = taskStoreForRead();
+    const task = await store.get(id);
+    // 与 Rust 同一句错误码：CLI / AI 侧按 `not_found` 分支处理"任务不存在"。
+    if (!task) return { success: false, error: 'not_found' };
+    return { success: true, data: { ...task, docs: buildTaskDocs(store, task.id) } };
+  } catch (err) {
+    return { success: false, error: `读取任务失败：${taskErrText(err)}` };
   }
-  return mgmtError(resp, 'Failed to get task');
 }
 /**
  * Echo helper for task-create responses: which override fields did the
@@ -1066,29 +1145,25 @@ export async function handleTaskCreateDirect(
   payload: Record<string, unknown>,
 ): Promise<AdminResponse> {
   const overridden = computeOverriddenFields(payload);
-  const resp = await managementApi('/api/task/create-direct', 'POST', payload);
-  const wrapped = wrapMgmtResponse(resp);
-  const enriched = enrichTaskCreateResponse(wrapped, payload, overridden);
-  return enriched;
+  // S3：落本地 TasksStore（写路径本地化）。响应形状照旧是 {task} + overrides 回读。
+  const response = toAdminResponse(await taskCreateDirect(taskStoreForRead(), payload));
+  return enrichTaskCreateResponse(response, payload, overridden);
 }
 export async function handleTaskCreateFromAlignment(
   payload: Record<string, unknown>,
 ): Promise<AdminResponse> {
   const overridden = computeOverriddenFields(payload);
-  const resp = await managementApi('/api/task/create-from-alignment', 'POST', payload);
-  const wrapped = wrapMgmtResponse(resp);
-  const enriched = enrichTaskCreateResponse(wrapped, payload, overridden);
-  return enriched;
+  const response = toAdminResponse(await taskCreateFromAlignment(taskStoreForRead(), payload));
+  return enrichTaskCreateResponse(response, payload, overridden);
 }
 export async function handleTaskRun(payload: { id: string }): Promise<AdminResponse> {
-  const resp = await managementApi('/api/task/run', 'POST', payload);
-  const wrapped = wrapMgmtResponse(resp);
-  return wrapped;
+  // S6：本地化（原先转发 Rust /api/task/run）。调度器走进程内单例 ——
+  // executing 占位集 / loop 代数都是进程内状态，各造一个实例等于放弃
+  // "同一任务同刻只跑一次"。调度权在 rust 时 run-ops 会降级（不 arm，只迁移）。
+  return runOpToAdminResponse(await taskRun({ store: taskStoreForRead(), env: process.env }, payload));
 }
 export async function handleTaskRerun(payload: { id: string }): Promise<AdminResponse> {
-  const resp = await managementApi('/api/task/rerun', 'POST', payload);
-  const wrapped = wrapMgmtResponse(resp);
-  return wrapped;
+  return runOpToAdminResponse(await taskRerun({ store: taskStoreForRead(), env: process.env }, payload));
 }
 /**
  * Enrich a successful task-create response with:
@@ -1175,65 +1250,102 @@ export async function handleTaskUpdate(
   if (typeof payload.id !== 'string' || payload.id.length === 0) {
     return { success: false, error: 'task id is required' };
   }
-  const resp = await managementApi('/api/task/update', 'POST', payload);
-  return wrapMgmtResponse(resp);
+  return toAdminResponse(await taskUpdate(taskStoreForRead(), payload));
 }
 export async function handleTaskUpdateStatus(
   payload: Record<string, unknown>,
 ): Promise<AdminResponse> {
-  // Infer actor/source if caller omitted them:
-  //   Inside an AI subprocess → ZHISHI_PORT is set → actor=agent, source=cli.
-  //   Otherwise (user ran `zhishi` in their terminal) → actor=user, source=cli.
-  // `ZHISHI_PORT` 由 sidecar 启动时 setSidecarPort 写入本进程 env
-  // (agent-session.ts),经环境继承进 AI 子进程;用户自己的 shell 没有它
-  // (用户的 CLI 读 `~/.zhishi/sidecar.port`)。
+  // actor/source 缺省值（2.0.8 修）。
+  //
+  // 旧实现：`process.env.ZHISHI_PORT ? 'agent' : 'user'` —— 意图是「AI 子进程带
+  // 这个变量、用户 shell 不带」。但这段代码跑在 **sidecar 进程里**，而
+  // `ZHISHI_PORT` 正是 sidecar 启动时由 setSidecarPort 写进自己 env 的
+  // （agent-session.ts），所以它**恒为真**：每条经 HTTP 进来的迁移都被记成
+  // actor=agent，包括用户手敲的 CLI。后果是信任账本 user_done(+2) 与
+  // agent_done(+1) 记错档，审计溯源也失真。
+  //
+  // 根因是拿「进程环境」表达「请求发起者」——跨进程边界后 env 不携带调用者
+  // 身份。现在改成：调用方显式声明（payload.actor/source），不声明就按**人**
+  // 算（CLI/GUI 都是人在操作；目前也没有任何 AI 工具会写任务状态——
+  // loop/tools.ts 里没有 task_update 类工具）。将来加 AI 工具时由工具显式
+  // stamp `actor:'agent'`，而不是再猜环境变量。
   if (payload.actor === undefined) {
-    payload.actor = process.env.ZHISHI_PORT ? 'agent' : 'user';
+    payload.actor = 'user';
   }
   if (payload.source === undefined) {
     payload.source = 'cli';
   }
-  const resp = await managementApi('/api/task/update-status', 'POST', payload);
-  const wrapped = wrapMgmtResponse(resp);
-  return wrapped;
+  return toAdminResponse(
+    await taskUpdateStatus(taskStoreForRead(), payload, { actorName: currentActor().name })
+  );
 }
 export async function handleTaskAppendSession(payload: {
   id: string;
   sessionId: string;
 }): Promise<AdminResponse> {
-  const resp = await managementApi('/api/task/append-session', 'POST', payload);
-  return wrapMgmtResponse(resp);
+  return toAdminResponse(await taskAppendSession(taskStoreForRead(), payload));
 }
 export async function handleTaskArchive(payload: {
   id: string;
   message?: string;
 }): Promise<AdminResponse> {
-  const resp = await managementApi('/api/task/archive', 'POST', payload);
-  return wrapMgmtResponse(resp);
+  return toAdminResponse(
+    await taskArchive(taskStoreForRead(), payload, { actorName: currentActor().name })
+  );
 }
 export async function handleTaskDelete(payload: { id: string }): Promise<AdminResponse> {
-  const resp = await managementApi('/api/task/delete', 'POST', payload);
-  const wrapped = wrapMgmtResponse(resp);
-  return wrapped;
+  return toAdminResponse(await taskDelete(taskStoreForRead(), payload));
 }
 /**
- * Read a task's markdown doc (`task.md` / `verify.md` / `progress.md` /
- * `alignment.md`). Missing files return `{ ok: true, content: "" }` so
- * CLI scripting is idempotent. Task docs live under `~/.zhishi/tasks/<id>/`
- * since v0.1.69 — this endpoint is the agent-facing read path because the
- * AI runs in the workspace cwd and can't know the user-profile dir.
+ * 读任务文档（`task.md` / `verify.md` / `progress.md` / `alignment.md`）。
+ * 缺文件返回 `{ success: true, data: { content: "" } }`，让 CLI 脚本幂等；
+ * 文档在 `<数据目录>/tasks/<id>/`，AI 跑在工作区 cwd 里，不可能自己猜到
+ * 用户目录下的这个布局 —— 这就是本端点存在的理由。
  */
+/** 四个文档种类白名单（照 Rust `task_doc_filename` 的 match 分支）。 */
+const TASK_DOC_KINDS: readonly TaskDocKind[] = ['task', 'verify', 'progress', 'alignment'];
+
+function isTaskDocKind(value: unknown): value is TaskDocKind {
+  return typeof value === 'string' && (TASK_DOC_KINDS as readonly string[]).includes(value);
+}
+
 export async function handleTaskReadDoc(payload: {
-  id: string;
-  doc: string;
+  id?: string;
+  doc?: string;
 }): Promise<AdminResponse> {
-  const resp = await managementApi(
-    `/api/task/read-doc${qsFrom(payload)}`,
-  );
-  if (resp.ok) {
-    return { success: true, data: { content: (resp as Record<string, unknown>).content ?? '' } };
+  // doc 先校验：它是白名单枚举，不碰盘就能判错，早失败早给清晰报错。
+  if (!isTaskDocKind(payload?.doc)) {
+    // 文案与 Rust `task::task_doc_filename` 一致（CLI 靠它提示可用值）。
+    return {
+      success: false,
+      error: `unknown doc name: ${String(payload?.doc)} (expected task|verify|progress|alignment)`,
+    };
   }
-  return mgmtError(resp, 'Failed to read task doc');
+  const doc = payload.doc;
+  const id = typeof payload?.id === 'string' ? payload.id.trim() : '';
+  if (!id) return { success: false, error: '缺少任务 id' };
+  try {
+    // docPath 内部会做 id 安全校验（路径穿越 / Windows 保留名 / 非法字符）；
+    // 这里单独先跑一次，让"入参不合法"与"IO 失败"的报错文案不混在一起。
+    assertSafeTaskId(id);
+    const store = taskStoreForRead();
+    const path = store.docPath(id, doc);
+    // 与 Rust 一致：任务不存在是**错误**（不是空串）—— 空串的语义是"任务在，
+    // 这份文档还没写"，两者混同会让"id 打错"看起来像"文档为空"。
+    if (!(await store.get(id))) return { success: false, error: 'task not found' };
+    try {
+      return { success: true, data: { content: readFileSync(path, 'utf-8') } };
+    } catch (err) {
+      // 缺文件不是错误：语义是"还没写"，返回空串让 CLI 脚本幂等
+      // （`zhishi task show-doc` 在空文档上不该报错）。
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { success: true, data: { content: '' } };
+      }
+      throw err;
+    }
+  } catch (err) {
+    return { success: false, error: `读取任务文档失败：${taskErrText(err)}` };
+  }
 }
 /**
  * Write `task.md` or `verify.md`. `progress.md` is agent-appended during
@@ -1245,8 +1357,7 @@ export async function handleTaskWriteDoc(payload: {
   doc: string;
   content: string;
 }): Promise<AdminResponse> {
-  const resp = await managementApi('/api/task/write-doc', 'POST', payload);
-  return wrapMgmtResponse(resp);
+  return toAdminResponse(await taskWriteDoc(taskStoreForRead(), payload));
 }
 // ---------------------------------------------------------------------------
 // Tool readme lookups — progressive disclosure (v0.1.67)

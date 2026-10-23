@@ -693,7 +693,7 @@ describe('runAutoRunLoop(终态清理本线声明,不动其他线)', () => {
 });
 
 describe('runAutoRunLoop(1.7.5 显式锚传递)', () => {
-  it('invoke 收到环境锚(envKey)+工作区锚(workspaceAnchor)+线 id', async () => {
+  it('invoke 收到环境锚(envKey)+工作区锚(workspaceAnchor)+per-invoke 工作区(S6)+线 id', async () => {
     const record = makeRecord({ budget: { kind: 'turns', limit: 1, spent: 0 } });
     const fake = makeFakeDeps();
     const ctl = createAutoRunController(record);
@@ -705,6 +705,8 @@ describe('runAutoRunLoop(1.7.5 显式锚传递)', () => {
       loopSessionId: 'ls-1',
       envKey: 'pwn-vm',
       workspaceAnchor: '/ws',
+      // S6：环境锚解析也按本 run 的工作区（不是引擎启动工作区）
+      workspace: '/ws',
     });
   });
 });
