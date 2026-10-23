@@ -32,6 +32,8 @@ import {
   RESEARCH_TASK_KINDS,
 } from './research-kinds.js';
 import type { ResearchBugClass, ResearchOutcome, ResearchTaskKind } from './research-kinds.js';
+import type { SqliteBackend, SqliteDatabase, SqliteFactory, SqliteStatement } from './sqlite.js';
+import { resolveSqliteBackend } from './sqlite.js';
 import { workspacePathsEqual } from './workspacePath.js';
 
 // ===== Types =====
@@ -164,22 +166,11 @@ export const SIMILARITY_THRESHOLD = 0.82;
 
 // ===== SQLite engine =====
 
-interface SqliteStatement {
-  run: (...args: unknown[]) => unknown;
-  get: (...args: unknown[]) => unknown;
-  all: (...args: unknown[]) => unknown[];
-}
-
-interface SqliteDatabase {
-  exec: (sql: string) => unknown;
-  prepare: (sql: string) => SqliteStatement;
-  close: () => void;
-}
-
-type SqliteFactory = (path: string) => SqliteDatabase;
+export type { SqliteBackend, SqliteDatabase, SqliteFactory, SqliteStatement };
 
 let sqliteFactory: SqliteFactory | null = null;
 let sqliteLoadError: Error | null = null;
+let sqliteBackend: SqliteBackend | null = null;
 
 // ---- 宿主注入端口（最小拆：包不再硬依赖 u-disk 的打包布局） ----
 
@@ -196,6 +187,7 @@ export function setSqliteEntryPointResolver(resolver: (() => string | null) | un
   // 解析器变更后清缓存（测试在进程内切换注入）
   sqliteFactory = null;
   sqliteLoadError = null;
+  sqliteBackend = null;
 }
 
 /**
@@ -218,20 +210,19 @@ function defaultSqliteEntryPoint(): string | null {
   }
 }
 
+/**
+ * 加载驱动：`node:sqlite` 优先（Node >= 22.5 自带，不随 Node 换 ABI）；只有
+ * 它缺席时才用 better-sqlite3（注入的打包路径 / 裸解析）兜底。
+ * 两条路都不通的诊断信息由 resolveSqliteBackend 统一给出。
+ */
 function loadSqlite(): SqliteFactory {
   if (sqliteFactory) return sqliteFactory;
   if (sqliteLoadError) throw sqliteLoadError;
   const entry = sqliteEntryPointResolver?.() ?? defaultSqliteEntryPoint();
-  if (!entry) {
-    sqliteLoadError = new Error(
-      'better-sqlite3 not found — install it as a dependency of this host, or inject ' +
-        'setSqliteEntryPointResolver() (u-disk 生产形态走 sqlite-runtime/node_modules/better-sqlite3).',
-    );
-    throw sqliteLoadError;
-  }
   try {
-    const nodeRequire = createRequire(import.meta.url);
-    sqliteFactory = nodeRequire(entry) as SqliteFactory;
+    const resolved = resolveSqliteBackend({ betterSqliteEntry: entry });
+    sqliteFactory = resolved.factory;
+    sqliteBackend = resolved.backend;
     return sqliteFactory;
   } catch (err) {
     sqliteLoadError = err instanceof Error ? err : new Error(String(err));
@@ -239,19 +230,25 @@ function loadSqlite(): SqliteFactory {
   }
 }
 
+/** 当前生效的 SQLite 后端（会触发一次加载；加载失败则抛错）。 */
+export function getSqliteBackendName(): SqliteBackend {
+  loadSqlite();
+  return sqliteBackend ?? 'better-sqlite3';
+}
+
 const dbCache = new Map<string, SqliteDatabase>();
 
 /**
- * 启动探测（1.4.6 环境坑防护）：better-sqlite3 可加载性检查——ABI 不匹配
- * （如用系统 node 而非 bundled node 起 sidecar,cJSON dogfood 第 2 轮实证:
- * 137/127 不匹配导致 research_log 全挂）时在启动期显式暴露,不再等第一次
- * research_log/情报查询调用才暴雷。同一 .node 构建,本探测覆盖 memory /
- * expert / intel 三库的加载前提。
+ * 启动探测（1.4.6 环境坑防护）：sqlite 驱动可加载性检查——把最终生效的后端
+ * 暴露给启动日志。node:sqlite 优先，所以 better-sqlite3 的 ABI 不匹配
+ * （系统 node 与预编译 .node 137/127 之差；cJSON dogfood 第 2 轮实证）不再
+ * 致命；只有两条路都不通时才在启动期显式报错，不等第一次 research_log /
+ * 情报查询才暴雷。本探测覆盖 memory / expert / intel 三库的加载前提。
  */
-export function probeSqliteAvailable(): { ok: boolean; error?: string } {
+export function probeSqliteAvailable(): { ok: boolean; backend?: SqliteBackend; error?: string } {
   try {
     loadSqlite();
-    return { ok: true };
+    return { ok: true, ...(sqliteBackend ? { backend: sqliteBackend } : {}) };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -1324,8 +1321,6 @@ function db(baseDir: string): SqliteDatabase {
 export function openTrustDb(baseDir: string = getZhiShiDataDir()): SqliteDatabase {
   return openDb(baseDir);
 }
-
-export type { SqliteDatabase };
 
 function migrateLegacy(baseDir: string, db: SqliteDatabase): void {
   // entries.jsonl → memories

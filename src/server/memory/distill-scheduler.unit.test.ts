@@ -17,6 +17,8 @@ import {
   RESEARCH_ARC_MIN_INTERVAL_MS,
   dueArcs,
   runDistillTick,
+  rustSchedulerPresent,
+  startDistillTimer,
 } from './distill-scheduler';
 
 describe('pickDistillHost（宿主四级回退）', () => {
@@ -141,4 +143,18 @@ describe('runDistillTick（锁 + 落盘）', () => {
     expect(persisted).toHaveLength(0);
   });
 
+});
+
+describe('防双跑：Rust 调度者在场时让位', () => {
+  it('在 ZHISHI_MANAGEMENT_PORT 下不启动定时器', () => {
+    expect(rustSchedulerPresent({ ZHISHI_MANAGEMENT_PORT: '34567' })).toBe(true);
+    expect(startDistillTimer({ ZHISHI_MANAGEMENT_PORT: '34567' })).toBeNull();
+  });
+
+  it('无 Management API 端口（CLI 自立 sidecar）→ 正常启动', () => {
+    expect(rustSchedulerPresent({})).toBe(false);
+    const timer = startDistillTimer({});
+    expect(timer).not.toBeNull();
+    if (timer) clearInterval(timer);
+  });
 });

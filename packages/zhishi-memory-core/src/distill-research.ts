@@ -26,6 +26,7 @@
  * 会话摘录收集等外壳在 distill-runner.ts（runResearchDistillArc）。
  */
 
+import { capSectionByLines } from './cap-section.js';
 import { getZhiShiDataDir } from './paths.js';
 import {
   latestKeyedDistilledEntry,
@@ -267,10 +268,11 @@ export interface ResearchDistillMergeResult {
 }
 
 function capSection(body: string, key: ResearchDistillKey, warnings: string[]): string {
-  const trimmed = body.trim();
-  if (trimmed.length <= RESEARCH_DISTILL_MAX_CHARS_PER_SECTION) return trimmed;
-  warnings.push(`分节 ${key} 超过 ${RESEARCH_DISTILL_MAX_CHARS_PER_SECTION} 字符（${trimmed.length}），已截断`);
-  return trimmed.slice(0, RESEARCH_DISTILL_MAX_CHARS_PER_SECTION);
+  // 与认知弧同一实现：按整条淘汰、旧的先走（见 cap-section.ts）。
+  // 研究弧的三节是「### 域 + bullet」，结构标题不会被当作淘汰对象。
+  const capped = capSectionByLines(body, RESEARCH_DISTILL_MAX_CHARS_PER_SECTION, key);
+  warnings.push(...capped.warnings);
+  return capped.text;
 }
 
 /**

@@ -23,6 +23,10 @@
       "types": "./dist/store.d.ts",
       "default": "./dist/store.js"
     },
+    "./sqlite": {
+      "types": "./dist/sqlite.d.ts",
+      "default": "./dist/sqlite.js"
+    },
     "./distill": {
       "types": "./dist/distill.d.ts",
       "default": "./dist/distill.js"

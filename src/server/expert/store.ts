@@ -1,6 +1,6 @@
 /**
  * 专家知识库（expert.db）——1.2.1 专家知识层（骨架期）的存储层，
- * SQLite（better-sqlite3）实现，照 intel.db 范式。
+ * SQLite 实现（node:sqlite 优先，Node < 22.5 才用 better-sqlite3 兜底），照 intel.db 范式。
  *
  * 与 intel.db / memory.db 物理独立 = 语义独立：intel.db（公共原料，线索
  * 不是结论）/ memory.db（LLM 自身经验，参考级）/ expert.db（专家审定，
@@ -17,7 +17,6 @@
  *
  * 并发模型：WAL。驱动加载与 intel/store.ts 同构。
  */
-import { createRequire } from 'module';
 import { existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 
@@ -25,22 +24,10 @@ import { getBundledSqliteEntryPoint } from '../utils/runtime';
 import type { ResearchTaskKind } from '../memory/store';
 import type { ExpertEntryKind, ExpertProvenance, ValidatedExpertEntry } from './validate';
 
-// ===== better-sqlite3 驱动加载（同 intel/store.ts 模式） =====
+// ===== SQLite 驱动加载（同 intel/store.ts 模式，统一走 zhishi-memory-core/sqlite） =====
 
-interface SqliteStatement {
-  run: (...args: unknown[]) => { changes: number; lastInsertRowid: number | bigint };
-  get: (...args: unknown[]) => unknown;
-  all: (...args: unknown[]) => unknown[];
-}
-
-interface SqliteDatabase {
-  exec: (sql: string) => unknown;
-  prepare: (sql: string) => SqliteStatement;
-  close: () => void;
-  transaction: <T>(fn: () => T) => () => T;
-}
-
-type SqliteFactory = (path: string) => SqliteDatabase;
+import type { SqliteDatabase, SqliteFactory } from 'zhishi-memory-core/sqlite';
+import { resolveSqliteBackend } from 'zhishi-memory-core/sqlite';
 
 let sqliteFactory: SqliteFactory | null = null;
 let sqliteLoadError: Error | null = null;
@@ -48,16 +35,8 @@ let sqliteLoadError: Error | null = null;
 function loadSqlite(): SqliteFactory {
   if (sqliteFactory) return sqliteFactory;
   if (sqliteLoadError) throw sqliteLoadError;
-  const entry = getBundledSqliteEntryPoint();
-  if (!entry) {
-    sqliteLoadError = new Error(
-      'better-sqlite3 not found — expected sqlite-runtime/node_modules/better-sqlite3 (production) or node_modules/better-sqlite3 (dev).',
-    );
-    throw sqliteLoadError;
-  }
   try {
-    const nodeRequire = createRequire(import.meta.url);
-    sqliteFactory = nodeRequire(entry) as SqliteFactory;
+    sqliteFactory = resolveSqliteBackend({ betterSqliteEntry: getBundledSqliteEntryPoint() }).factory;
     return sqliteFactory;
   } catch (err) {
     sqliteLoadError = err instanceof Error ? err : new Error(String(err));

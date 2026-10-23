@@ -1,9 +1,10 @@
 /**
- * 情报库（intel.db）——1.1.2 情报横切的存储层，SQLite（better-sqlite3）实现。
+ * 情报库（intel.db）——1.1.2 情报横切的存储层，SQLite 实现。
  *
  * 与 memory.db 完全独立：独立文件、独立连接，互不干扰（不碰记忆库是
- * 1.1.2 的红线）。驱动加载方式与 memory/store.ts 同构：生产走
- * sqlite-runtime/node_modules/better-sqlite3 的路径解析（getBundledSqliteEntryPoint）。
+ * 1.1.2 的红线）。驱动加载方式与 memory/store.ts 同构：node:sqlite 优先，
+ * 只有在宿主 Node < 22.5（没有 DatabaseSync）时才用 getBundledSqliteEntryPoint
+ * 的 better-sqlite3 兜底——见 zhishi-memory-core/sqlite。
  *
  * 表结构（分级设计定稿）：
  * - cves(id PK, description, cvss_score, cvss_vector, published, modified)
@@ -24,7 +25,6 @@
  * 写函数不带事务，调用方用 runInTransaction 组合
  * （「写入用事务、meta 最后提交」的纪律落在 sync.ts）。
  */
-import { createRequire } from 'module';
 import { existsSync, mkdirSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 
@@ -33,22 +33,10 @@ import type { ParsedCve, IntelProduct } from './nvd-parser';
 import type { ParsedExploit } from './exploitdb-parser';
 import type { ParsedNucleiTemplate } from './nuclei-parser';
 
-// ===== better-sqlite3 驱动加载（同 memory/store.ts 模式） =====
+// ===== SQLite 驱动加载（同 memory/store.ts 模式，统一走 zhishi-memory-core/sqlite） =====
 
-interface SqliteStatement {
-  run: (...args: unknown[]) => { changes: number; lastInsertRowid: number | bigint };
-  get: (...args: unknown[]) => unknown;
-  all: (...args: unknown[]) => unknown[];
-}
-
-interface SqliteDatabase {
-  exec: (sql: string) => unknown;
-  prepare: (sql: string) => SqliteStatement;
-  close: () => void;
-  transaction: <T>(fn: () => T) => () => T;
-}
-
-type SqliteFactory = (path: string) => SqliteDatabase;
+import type { SqliteDatabase, SqliteFactory } from 'zhishi-memory-core/sqlite';
+import { resolveSqliteBackend } from 'zhishi-memory-core/sqlite';
 
 let sqliteFactory: SqliteFactory | null = null;
 let sqliteLoadError: Error | null = null;
@@ -56,16 +44,8 @@ let sqliteLoadError: Error | null = null;
 function loadSqlite(): SqliteFactory {
   if (sqliteFactory) return sqliteFactory;
   if (sqliteLoadError) throw sqliteLoadError;
-  const entry = getBundledSqliteEntryPoint();
-  if (!entry) {
-    sqliteLoadError = new Error(
-      'better-sqlite3 not found — expected sqlite-runtime/node_modules/better-sqlite3 (production) or node_modules/better-sqlite3 (dev).',
-    );
-    throw sqliteLoadError;
-  }
   try {
-    const nodeRequire = createRequire(import.meta.url);
-    sqliteFactory = nodeRequire(entry) as SqliteFactory;
+    sqliteFactory = resolveSqliteBackend({ betterSqliteEntry: getBundledSqliteEntryPoint() }).factory;
     return sqliteFactory;
   } catch (err) {
     sqliteLoadError = err instanceof Error ? err : new Error(String(err));

@@ -21,6 +21,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { getZhiShiDataDir } from './paths.js';
 import { stripBom } from './text.js';
+import { capSectionByLines } from './cap-section.js';
 import {
   allEntries,
   contentKey,
@@ -339,10 +340,12 @@ function classifySectionHeader(header: string): DistillKey | null {
 const KEY_ORDER: DistillKey[] = ['userModel', 'selfModel', 'routines', 'reminders'];
 
 function capSection(body: string, key: DistillKey, warnings: string[]): string {
-  const trimmed = body.trim();
-  if (trimmed.length <= DISTILL_MAX_CHARS_PER_FILE) return trimmed;
-  warnings.push(`分节 ${key} 超过 ${DISTILL_MAX_CHARS_PER_FILE} 字符（${trimmed.length}），已截断`);
-  return trimmed.slice(0, DISTILL_MAX_CHARS_PER_FILE);
+  // 2.0.8 实机修复：reminders 是"一行一条、每条带日期"的结构，旧实现按字符硬切
+  // 会切出半条 bullet（`…｜日期：` 断在这里），下一轮蒸馏把残句喂回模型就越写越歪。
+  // 现在按整条淘汰、旧的先走，具体规则见 cap-section.ts。
+  const capped = capSectionByLines(body, DISTILL_MAX_CHARS_PER_FILE, key);
+  warnings.push(...capped.warnings);
+  return capped.text;
 }
 
 /**

@@ -169,7 +169,32 @@ export async function runDistillTick(options: DistillTickOptions = {}): Promise<
 }
 
 /** 受护定时器：上一轮未结束不重入；unref 不阻塞退出。 */
-export function startDistillTimer(): NodeJS.Timeout {
+/**
+ * 判断当下是否有别的调度者在驱动蒸馏弧。
+ *
+ * 现实（2026-10-22 实机）：Tauri 应用活着时，Rust 的 task_scheduler 会用
+ * cron 把「蒸馏弧」任务 tick 到 sidecar 的 /cron/execute-sync；而本模块也想
+ * 按自己的节律驱动同一条弧。两者靠 `runWithArcLock` 只能互斥"同一瞬间"，
+ * 挡不住"各按各的节律各跑一遍"——结果是 token 翻倍 + 同一份记忆被并发重写。
+ *
+ * Rust 拉起 sidecar 时会注入 `ZHISHI_MANAGEMENT_PORT`（sidecar.rs：任务调度
+ * 通过这个 Management API 反向调用 sidecar）。所以它存在 = 有 Rust 调度者
+ * 在场，本模块让位即可。CLI 自立 sidecar 时不注入，本模块照常接管。
+ */
+export function rustSchedulerPresent(env: NodeJS.ProcessEnv = process.env): boolean {
+  const port = env.ZHISHI_MANAGEMENT_PORT;
+  return typeof port === 'string' && port.trim().length > 0;
+}
+
+/**
+ * 受护定时器：上一轮未结束不重入；unref 不阻塞退出。
+ * 有 Rust 调度者在场时**不启动**（让位，避免双跑）。
+ */
+export function startDistillTimer(env: NodeJS.ProcessEnv = process.env): NodeJS.Timeout | null {
+  if (rustSchedulerPresent(env)) {
+    console.log('[distill-timer] 检测到 Rust 调度器（ZHISHI_MANAGEMENT_PORT）——让位，本进程不驱动蒸馏弧');
+    return null;
+  }
   let running = false;
   const kick = () => {
     if (running) return;
