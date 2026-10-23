@@ -368,6 +368,16 @@ INSERT  deepseek-flash · ctx 41% · 168k/250k · Σ 12k · 队列 0 · 5m12s ·
     否则 `go test -race` 会因缺 `cl` 而 build failed。
 15. **attach 断开就回 TUI**，不自动重连（远端 pty 已被服务端回收）。
 
+## README 截图
+
+`assets/tui.png` 是真帧，不是手工拼的样张：`cmd/framegen` 用真实的 `NewModel` + 种子块渲染
+104×26 一帧（不连 sidecar），再由脚本做 ANSI → PNG。
+
+```bash
+cd src/tui && go run ./cmd/framegen > /tmp/frame.ansi
+python scripts/dev/render-tui-frame.py /tmp/frame.ansi assets/tui.png
+```
+
 ## 下一步
 
 1. attach 断线重连 + 远端尺寸/标题上报（`{type:'resize'}` 已通，标题还缺协议）。
