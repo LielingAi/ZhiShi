@@ -336,7 +336,18 @@ export async function envBgStart(
   });
   if (!r.ok) return { ok: false, error: r.error };
   const { pid } = parseBgStart(r.stdout);
-  if (!pid) return { ok: false, error: `启动失败：远端未返回 pid（stdout: ${r.stdout.slice(0, 200)}）` };
+  if (!pid) {
+    // 别只报「stdout 为空」：docker 容器没运行时错误在 stderr（"is not
+    // running"）、exit 1，stdout 天然是空的。出口带 exit/stderr，才能让人
+    // 一眼看出是容器没起还是命令本身失败。
+    const stderr = (r.stderr ?? '').trim();
+    const detail = [
+      `exit=${r.exitCode}`,
+      stderr ? `stderr: ${stderr.slice(0, 300)}` : '',
+      `stdout: ${r.stdout.slice(0, 200)}`,
+    ].filter(Boolean).join('；');
+    return { ok: false, error: `启动失败：远端未返回 pid（${detail}）` };
+  }
   return { ok: true, tag, pid, logPath: `${BG_DIR}/${tag}.log` };
 }
 

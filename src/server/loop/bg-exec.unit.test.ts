@@ -269,3 +269,18 @@ describe('编排(注入 exec,薄包)', () => {
     if (!r.ok) expect(r.error).toContain('guest-exec');
   });
 });
+
+describe('env_bg start 错误可读性', () => {
+  it('缺少 pid 时带 exit 与 stderr（容器未运行不再只报 stdout 空）', async () => {
+    const { exec } = scriptedExec([
+      'missing',
+      { exitCode: 1, stdout: '', stderr: 'Error response from daemon: container abc is not running\n' },
+    ]);
+    const r = await envBgStart(DOCKER, 'x', 'c1', { exec });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain('exit=1');
+      expect(r.error).toContain('not running');
+    }
+  });
+});
