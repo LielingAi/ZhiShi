@@ -299,8 +299,43 @@ describe('引用的专家知识（1.2.2 expert_refs）', () => {
     const plain = [ev({ id: 1, ts: 100, taskKind: 'pentest', outcome: 'success', summary: 'x' })];
     const s = buildReportSkeleton({ workspace: WS, envId: 'e', events: plain, transcript: transcript([]), now: NOW });
     expect(s.expertRefs).toEqual([]);
-    expect(s.sections.map((x) => x.key)).toEqual(['target', 'recon', 'findings', 'exploit-chain', 'repro', 'fix']);
+    expect(s.sections.map((x) => x.key)).toEqual(['tldr', 'target', 'recon', 'findings', 'exploit-chain', 'repro', 'fix', 'glossary']);
     const md = renderReportMarkdown(s);
     expect(md).not.toContain('引用的专家知识');
+  });
+});
+
+// 2.1 输出可读性：先看结论 + 术语表
+describe('2.1 先看结论 / 术语表（纯叙述节）', () => {
+  const events = [
+    ev({ id: 1, ts: 100, taskKind: 'pentest', outcome: 'success', bugClass: 'sql-injection', summary: 'SQLi 拿到管理员会话' }),
+    ev({ id: 2, ts: 200, taskKind: 'pentest', outcome: 'success', summary: '读取 /etc/passwd' }),
+  ];
+
+  it('有叙述才渲染；没有叙述整节不出现（降级报告不留空标题/占位句）', () => {
+    const s = buildReportSkeleton({ workspace: WS, envId: 'e', events, transcript: transcript([]), now: NOW });
+
+    const bare = renderReportMarkdown(s);
+    expect(bare).not.toContain('## 先看结论');
+    expect(bare).not.toContain('## 术语表');
+
+    const md = renderReportMarkdown(s, {
+      narration: new Map([
+        ['tldr', '- 打通 SQL 注入，拿到管理员会话\n- 可读取服务器任意文件'],
+        ['glossary', '- SQLi：把恶意 SQL 塞进输入，让数据库执行'],
+      ]),
+    });
+    expect(md).toContain('## 先看结论');
+    expect(md).toContain('拿到管理员会话');
+    expect(md).toContain('## 术语表');
+    expect(md).toContain('让数据库执行');
+    // 顺序：结论在最前，术语表在最后。
+    expect(md.indexOf('## 先看结论')).toBeLessThan(md.indexOf('## 目标'));
+    expect(md.indexOf('## 术语表')).toBeGreaterThan(md.indexOf('## 修复建议'));
+    // 纯叙述节内部不出现「本节无事实记录」占位（其余空节仍保留该提示）。
+    const tldrBlock = md.slice(md.indexOf('## 先看结论'), md.indexOf('## 目标'));
+    const glossaryBlock = md.slice(md.indexOf('## 术语表'));
+    expect(tldrBlock).not.toContain('（本节无事实记录）');
+    expect(glossaryBlock).not.toContain('（本节无事实记录）');
   });
 });

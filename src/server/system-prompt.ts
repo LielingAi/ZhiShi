@@ -94,6 +94,18 @@ const TMPL_CHANNEL_SECURITY = `<zhishi-interaction-channel>
 用户正通过 ZhiShi 研究终端(zhishi agent CLI / TUI)与你对话。
 </zhishi-interaction-channel>`;
 
+/**
+ * 2.1 输出风格（交互场景专用；cron / auto-run 是 headless 日志，不注入）：
+ * 结论先行 + 少术语 + 事实不改写。与报告叙述的规则同一套口径。
+ */
+const TMPL_OUTPUT_STYLE = `<zhishi-output-style>
+最终回答写给要据此做决定的人看。默认结构：
+1. 先看结论：3–5 条，动词开头，一条一句话。顺序是「发生了什么 → 影响是什么 → 下一步做什么」，不要用「本次」「综上所述」这类开场白复述过程。
+2. 关键依据：只列支撑结论的事实。路径、行号、版本、payload 保留原文。
+3. 下一步（可选）：一条可执行建议。
+术语：缩写和专有名词首次出现时用一句中文解释（例：SSRF——让服务器替你访问内网地址）；解释里不要再套未解释的缩写。技术细节不许为了通俗而删改——压缩的是叙述，不是事实。
+</zhishi-output-style>`;
+
 const TMPL_CRON_TASK = `<zhishi-cron-task-instructions>
 你正处于心跳循环任务模式 (Task ID: {{taskId}})。每隔 {{intervalText}} 系统触发唤醒你一次。{{#if aiCanExit}}
 
@@ -260,6 +272,12 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
     : scenario.type === 'security' ? TMPL_CHANNEL_SECURITY
     : TMPL_CHANNEL_DESKTOP,
   );
+
+  // L2.5: 输出风格（2.1）——只有实时对话方需要「先看结论」；cron / auto-run
+  // 的读者是日志，保持简洁但不需要双层结构。
+  if (scenario.type === 'security' || scenario.type === 'desktop') {
+    parts.push(TMPL_OUTPUT_STYLE);
+  }
 
   // L3: Scenario instructions (stacked as needed)
   if (scenario.type === 'cron') {

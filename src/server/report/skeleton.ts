@@ -29,6 +29,12 @@ export interface ReportSection {
    * LLM 连写引子的机会都没有，本节每个字都是代码钉死的。
    */
   factOnly?: boolean;
+  /**
+   * 纯叙述节（2.1「先看结论」「术语表」）：没有事实行，正文只来自 LLM。
+   * 没有叙述时**整节不渲染**——降级报告里不出现空标题，也不出现
+   * 「本节无事实记录」这种对读者无意义的占位。
+   */
+  narrativeOnly?: boolean;
 }
 
 /** 专家知识引用（1.2.2）：事件 expert_refs 解析后的条目引用。 */
@@ -385,11 +391,16 @@ function buildSections(skeleton: ReportSkeleton): ReportSection[] {
     expertRefs: skeleton.expertRefs,
     ...(skeleton.evidenceResults ? { evidenceResults: skeleton.evidenceResults } : {}),
   };
-  const sections: ReportSection[] = skeleton.template.sections.map((spec) => ({
-    key: spec.key,
-    title: spec.title,
-    facts: factsForSection(spec.key, ctx),
-  }));
+  const sections: ReportSection[] = [
+    // 2.1「先看结论」：读者先读这里。事实为空——内容全部来自叙述，
+    // 规则由 narrate.ts 的提示词约束（3–5 条、动词开头、不复述过程）。
+    { key: 'tldr', title: '先看结论', facts: [], narrativeOnly: true },
+    ...skeleton.template.sections.map((spec) => ({
+      key: spec.key,
+      title: spec.title,
+      facts: factsForSection(spec.key, ctx),
+    })),
+  ];
   // pentest 模板无独立证据节(design 节清单)——证据引用/回收状态是硬事实，
   // 必须有家:挂到「发现」节末尾。
   if (!sections.some((s) => s.key === 'evidence')) {
@@ -401,6 +412,9 @@ function buildSections(skeleton: ReportSkeleton): ReportSection[] {
   if (skeleton.expertRefs.length > 0) {
     sections.push({ key: 'expert-refs', title: '引用的专家知识', facts: factsForSection('expert-refs', ctx), factOnly: true });
   }
+  // 2.1 术语表：正文出现过的缩写/专有名词，一句人话解释。纯叙述节——
+  // 没生成就整节不出现（不留下空标题）。
+  sections.push({ key: 'glossary', title: '术语表', facts: [], narrativeOnly: true });
   return sections;
 }
 
@@ -433,11 +447,21 @@ export function renderReportMarkdown(skeleton: ReportSkeleton, options: RenderOp
   }
   lines.push('');
   for (const section of skeleton.sections) {
+    const narration = section.factOnly ? undefined : options.narration?.get(section.key)?.trim();
+    // 纯叙述节（先看结论 / 术语表）：没有叙述就整节跳过——降级报告里
+    // 「## 先看结论」下面空一行比没有这节更糟。
+    if (section.narrativeOnly) {
+      if (!narration) continue;
+      lines.push(`## ${section.title}`);
+      lines.push('');
+      lines.push(narration);
+      lines.push('');
+      continue;
+    }
     lines.push(`## ${section.title}`);
     lines.push('');
     // factOnly 节（引用的专家知识）纯事实渲染——填肉 prompt 不含此节，
     // 这里也不接受叙述回填（双重防线）。
-    const narration = section.factOnly ? undefined : options.narration?.get(section.key)?.trim();
     if (narration) {
       lines.push(narration);
       lines.push('');

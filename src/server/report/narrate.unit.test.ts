@@ -115,3 +115,24 @@ describe('parseNarratedSections', () => {
     expect(parsed.get('recon')).toBe('侦察叙述');
   });
 });
+
+// 2.1 输出可读性：结论与术语表有独立写作契约
+describe('2.1 叙述契约（先看结论 / 术语表）', () => {
+  it('tldr 要求 3–5 条、动词开头、≤40 字；glossary 要求一句解释且不叠未解释缩写', () => {
+    const prompt = buildNarrationPrompt(skeleton());
+    expect(prompt).toContain('写 3–5 条结论');
+    expect(prompt).toContain('动词开头');
+    expect(prompt).toContain('每条不超过 40 字');
+    expect(prompt).toContain('最多 8 条');
+    expect(prompt).toContain('一句中文解释');
+    // 纯叙述节不能被引导去写「本节无事实记录」这种占位。
+    expect(prompt).not.toMatch(/## 先看结论（key=tldr）\n（本节无事实记录/);
+    expect(prompt).not.toMatch(/## 术语表（key=glossary）\n（本节无事实记录/);
+  });
+
+  it('system prompt 含人话规则：首现解释、去空话、事实不改写', () => {
+    expect(NARRATION_SYSTEM_PROMPT).toContain('首次出现时用一句中文解释');
+    expect(NARRATION_SYSTEM_PROMPT).toContain('综上所述');
+    expect(NARRATION_SYSTEM_PROMPT).toContain('压缩的是叙述，不是事实');
+  });
+});

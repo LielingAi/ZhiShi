@@ -26,7 +26,28 @@ export const NARRATION_SYSTEM_PROMPT =
   '为每一节写一段连贯的中文过程叙述，把该节事实串成可读的报告文字。' +
   '硬性纪律：事实字段（数字、路径、行号、flag、时间、漏洞类别、事件编号）只许引用，' +
   '不得改动、不得四舍五入、不得编造骨架里没有的新事实；拿不准就照抄原文。' +
-  '叙述是事实的引子，不是替代品——不要重复罗列全部事实条目，概括脉络即可。';
+  '叙述是事实的引子，不是替代品——不要重复罗列全部事实条目，概括脉络即可。' +
+  '写作风格（2.1）：写给非本域读者也能读懂。缩写与专有名词首次出现时用一句中文解释；' +
+  '一句话只说一件事，避免长从句；不写「综上所述」「值得注意的是」这类空话；' +
+  '不要用形容词堆砌专业感。技术细节照原样保留，压缩的是叙述，不是事实。';
+
+/** 每节的写作指令（2.1）：纯叙述节有自己的格式契约，其余节沿用通用说明。 */
+function sectionInstruction(section: { key: string; title: string; narrativeOnly?: boolean }): string {
+  if (section.key === 'tldr') {
+    return (
+      '写 3–5 条结论，动词开头、一条一句、每条不超过 40 字。' +
+      '顺序：发生了什么 → 影响是什么 → 下一步做什么。' +
+      '不出现未解释的缩写；不复述过程；不写「本次研究」这类开场白。'
+    );
+  }
+  if (section.key === 'glossary') {
+    return (
+      '只列正文事实与叙述里确实出现过的缩写/专有名词，一行一条「- 术语：一句中文解释」，最多 8 条。' +
+      '解释里不许再出现未解释的缩写。没有可解释的术语就写「无」。'
+    );
+  }
+  return `（「${section.title}」一节的叙述）`;
+}
 
 /** 逐节列出输出格式契约 + 全量事实。factOnly 节（引用的专家知识）不进 prompt。 */
 export function buildNarrationPrompt(skeleton: ReportSkeleton): string {
@@ -37,7 +58,7 @@ export function buildNarrationPrompt(skeleton: ReportSkeleton): string {
   lines.push('输出格式（严格遵守；每节一段，节与节之间不要有多余文字）：');
   for (const section of narratable) {
     lines.push(`${sectionOpenMarker(section.key)}`);
-    lines.push(`（「${section.title}」一节的叙述）`);
+    lines.push(sectionInstruction(section));
     lines.push(SECTION_CLOSE);
   }
   lines.push('');
@@ -45,7 +66,11 @@ export function buildNarrationPrompt(skeleton: ReportSkeleton): string {
   lines.push('');
   for (const section of narratable) {
     lines.push(`## ${section.title}（key=${section.key}）`);
-    if (section.facts.length === 0) {
+    if (section.narrativeOnly) {
+      // 「先看结论」「术语表」没有事实行——不能让下游模型看到「本节无事实
+      // 记录」就照着写一句占位，那是我们要避免的空话。
+      lines.push('（本节不提供事实行；按上面的格式，由你基于其余各节的事实来写）');
+    } else if (section.facts.length === 0) {
       lines.push('（本节无事实记录——写一句「本节无记录」即可）');
     } else {
       for (const fact of section.facts) lines.push(`- ${fact}`);

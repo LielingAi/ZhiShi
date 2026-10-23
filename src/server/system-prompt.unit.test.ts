@@ -39,6 +39,20 @@ describe('L2 信道段按场景分述（1.2.6）', () => {
     expect(buildSystemPromptAppend({ type: 'desktop' })).toContain('桌面客户端与你对话');
     expect(buildSystemPromptAppend({ type: 'security' })).toContain('研究终端');
   });
+
+  it('2.1 输出风格段只进交互场景：结论先行 + 术语首现解释', () => {
+    for (const scenario of [{ type: 'desktop' }, { type: 'security' }] as const) {
+      const prompt = buildSystemPromptAppend(scenario);
+      expect(prompt).toContain('<zhishi-output-style>');
+      expect(prompt).toContain('先看结论');
+      expect(prompt).toContain('首次出现时用一句中文解释');
+    }
+    // headless（cron / auto-run）的读者是日志，不注入双层结构。
+    expect(buildSystemPromptAppend(CRON_SCENARIO)).not.toContain('<zhishi-output-style>');
+    expect(
+      buildSystemPromptAppend({ type: 'auto-run', taskId: 'a1', budgetKind: 'turns', budgetLimit: 10 } as never),
+    ).not.toContain('<zhishi-output-style>');
+  });
 });
 
 describe('cron 自退教学对齐真实机制（1.2.6 B9 关联）', () => {
