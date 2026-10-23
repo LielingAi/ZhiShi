@@ -115,7 +115,7 @@ func (m Model) renderStream(height int) (string, []clickRow, int, []string) {
 		return padLines([]string{
 				dimStyle.Render("  还没有内容。输入一句话开始。"),
 				"",
-				dimStyle.Render("  第一次用？F1 帮助（按「想做什么」分组）· Ctrl+K 命令面板 · Ctrl+F 搜索"),
+				dimStyle.Render("  第一次用？F1 帮助（按「想做什么」分组）· Ctrl+K 动作中心 · Ctrl+F 搜索"),
 				dimStyle.Render("  面板：Alt+e 环境 · Alt+l 研究线 · Alt+t 任务 · Alt+a 研究档案 · Alt+w 自动循环"),
 			}, height),
 			make([]clickRow, height), 0, make([]string, height)
@@ -477,7 +477,19 @@ func (m Model) secondLine() string {
 	case m.ScrollLines > 0:
 		right = dimStyle.Render(fmt.Sprintf("↑ 上翻 %d 行（Alt+g 回底）", m.ScrollLines))
 	default:
-		right = dimStyle.Render("Alt+j/k 移动  Alt+r 折叠  Alt+y 复制  F2 鼠标  F1 键位  ^C 退出")
+		// 2.2：不再常驻键位清单——只提示「此刻最有用的下一步」。
+		// 键位总表在 F1；全部动作在 Ctrl+K。
+		hint := "Ctrl+K 动作中心  ·  / 命令  ·  F1 键位"
+		if m.Running() {
+			hint = "Ctrl+C 停  ·  Ctrl+K 动作中心  ·  F1 键位"
+		} else if vb := m.VisibleBlocks(); cur >= 0 && cur < len(vb) {
+			b := vb[cur]
+			lines := bodyLineCount(b.Body)
+			if !b.Expanded && render.FoldedBodyLines(b.Kind, lines) < lines {
+				hint = "Alt+r 展开这一块  ·  Ctrl+K 动作中心  ·  F1 键位"
+			}
+		}
+		right = dimStyle.Render(hint)
 		if len(m.Choices) > 0 {
 			right = selStyle.Render(fmt.Sprintf("有 %d 条待答：Alt+d 打开", len(m.Choices)))
 		}

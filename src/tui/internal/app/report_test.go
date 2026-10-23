@@ -40,7 +40,7 @@ func TestReportExportFromSessionPanel(t *testing.T) {
 	// 回执落成一个块，含降级项
 	found := false
 	for _, b := range m.Store.List() {
-		if strings.Contains(b.Body, "reportDir") {
+		if strings.Contains(b.Body, "目录:") {
 			found = true
 			if !strings.Contains(b.Body, "evidence 404") {
 				t.Fatalf("降级项应写进块：%q", b.Body)

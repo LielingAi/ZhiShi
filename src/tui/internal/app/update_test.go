@@ -385,7 +385,7 @@ func TestViewIsPureAndFitsHeight(t *testing.T) {
 	if after := m.Store.List()[0].Version; after != before {
 		t.Fatalf("View 改了状态：version %d → %d", before, after)
 	}
-	if !containsAll(first, "zhishi", "hello", "Alt+j/k") {
+	if !containsAll(first, "zhishi", "hello", "Ctrl+K 动作中心") {
 		t.Fatalf("视图缺少必要元素：\n%s", first)
 	}
 }

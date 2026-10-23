@@ -37,7 +37,7 @@ func TestOverlayDoesNotJoinLayout(t *testing.T) {
 		t.Fatalf("header 被覆盖层改写了：\n%q\n%q", base[0], withOverlay[0])
 	}
 	drawn := strings.Join(withOverlay, "\n")
-	if !strings.Contains(drawn, "命令面板") {
+	if !strings.Contains(drawn, "动作中心") {
 		t.Fatalf("覆盖层没画出来：\n%s", drawn)
 	}
 	if !strings.Contains(drawn, "↑↓ 选择") {
@@ -58,15 +58,15 @@ func TestPaletteOverlayShowsSelection(t *testing.T) {
 	m := testModel()
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
 	out := m.View()
-	if !strings.Contains(out, "▸ /model list") {
+	if !strings.Contains(out, "▸ 会话操作") {
 		t.Fatalf("选中项应有 ▸ 标记：\n%s", out)
 	}
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	out = m.View()
-	if strings.Contains(out, "▸ /model list") {
+	if strings.Contains(out, "▸ 会话操作") {
 		t.Fatalf("移动后第一项不该还是选中态：\n%s", out)
 	}
-	if !strings.Contains(out, "▸ /model set-key") {
+	if !strings.Contains(out, "▸ attach 到环境") {
 		t.Fatalf("第二项应被选中：\n%s", out)
 	}
 }
