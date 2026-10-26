@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.4] - 2026-10-26
+
+> **三处实机修复**：带引号/循环的 `env_exec` 命令被拆坏、Windows 多行粘贴多空行、空闲/运行状态看不出来。
+
+### Fixed
+
+- **`env_exec` 带引号或 `for … do … done` 的命令报语法错误**（`Syntax error: "done" unexpected` / `Unterminated quoted string`）：远端超时包装把命令塞进 `C="…"` 再套两层双引号逃逸，Node 直接 spawn MSYS `ssh` 时逃逸层被 argv 解析吃掉。改用 heredoc（单引号分隔符关闭展开）传命令体，命令里的引号/`$`/反引号/换行原样送达；不依赖 bash/base64；分隔符按命令内容动态避让
+- **Windows 多行粘贴每行之间多一个空行**：剪贴板是 CRLF，textarea 的清洗器把 `\r` 和 `\n` 各算一次换行。粘贴进输入框前统一归一为 LF
+- **换行键**：Windows Terminal 默认把 `Alt+Enter` 抢作全屏，文档改为 `Ctrl+J` 优先（conhost 仍可用 `Alt+Enter`）
+
+### Changed
+
+- **空闲/运行状态醒目化**：header 右上角改为「● 运行中 12s / ○ 空闲 / ○ 状态未知」；状态行同步显示；运行中输入框边框换警示色
+
 ## [2.2.3] - 2026-10-26
 
 > **模型目录刷新**：上游新增模型后，不用再重传 key。
