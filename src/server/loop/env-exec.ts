@@ -618,47 +618,46 @@ export function buildWindowsTimeoutEncodedCommand(command: string, timeoutMs: nu
 }
 
 /**
- * 双引号转义（`\` `"` `$` 反引号）——sh 与 csh 的共同子集。
- *
- * 包装串要过两层 shell：外层是**远端登录 shell**（Junos / FreeBSD 的 root
- * 是 csh，不是 sh），内层是 sh。csh 在双引号内对这四个字符的处理与 sh
- * 一致，单引号的 `'\''` 拼接则不通用——所以统一用双引号 + 反斜杠。
- *
- * 已知边界：csh 在双引号内仍做历史展开（`!`），命令含 `!` 的 csh 目标会
- * 被吃掉；这类目标改走密码通道 + 单条 cli 命令，不做进一步的引号体操。
- */
-function dqEscape(s: string): string {
-  return s.replace(/[\\"$`]/g, (c) => `\\${c}`);
-}
-
-/**
  * 远端超时杀包装。
  *
- * 2.0.6 重写（2026-10 vsrx 实机）：旧实现是
- * `timeout -k 5 <n>s bash -c "$(echo <b64>|base64 -d)"`——同时假设了 bash、
- * GNU coreutils timeout 和 base64 三样东西。Junos / FreeBSD / OpenWrt 的
- * 网络设备上三样都不保证有，结果是 ssh 连得上、命令 127，用户看到的是
- * 「环境坏了」。
+ * 2.2.3 重写（实机：带引号/循环的命令 `sh: Syntax error: "done" unexpected`）：
+ * 旧实现把命令塞进 `C="…"` 再套两层双引号逃逸。经 Node 直接 spawn MSYS
+ * `ssh.exe` 时，这层逃逸引号在 argv 解析里被吃掉——`for … do … done`、
+ * 含 `"` 的命令都会被拆坏（env_bg 启动失败是同一根因）。
  *
- * 新形态：外层 `sh -c "<内层脚本>"`，内层按**远端能力**降级——
- *   - 有 `timeout` → `timeout -k 5 <n>s sh -c "$C"`（Linux 语义不变：
- *     TERM 后 5s 补 KILL，超时退出码 124/137）；
- *   - 没有 `timeout` → 裸 `sh -c "$C"`（放弃强制杀，命令至少能跑）。
- * 命令本体经两层双引号变量传递，不再依赖 base64；引号/换行/`$` 安全。
+ * 新形态：**heredoc 传命令体**，单引号分隔符关闭一切展开：
+ *
+ *   if command -v timeout …; then timeout -k 5 <n>s sh; else sh; fi <<'EOF'
+ *   <用户命令原样>
+ *   EOF
+ *
+ * 命令里无论有单/双引号、`$`、反引号、换行，都原样送达；不再依赖 bash 或
+ * base64（Junos/FreeBSD/OpenWrt 兼容），也不再有可被 argv 吃掉的转义层。
+ * 分隔符按命令内容动态避开（命令里恰好有一行等于分隔符时换一个）。
  */
 export function buildRemoteTimeoutWrapper(command: string, timeoutMs: number, family: 'linux' | 'windows' = 'linux'): string {
   const secs = Math.max(1, Math.ceil(timeoutMs / 1000));
   if (family === 'windows') {
     return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${buildWindowsTimeoutEncodedCommand(command, timeoutMs)}`;
   }
-  // 命令体只需两层转义：内层 sh 的变量赋值 + 外层登录 shell（payload 里
-  // 再套一层就会把 `$`、引号原样送到命令里——多余的一层是静默的错误结果）。
-  const payload = dqEscape(command);
-  const script =
-    `C="${payload}"; ` +
-    `if command -v timeout >/dev/null 2>&1; then exec timeout -k 5 ${secs}s sh -c "$C"; fi; ` +
-    `exec sh -c "$C"`;
-  return `sh -c "${dqEscape(script)}"`;
+  const delimiter = pickHeredocDelimiter(command);
+  return (
+    `if command -v timeout >/dev/null 2>&1; then timeout -k 5 ${secs}s sh; else sh; fi <<'${delimiter}'\n` +
+    `${command}\n` +
+    `${delimiter}`
+  );
+}
+
+/** heredoc 分隔符：避开命令里恰好独占一行的同名行。 */
+function pickHeredocDelimiter(command: string): string {
+  const lines = new Set(command.split('\n').map((l) => l.trim()));
+  let delimiter = 'ZHISHI_CMD_EOF';
+  let i = 0;
+  while (lines.has(delimiter)) {
+    i += 1;
+    delimiter = `ZHISHI_CMD_EOF_${i}`;
+  }
+  return delimiter;
 }
 
 export async function execInEnvironment(
