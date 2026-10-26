@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-10-26
+
+> **Kimi 思维链泄漏修复**：`kimi-for-coding` 等 reasoning 模型走错协议通道，CoT 被当成正文输出（表现为 “Let me call / Let me do it” 接龙）。同时新增只读「研究简报」。
+
+### Fixed
+
+- **Kimi reasoning 模型的 CoT 流入正文**：官方 `/coding` 端点对 reasoning 模型返回 `reasoning_content`，但只有 `k3` 被切到 OpenAI 兼容通道；`kimi-for-coding` / `-highspeed` 仍走 `anthropic-messages`，该通道分不出思考块 → 思维链作为 assistant 正文流出。现在目录里 `reasoning=true` 的 Kimi 模型**一律走 OpenAI 通道**，`reasoning_content` 由适配器收进 thinking 信道
+- `maxTokens` 用目录真实值（`kimi-for-coding` 32K）——思考先消耗输出预算，预算过低会出现正文为空 + `finish_reason=length`
+- `reasoning_effort` 仅 k3 开启（其余模型未确认支持，避免 400）
+
+### Added
+
+- **研究档案「简报」**（`Alt+a` 默认视图）：把完整账本压成三块——靠得住的结论（established + 有效证据 + 无反证）、还缺什么（未决问题 / 存疑 / 待复核 / 反证待评估）、已经死了（证伪 / 纠正 / 放弃 + 最近一次纠正原因）。`f` 切完整账本；旧 sidecar 不返回简报时自动回落
+- 派生规则是确定性的（证据状态 + 反证 + needsReview），不新增数据字段、不新增生命周期
+
 ## [2.2.1] - 2026-10-24
 
 > **修复 VM/SSH 上 `env_bg` 无法启动**：后台启动命令被远端超时包装的引号层破坏，表现为 `stdout` 为空、没有 pid。

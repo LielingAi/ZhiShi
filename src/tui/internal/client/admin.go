@@ -266,24 +266,49 @@ func (c *Client) Tasks(ctx context.Context) ([]TaskInfo, error) {
 	return tasks, nil
 }
 
-// Archive 取研究档案（archive/list {sessionId}）。
-func (c *Client) Archive(ctx context.Context, sessionID string) ([]ArchiveEntity, error) {
+// ArchiveBriefItem 是简报里的一行（服务端派生，只读）。
+type ArchiveBriefItem struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Text    string `json:"text"`
+	Status  string `json:"status"`
+	Support int    `json:"support"`
+	Against int    `json:"against"`
+	Reason  string `json:"reason"`
+}
+
+// ArchiveBrief 是「靠得住 / 还缺什么 / 已排除」三块（2.2.1）。
+type ArchiveBrief struct {
+	Solid  []ArchiveBriefItem `json:"solid"`
+	Gaps   []ArchiveBriefItem `json:"gaps"`
+	Closed []ArchiveBriefItem `json:"closed"`
+}
+
+// ArchiveData 是一次档案读取的全部结果。
+type ArchiveData struct {
+	Entities []ArchiveEntity
+	Brief    ArchiveBrief
+}
+
+// Archive 取研究档案 + 服务端派生的简报（archive/list {sessionId}）。
+func (c *Client) Archive(ctx context.Context, sessionID string) (ArchiveData, error) {
 	res, err := c.Admin(ctx, "archive/list", map[string]any{"sessionId": sessionID})
 	if err != nil {
-		return nil, err
+		return ArchiveData{}, err
 	}
 	if !res.Success {
-		return nil, fmt.Errorf("%s", res.Error)
+		return ArchiveData{}, fmt.Errorf("%s", res.Error)
 	}
 	var body struct {
 		Archive struct {
 			Entities []ArchiveEntity `json:"entities"`
 		} `json:"archive"`
+		Brief ArchiveBrief `json:"brief"`
 	}
 	if err := json.Unmarshal(res.Data, &body); err != nil {
-		return nil, fmt.Errorf("archive/list 数据结构不符：%w", err)
+		return ArchiveData{}, fmt.Errorf("archive/list 数据结构不符：%w", err)
 	}
-	return body.Archive.Entities, nil
+	return ArchiveData{Entities: body.Archive.Entities, Brief: body.Brief}, nil
 }
 
 // urlQueryEscape 单独抽出来：这行在热路径之外，但读起来比内联清楚。

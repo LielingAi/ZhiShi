@@ -60,7 +60,7 @@ type adminAPI interface {
 	SwitchSession(ctx context.Context, id string) error
 	Tasks(ctx context.Context) ([]client.TaskInfo, error)
 	TaskGet(ctx context.Context, id string) (client.TaskDetail, error)
-	Archive(ctx context.Context, sessionID string) ([]client.ArchiveEntity, error)
+	Archive(ctx context.Context, sessionID string) (client.ArchiveData, error)
 	WireMessages(ctx context.Context, loopSessionID string) (client.WirePage, error)
 	TaskUpdateStatus(ctx context.Context, id, status, message string) error
 	TaskRerun(ctx context.Context, id string) error

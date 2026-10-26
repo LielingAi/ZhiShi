@@ -122,12 +122,15 @@ export function buildLoopModel(opts: BuildLoopModelOptions): LoopModelResolution
     const catalog = provider.getModels();
     const found = catalog.find((m) => m.id === opts.modelId);
 
-    // 1.6.12：k3 系改走 openai-completions 通道——K3 官方行为是「思考恒开 +
-    // reasoning_content 返回」（OpenAI 思考格式，见 pi#7199 / K3 API 指南）；
+    // 2.2.2：所有 reasoning 系 Kimi 模型都改走 openai-completions 通道——
+    // 官方行为是「思考恒开 + reasoning_content 返回」（OpenAI 思考格式）；
     // anthropic-messages 通道分不出思考块，CoT 全裸奔进正文（实机：k3 一条
-    // 消息 3.4 万 token 全是思维链）。openai 适配器把 reasoning_content 收进
-    // thinking 信道。/coding/v1/chat/completions 端点实探存在（401 待鉴权）。
-    if (/^k3([-.]|$)/.test(opts.modelId)) {
+    // 消息 3.4 万 token 全是思维链；kimi-for-coding 同样，表现为
+    // “Let me call/Let me do it”无限接龙）。
+    // 判定不写死型号：目录里 reasoning=true 的条目一律走这条通道，新模型
+    // 进目录即自动生效。openai 适配器把 reasoning_content 收进 thinking 信道。
+    const isReasoningModel = found?.reasoning === true || /^k3([-.]|$)/.test(opts.modelId);
+    if (isReasoningModel) {
       const openaiModels = createModels();
       const cat = found;
       const model = {
@@ -136,20 +139,22 @@ export function buildLoopModel(opts: BuildLoopModelOptions): LoopModelResolution
         api: 'openai-completions',
         provider: 'kimi-coding-openai',
         baseUrl: 'https://api.kimi.com/coding/v1',
-        reasoning: true, // k3 恒思考（官方）；reasoning_content 由 openai 适配器分离
+        reasoning: true, // 恒思考（官方）；reasoning_content 由 openai 适配器分离
         input: cat?.input ?? ['text'],
         cost: cat?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: cat?.contextWindow ?? 262_144,
+        // 思考会先消耗输出预算：用目录真实上限（kimi-for-coding 32K），
+        // 低于这个值会出现“全被 thinking 吃掉、正文为空 + finish_reason=length”。
         maxTokens: cat?.maxTokens ?? 131_072,
         // 1.6.12 实机回归修正：compat 缺省时 pi 自动检测不认识 kimi-coding
         // （isMoonshot 只认 api.moonshot.*）→ supportsDeveloperRole 误判 true →
         // system 消息以 'developer' 角色发送，kimi 端点 400「role 'developer'
-        // is not allowed」。钉死 compat：developer 角色关、max_tokens 字段名、
-        // reasoning_effort 支持（K3 官方支持）。
+        // is not allowed」。钉死 compat：developer 角色关、max_tokens 字段名。
+        // reasoning_effort 只有 k3 官方明确支持；其余模型不开，避免 400。
         compat: {
           supportsStore: false,
           supportsDeveloperRole: false,
-          supportsReasoningEffort: true,
+          supportsReasoningEffort: /^k3([-.]|$)/.test(opts.modelId),
           supportsUsageInStreaming: true,
           maxTokensField: 'max_tokens',
           supportsLongCacheRetention: false,

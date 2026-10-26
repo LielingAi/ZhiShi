@@ -108,9 +108,9 @@ func (f *fakeAdmin) Tasks(context.Context) ([]client.TaskInfo, error) {
 	return f.tasks, f.tasksErr
 }
 
-func (f *fakeAdmin) Archive(_ context.Context, sessionID string) ([]client.ArchiveEntity, error) {
+func (f *fakeAdmin) Archive(_ context.Context, sessionID string) (client.ArchiveData, error) {
 	f.archiveSIDs = append(f.archiveSIDs, sessionID)
-	return f.archive, f.archiveErr
+	return client.ArchiveData{Entities: f.archive}, f.archiveErr
 }
 
 func (f *fakeAdmin) WireMessages(_ context.Context, loopSessionID string) (client.WirePage, error) {

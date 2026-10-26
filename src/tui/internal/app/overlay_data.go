@@ -284,6 +284,9 @@ type archiveOverlay struct {
 	groups []archiveGroup
 	// ents 是原始实体（详情面板要全文/链接，而 row 只留了摘要）。
 	ents []client.ArchiveEntity
+	// brief 是服务端派生的三块简报（2.2.1）；默认展示它，f 切完整账本。
+	brief   *client.ArchiveBrief
+	showAll bool
 	// sel 是扁平实体列表里的光标（分组顺序拼接），写操作作用在它上面。
 	sel  int
 	note string
@@ -309,13 +312,24 @@ func (o *archiveOverlay) Handle(m *Model, msg tea.KeyMsg) tea.Cmd {
 	case "r":
 		// 档案会被 agent 在别处改，不能只靠重开面板。
 		return o.reload(m)
+	case "f":
+		// 简报 ↔ 完整账本（简报是默认面，写操作只在完整账本里开放）。
+		o.showAll = !o.showAll
+		o.sel = 0
+		return nil
 	case "up", "ctrl+p":
 		o.sel--
 	case "down", "ctrl+n":
 		o.sel++
 	case "v", "c", "a":
+		if !o.showAll && o.brief != nil {
+			return nil
+		}
 		return o.handleOps(m, msg)
 	case "enter", "d":
+		if !o.showAll && o.brief != nil {
+			return nil
+		}
 		return o.detail(m)
 	}
 	flat := o.flatRows()
@@ -331,6 +345,70 @@ func (o *archiveOverlay) Handle(m *Model, msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+// renderBrief 是默认面：三块只读摘要（靠得住 / 还缺什么 / 已排除）。
+func (o *archiveOverlay) renderBrief(width, height int) string {
+	maxRows := listOverlayRows(height)
+	lines := []string{headerStyle.Render("研究档案 · 简报")}
+	if o.note != "" {
+		lines = append(lines, noticeStyle.Render("· "+o.note))
+	}
+	sections := []struct {
+		title string
+		items []client.ArchiveBriefItem
+	}{
+		{"靠得住的结论", o.brief.Solid},
+		{"还缺什么", o.brief.Gaps},
+		{"已经死了（别再试）", o.brief.Closed},
+	}
+	shown := 0
+	for _, sec := range sections {
+		if shown >= maxRows {
+			break
+		}
+		lines = append(lines, headerStyle.Render(fmt.Sprintf("%s  %d", sec.title, len(sec.items))))
+		shown++
+		if len(sec.items) == 0 {
+			lines = append(lines, dimStyle.Render("  （无）"))
+			shown++
+			continue
+		}
+		for _, it := range sec.items {
+			if shown >= maxRows {
+				break
+			}
+			line := "  " + valueStyle.Render(it.ID) + "  " + truncateWidth(it.Text, width-12)
+			if meta := briefMeta(it); meta != "" {
+				line += "  " + dimStyle.Render(meta)
+			}
+			lines = append(lines, line)
+			shown++
+		}
+	}
+	if rest := len(o.brief.Solid) + len(o.brief.Gaps) + len(o.brief.Closed); rest > 0 && shown >= maxRows {
+		lines = append(lines, dimStyle.Render(fmt.Sprintf("  …（窗口已满，共 %d 条；f 看全部）", rest)))
+	}
+	lines = append(lines, footerHint("f 看全部 · r 刷新 · Esc 关闭", ""))
+	return strings.Join(lines, "\n")
+}
+
+/** briefMeta 是行尾的一句话依据（证据数 / 反证 / 放弃原因）。 */
+func briefMeta(it client.ArchiveBriefItem) string {
+	if it.Reason != "" {
+		return it.Reason
+	}
+	if it.Kind == "question" {
+		return "未决问题"
+	}
+	parts := make([]string, 0, 2)
+	if it.Support > 0 {
+		parts = append(parts, fmt.Sprintf("证据 %d", it.Support))
+	}
+	if it.Against > 0 {
+		parts = append(parts, fmt.Sprintf("反证 %d", it.Against))
+	}
+	return strings.Join(parts, " · ")
+}
+
 func (o *archiveOverlay) Render(m Model, width, height int) string {
 	switch o.state {
 	case loadIdle, loadRunning:
@@ -339,6 +417,9 @@ func (o *archiveOverlay) Render(m Model, width, height int) string {
 		lines := append([]string{headerStyle.Render("研究档案")}, wrapLines("! "+o.err, width, errStyle)...)
 		lines = append(lines, footerHint("Esc 关闭"))
 		return strings.Join(lines, "\n")
+	}
+	if !o.showAll && o.brief != nil {
+		return o.renderBrief(width, height)
 	}
 
 	maxRows := listOverlayRows(height)
@@ -383,12 +464,20 @@ func (o *archiveOverlay) Render(m Model, width, height int) string {
 	if rest := total - idx; rest > 0 && shown >= maxRows {
 		lines = append(lines, dimStyle.Render("  …（窗口已满，Esc 关闭后可再看）"))
 	}
-	lines = append(lines, footerHint("Esc 关闭"))
+	lines = append(lines, footerHint("f 看简报 · v/c/a 判定 · Enter 详情 · r 刷新 · Esc 关闭", ""))
 	return strings.Join(lines, "\n")
 }
 
 func (o *archiveOverlay) Summary() Summary {
-	s := Summary{Kind: "archive", Title: "研究档案", State: o.state.String(), Err: o.err, Count: o.count()}
+	count := o.count()
+	if !o.showAll && o.brief != nil {
+		count = len(o.brief.Solid) + len(o.brief.Gaps) + len(o.brief.Closed)
+	}
+	s := Summary{Kind: "archive", Title: "研究档案", State: o.state.String(), Err: o.err, Count: count}
+	if o.brief != nil && !o.showAll && len(o.brief.Solid) > 0 {
+		s.First = o.brief.Solid[0].ID + " " + o.brief.Solid[0].Text
+		return s
+	}
 	for _, g := range o.groups {
 		if len(g.rows) > 0 {
 			s.First = g.rows[0].Key + " " + g.rows[0].Desc
@@ -398,13 +487,14 @@ func (o *archiveOverlay) Summary() Summary {
 	return s
 }
 
-func (o *archiveOverlay) apply(groups []archiveGroup, err error, ents []client.ArchiveEntity) {
+func (o *archiveOverlay) apply(groups []archiveGroup, err error, ents []client.ArchiveEntity, brief *client.ArchiveBrief) {
 	if err != nil {
 		o.fail(err)
 		return
 	}
 	o.groups = groups
 	o.ents = ents
+	o.brief = brief
 	o.state = loadReady
 	o.err = ""
 }

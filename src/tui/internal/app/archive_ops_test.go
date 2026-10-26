@@ -11,7 +11,7 @@ import (
 
 func archiveOverlayWith(m Model, groups ...archiveGroup) Model {
 	ov := newArchiveOverlay()
-	ov.apply(groups, nil, nil)
+	ov.apply(groups, nil, nil, nil)
 	m.PushOverlay(ov)
 	return m
 }
@@ -89,7 +89,7 @@ func TestArchiveDetailShowsFullText(t *testing.T) {
 		ID: "H#1", Kind: "hypothesis", Status: "proposed",
 		Text:  "完整假设正文：扫描器在 133 上可用，因为 22 端口开放",
 		Links: []string{"V#2"}, Against: []string{"C#3"}, NeedsReview: true,
-	}})
+	}}, nil)
 
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	out := m.View()
@@ -110,7 +110,7 @@ func TestArchiveDetailActions(t *testing.T) {
 		m.PushOverlay(newArchiveOverlay())
 		ov, _ := lastOverlayOf[*archiveOverlay](&m)
 		ov.apply([]archiveGroup{{kind: "hypothesis", rows: []row{{Key: "H#1", Desc: "x"}}}}, nil,
-			[]client.ArchiveEntity{{ID: "H#1", Kind: "hypothesis", Status: "proposed", Text: "正文"}})
+			[]client.ArchiveEntity{{ID: "H#1", Kind: "hypothesis", Status: "proposed", Text: "正文"}}, nil)
 		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		if _, ok := lastOverlayOf[*detailOverlay](&m); !ok {
 			t.Fatal("前置条件：详情层没打开")

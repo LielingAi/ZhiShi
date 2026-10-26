@@ -103,6 +103,7 @@ type (
 	archiveMsg struct {
 		groups []archiveGroup
 		ents   []client.ArchiveEntity
+		brief  *client.ArchiveBrief
 		err    error
 	}
 	// wireMsg 是只读回看的 wire 消息加载结果。
@@ -604,7 +605,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case archiveMsg:
 		if ov, ok := lastOverlayOf[*archiveOverlay](&m); ok {
-			ov.apply(msg.groups, msg.err, msg.ents)
+			ov.apply(msg.groups, msg.err, msg.ents, msg.brief)
 		}
 		return m, nil
 
@@ -2076,11 +2077,15 @@ func loadArchiveCmd(ctx context.Context, a adminAPI, sessionID string) tea.Cmd {
 		if a == nil {
 			return archiveMsg{err: errNoAdmin}
 		}
-		ents, err := a.Archive(ctx, sessionID)
+		data, err := a.Archive(ctx, sessionID)
 		if err != nil {
 			return archiveMsg{err: err}
 		}
-		return archiveMsg{groups: groupArchive(ents), ents: ents}
+		var brief *client.ArchiveBrief
+		if len(data.Brief.Solid)+len(data.Brief.Gaps)+len(data.Brief.Closed) > 0 {
+			brief = &data.Brief
+		}
+		return archiveMsg{groups: groupArchive(data.Entities), ents: data.Entities, brief: brief}
 	}
 }
 

@@ -5,6 +5,7 @@
  */
 
 import { abandonEntity, correctEntity, loadArchive, resolveHypothesis, resolveQuestion } from './loop/archive';
+import { buildArchiveBrief } from './loop/archive-brief';
 import { getPiSessionId } from './loop/chat-engine';
 import { createArchiveTool } from './loop/tools';
 import { broadcast } from './sse';
@@ -36,7 +37,9 @@ export function handleArchiveList(payload: { sessionId?: string }): AdminRespons
   if (!sessionId) return { success: false, error: 'archive/list: 会话未锚定（先开/接会话）' };
   if (!canReadLine(currentActor(), getLineOwnership(sessionId))) return { success: false, error: 'forbidden' };
   try {
-    return { success: true, data: { archive: loadArchive(sessionId) as unknown as Record<string, unknown> } };
+    const archive = loadArchive(sessionId);
+    // 2.2.1 简报：只读派生（三块：靠得住 / 还缺什么 / 已排除），与完整档案同一次返回。
+    return { success: true, data: { archive: archive as unknown as Record<string, unknown>, brief: buildArchiveBrief(archive) } };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
