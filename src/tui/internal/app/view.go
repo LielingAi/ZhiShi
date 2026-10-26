@@ -294,31 +294,23 @@ func padRows(rows []clickRow, n int) []clickRow {
 }
 
 func (m Model) viewHeader() string {
-	// 2.2.4：状态用「符号 + 中文 + 已运行时长」，不再只显示小写 running/idle
-	// （只在右上角一个英文单词，忙的时候根本注意不到）。
-	state := "○ 空闲"
-	if m.Running() {
-		state = "● 运行中"
-		if el := m.Elapsed(); el > 0 {
-			state += " " + fmtDuration(el)
-		}
-	} else if m.SessionSt == "" || m.SessionSt == "unknown" {
-		state = "○ 状态未知"
-	}
-	if !m.Connected {
-		state += " · 未连接"
-	}
-	// 地址只留 host:port：`http://127.0.0.1:7411` 这串每帧都占十几列，价值却只在
-	// 第一次确认"连的是谁"。
+	// 2.2.5：运行/空闲状态只在状态行与输入框边框显示（header 不再重复）。
+	// 这里只保留连接异常提示——它会改变"能不能操作"的判断，不能省。
 	left := headerStyle.Render("zhishi") + dimStyle.Render("  "+shortServer(m.Server))
 	if m.SessionTitle != "" {
 		left += dimStyle.Render("  ·  ") + valueStyle.Render(truncateWidth(m.SessionTitle, 32))
 	}
-	right := stateStyle(m.SessionSt, state)
+	right := ""
+	if !m.Connected {
+		right = warnStyle.Render("未连接")
+	}
 	if m.SessionID != "" {
 		right = dimStyle.Render(m.SessionID) + dimStyle.Render("  ") + right
 	}
-	// 左标题 / 右状态：右侧贴边，中间留白。宽度不够时优先保右（状态比地址有用）。
+	if right == "" {
+		return left
+	}
+	// 左标题 / 右状态：右侧贴边，中间留白。宽度不够时优先保右。
 	gap := m.contentWidth() - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		left = truncateWidth(left, m.contentWidth()-lipgloss.Width(right)-1)
@@ -547,17 +539,6 @@ func blockLabel(b store.Block) string {
 
 func styleCount(s string) string { return countStyle.Render(s) }
 
-func stateStyle(raw, rendered string) string {
-	switch raw {
-	case "running":
-		return runStyle.Render(rendered)
-	case "idle":
-		return idleStyle.Render(rendered)
-	default:
-		return dimStyle.Render(rendered)
-	}
-}
-
 // drawOverlay 把栈顶覆盖层叠到成品画面上。
 //
 // 覆盖层不参与 JoinVertical：它是盖上去的一层，行数不变、底层布局不动
@@ -709,7 +690,6 @@ var (
 	valueStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color(style.Current.Text))
 	selStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color(style.Current.Warn)).Bold(true)
 	runStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color(style.Current.Warn)).Bold(true)
-	idleStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color(style.Current.OK))
 	noticeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(style.Current.Notice))
 	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color(style.Current.Fail))
 	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color(style.Current.Warn))
