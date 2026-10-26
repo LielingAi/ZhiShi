@@ -326,9 +326,9 @@ func (m Model) nowTime() time.Time {
 //
 // conhost 这类终端把粘贴拆成逐字符 + 回车注入，字符间隔在毫秒级；真人
 // 打完字再按 Enter 通常 > 30ms。阈值取得很紧（12ms）避免误伤：只有
-// 「刚在 25ms 内涌入 ≥8 个字符」之后的回车才算粘贴换行。
+// 「刚在 25ms 内涌入 ≥4 个字符」之后的回车才算粘贴换行。
 func (m Model) pasteEnter() bool {
-	if m.FastChars < 8 || m.LastKeyAt.IsZero() {
+	if m.FastChars < 4 || m.LastKeyAt.IsZero() {
 		return false
 	}
 	return m.nowTime().Sub(m.LastKeyAt) < 12*time.Millisecond
