@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.5] - 2026-10-26
+
+> **两处 TUI 修复**：conhost 粘贴被空行截断发送；header 状态徽标与状态行重复。
+
+### Fixed
+
+- **旧控制台（conhost）粘贴时，空行会触发发送**：conhost 不支持 bracketed paste，粘贴被拆成逐字符 + 回车注入，空行等价于按 Enter，消息从中间被截断。现在「25ms 内涌入 ≥8 字符」之后的回车（<12ms）判为换行；连续空行同样处理；正常打字后回车不受影响
+- **header 不再重复运行/空闲状态**：状态只在状态行（`● 运行中 12s`）与输入框边框（运行时警示色）显示，header 只保留 session id 与断线警告
+
 ## [2.2.4] - 2026-10-26
 
 > **三处实机修复**：带引号/循环的 `env_exec` 命令被拆坏、Windows 多行粘贴多空行、空闲/运行状态看不出来。
