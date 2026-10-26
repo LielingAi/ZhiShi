@@ -7,7 +7,7 @@
   </picture>
 </p>
 
-**v2.2.2 · 安全研究领域的 agent harness：多环境协同、原生语义查询、环境融合、研究档案。**
+**v2.2.3 · 安全研究领域的 agent harness：多环境协同、原生语义查询、环境融合、研究档案。**
 
 [![Version](https://img.shields.io/github/v/tag/LielingAi/ZhiShi)](https://github.com/LielingAi/ZhiShi/tags)
 [![License](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](LICENSE)
@@ -169,7 +169,7 @@ GUI 主窗口已整体删除（`src/gui/**`，历史版本仍在 git 里）。�
 | 工具侧技能 | 4 个工具本体随包分发（agent-browser / download-anything / zhishi-cli / range-ops——发现 + .claude 兼容同步） |
 | 子代理 | bundled-agents：fuzz-runner / crash-triager / vuln-hunter / hypothesis-tester / critic；`Alt+t` 看工作现场与完整 transcript |
 | 域包 | `bundled-domains/<域>/domain.json` —— 域 = 研究知识维度，只由任务内容判定（配方默认 + 内容信号动态修正）；`zhishi domain check` 就绪自检 |
-| 模型 | 8 家内置供应商端点（kimi / deepseek / openai / moonshot / 通义 / 智谱 / 硅基流动…），`zhishi model set-key <id> <key>` 后自动拉模型列表，TUI 里 `Alt+x` 切换（只显示已配置供应商） |
+| 模型 | 8 家内置供应商端点（kimi / deepseek / openai / moonshot / 通义 / 智谱 / 硅基流动…），`zhishi model set-key <id> <key>` 后自动拉模型列表；上游新增模型用 `zhishi model refresh [id]` 刷新（不重写 key）。TUI 里 `Alt+x` 切换（只显示已配置供应商） |
 
 ## 快速开始
 

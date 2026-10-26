@@ -266,6 +266,34 @@ func (c *Client) Tasks(ctx context.Context) ([]TaskInfo, error) {
 	return tasks, nil
 }
 
+// ModelRefreshResult 是一个供应商的目录刷新结果。
+type ModelRefreshResult struct {
+	ID            string `json:"id"`
+	ModelsFetched int    `json:"modelsFetched"`
+	Error         string `json:"error"`
+}
+
+// ModelRefreshInfo 是所有供应商的刷新汇总。
+type ModelRefreshInfo struct {
+	Results []ModelRefreshResult `json:"results"`
+}
+
+// ModelRefresh 用已保存的 key 重新发现模型目录（不重写 key）。
+func (c *Client) ModelRefresh(ctx context.Context) (ModelRefreshInfo, error) {
+	res, err := c.Admin(ctx, "model/refresh", map[string]any{})
+	if err != nil {
+		return ModelRefreshInfo{}, err
+	}
+	if !res.Success {
+		return ModelRefreshInfo{}, fmt.Errorf("%s", res.Error)
+	}
+	var info ModelRefreshInfo
+	if err := json.Unmarshal(res.Data, &info); err != nil {
+		return ModelRefreshInfo{}, fmt.Errorf("model/refresh 数据结构不符：%w", err)
+	}
+	return info, nil
+}
+
 // ArchiveBriefItem 是简报里的一行（服务端派生，只读）。
 type ArchiveBriefItem struct {
 	ID      string `json:"id"`

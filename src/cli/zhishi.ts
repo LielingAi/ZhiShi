@@ -105,7 +105,7 @@ const TOP_HELP = `zhishi — ZhiShi Self-Configuration CLI
 Usage: zhishi [command] [options]        # 裸命令 = 交互式 TUI
 Commands:
   tui       Interactive TUI (default when stdin is a TTY; extra flags are forwarded, e.g. --probe)
-  model     Manage model providers
+  model     Manage model providers (list / set-key / refresh / verify / set-default / add / remove)
   agent     Manage agents (+ 'agent show <id>' for effective defaults)
             会话引擎: pi(M4c 起唯一引擎,SDK 已删除);
             ZHISHI_LOOP_ENGINE/loopEngine=sdk 仅兼容读取,告警并回落 pi
@@ -136,6 +136,7 @@ Global flags:
 Examples:
   zhishi model list
   zhishi model set-key deepseek sk-xxx
+  zhishi model refresh deepseek        # 用已保存的 key 重新拉模型目录（不重写 key）
   zhishi env engines                        # probe docker/hypervisors/ssh + install guidance
   zhishi env install docker|hyperv          # auto-install a missing engine (download + verify + launch / dism)
   zhishi env install msvc-build-tools|windows-sdk|windbg
@@ -350,6 +351,14 @@ if (!result.success) {
     return;
   }
 // Group-specific formatting
+  if (group === 'model' && action === 'refresh') {
+    const data = (result.data as { results?: Array<{ id: string; modelsFetched?: number; error?: string }> }) ?? {};
+    for (const r of data.results ?? []) {
+      if (r.error) console.log('✗ ' + r.id + '  ' + r.error);
+      else console.log('✓ ' + r.id + '  ' + (r.modelsFetched ?? 0) + ' 个模型');
+    }
+    return;
+  }
   if (group === 'model' && action === 'list') {
     printModelList(result.data as Array<Record<string, unknown>>);
     return;
@@ -2345,6 +2354,7 @@ function buildRequestBody(
 // Model commands
   if (group === 'model') {
     if (action === 'set-key') return { id: rest[0] || flags.id, apiKey: rest[1] || flags.apiKey };
+    if (action === 'refresh') return { id: rest[0] || flags.id };
     if (action === 'verify') return { id: rest[0] || flags.id, model: flags.model };
     if (action === 'set-default') return { id: rest[0] || flags.id };
     if (action === 'add') {

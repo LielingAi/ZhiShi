@@ -285,6 +285,17 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'model/set-key') return api.handleModelSetKey(payload as Parameters<typeof api.handleModelSetKey>[0]);
   if (route === 'model/set-default') return api.handleModelSetDefault(payload as Parameters<typeof api.handleModelSetDefault>[0]);
   if (route === 'model/verify') return await api.handleModelVerify(payload as Parameters<typeof api.handleModelVerify>[0]);
+  if (route === 'model/refresh') {
+    const { refreshModelCatalogs } = await import('./model-refresh');
+    const outcome = await refreshModelCatalogs((payload as { id?: string })?.id);
+    if (outcome.error) return { success: false, error: outcome.error };
+    const ok = outcome.results.filter((r) => !r.error && r.modelsFetched !== undefined).length;
+    return {
+      success: true,
+      data: { results: outcome.results },
+      hint: `已刷新 ${ok}/${outcome.results.length} 个供应商的模型目录`,
+    };
+  }
 // Agent commands
   if (route === 'agent/list') return api.handleAgentList();
   if (route === 'agent/show') return api.handleAgentShow(payload as Parameters<typeof api.handleAgentShow>[0]);

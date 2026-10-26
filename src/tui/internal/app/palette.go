@@ -29,6 +29,7 @@ const (
 	PaletteChoices
 	PaletteHistory
 	PaletteHelp
+	PaletteRefreshModels
 	PaletteToggleBlock
 	PaletteCopyBlock
 	PaletteRewind
@@ -66,6 +67,7 @@ func paletteItems() []PaletteItem {
 		{Name: "搜索", Desc: "本会话 → 记忆 / 专家 / 情报（Ctrl+F）", Action: PaletteSearch},
 		{Name: "打开历史回看", Desc: "当前线的历史消息（Alt+h）", Action: PaletteHistory},
 		{Name: "键位帮助", Desc: "所有快捷键与面板说明（F1）", Action: PaletteHelp},
+		{Name: "刷新模型目录", Desc: "用已保存的 key 重新拉取所有供应商的模型（不重写 key）", Action: PaletteRefreshModels},
 		{Name: "跳到最后一块", Desc: "回到底部并跟随输出", Action: PaletteJumpBottom},
 		{Name: "只看失败", Desc: "切换失败块过滤", Action: PaletteToggleFailed},
 		{Name: "重连", Desc: "重新订阅 /chat/stream", Action: PaletteReconnect},
@@ -259,6 +261,8 @@ func (o *paletteOverlay) run(m *Model) tea.Cmd {
 	case PaletteHelp:
 		m.PushOverlay(&helpOverlay{})
 		return nil
+	case PaletteRefreshModels:
+		return modelRefreshCmd(m.Ctx, m.Admin)
 	case PaletteOpenEnv:
 		return m.openEnvOverlay()
 	case PaletteOpenLine:

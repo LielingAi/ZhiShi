@@ -160,6 +160,7 @@ VM 类型环境的快照约定：每次 `env up` 回到 `zhishi-clean` 干净快
 ```bash
 zhishi model list                                # 各家状态与模型
 zhishi model set-key deepseek <apiKey>           # 保存 key（自动拉取模型列表）
+zhishi model refresh [provider]                  # 上游新增模型后刷新目录（不重写 key）
 zhishi model verify deepseek                     # 验证 key 可用
 zhishi model set-default deepseek deepseek-v4-pro   # 设置默认模型
 ```

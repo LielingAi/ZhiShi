@@ -102,16 +102,16 @@ describe('resolveLoopModel（config 自解析）', () => {
     expect(r!.model.contextWindow).toBeGreaterThan(0);
   });
 
-  it('1.6.12：非 k3 的 kimi 模型保持 anthropic 通道（kimi-for-coding 不受影响）', () => {
+  it('2.2.2：kimi-for-coding 等 reasoning 模型也走 openai 通道（CoT 不再进正文）', () => {
     const r = resolveLoopModel(config({
       defaultProviderId: 'moonshot-coding',
       defaultModelId: 'kimi-for-coding',
       providerApiKeys: { 'moonshot-coding': 'fake-key' },
     }));
     expect(r).not.toBeNull();
-    expect(r!.model.api).toBe('anthropic-messages');
-    expect(r!.model.provider).toBe('kimi-coding');
-    expect(r!.model.baseUrl).toBe(KIMI_CODING_BASE_URL);
+    expect(r!.model.api).toBe('openai-completions');
+    expect(r!.model.reasoning).toBe(true);
+    expect(r!.model.baseUrl).toBe('https://api.kimi.com/coding/v1');
   });
 
   it('defaultProviderId 缺省时回落 providerApiKeys 首键', () => {

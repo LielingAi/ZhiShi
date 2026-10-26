@@ -664,6 +664,10 @@ func (f *fakeAdmin) AutoRunStop(_ context.Context, id string) error {
 	return f.autoRunStopErr
 }
 
+func (f *fakeAdmin) ModelRefresh(context.Context) (client.ModelRefreshInfo, error) {
+	return client.ModelRefreshInfo{}, nil
+}
+
 func (f *fakeAdmin) ReportExport(_ context.Context, workspace string) (client.ReportExportInfo, error) {
 	f.reportWorkspaces = append(f.reportWorkspaces, workspace)
 	if f.reportErr != nil {

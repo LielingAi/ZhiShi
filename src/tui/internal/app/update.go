@@ -106,6 +106,11 @@ type (
 		brief  *client.ArchiveBrief
 		err    error
 	}
+	// modelRefreshDoneMsg 是 model/refresh 的结果。
+	modelRefreshDoneMsg struct {
+		info client.ModelRefreshInfo
+		err  error
+	}
 	// wireMsg 是只读回看的 wire 消息加载结果。
 	wireMsg struct {
 		lineID string
@@ -295,6 +300,27 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 					r.state = loadReady
 				}
 			}
+		}
+		return m, nil
+
+	case modelRefreshDoneMsg:
+		if msg.err != nil {
+			m.LastErr = "刷新模型目录失败：" + msg.err.Error()
+			return m, nil
+		}
+		ok, models := 0, 0
+		failed := make([]string, 0, len(msg.info.Results))
+		for _, r := range msg.info.Results {
+			if r.Error != "" {
+				failed = append(failed, r.ID)
+				continue
+			}
+			ok++
+			models += r.ModelsFetched
+		}
+		m.LastNotice = fmt.Sprintf("模型目录已刷新：%d 个供应商 / %d 个模型", ok, models)
+		if len(failed) > 0 {
+			m.LastNotice += "（失败：" + strings.Join(failed, "、") + "）"
 		}
 		return m, nil
 
@@ -2069,6 +2095,19 @@ func loadWireCmd(ctx context.Context, a adminAPI, lineID, title string) tea.Cmd 
 			messages: page.Messages,
 			total:    page.Total,
 		}}
+	}
+}
+
+// modelRefreshCmd 刷新模型目录（用已保存的 key，不重写 key）。
+func modelRefreshCmd(ctx context.Context, a adminAPI) tea.Cmd {
+	return func() tea.Msg {
+		if a == nil {
+			return modelRefreshDoneMsg{err: errNoAdmin}
+		}
+		reqCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		info, err := a.ModelRefresh(reqCtx)
+		return modelRefreshDoneMsg{info: info, err: err}
 	}
 }
 

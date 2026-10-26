@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-10-26
+
+> **模型目录刷新**：上游新增模型后，不用再重传 key。
+
+### Added
+
+- **`zhishi model refresh [provider]`**：用已保存的 key 重新发现模型目录（不写 key、不进 shell history）。不带参数刷新所有已配置供应商；单家失败不影响其它家
+- **TUI 动作中心**（`Ctrl+K`）新增「刷新模型目录」，回执显示成功供应商数与模型总数
+- 成功目录写回 `presetCustomModels`（与 `model set-key` 同一持久化口径）
+
+### Fixed
+
+- 修正 1.6.12 遗留测试：`kimi-for-coding` 等 reasoning 模型在 2.2.2 起走 OpenAI 通道
+
 ## [2.2.2] - 2026-10-26
 
 > **Kimi 思维链泄漏修复**：`kimi-for-coding` 等 reasoning 模型走错协议通道，CoT 被当成正文输出（表现为 “Let me call / Let me do it” 接龙）。同时新增只读「研究简报」。
