@@ -212,7 +212,7 @@ zhishi model set-default deepseek deepseek-v4-pro   # 设置默认模型
 | 键 | 作用 |
 |---|---|
 | `Enter` | 发送；turn 进行中发送 = 纠偏注入（不打断，下一轮接住） |
-| `Alt+Enter` | 换行 |
+| `Ctrl+J` | 换行（Windows Terminal；其他终端也可用 `Alt+Enter`，但 WT 默认把它当全屏） |
 | `Ctrl+K` | 动作中心：搜索并直接执行（环境 / 任务 / 报告 / 搜索…）；命令模板同样可搜 |
 | `/` | 斜杠命令：直接跑 CLI 子命令，输出贴成块 |
 | `@` | 文件 / 环境补全 |

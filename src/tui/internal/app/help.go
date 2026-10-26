@@ -60,7 +60,7 @@ var helpSections = []helpSection{
 		title: "发消息",
 		rows: [][2]string{
 			{"Enter", "发送（运行中则作为纠偏注入，进 Alt+q 的队列）"},
-			{"Alt+Enter", "换行（Windows 下 Ctrl+J 与 Enter 同码，用这个）"},
+			{"Ctrl+J", "换行（Windows Terminal 可靠；Alt+Enter 在 WT 被当全屏）"},
 			{"/", "CLI 子命令候选：/model list、/env list、/help …"},
 			{"@", "工作区文件补全；命中的文件会作为结构化引用随消息发送"},
 			{"Alt+i / Alt+u", "附加图片（输入或粘贴路径，≤8MB）/ 移除最后一张"},

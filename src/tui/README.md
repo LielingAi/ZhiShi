@@ -50,7 +50,7 @@ INSERT 模式——输入框永远聚焦，没有 NORMAL 模式。bubbletea 的 
 | 键 | 作用 |
 |---|---|
 | `Enter` | 发送 |
-| `Alt+Enter` | 换行（Windows 控制台把 Ctrl+J 与 Enter 同码，只有 Alt+Enter 可靠） |
+| `Ctrl+J` | 换行（Windows Terminal 可靠；WT 把 Alt+Enter 抢作全屏） |
 | `Alt+j` / `Alt+k` | 移动 block 光标（移出视口时自动滚动跟随） |
 | `Alt+r` / 点块头 | 折叠/展开**工具输出 / 思考**（工具超 3 行、思考超 3 行才折）——光标没动过时作用于最后一块可折叠的块；块头 `▸` 标出该块。助手正文与用户消息永远完整显示 |
 | `Alt+y` | 复制当前块正文（OSC52，不支持时落临时文件） |
@@ -121,7 +121,7 @@ INSERT  选择  deepseek-flash  ctx 40%  102k/250k  Σ 124k  队列 0
   env_exec 只占十几行（原来每个 8 行）；工具块之间也不留空行
 - 工具首行 `exit=N`（N≠0）会在块头标 ✗——`isError` 之外的第二道判据
 - 标题行显示 sidecar 自动生成的会话标题；状态行显示任务形态与后台进程数
-- 换行键是 Alt+Enter：Windows 控制台把 Ctrl+J 归一成 Enter（见偏差 5）
+- 换行键优先 Ctrl+J：Windows Terminal 能区分 LF；Alt+Enter 在 WT 被当成全屏（见偏差 5）
 - 助手正文走**轻量 markdown**：标题去掉 `#` 变强调色、`- `→`• `、`> `→`│ `、
   行内代码 / 加粗去标记变色、围栏代码块内整体着色。只做「单行可判定」的语法，
   不改行数、不变宽——否则折行与虚拟滚动会算错
@@ -319,10 +319,9 @@ INSERT  deepseek-flash · ctx 41% · 168k/250k · Σ 12k · 队列 0 · 5m12s ·
    最后一个 go 1.24 兼容版。
 4. **attach 的结束提示落在状态行**，不是直接写 stdout：attach 结束后终端归
    bubbletea 管，写 stdout 会被紧接着的重绘盖掉（用户等于看不到）。
-5. **换行只有 `Alt+Enter` 可靠。** Windows 控制台把 Ctrl+J 归一成 `VK_RETURN`
-   （与 Enter 同码），bubbletea 在 Windows 上拿不到 Ctrl 位；`Shift+Enter` 需要
-   CSI-u，v1.3 不支持。代码里三个键都收（Unix 终端下 Ctrl+J 仍是 LF），但文档
-   只承诺 `Alt+Enter`。
+5. **换行键按终端选。** Windows Terminal 把 Ctrl+J 发成 LF（`ctrl+j`），可靠；
+   但它默认把 `Alt+Enter` 抢作全屏。传统 conhost 把 Ctrl+J 归一成 `VK_RETURN`
+   （与 Enter 同码），此时只剩 `Alt+Enter`。`Shift+Enter` 需要 CSI-u，v1.3 不支持。
 6. **`Ctrl+Space` 上报成 `ctrl+@`**，两个都认。
 7. **attach 的 `SetStdin` 拿到的是 bubbletea 的输入流**，不是我们自己的 `os.Stdin`。
    它通常是 `*os.File`（能 raw + 读）；用 `tea.WithInput(自定义 reader)` 时拿不到

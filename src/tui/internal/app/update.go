@@ -673,6 +673,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch action {
 	case ActionInput:
 		var cmd tea.Cmd
+		// Windows 剪贴板是 CRLF：bubbles 的清洗器会把 \r 和 \n 各自替换成
+		// 换行，粘贴出来每行之间多一个空行。先归一成 LF 再交给 textarea。
+		if len(msg.Runes) > 1 {
+			msg.Runes = normalizePastedNewlines(msg.Runes)
+		}
 		m.Input, cmd = m.Input.Update(msg)
 		// 候选完全由输入内容派生：每敲一个字符重算一次（模板只有 20 来条，
 		// 比"维护一份可见性状态机"便宜得多，也不会出现状态不同步）。
@@ -1607,6 +1612,24 @@ func (m Model) targetBlock() (store.Block, bool) {
 		return store.Block{}, false
 	}
 	return vb[m.effectiveCursor()], true
+}
+
+// normalizePastedNewlines 把 CRLF / 孤立 CR 归一成 LF。
+// bubbles 的清洗器会把 \r 和 \n 各自替换成一次换行——Windows 剪贴板的
+// CRLF 于是变成两个换行（粘贴多行时每行之间多一个空行）。
+func normalizePastedNewlines(runes []rune) []rune {
+	out := make([]rune, 0, len(runes))
+	for i := 0; i < len(runes); i++ {
+		if runes[i] == '\r' {
+			if i+1 < len(runes) && runes[i+1] == '\n' {
+				continue // CRLF 的 CR 丢掉，保留后面的 LF
+			}
+			out = append(out, '\n')
+			continue
+		}
+		out = append(out, runes[i])
+	}
+	return out
 }
 
 // bodyLineCount 数正文行数（与渲染口径一致：去掉尾部空行后按 \n 切）。
