@@ -242,6 +242,13 @@ type Model struct {
 	// 退出
 	QuitArmed bool
 	Quit      bool
+
+	// 粘贴突发检测：老 conhost 没有 bracketed paste，粘贴会被拆成逐字符 +
+	// 回车注入。用「短间隔内到达大量字符」把随后的 Enter 判成换行，而不是发送。
+	LastKeyAt time.Time
+	FastChars int
+	// Clock 是测试注入口；缺省 time.Now。
+	Clock func() time.Time
 }
 
 // NewModel 构造初态。c 为 nil 表示纯离线（测试/渲染自查）。
@@ -276,6 +283,7 @@ func NewModel(server string, c *client.Client) Model {
 		MouseOn:         false, // 默认把鼠标留给终端：拖选复制开箱即用；滚轮靠 ↑↓ 兜底（WT 会翻译）
 		Ctx:             ctx,
 		Cancel:          cancel,
+		Clock:           time.Now,
 	}
 	if c != nil {
 		m.Admin = c
@@ -306,6 +314,25 @@ func (m *Model) PopOverlay() bool {
 
 // Running 表示 sidecar 报告当前 turn 在跑（chat:status / chat:init）。
 func (m Model) Running() bool { return m.SessionSt == "running" }
+
+func (m Model) nowTime() time.Time {
+	if m.Clock != nil {
+		return m.Clock()
+	}
+	return time.Now()
+}
+
+// pasteEnter 判断这次 Enter 是否来自「无 bracketed paste 的粘贴」。
+//
+// conhost 这类终端把粘贴拆成逐字符 + 回车注入，字符间隔在毫秒级；真人
+// 打完字再按 Enter 通常 > 30ms。阈值取得很紧（12ms）避免误伤：只有
+// 「刚在 25ms 内涌入 ≥8 个字符」之后的回车才算粘贴换行。
+func (m Model) pasteEnter() bool {
+	if m.FastChars < 8 || m.LastKeyAt.IsZero() {
+		return false
+	}
+	return m.nowTime().Sub(m.LastKeyAt) < 12*time.Millisecond
+}
 
 // CursorBlock 返回光标所在的块。
 func (m Model) CursorBlock() (store.Block, bool) { return m.Store.At(m.Cursor) }

@@ -673,6 +673,20 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch action {
 	case ActionInput:
 		var cmd tea.Cmd
+		// 粘贴突发统计（见 Model.pasteEnter）：只统计普通字符事件，bracketed
+		// paste 是原子事件，直接清空计数。
+		now := m.nowTime()
+		if msg.Paste {
+			m.FastChars = 0
+			m.LastKeyAt = now
+		} else if msg.Type == tea.KeyRunes {
+			if !m.LastKeyAt.IsZero() && now.Sub(m.LastKeyAt) < 25*time.Millisecond {
+				m.FastChars += len(msg.Runes)
+			} else {
+				m.FastChars = len(msg.Runes)
+			}
+			m.LastKeyAt = now
+		}
 		// Windows 剪贴板是 CRLF：bubbles 的清洗器会把 \r 和 \n 各自替换成
 		// 换行，粘贴出来每行之间多一个空行。先归一成 LF 再交给 textarea。
 		if len(msg.Runes) > 1 {
@@ -866,6 +880,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 
 	case ActionSend:
+		// 老 conhost 的粘贴是逐字符+回车注入：紧跟大量字符的 Enter 要当换行，
+		// 否则粘贴会被从中间截断发送（空行尤其明显）。
+		if m.pasteEnter() {
+			m.Input.InsertString("\n")
+			m.LastKeyAt = m.nowTime()
+			m.layout()
+			return m, nil
+		}
 		// @ 候选在场时 Enter = 接受补全，不发送（和斜杠菜单同一套手感）。
 		if m.AtRows() > 0 {
 			m.applyAt()
@@ -886,6 +908,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		m.Input.Reset()
 		m.Menu = nil
+		m.FastChars = 0
+		m.LastKeyAt = time.Time{}
 		m.layout()
 		m.ScrollLines = 0 // 自己发的消息一定要看得到
 		// 以 / 开头 = CLI 子命令（见 slash.go）；否则是会话消息。

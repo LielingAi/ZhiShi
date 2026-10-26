@@ -3,6 +3,7 @@ package app
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -12,6 +13,9 @@ import (
 
 func testModel() Model {
 	m := NewModel("http://127.0.0.1:7411", nil)
+	// 测试里每次读时钟推进 1s：避免触发「粘贴突发」启发式（真实用户打字间隔）。
+	var tick int64
+	m.Clock = func() time.Time { tick++; return time.Unix(tick, 0) }
 	m.Width, m.Height = 100, 30
 	m.layout()
 	return m
