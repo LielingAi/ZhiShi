@@ -294,9 +294,16 @@ func padRows(rows []clickRow, n int) []clickRow {
 }
 
 func (m Model) viewHeader() string {
-	state := m.SessionSt
-	if state == "" {
-		state = "unknown"
+	// 2.2.4：状态用「符号 + 中文 + 已运行时长」，不再只显示小写 running/idle
+	// （只在右上角一个英文单词，忙的时候根本注意不到）。
+	state := "○ 空闲"
+	if m.Running() {
+		state = "● 运行中"
+		if el := m.Elapsed(); el > 0 {
+			state += " " + fmtDuration(el)
+		}
+	} else if m.SessionSt == "" || m.SessionSt == "unknown" {
+		state = "○ 状态未知"
 	}
 	if !m.Connected {
 		state += " · 未连接"
@@ -346,7 +353,12 @@ func (m Model) viewInput() string {
 	if inner < 10 {
 		inner = 10
 	}
-	return inputStyle.Width(inner).Render(m.Input.View())
+	// 运行中输入板换警示色边框——这是屏幕上最容易被余光扫到的位置。
+	border := style.Current.Faint
+	if m.Running() {
+		border = style.Current.Warn
+	}
+	return inputStyle.BorderForeground(lipgloss.Color(border)).Width(inner).Render(m.Input.View())
 }
 
 // viewStatus 固定两行：状态行 + 提示/键位行。
@@ -379,6 +391,14 @@ func (m Model) statusLine() string {
 	}
 	segs := []seg{
 		{modeStyle.Render("INSERT"), 0},
+	}
+	if m.Running() {
+		// 2.2.4：忙碌状态必须在输入框旁边也可见（header 在顶部，滚动时容易看丢）。
+		state := "● 运行中"
+		if el := m.Elapsed(); el > 0 {
+			state += " " + fmtDuration(el)
+		}
+		segs = append(segs, seg{runStyle.Render(state), 0})
 	}
 	if m.MouseOn {
 		// 默认是"鼠标交给终端"，只有接管时才提示——常态不该占状态栏。
