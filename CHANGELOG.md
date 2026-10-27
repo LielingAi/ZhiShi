@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.6] - 2026-10-26
+
+> **大段粘贴不再被静默截断**：textarea 包内部硬上限 10000 行，超出部分现在暂存并在发送时完整拼回。
+
+### Added
+
+- **粘贴溢出缓冲**：输入框软上限 9900 行；超出的粘贴内容进 `PasteOverflow`，状态行显示「暂存 N 行」，发送时按原顺序拼回正文，发送后清空
+- bracketed paste（Windows Terminal 等）一次切分；conhost 逐键粘贴到上限后新输入直接进溢出
+
+### Fixed
+
+- 短粘贴（4–7 个字符）的换行判定：粘贴突发阈值 8 → 4
+
 ## [2.2.5] - 2026-10-26
 
 > **两处 TUI 修复**：conhost 粘贴被空行截断发送；header 状态徽标与状态行重复。
