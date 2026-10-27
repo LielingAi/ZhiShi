@@ -392,6 +392,10 @@ func (m Model) statusLine() string {
 		}
 		segs = append(segs, seg{runStyle.Render(state), 0})
 	}
+	if n := len(m.PasteOverflow); n > 0 {
+		// 超出输入框容量的粘贴内容：发送时会拼回正文，这里必须让人看见。
+		segs = append(segs, seg{dimStyle.Render(fmt.Sprintf("暂存 %d 行", n)), 0})
+	}
 	if m.MouseOn {
 		// 默认是"鼠标交给终端"，只有接管时才提示——常态不该占状态栏。
 		segs = append(segs, seg{selStyle.Render("鼠标"), 3})

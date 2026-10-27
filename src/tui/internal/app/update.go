@@ -687,6 +687,23 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			}
 			m.LastKeyAt = now
 		}
+		// textarea 的硬上限是 10000 行：超出部分进 PasteOverflow，发送时拼回。
+		// bracketed paste 可以一次切分；无 bracketed paste（conhost）逐键到达，
+		// 到了软上限后新输入直接进溢出。
+		if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+			if msg.Paste && strings.Contains(string(msg.Runes), "\n") {
+				head, tail := splitPasteForInput(m.Input.LineCount(), string(msg.Runes))
+				if len(tail) > 0 {
+					m.PasteOverflow = append(m.PasteOverflow, tail...)
+					msg.Runes = []rune(head)
+				}
+			} else if !msg.Paste && m.Input.LineCount() >= inputLineCap {
+				m.PasteOverflow = append(m.PasteOverflow, strings.Split(string(msg.Runes), "\n")...)
+				m.Menu = buildSlashMenu(m.Input.Value())
+				m.layout()
+				return m, nil
+			}
+		}
 		// Windows 剪贴板是 CRLF：bubbles 的清洗器会把 \r 和 \n 各自替换成
 		// 换行，粘贴出来每行之间多一个空行。先归一成 LF 再交给 textarea。
 		if len(msg.Runes) > 1 {
@@ -883,7 +900,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		// 老 conhost 的粘贴是逐字符+回车注入：紧跟大量字符的 Enter 要当换行，
 		// 否则粘贴会被从中间截断发送（空行尤其明显）。
 		if m.pasteEnter() {
-			m.Input.InsertString("\n")
+			if m.Input.LineCount() >= inputLineCap {
+				m.PasteOverflow = append(m.PasteOverflow, "")
+			} else {
+				m.Input.InsertString("\n")
+			}
 			m.LastKeyAt = m.nowTime()
 			m.layout()
 			return m, nil
@@ -893,7 +914,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.applyAt()
 			return m, nil
 		}
-		text := strings.TrimSpace(m.Input.Value())
+		text := strings.TrimSpace(m.composeInput())
 		// 只有图片没有文字也是合法消息（服务端允许）。
 		if text == "" && len(m.PendingImages) == 0 {
 			return m, nil
@@ -908,6 +929,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		m.Input.Reset()
 		m.Menu = nil
+		m.PasteOverflow = nil
 		m.FastChars = 0
 		m.LastKeyAt = time.Time{}
 		m.layout()
@@ -1636,6 +1658,20 @@ func (m Model) targetBlock() (store.Block, bool) {
 		return store.Block{}, false
 	}
 	return vb[m.effectiveCursor()], true
+}
+
+// splitPasteForInput 按 textarea 软上限切分粘贴文本：head 进输入框，
+// tail 进 PasteOverflow（发送时拼回）。currentLines 是输入框当前行数。
+func splitPasteForInput(currentLines int, text string) (head string, tail []string) {
+	lines := strings.Split(text, "\n")
+	room := inputLineCap - currentLines
+	if room < 0 {
+		room = 0
+	}
+	if len(lines) <= room {
+		return text, nil
+	}
+	return strings.Join(lines[:room], "\n"), lines[room:]
 }
 
 // normalizePastedNewlines 把 CRLF / 孤立 CR 归一成 LF。

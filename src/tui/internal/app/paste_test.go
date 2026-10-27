@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -59,5 +60,30 @@ func TestNormalEnterStillSends(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("正常回车应发送")
+	}
+}
+
+func TestLargePasteOverflowsInsteadOfTruncating(t *testing.T) {
+	m := testModel()
+	var b strings.Builder
+	for i := 0; i < 12000; i++ {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("line")
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Paste: true, Runes: []rune(b.String())})
+
+	if len(m.PasteOverflow) == 0 {
+		t.Fatal("超过输入框上限的粘贴应进入 PasteOverflow")
+	}
+	if got := len(strings.Split(m.composeInput(), "\n")); got != 12000 {
+		t.Fatalf("发送文本应保留全部 12000 行，实际 %d", got)
+	}
+	if m.Input.LineCount() > inputLineCap+1 {
+		t.Fatalf("输入框内容不应超过软上限，实际 %d", m.Input.LineCount())
+	}
+	if line := m.statusLine(); !strings.Contains(line, "暂存") {
+		t.Fatalf("状态行应提示暂存行数：%q", line)
 	}
 }

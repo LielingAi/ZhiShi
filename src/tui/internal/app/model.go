@@ -28,6 +28,9 @@ import (
 const (
 	minInputLines = 1
 	maxInputLines = 6
+	// inputLineCap 是输入框内容行的软上限（bubbles 的硬上限是 10000 行）。
+	// 超过部分进 PasteOverflow，发送时拼回正文，避免大段粘贴被静默截断。
+	inputLineCap = 9900
 )
 
 // 没有 WindowSizeMsg 时的兜底尺寸。真终端一定会发尺寸，但非 TTY（管道、
@@ -247,6 +250,9 @@ type Model struct {
 	// 回车注入。用「短间隔内到达大量字符」把随后的 Enter 判成换行，而不是发送。
 	LastKeyAt time.Time
 	FastChars int
+	// PasteOverflow 是超出输入框容量的粘贴内容（textarea 包内部硬上限
+	// 10000 行）。输入框继续可编辑，溢出行原样保存，发送时拼在正文后面。
+	PasteOverflow []string
 	// Clock 是测试注入口；缺省 time.Now。
 	Clock func() time.Time
 }
@@ -386,6 +392,16 @@ func (m Model) InputLines() int {
 		n = maxInputLines
 	}
 	return n
+}
+
+// composeInput 把输入框正文与溢出粘贴拼成最终发送文本。
+// 溢出部分用户不能就地编辑，但一定随消息带上——宁可多发，不可静默丢。
+func (m Model) composeInput() string {
+	v := m.Input.Value()
+	if len(m.PasteOverflow) == 0 {
+		return v
+	}
+	return v + "\n" + strings.Join(m.PasteOverflow, "\n")
 }
 
 // StreamHeight 返回 stream 区可用行数。
