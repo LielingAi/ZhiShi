@@ -192,6 +192,8 @@ zhishi model set-default deepseek deepseek-v4-pro   # 设置默认模型
 | `/mission <形态>` | 改任务形态（挖掘/利用/复现/ctf/无类型） |
 | `/rewind` | 回退到历史消息（改完重发） |
 | `/fork` | 从某条消息分叉出新线 |
+| `/clear` | 清空当前窗口屏幕；会话上下文保留 |
+| `/reset` | 重置当前会话：新线 + 清屏（等价 `Alt+x → 重置当前会话`） |
 | `/queue` | 查看/取消排队消息 |
 | `/tasks` | 任务中心（检查面板页签同源：战役对象卡/后台进程/子代理） |
 | `Alt+x → 导出研究报告` | 导出报告目录（index.md + report.md + findings/ + evidence/ + report.zip），需一次越界批准 |

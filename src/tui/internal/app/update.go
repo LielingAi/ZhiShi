@@ -445,8 +445,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if msg.sessionID != "" {
 			m.SessionID = msg.sessionID
 		}
-		// 三个动作都会改变服务端历史：重连一次拿回权威回放。
-		return m, m.reconnect()
+		// reset/fork/rewind 都会改变历史：旧块表整份作废后重连，避免残留已截断内容。
+		return m, m.afterLineSwitch(m.LastNotice)
 
 	case modelSwitchDoneMsg:
 		if msg.err != nil {
@@ -958,9 +958,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.LastKeyAt = time.Time{}
 		m.layout()
 		m.ScrollLines = 0 // 自己发的消息一定要看得到
-		// 以 / 开头 = CLI 子命令（见 slash.go）；否则是会话消息。
+		// 以 / 开头 = 本地命令或 CLI 子命令（见 slash.go）；否则是会话消息。
 		if args, isSlash := parseSlash(text); isSlash {
-			return m, m.startCLI(args)
+			return m, m.startSlash(args)
 		}
 		// 本地先回显一条用户消息：流里只有助手输出，不回显的话自己发了什么
 		// 在画面上完全消失（对照 Warp / Claude Code 的对话结构）。
@@ -1810,6 +1810,16 @@ func (m *Model) ensureTick() tea.Cmd {
 	}
 	m.Ticking = true
 	return tickCmd()
+}
+
+// clearTranscript 只清当前窗口的可视块，不动会话、上下文和事件序号。
+// 序号必须保留：在途 SSE 事件/命令回执仍可能落到清屏前的块 id 上。
+func (m *Model) clearTranscript() {
+	m.Store.Reset()
+	m.PendingUserEcho = make(map[string]string)
+	m.Cursor = 0
+	m.ScrollLines = 0
+	m.LastErr = ""
 }
 
 // afterLineSwitch 是"线换了"之后的统一善后。

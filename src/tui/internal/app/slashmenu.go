@@ -21,6 +21,8 @@ const slashMenuMaxRows = 8
 // 能力边界（见文件头注释）。
 func commandTemplates() []PaletteItem {
 	return []PaletteItem{
+		{Name: "/clear", Desc: "清屏（会话上下文保留）", Insert: "/clear"},
+		{Name: "/reset", Desc: "重置当前会话（新线 + 清屏）", Insert: "/reset"},
 		{Name: "/model list", Desc: "provider / 默认模型", Insert: "/model list"},
 		{Name: "/model set-key ", Desc: "写 provider key（<id> <key>）", Insert: "/model set-key "},
 		{Name: "/model verify ", Desc: "验证 provider 是否可用", Insert: "/model verify "},

@@ -128,12 +128,16 @@ func TestModelOverlaySwitches(t *testing.T) {
 // 成功回执 → 提示 + 重连（重新拉权威历史）。
 func TestSessionOpDoneReconnects(t *testing.T) {
 	m := testModel()
+	m.Store.Upsert(store.Block{ID: "msg:old", Kind: store.KindUser, Version: 1, Body: "回退前"})
 	m2, cmd := m.Update(sessionOpDoneMsg{op: "rewind"})
 	if cmd == nil {
 		t.Fatal("回退成功后应重连")
 	}
 	if !strings.Contains(m2.LastNotice, "回退") {
 		t.Fatalf("应有提示，实际 %q", m2.LastNotice)
+	}
+	if m2.Store.Len() != 0 {
+		t.Fatal("reset/fork/rewind 后必须清空旧块，等权威历史重放")
 	}
 }
 
@@ -149,6 +153,38 @@ func TestStartupCreatesIndependentEmptyLine(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("创建成功后应订阅新线")
+	}
+}
+
+func TestClearSlashClearsScreenOnly(t *testing.T) {
+	m := typeString(testModel(), "/clear")
+	m.SessionID = "ls-current"
+	m.ContextUsed = 4096
+	m.Store.Upsert(store.Block{ID: "msg:old", Kind: store.KindUser, Version: 1, Body: "旧内容"})
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("/clear 是本地命令，不应起 CLI 子进程")
+	}
+	if m.Store.Len() != 0 {
+		t.Fatal("/clear 应清空可视块")
+	}
+	if m.SessionID != "ls-current" || m.ContextUsed != 4096 {
+		t.Fatal("/clear 不应改变会话或上下文")
+	}
+	if !strings.Contains(m.LastNotice, "上下文保留") {
+		t.Fatalf("应说明上下文保留，实际 %q", m.LastNotice)
+	}
+}
+
+func TestResetSlashUsesSessionReset(t *testing.T) {
+	m := typeString(testModel(), "/reset")
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("/reset 应发起会话重置")
+	}
+	msg, ok := cmd().(sessionOpDoneMsg)
+	if !ok || msg.op != "reset" {
+		t.Fatalf("/reset 应走 reset 通道，实际 %#v", msg)
 	}
 }
 

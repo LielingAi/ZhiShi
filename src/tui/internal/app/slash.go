@@ -201,6 +201,22 @@ func ProbeCLI(server, token, input string) (out string, ok bool, err error) {
 }
 
 // startCLI 建块并下发子进程命令。块先以 live 态出现，结果回来再补正文。
+// startSlash 先处理少量只属于 TUI 的本地命令，其余仍原样交给 CLI。
+func (m *Model) startSlash(args []string) tea.Cmd {
+	if len(args) == 1 {
+		switch strings.ToLower(args[0]) {
+		case "clear":
+			m.clearTranscript()
+			m.LastNotice = "屏幕已清空（会话上下文保留）"
+			return nil
+		case "reset":
+			m.LastNotice = "正在重置会话…"
+			return sessionOpCmd(m.Ctx, m.sessionClient(), "reset", m.SessionID, "")
+		}
+	}
+	return m.startCLI(args)
+}
+
 func (m *Model) startCLI(args []string) tea.Cmd {
 	if len(args) == 0 {
 		m.LastNotice = "用法：/<cli 子命令>，例如 /model list、/env list、/status"

@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.8] - 2026-11-02
+
+> **TUI 清屏与会话重置恢复**：补回本地 `/clear`、`/reset`，并修复 reset/rewind/fork 后旧内容仍留在屏幕上的问题。
+
+### Added
+
+- `/clear`：只清空当前窗口可视块，保留会话上下文与服务端历史
+- `/reset`：直接重置当前会话（新线 + 清屏），等价于 `Alt+x → 重置当前会话`
+
+### Fixed
+
+- reset/rewind/fork 完成后旧块表未作废，历史本应清空时仍显示旧内容；现在先清空再接收权威历史重放
+
 ## [2.2.7] - 2026-11-02
 
 > **TUI 会话启动与多窗口隔离**：每次启动都进入独立空 Session；历史恢复只影响当前窗口，多个 TUI 与团队模式不再共享当前线。
