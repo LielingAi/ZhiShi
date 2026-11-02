@@ -209,6 +209,7 @@ const NON_ADMIN_OPERATOR_POSTS = new Set([
   '/chat/queue/cancel',
   '/chat/reset',
   '/sessions/fork',
+  '/sessions/new',
   '/sessions/switch',
   '/cron/execute-sync',
   // respond 角色死结的 B 案（WREN 2026-09-29 定）：路由档降到 operator 让

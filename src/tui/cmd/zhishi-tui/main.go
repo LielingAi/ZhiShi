@@ -113,7 +113,11 @@ func runProbe(c *client.Client, server string) error {
 	}
 	fmt.Printf("health    ok  %s\n", server)
 
-	sub, err := c.Subscribe(ctx)
+	sessionID, err := c.NewSession(ctx)
+	if err != nil {
+		return fmt.Errorf("POST /sessions/new: %w", err)
+	}
+	sub, err := c.Subscribe(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("GET /chat/stream: %w", err)
 	}
@@ -124,7 +128,7 @@ func runProbe(c *client.Client, server string) error {
 	// 失败（无 provider key 等）不影响探针结论——错误本身也是 SSE 事件。
 	sent := make(chan error, 1)
 	go func() {
-		res, err := c.Send(ctx, "probe: zhishi-tui M0 walking skeleton", client.SendOptions{})
+		res, err := c.Send(ctx, "probe: zhishi-tui M0 walking skeleton", client.SendOptions{SessionID: sessionID})
 		switch {
 		case err != nil:
 			sent <- err

@@ -249,9 +249,10 @@ format=wire&loopSessionId=<loopSessionId>` → `replayWire` 灌进**独立的 St
 | 面板/功能 | 调用 | 线上形状（节选） |
 |---|---|---|
 | 环境 | `POST /api/admin/environment/list` | `{success, data:{environments:[{id,kind,name,host,container,address,user,capabilityDomains[]}]}}` |
-| 环境切换 | `POST /api/admin/environment/select` | 请求 `{workspace, selection:{kind:"env",id}}` |
+| 环境切换 | `POST /api/admin/environment/select` | 请求 `{workspace, selection:{kind:"env",id}, sessionId}`，只切当前 TUI 的线 |
+| 启动新线 | `POST /sessions/new` | 每个 TUI 进程启动一次；返回独立空 `sessionId`，不改其他窗口 |
 | 线/回看列表 | `GET /sessions` | `{success, sessions:[{id,title,loopSessionId,lastActiveAt,archived,stats:{messageCount}}]}` |
-| 线切换 | `POST /sessions/switch` | 请求 `{sessionId}` |
+| 线切换 / live 订阅 | `GET /chat/stream?sessionId=<loopSessionId>&attach=1` | 当前 TUI 本地改持线后订阅；不改共享 actor 活跃指针 |
 | 回看消息 | `GET /api/loop-session/messages?format=wire` | `{success, messages:[{id,role,content,timestamp,name?,ok?,kind?,choice?}], totalMessages, truncated}` |
 | 任务 | `POST /api/admin/task/list` | `{success, data:[{id,name,status,executor,tags[],createdAt,updatedAt}]}` |
 | 档案 | `POST /api/admin/archive/list` | 请求 `{sessionId}`；`{success, data:{archive:{entities:[{id,kind,text,status,links[],against[],needsReview}]}}}` |

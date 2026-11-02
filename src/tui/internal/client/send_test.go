@@ -23,12 +23,13 @@ func TestSendIncludesRefsAndPermissionMode(t *testing.T) {
 
 	c := New(srv.URL, "")
 	if _, err := c.Send(context.Background(), "看下这个", SendOptions{
+		SessionID:      "ls-window",
 		PermissionMode: "fullAgency",
 		Refs:           []ChatRef{{Type: "file", Path: "a/b.go"}, {Type: "env", ID: "vsrx"}},
 	}); err != nil {
 		t.Fatalf("Send 失败：%v", err)
 	}
-	if got["text"] != "看下这个" || got["permissionMode"] != "fullAgency" {
+	if got["text"] != "看下这个" || got["permissionMode"] != "fullAgency" || got["sessionId"] != "ls-window" {
 		t.Fatalf("payload 缺字段：%+v", got)
 	}
 	refs, ok := got["refs"].([]any)

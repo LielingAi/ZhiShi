@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.7] - 2026-11-02
+
+> **TUI 会话启动与多窗口隔离**：每次启动都进入独立空 Session；历史恢复只影响当前窗口，多个 TUI 与团队模式不再共享当前线。
+
+### Added
+
+- 新增 `POST /sessions/new`：每个 TUI 进程创建独立空线，首条消息后再自动建档；SSE 断线重连不重复创线
+- 每个 TUI 显式持有 `loopSessionId`，发送、停止、重置、回退、分叉、队列、切模型与环境切换均按线寻址
+
+### Fixed
+
+- `zhishi tui` 不再从任意目录自动进入最后的 Session；`Alt+l` 只恢复当前窗口选中的历史线，`Alt+h` 保持只读回看
+- 团队模式新线创建即登记当前 Actor 为 owner；SSE 与写操作继续执行私有线/共享线权限矩阵
+- 同步 `env_exec` 测试剥壳函数与 heredoc 包装，全量 unit 恢复全绿
+
 ## [2.2.6] - 2026-10-26
 
 > **大段粘贴不再被静默截断**：textarea 包内部硬上限 10000 行，超出部分现在暂存并在发送时完整拼回。

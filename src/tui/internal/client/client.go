@@ -88,6 +88,8 @@ type ChatImage struct {
 
 // SendOptions 是 /chat/send 的可选字段。
 type SendOptions struct {
+	// SessionID 是当前 TUI 实例持有的 loopSessionId。
+	SessionID string
 	// PermissionMode: auto（默认，越界要审批）| fullAgency（后台全自主）。
 	PermissionMode string
 	Refs           []ChatRef
@@ -96,6 +98,9 @@ type SendOptions struct {
 
 func (c *Client) Send(ctx context.Context, text string, opts SendOptions) (SendResult, error) {
 	payload := map[string]any{"text": text}
+	if opts.SessionID != "" {
+		payload["sessionId"] = opts.SessionID
+	}
 	if opts.PermissionMode != "" {
 		payload["permissionMode"] = opts.PermissionMode
 	}
@@ -131,23 +136,10 @@ func (c *Client) Send(ctx context.Context, text string, opts SendOptions) (SendR
 	return out, nil
 }
 
-// Stop 中断当前 turn（POST /chat/stop）。
-func (c *Client) Stop(ctx context.Context) error {
-	req, err := c.newRequest(ctx, http.MethodPost, "/chat/stop", strings.NewReader("{}"))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("stop: HTTP %d", resp.StatusCode)
-	}
-	return nil
+// Stop 中断当前 TUI 所持线的 turn（POST /chat/stop）。
+func (c *Client) Stop(ctx context.Context, sessionID string) error {
+	raw, _ := json.Marshal(map[string]string{"sessionId": sessionID})
+	return c.postRoot(ctx, "/chat/stop", raw)
 }
 
 // RespondBoundary / RespondDecision 应答「让人选择」的 pending 请求。
@@ -168,29 +160,36 @@ func (c *Client) RespondDecision(ctx context.Context, payload json.RawMessage) e
 
 // postRoot 向 sidecar 根路径 POST 一段 JSON，非 2xx 或 success=false 即报错。
 func (c *Client) postRoot(ctx context.Context, path string, payload json.RawMessage) error {
+	_, err := c.postRootSession(ctx, path, payload)
+	return err
+}
+
+// postRootSession 同时读出换线类响应里的 loopSessionId（reset/fork/new）。
+func (c *Client) postRootSession(ctx context.Context, path string, payload json.RawMessage) (string, error) {
 	body := bytes.NewReader(payload)
 	req, err := c.newRequest(ctx, http.MethodPost, path, body)
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s: HTTP %d %s", path, resp.StatusCode, strings.TrimSpace(string(data)))
+		return "", fmt.Errorf("%s: HTTP %d %s", path, resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	var out struct {
-		Success bool   `json:"success"`
-		Error   string `json:"error"`
+		Success   bool   `json:"success"`
+		Error     string `json:"error"`
+		SessionID string `json:"sessionId"`
 	}
 	if json.Unmarshal(data, &out) == nil && !out.Success && out.Error != "" {
-		return fmt.Errorf("%s: %s", path, out.Error)
+		return "", fmt.Errorf("%s: %s", path, out.Error)
 	}
-	return nil
+	return out.SessionID, nil
 }
 
 // Subscribe 打开 SSE 长连接。
@@ -201,10 +200,18 @@ func (c *Client) postRoot(ctx context.Context, path string, payload json.RawMess
 // token 同时走 header 与 ?token= query：header 是服务端 HTTP 路径唯一认的
 // 通道（src/server/auth/gate.ts 的 queryToken 兜底只在 WS upgrade 传），
 // query 留着是为了将来把 SSE 挪到不能自定义头的客户端时不用改协议。
-func (c *Client) Subscribe(ctx context.Context) (*Subscription, error) {
-	endpoint := c.BaseURL + "/chat/stream"
+func (c *Client) Subscribe(ctx context.Context, sessionIDs ...string) (*Subscription, error) {
+	query := url.Values{}
 	if c.Token != "" {
-		endpoint += "?token=" + url.QueryEscape(c.Token)
+		query.Set("token", c.Token)
+	}
+	if len(sessionIDs) > 0 && strings.TrimSpace(sessionIDs[0]) != "" {
+		query.Set("sessionId", strings.TrimSpace(sessionIDs[0]))
+		query.Set("attach", "1")
+	}
+	endpoint := c.BaseURL + "/chat/stream"
+	if encoded := query.Encode(); encoded != "" {
+		endpoint += "?" + encoded
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -290,9 +297,14 @@ const ShortTimeout = 5 * time.Second
 
 // ── 会话写操作（2.1 P0）─────────────────────────────────────────────────
 
-// ChatModel 会话内切模型（POST /chat/model {providerId, model}）。
-func (c *Client) ChatModel(ctx context.Context, providerID, model string) error {
-	payload := map[string]any{"model": model}
+// NewSession 创建当前 TUI 实例的独立空线，不改变其他窗口的当前线。
+func (c *Client) NewSession(ctx context.Context) (string, error) {
+	return c.postRootSession(ctx, "/sessions/new", json.RawMessage(`{}`))
+}
+
+// ChatModel 会话内切模型（POST /chat/model {sessionId, providerId, model}）。
+func (c *Client) ChatModel(ctx context.Context, sessionID, providerID, model string) error {
+	payload := map[string]any{"model": model, "sessionId": sessionID}
 	if providerID != "" {
 		payload["providerId"] = providerID
 	}
@@ -301,20 +313,21 @@ func (c *Client) ChatModel(ctx context.Context, providerID, model string) error 
 }
 
 // ResetChat 清空当前会话上下文（POST /chat/reset）。旧 jsonl 保留可审计。
-func (c *Client) ResetChat(ctx context.Context) error {
-	return c.postRoot(ctx, "/chat/reset", json.RawMessage(`{}`))
+func (c *Client) ResetChat(ctx context.Context, sessionID string) (string, error) {
+	raw, _ := json.Marshal(map[string]string{"sessionId": sessionID})
+	return c.postRootSession(ctx, "/chat/reset", raw)
 }
 
-// Rewind 回退到某条用户消息之前（POST /chat/rewind {userMessageId}）。
-func (c *Client) Rewind(ctx context.Context, userMessageID string) error {
-	raw, _ := json.Marshal(map[string]any{"userMessageId": userMessageID})
+// Rewind 回退到某条用户消息之前（POST /chat/rewind {sessionId, userMessageId}）。
+func (c *Client) Rewind(ctx context.Context, sessionID, userMessageID string) error {
+	raw, _ := json.Marshal(map[string]any{"sessionId": sessionID, "userMessageId": userMessageID})
 	return c.postRoot(ctx, "/chat/rewind", raw)
 }
 
-// Fork 从某条消息处分叉当前线（POST /sessions/fork {messageId}）。
-func (c *Client) Fork(ctx context.Context, messageID string) error {
-	raw, _ := json.Marshal(map[string]any{"messageId": messageID})
-	return c.postRoot(ctx, "/sessions/fork", raw)
+// Fork 从某条消息处分叉当前线（POST /sessions/fork {sessionId, messageId}）。
+func (c *Client) Fork(ctx context.Context, sessionID, messageID string) (string, error) {
+	raw, _ := json.Marshal(map[string]any{"sessionId": sessionID, "messageId": messageID})
+	return c.postRootSession(ctx, "/sessions/fork", raw)
 }
 
 // ModelOption 是模型选择器的一行。
@@ -386,9 +399,9 @@ func (c *Client) Models(ctx context.Context) ([]ModelOption, error) {
 	return out, nil
 }
 
-// CancelQueueItem 撤销一条排队/纠偏消息（POST /chat/queue/cancel {queueId}）。
-func (c *Client) CancelQueueItem(ctx context.Context, queueID string) error {
-	raw, _ := json.Marshal(map[string]any{"queueId": queueID})
+// CancelQueueItem 撤销一条排队/纠偏消息（POST /chat/queue/cancel {sessionId, queueId}）。
+func (c *Client) CancelQueueItem(ctx context.Context, sessionID, queueID string) error {
+	raw, _ := json.Marshal(map[string]any{"sessionId": sessionID, "queueId": queueID})
 	return c.postRoot(ctx, "/chat/queue/cancel", raw)
 }
 

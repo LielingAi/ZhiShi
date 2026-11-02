@@ -236,9 +236,9 @@ func (o *paletteOverlay) run(m *Model) tea.Cmd {
 	case PaletteCopyBlock:
 		return m.copyTargetBlock()
 	case PaletteRewind:
-		return sessionOpCmd(m.Ctx, m.sessionClient(), "rewind", it.Arg)
+		return sessionOpCmd(m.Ctx, m.sessionClient(), "rewind", m.SessionID, it.Arg)
 	case PaletteFork:
-		return sessionOpCmd(m.Ctx, m.sessionClient(), "fork", it.Arg)
+		return sessionOpCmd(m.Ctx, m.sessionClient(), "fork", m.SessionID, it.Arg)
 	case PaletteSessionActions:
 		m.PushOverlay(newSessionOverlay(m))
 		return nil

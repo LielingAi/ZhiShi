@@ -226,6 +226,7 @@ zhishi model set-default deepseek deepseek-v4-pro   # 设置默认模型
 
 ### 读屏幕
 
+- **启动与多窗口**：每次 `zhishi tui` 启动都进入独立空 Session，不自动接回最后一条线；`Alt+l` 只恢复当前窗口选中的历史线，多个 TUI 可同时持不同线工作。
 - **单列布局**：顶部 header（地址 / 线 / 状态）· 会话流 · 输入板 · 状态行（模式 / 模型 / context / 队列 / 提示）。
 - **块化流**：工具块折叠（exit 码 / 失败 / 行数），结论聚合亮顶；`Alt+r` 展开看完整输出。
 - **面板**：`Alt+e` 环境、`Alt+t` 任务、`Alt+a` 档案、`Alt+l` 线、`Alt+w` 自动循环、`Alt+d` 待答请求、`Alt+x` 会话操作。

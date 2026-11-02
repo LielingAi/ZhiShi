@@ -168,8 +168,11 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import {
   __resetEnginesForTests,
   controlLineGate,
+  createPiSession,
   getActiveLoopSessionId,
   getLiveEngineState,
+  getPiAgentState,
+  resolveControlLine,
   hasLiveEngine,
   initPiChatEngine,
   injectPiDecision,
@@ -299,6 +302,28 @@ describe('P3b 多引擎并发(放掉一台上限)', () => {
     releaseAll();
     await waitLineIdle('ls-alice');
     await waitLineIdle('ls-bob');
+  });
+
+  it('同一 actor 多 TUI：各自新线、独立发送，不改共享活跃指针', async () => {
+    const before = getActiveLoopSessionId();
+    const first = await asActor('alice', 'operator', () => createPiSession());
+    const second = await asActor('alice', 'operator', () => createPiSession());
+    expect(first).not.toBe(second);
+    expect(getActiveLoopSessionId()).toBe(before);
+    expect(lineOwnershipData.get(first)?.owner).toBe('alice');
+    expect(lineOwnershipData.get(second)?.owner).toBe('alice');
+    expect(appendLoopMessagesMock.mock.calls.some((c) => c[0] === first && (c[1] as unknown[]).length === 0)).toBe(true);
+    expect(appendLoopMessagesMock.mock.calls.some((c) => c[0] === second && (c[1] as unknown[]).length === 0)).toBe(true);
+
+    await sendPiChatMessage({ text: '窗口一' }, first);
+    await sendPiChatMessage({ text: '窗口二' }, second);
+    await waitLineIdle(first);
+    await waitLineIdle(second);
+    expect(getPiAgentState(first).sessionId).toBe(first);
+    expect(getPiAgentState(second).sessionId).toBe(second);
+    expect(resolveControlLine(first)).toBe(first);
+    expect(controlLineGate(first)).toBeNull();
+    expect(getActiveLoopSessionId()).toBe(before);
   });
 
   it('per-actor 活跃线/controlLineGate:A 的闸不拦 B 的当前线', async () => {

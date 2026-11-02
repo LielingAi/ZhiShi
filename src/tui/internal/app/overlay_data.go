@@ -89,7 +89,7 @@ func (o *envOverlay) Handle(m *Model, msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		o.note = "切换中…"
-		return selectEnvironmentCmd(m.Ctx, m.Admin, m.Workspace, r.Key)
+		return selectEnvironmentCmd(m.Ctx, m.Admin, m.Workspace, r.Key, m.SessionID)
 	}
 	return nil
 }
@@ -161,8 +161,12 @@ func (o *lineOverlay) Handle(m *Model, msg tea.KeyMsg) tea.Cmd {
 		if !ok || o.state != loadReady {
 			return nil
 		}
+		if r.Ref == "" {
+			o.note = "这条线没有 loopSessionId，无法恢复"
+			return nil
+		}
 		o.note = "切换中…"
-		return switchSessionCmd(m.Ctx, m.Admin, r.Key)
+		return switchSessionCmd(r.Ref)
 	}
 	return nil
 }

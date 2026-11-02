@@ -54,6 +54,11 @@ type (
 	}
 	// healthMsg 是探活结果。
 	healthMsg struct{ err error }
+	// newSessionMsg 是当前 TUI 进程启动时创建独立空线的结果。
+	newSessionMsg struct {
+		sessionID string
+		err       error
+	}
 	// sendMsg 是 /chat/send 的结果。
 	sendMsg struct {
 		result client.SendResult
@@ -89,7 +94,7 @@ type (
 		rows []row
 		err  error
 	}
-	// lineSwitchMsg 是 POST /sessions/switch 的结果。
+	// lineSwitchMsg 是当前 TUI 本地切换持线的结果。
 	lineSwitchMsg struct {
 		sessionID string
 		err       error
@@ -120,15 +125,13 @@ type (
 	}
 )
 
-// Init 只"声明"IO 不执行它：先探活，再订阅。
-//
-// Init 放在 update.go 而不是 model.go，是为了让"发起 IO 的地方只有
-// update.go"这条边界在 grep 层面也成立。
+// Init 只"声明"IO 不执行它：探活并创建本窗口独立空线，成功后才订阅。
+// SSE 断线重连只走 reconnect，不会重复创建空线。
 func (m Model) Init() tea.Cmd {
 	if m.Client == nil {
 		return nil
 	}
-	return tea.Batch(healthCmd(m.Ctx, m.Client), subscribeCmd(m.Ctx, m.Client, m.SubGen))
+	return tea.Batch(healthCmd(m.Ctx, m.Client), newSessionCmd(m.Ctx, m.Client))
 }
 
 // Update 是唯一发起 IO 的地方。
@@ -200,6 +203,20 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, nil
+
+	case newSessionMsg:
+		if msg.err != nil {
+			m.LastErr = "创建空会话失败：" + msg.err.Error()
+			return m, nil
+		}
+		if msg.sessionID == "" {
+			m.LastErr = "创建空会话失败：sidecar 未返回 sessionId"
+			return m, nil
+		}
+		m.SessionID = msg.sessionID
+		m.SessionTitle = ""
+		m.Store.Reset()
+		return m, subscribeCmd(m.Ctx, m.Client, m.SessionID, m.SubGen)
 
 	case sendMsg:
 		switch {
@@ -425,6 +442,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			"rewind": "已回退，正在重新载入历史",
 			"fork":   "已分叉，正在重新载入历史",
 		}[msg.op]
+		if msg.sessionID != "" {
+			m.SessionID = msg.sessionID
+		}
 		// 三个动作都会改变服务端历史：重连一次拿回权威回放。
 		return m, m.reconnect()
 
@@ -596,6 +616,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		m.EnvironmentID = msg.envID
 		m.SelectedEnvID = msg.envID
+		if msg.sessionID != "" {
+			m.SessionID = msg.sessionID
+		}
 		return m, m.afterLineSwitch("已切到环境 " + msg.envID)
 
 	case sessionsMsg:
@@ -621,6 +644,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if opened {
 			m.PopOverlay()
 		}
+		m.SessionID = msg.sessionID
 		return m, m.afterLineSwitch("已切换会话线")
 
 	case taskListMsg:
@@ -952,6 +976,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.addLocalUserEcho(echo)
 		m.clearPendingImages()
 		return m, sendCmd(m.Ctx, m.Client, text, client.SendOptions{
+			SessionID:      m.SessionID,
 			PermissionMode: m.PermissionMode,
 			Refs:           m.extractRefs(text),
 			Images:         images,
@@ -989,7 +1014,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.Running() {
 			// 中断本身就是一次完整动作，不顺手武装退出：否则"中断后想继续
 			// 观察"会被下一次误按直接杀掉。
-			return m, stopCmd(m.Ctx, m.Client)
+			return m, stopCmd(m.Ctx, m.Client, m.SessionID)
 		}
 		if m.QuitArmed {
 			m.Quit = true
@@ -1208,7 +1233,7 @@ func (m *Model) reconnect() tea.Cmd {
 	m.Connected = false
 	m.StreamErr = ""
 	m.SubGen++
-	return subscribeCmd(m.Ctx, m.Client, m.SubGen)
+	return subscribeCmd(m.Ctx, m.Client, m.SessionID, m.SubGen)
 }
 
 // ── 事件归约 ────────────────────────────────────────────────────────────
@@ -1846,12 +1871,24 @@ func healthCmd(ctx context.Context, c *client.Client) tea.Cmd {
 	}
 }
 
-func subscribeCmd(ctx context.Context, c *client.Client, gen int) tea.Cmd {
+func newSessionCmd(ctx context.Context, c *client.Client) tea.Cmd {
+	return func() tea.Msg {
+		if c == nil {
+			return newSessionMsg{err: fmt.Errorf("no client")}
+		}
+		reqCtx, cancel := context.WithTimeout(ctx, client.ShortTimeout)
+		defer cancel()
+		sessionID, err := c.NewSession(reqCtx)
+		return newSessionMsg{sessionID: sessionID, err: err}
+	}
+}
+
+func subscribeCmd(ctx context.Context, c *client.Client, sessionID string, gen int) tea.Cmd {
 	return func() tea.Msg {
 		if c == nil {
 			return subscribedMsg{err: fmt.Errorf("no client"), gen: gen}
 		}
-		sub, err := c.Subscribe(ctx)
+		sub, err := c.Subscribe(ctx, sessionID)
 		return subscribedMsg{sub: sub, err: err, gen: gen}
 	}
 }
@@ -1880,14 +1917,14 @@ func sendCmd(ctx context.Context, c *client.Client, text string, opts client.Sen
 	}
 }
 
-func stopCmd(ctx context.Context, c *client.Client) tea.Cmd {
+func stopCmd(ctx context.Context, c *client.Client, sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		if c == nil {
 			return stopMsg{err: fmt.Errorf("no client")}
 		}
 		reqCtx, cancel := context.WithTimeout(ctx, client.ShortTimeout)
 		defer cancel()
-		return stopMsg{err: c.Stop(reqCtx)}
+		return stopMsg{err: c.Stop(reqCtx, sessionID)}
 	}
 }
 
@@ -2067,12 +2104,12 @@ func envRow(e client.EnvironmentInfo) row {
 	return row{Key: e.ID, Title: name, Desc: desc, Flag: e.User}
 }
 
-func selectEnvironmentCmd(ctx context.Context, a adminAPI, workspace, id string) tea.Cmd {
+func selectEnvironmentCmd(ctx context.Context, a adminAPI, workspace, id, currentSessionID string) tea.Cmd {
 	return func() tea.Msg {
 		if a == nil {
 			return envSelectMsg{envID: id, err: errNoAdmin}
 		}
-		sessionID, err := a.SelectEnvironment(ctx, workspace, id)
+		sessionID, err := a.SelectEnvironment(ctx, workspace, id, currentSessionID)
 		return envSelectMsg{envID: id, sessionID: sessionID, err: err}
 	}
 }
@@ -2122,13 +2159,10 @@ func trimTimestamp(iso string) string {
 	return iso
 }
 
-func switchSessionCmd(ctx context.Context, a adminAPI, id string) tea.Cmd {
-	return func() tea.Msg {
-		if a == nil {
-			return lineSwitchMsg{sessionID: id, err: errNoAdmin}
-		}
-		return lineSwitchMsg{sessionID: id, err: a.SwitchSession(ctx, id)}
-	}
+// switchSessionCmd 只改变当前 TUI 的持线；live attach 时由服务端核读权限。
+// 不调用旧 /sessions/switch，避免改写其他窗口共享的 actor 活跃指针。
+func switchSessionCmd(id string) tea.Cmd {
+	return func() tea.Msg { return lineSwitchMsg{sessionID: id} }
 }
 
 func loadTasksCmd(ctx context.Context, a adminAPI) tea.Cmd {

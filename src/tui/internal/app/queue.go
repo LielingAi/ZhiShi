@@ -75,7 +75,7 @@ func (o *queueOverlay) Handle(m *Model, msg tea.KeyMsg) tea.Cmd {
 		}
 		it := m.Queued[o.sel]
 		o.note = "撤销中…"
-		return queueCancelCmd(m.Ctx, m.sessionClient(), it.ID)
+		return queueCancelCmd(m.Ctx, m.sessionClient(), m.SessionID, it.ID)
 	}
 	if o.sel < 0 {
 		o.sel = 0
@@ -133,14 +133,14 @@ type queueCancelDoneMsg struct {
 	err error
 }
 
-func queueCancelCmd(ctx context.Context, client sessionOps, id string) tea.Cmd {
+func queueCancelCmd(ctx context.Context, client sessionOps, sessionID, id string) tea.Cmd {
 	return func() tea.Msg {
 		if client == nil {
 			return queueCancelDoneMsg{id: id, err: fmt.Errorf("没有可用的 sidecar 连接")}
 		}
 		reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		return queueCancelDoneMsg{id: id, err: client.CancelQueueItem(reqCtx, id)}
+		return queueCancelDoneMsg{id: id, err: client.CancelQueueItem(reqCtx, sessionID, id)}
 	}
 }
 

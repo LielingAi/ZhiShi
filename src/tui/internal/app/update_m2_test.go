@@ -90,7 +90,7 @@ func (f *fakeAdmin) Environments(context.Context) ([]client.EnvironmentInfo, err
 	return f.envs, f.envsErr
 }
 
-func (f *fakeAdmin) SelectEnvironment(_ context.Context, workspace, id string) (string, error) {
+func (f *fakeAdmin) SelectEnvironment(_ context.Context, workspace, id, _ string) (string, error) {
 	f.selected = append(f.selected, [2]string{workspace, id})
 	return f.selectSID, f.selectErr
 }
@@ -281,9 +281,9 @@ func TestChatInitRecordsWorkspace(t *testing.T) {
 
 func TestLineOverlayOpenSwitchResetsLine(t *testing.T) {
 	fa := &fakeAdmin{sessions: []client.SessionInfo{
-		{ID: "s1", Title: "旧线", LastActiveAt: "2026-01-01T10:00:00.000Z",
+		{ID: "s1", LoopSessionID: "ls-1", Title: "旧线", LastActiveAt: "2026-01-01T10:00:00.000Z",
 			Stats: &client.SessionStats{MessageCount: 7}},
-		{ID: "s2", Title: "新线", Archived: true},
+		{ID: "s2", LoopSessionID: "ls-2", Title: "新线", Archived: true},
 	}}
 	m := adminModel(fa)
 	// 旧线的残留内容必须被切线清掉。
@@ -307,8 +307,11 @@ func TestLineOverlayOpenSwitchResetsLine(t *testing.T) {
 	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = pump(t, m, cmd)
 
-	if len(fa.switched) != 1 || fa.switched[0] != "s2" {
-		t.Fatalf("应切换到 s2，实际 %v", fa.switched)
+	if len(fa.switched) != 0 {
+		t.Fatalf("窗口持线不应调用全局 /sessions/switch，实际 %v", fa.switched)
+	}
+	if m.SessionID != "ls-2" {
+		t.Fatalf("当前窗口应持有 ls-2，实际 %q", m.SessionID)
 	}
 	if _, ok := lastOverlayOf[*lineOverlay](&m); ok {
 		t.Fatal("切线成功后应关面板")
@@ -339,23 +342,22 @@ func TestSwitchBumpsSubGenAndResubscribes(t *testing.T) {
 	}
 }
 
-func TestLineSwitchFailureKeepsPanel(t *testing.T) {
-	fa := &fakeAdmin{
-		sessions:  []client.SessionInfo{{ID: "s1", Title: "线"}},
-		switchErr: errors.New("目标线在跑"),
-	}
+func TestLineSwitchWithoutLoopIDKeepsPanel(t *testing.T) {
+	fa := &fakeAdmin{sessions: []client.SessionInfo{{ID: "s1", Title: "线"}}}
 	m := adminModel(fa)
 	m, cmd := m.Update(alt('l'))
 	m = pump(t, m, cmd)
 	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = pump(t, m, cmd)
+	if cmd != nil {
+		t.Fatal("缺少 loopSessionId 时不应发起切线")
+	}
 
 	ov, ok := lastOverlayOf[*lineOverlay](&m)
 	if !ok {
-		t.Fatal("切线失败不该关面板")
+		t.Fatal("缺少 loopSessionId 时不该关面板")
 	}
-	if !strings.Contains(ov.note, "目标线在跑") {
-		t.Fatalf("面板里应有失败提示，实际 %q", ov.note)
+	if !strings.Contains(ov.note, "没有 loopSessionId") {
+		t.Fatalf("面板里应有原因提示，实际 %q", ov.note)
 	}
 }
 
@@ -613,29 +615,29 @@ func (f *fakeAdmin) Models(context.Context) ([]client.ModelOption, error) {
 	return f.models, f.modelsErr
 }
 
-func (f *fakeAdmin) ChatModel(_ context.Context, providerID, model string) error {
+func (f *fakeAdmin) ChatModel(_ context.Context, _ string, providerID, model string) error {
 	f.chatModels = append(f.chatModels, providerID+"/"+model)
 	return f.chatModelErr
 }
 
-func (f *fakeAdmin) ResetChat(context.Context) error {
+func (f *fakeAdmin) ResetChat(_ context.Context, _ string) (string, error) {
 	f.reset++
-	return f.sessionOpErr
+	return "line-reset", f.sessionOpErr
 }
 
-func (f *fakeAdmin) Rewind(_ context.Context, id string) error {
+func (f *fakeAdmin) Rewind(_ context.Context, _ string, id string) error {
 	f.rewinds = append(f.rewinds, id)
 	return f.sessionOpErr
 }
 
-func (f *fakeAdmin) CancelQueueItem(_ context.Context, id string) error {
+func (f *fakeAdmin) CancelQueueItem(_ context.Context, _ string, id string) error {
 	f.queueCancels = append(f.queueCancels, id)
 	return f.queueCancelErr
 }
 
-func (f *fakeAdmin) Fork(_ context.Context, id string) error {
+func (f *fakeAdmin) Fork(_ context.Context, _ string, id string) (string, error) {
 	f.forks = append(f.forks, id)
-	return f.sessionOpErr
+	return "line-fork", f.sessionOpErr
 }
 
 // ── auto-run 观察面（P2-a）──────────────────────────────────────────────

@@ -76,7 +76,7 @@ describe('非 admin 路由分类', () => {
   });
 
   it('聊天/会话写 = 操作员档', () => {
-    for (const p of ['/chat/send', '/chat/stop', '/chat/reset', '/chat/model', '/sessions/switch', '/sessions/fork', '/cron/execute-sync']) {
+    for (const p of ['/chat/send', '/chat/stop', '/chat/reset', '/chat/model', '/sessions/new', '/sessions/switch', '/sessions/fork', '/cron/execute-sync']) {
       expect(requiredRoleFor(p, 'POST'), p).toBe('operator');
     }
     expect(requiredRoleFor('/sessions/abc', 'DELETE')).toBe('operator');

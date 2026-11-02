@@ -160,14 +160,15 @@ func (c *Client) Environments(ctx context.Context) ([]EnvironmentInfo, error) {
 
 // SelectEnvironment 切环境。
 //
-// 真实签名是 { workspace, selection:{kind:"env", id} }（admin-api.ts::
-// handleEnvironmentSelect + define validateEnvSelection），**不是**任务书里的
-// {id}——workspace 必须是本会话的 agentDir（TUI 从 chat:init 拿到）。
-// 返回切换后绑定的会话线 id（可能为空）。
-func (c *Client) SelectEnvironment(ctx context.Context, workspace, id string) (string, error) {
+// 真实签名是 { workspace, selection:{kind:"env", id}, sessionId }（admin-api.ts::
+// handleEnvironmentSelect + define validateEnvSelection）。workspace 来自 chat:init，
+// sessionId 是当前 TUI 实例持有的线；切换不改其他窗口。
+// 返回切换后绑定的会话线 id。
+func (c *Client) SelectEnvironment(ctx context.Context, workspace, id, sessionID string) (string, error) {
 	res, err := c.Admin(ctx, "environment/select", map[string]any{
 		"workspace": workspace,
 		"selection": map[string]any{"kind": "env", "id": id},
+		"sessionId": sessionID,
 	})
 	if err != nil {
 		return "", err

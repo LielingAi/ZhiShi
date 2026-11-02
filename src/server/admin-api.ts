@@ -133,13 +133,13 @@ import { augmentedProcessEnv, resolveCommand } from './utils/env-utils';
 import { dirname, resolve } from 'path';
 import { connect } from 'net';
 import { setAgents } from './agent-session';
-import { getPiAgentState, getEnvSessionBinding, getPiLineMission, setPiLineMission, switchEnvSession, resolveSessionEnv, resolveSessionEnvKey } from './loop/chat-engine';
+import { controlLineGate, getPiAgentState, getEnvSessionBinding, getPiLineMission, setPiLineMission, switchEnvSession, resolveControlLine, resolveSessionEnv, resolveSessionEnvKey } from './loop/chat-engine';
 import { isMissionKind, MISSION_KINDS } from '../shared/mission';
 import { loadArchive } from './loop/archive';
 import { envKeyForSelection, getEnvSessionLine, loadEnvSessionsMap, removeEnvSessionsForEnvId, renameEnvSessionEnvId } from './environment/env-sessions';
 import { planMergeEntries } from './environment/env-merge';
 import { selectPruneCandidates } from './environment/env-prune';
-import { canReadLine } from './auth/line-access';
+import { canReadLine, canWriteLine } from './auth/line-access';
 import { getLineOwnership } from './loop/line-ownership';
 import { resolveLoopModel } from './loop/pi-provider';
 import { runLoopText } from 'zhishi-loop-core/loop';
@@ -4677,9 +4677,15 @@ export function __setSelectProbeForTests(fn: SelectProbeFn | null): void {
 export async function handleEnvironmentSelect(payload: {
   workspace?: string;
   selection?: unknown;
+  sessionId?: unknown;
 }): Promise<AdminResponse> {
   const workspace = typeof payload.workspace === 'string' ? payload.workspace.trim() : '';
   if (!workspace) return { success: false, error: 'Missing required argument: <workspace>' };
+  const lineGate = controlLineGate(payload.sessionId);
+  if (lineGate) return { success: false, error: lineGate.error };
+  const targetLine = resolveControlLine(payload.sessionId);
+  if (!canWriteLine(currentActor(), getLineOwnership(targetLine))) return { success: false, error: 'forbidden' };
+  const explicitLine = typeof payload.sessionId === 'string' && payload.sessionId.trim() ? targetLine : undefined;
   const validated = validateEnvSelection(payload.selection);
   if (!validated.ok) return { success: false, error: validated.error };
   // 2.0.2：busy 不再前置拒绝——switchEnvSession 走 busy 安全路径（P3b 多引擎：
@@ -4714,7 +4720,7 @@ export async function handleEnvironmentSelect(payload: {
     await mutateSelectionStore((store) => setWorkspaceSelection(store, workspace, validated.selection, selectedAt));
     // 落盘后联动引擎切线（非本引擎 workspace 时 no-op）。若与 turn 起跑
     // 撞车（前置闸之后的竞态），切换失败但选定已落盘——返回错误，重选即愈合。
-    const switched = await switchEnvSession(workspace, envKeyForSelection(validated.selection));
+    const switched = await switchEnvSession(workspace, envKeyForSelection(validated.selection), explicitLine);
     if (!switched.ok) return { success: false, error: switched.error ?? '环境会话线切换失败' };
     return {
       success: true,
@@ -4722,6 +4728,7 @@ export async function handleEnvironmentSelect(payload: {
         workspace,
         selection: validated.selection,
         selectedAt,
+        sessionId: switched.sessionId,
         // 1.7.8 快照缺位警示（design §5）：首次选定本机时随响应带一次性
         // 提示——本机无快照可回滚，BSOD 级实验自担；内核研究走 pwn-win。
         ...(selectedBuiltinLocal

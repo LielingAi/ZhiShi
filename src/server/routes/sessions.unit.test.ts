@@ -31,6 +31,8 @@ const agentSessionMocks = vi.hoisted(() => ({
 }));
 
 const chatEngineMocks = vi.hoisted(() => ({
+  controlLineGate: vi.fn(() => null),
+  resolveControlLine: vi.fn((id?: string) => id || 'active-loop-line'),
   forkPiChat: vi.fn(),
   getActiveLoopSessionId: vi.fn(() => 'active-loop-line'),
   getPiMessages: vi.fn((): unknown[] => []),
@@ -424,6 +426,14 @@ describe('POST /sessions/fork（handleForkSession）', () => {
     const res = await handleForkSession(jsonRequest({ messageId: 'm1' }), jsonResponse);
     expect((await bodyOf(res)).sessionId).toBe('forked');
     expect(chatEngineMocks.forkPiChat).toHaveBeenCalledWith('m1');
+  });
+
+  it('显式 sessionId → 按该线核权并分叉，不用共享活跃线', async () => {
+    chatEngineMocks.forkPiChat.mockResolvedValue({ success: true, sessionId: 'forked-window' });
+    const res = await handleForkSession(jsonRequest({ messageId: 'm2', sessionId: 'ls-window' }), jsonResponse);
+    expect(res.status).toBe(200);
+    expect(lineOwnershipMocks.getLineOwnership).toHaveBeenCalledWith('ls-window');
+    expect(chatEngineMocks.forkPiChat).toHaveBeenCalledWith('m2', 'ls-window');
   });
 });
 

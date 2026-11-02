@@ -137,6 +137,34 @@ func TestSessionOpDoneReconnects(t *testing.T) {
 	}
 }
 
+func TestStartupCreatesIndependentEmptyLine(t *testing.T) {
+	m := testModel()
+	m.Store.Upsert(store.Block{ID: "msg:old", Kind: store.KindUser, Version: 1, Body: "旧线"})
+	m2, cmd := m.Update(newSessionMsg{sessionID: "ls-new-window"})
+	if m2.SessionID != "ls-new-window" {
+		t.Fatalf("当前窗口应持有新线，实际 %q", m2.SessionID)
+	}
+	if m2.Store.Len() != 0 {
+		t.Fatal("启动新线不应回放上一个 Session")
+	}
+	if cmd == nil {
+		t.Fatal("创建成功后应订阅新线")
+	}
+}
+
+func TestResetAndForkUpdateOnlyCurrentWindowLine(t *testing.T) {
+	m := testModel()
+	m.SessionID = "ls-old"
+	m2, cmd := m.Update(sessionOpDoneMsg{op: "reset", sessionID: "ls-reset"})
+	if m2.SessionID != "ls-reset" || cmd == nil {
+		t.Fatalf("reset 后应持新线并重连：%q", m2.SessionID)
+	}
+	m3, _ := m2.Update(sessionOpDoneMsg{op: "fork", sessionID: "ls-fork"})
+	if m3.SessionID != "ls-fork" {
+		t.Fatalf("fork 后应持分叉线，实际 %q", m3.SessionID)
+	}
+}
+
 // 模型列表的可用性标记：没配 key 的 provider 要弱化并标出来，当前模型要标「当前」。
 func TestModelOverlayMarksAvailability(t *testing.T) {
 	m := testModel()

@@ -58,7 +58,7 @@ type opener func(path string) *exec.Cmd
 // 各方法的返回类型是 client 的 DTO——它们是线上形状的镜像，不是业务模型。
 type adminAPI interface {
 	Environments(ctx context.Context) ([]client.EnvironmentInfo, error)
-	SelectEnvironment(ctx context.Context, workspace, id string) (string, error)
+	SelectEnvironment(ctx context.Context, workspace, id, sessionID string) (string, error)
 	Sessions(ctx context.Context) ([]client.SessionInfo, error)
 	SwitchSession(ctx context.Context, id string) error
 	Tasks(ctx context.Context) ([]client.TaskInfo, error)
@@ -86,10 +86,10 @@ type adminAPI interface {
 	SearchIntel(ctx context.Context, q string) (string, int, error)
 	SessionPatch(ctx context.Context, id string, patch map[string]any) error
 	SessionDelete(ctx context.Context, id string) error
-	ChatModel(ctx context.Context, providerID, model string) error
-	ResetChat(ctx context.Context) error
-	Rewind(ctx context.Context, userMessageID string) error
-	Fork(ctx context.Context, messageID string) error
+	ChatModel(ctx context.Context, sessionID, providerID, model string) error
+	ResetChat(ctx context.Context, sessionID string) (string, error)
+	Rewind(ctx context.Context, sessionID, userMessageID string) error
+	Fork(ctx context.Context, sessionID, messageID string) (string, error)
 }
 
 // clickRow 是 stream 区某一行映射到的块，供鼠标命中用（strix 的 eventSpan

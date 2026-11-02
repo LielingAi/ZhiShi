@@ -64,6 +64,7 @@ import { broadcast, createSseClient, getClients } from './sse';
 import {
   isPiEngine,
   initPiChatEngine,
+  createPiSession,
   sendPiChatMessage,
   stopPiChat,
   resetPiChat,
@@ -83,6 +84,7 @@ import {
   // 1.8.7 P3a 按线寻址:当前线判定 + 读路由归属判定 + 控制路由 line_not_active 闸。
   getActiveLoopSessionId,
   resolveLineAddress,
+  resolveControlLine,
   controlLineGate,
   // 1.8.7 P3b 多引擎:live 引擎探针/只读状态(session-state/queue-status 按线回报)。
   hasLiveEngine,
@@ -130,6 +132,7 @@ import type { RuntimeConfig } from '../shared/types/runtime';
 export type PermissionMode = 'auto' | 'plan' | 'fullAgency' | 'custom';
 type SendMessagePayload = {
   text?: string;
+  sessionId?: unknown;
   images?: ImagePayload[];
   permissionMode?: PermissionMode;
   runtimeConfig?: RuntimeConfig;
@@ -917,12 +920,12 @@ honoServe({
 if (pathname === '/chat/stream' && request.method === 'GET') {
         // No onClose turn-interrupt: SSE disconnect is not a cancellation
         // authority (see the note above — turn lifecycle = Rust Owner model).
-        // P3b:「当前线」per-actor——缺省连接解析的是**调用方**的活跃线
-        // (本机模式恒 local 启动线,与 1.8.6 逐字节相同);?sessionId= 他线 →
-        // 只读历史视图(读权限:私有线仅 owner+reviewer),未知线 404。
+        // 缺省连接沿用 per-actor 当前线；显式 sessionId + attach=1 是该 TUI
+        // 实例的 live 持线订阅，不改共享活跃指针。旧的他线只读视图保持原语义。
         const streamLineParam = url.searchParams.get('sessionId');
-        const callerLine = getActiveLoopSessionId();
-        if (streamLineParam && streamLineParam !== callerLine) {
+        const attach = url.searchParams.get('attach') === '1';
+        const activeLine = getActiveLoopSessionId();
+        if (streamLineParam && (attach || streamLineParam !== activeLine)) {
           const addr = resolveLineAddress(streamLineParam);
           if (addr === 'unknown') {
             return jsonResponse({ success: false, error: `loop session '${streamLineParam}' not found` }, 404);
@@ -930,58 +933,48 @@ if (pathname === '/chat/stream' && request.method === 'GET') {
           if (!canReadLine(currentActor(), getLineOwnership(streamLineParam))) {
             return jsonResponse({ success: false, error: 'forbidden' }, 403);
           }
-          const { client, response } = createSseClient(() => {}, { live: false });
-          const storedLine = loadLoopSession(streamLineParam);
-          for (const message of buildLoopWireMessages(storedLine.messages)) {
-            client.send('chat:message-replay', { message, replayKind: 'cold-history', sessionId: streamLineParam });
+          if (!attach && streamLineParam !== activeLine) {
+            const { client, response } = createSseClient(() => {}, { live: false });
+            const storedLine = loadLoopSession(streamLineParam);
+            for (const message of buildLoopWireMessages(storedLine.messages)) {
+              client.send('chat:message-replay', { message, replayKind: 'cold-history', sessionId: streamLineParam });
+            }
+            return response;
           }
-          return response;
         }
-        // P3b 按线分流:live 订阅挂上本线——只收「全局 + 本线」事件。
-        const { client, response } = createSseClient(() => {}, { line: callerLine });
-        // M4a — pi 引擎:会话状态由 loop/chat-engine 服务(SDK 的
-        // getAgentState/getMessages 在这条路径下为空)。事件名/形状与
-        // SDK 路径逐字段对齐,客户端零改动。
+        const streamLine = streamLineParam ?? activeLine;
+        // 按线分流：每个 TUI 只收「全局 + 自己当前线」事件。
+        const { client, response } = createSseClient(() => {}, { line: streamLine });
         if (isPiEngine()) {
-          client.send('chat:init', getPiAgentState());
-          const piStreamingId = getPiStreamingAssistantId();
-          getPiMessages().forEach((message) => {
+          client.send('chat:init', getPiAgentState(streamLine));
+          const piStreamingId = getPiStreamingAssistantId(streamLine);
+          getPiMessages(streamLine).forEach((message) => {
             if (piStreamingId && message.id === piStreamingId) return;
             client.send('chat:message-replay', { message, replayKind: 'cold-history' });
           });
-          // 越界 ask(design §6.6):重连重放待答 ask——客户端重连不丢模态。
-          // P3b 按线过滤:他线的 pending 且该线有 live 引擎 → 只重放给那条线
-          // 的订阅者;无 sessionId(admin 类)或无引擎(headless/已回收)的
-          // pending 维持全员重放(1.8.6 语义);私有线读权限不过 → 跳过。
+          // 重连重放待答请求，归属与权限均按目标线判定。
           const streamActor = currentActor();
           for (const ask of pendingBoundaryAsks()) {
-            if (ask.sessionId && ask.sessionId !== callerLine && hasLiveEngine(ask.sessionId)) continue;
+            if (ask.sessionId && ask.sessionId !== streamLine && hasLiveEngine(ask.sessionId)) continue;
             if (ask.sessionId && !canReadLine(streamActor, getLineOwnership(ask.sessionId))) continue;
             client.send('chat:boundary-ask', ask);
           }
-          // 1.3.2 决策面板:重连重放待答决策——GUI 重连不丢待答面板。
-          // P3b:过滤口径同 boundary ask(按线 + 读权限)。
           for (const d of pendingDecisions()) {
-            if (d.sessionId !== callerLine && hasLiveEngine(d.sessionId)) continue;
+            if (d.sessionId !== streamLine && hasLiveEngine(d.sessionId)) continue;
             if (!canReadLine(streamActor, getLineOwnership(d.sessionId))) continue;
             client.send('chat:decision-request', {
               decisionId: d.decisionId,
               question: d.question,
               options: d.options,
               expertHits: d.expertHits,
-              // P2 additive：谁提的（重放同样可见）。
               ...(d.requestedBy ? { requestedBy: d.requestedBy } : {}),
             });
           }
-          const piInitInfo = getPiSystemInitInfo();
+          const piInitInfo = getPiSystemInitInfo(streamLine);
           if (piInitInfo) {
             client.send('chat:system-init', { info: piInitInfo });
           }
-          // 1.2.8(M4)重连对账:队列状态快照——重连的客户端错过了排队时刻的
-          // queue:added 广播,这里逐条补发 isInFlight:false 的排队项(FIFO +
-          // steering,kind 带上,与 chat-engine 广播形态一致),让重连后的
-          // 客户端队列与服务端一致。
-          for (const snap of getPiQueueSnapshotEvents()) {
+          for (const snap of getPiQueueSnapshotEvents(streamLine)) {
             client.send(snap.event, snap.data);
           }
           return response;
@@ -1006,18 +999,15 @@ if (pathname === '/chat/send' && request.method === 'POST') {
         }
 // M4c — 唯一引擎:pi(SDK 路径已删除)。
         try {
-          // P3a 按线寻址:sessionId 缺省/= 当前线 → 今日语义;≠ 当前线 →
-          // 409 line_not_active(绝不静默发到错的线上)。P3b:「当前线」
-          // per-actor(调用方 ALS actor);目标线无 live 引擎时注册表惰性
-          // 创建(transcript 从盘上装载)——回收后首发无感。
-          const lineGate = controlLineGate((payload as { sessionId?: unknown }).sessionId);
+          // 显式 sessionId 直接路由到对应 per-line 引擎；缺省沿用 per-actor 当前线。
+          const lineGate = controlLineGate(payload.sessionId);
           if (lineGate) return jsonResponse({ success: false, ...lineGate }, 409);
-          // P3b 双线制写闸:私有线非主 403(共享/旧线 operator+ 已由角色闸覆盖)。
-          if (!canWriteLine(currentActor(), getLineOwnership(getActiveLoopSessionId()))) {
+          const targetLine = resolveControlLine(payload.sessionId);
+          if (!canWriteLine(currentActor(), getLineOwnership(targetLine))) {
             return jsonResponse({ success: false, error: 'forbidden' }, 403);
           }
           console.log(`[chat][pi] send text="${text.slice(0, 200)}" images=${images.length} model=${model ?? 'default'}`);
-          const piResult = await sendPiChatMessage({ text, images, model, providerEnv, permissionMode, refs });
+          const piResult = await sendPiChatMessage({ text, images, model, providerEnv, permissionMode, refs }, targetLine);
           if (piResult.error) {
             return jsonResponse({ success: false, error: piResult.error }, chatSendErrorStatus(piResult.error));
           }
@@ -1039,12 +1029,10 @@ if (pathname === '/chat/send' && request.method === 'POST') {
 if (pathname === '/chat/model' && request.method === 'POST') {
         try {
           const payload = (await request.json()) as { model?: string; providerId?: string; sessionId?: unknown };
-          // P3a 按线寻址闸(同 /chat/send——模型切换虽落全局 config,显式
-          // 寻址非当前线的请求一律 line_not_active,不静默受理)。
           const modelGate = controlLineGate(payload?.sessionId);
           if (modelGate) return jsonResponse({ success: false, ...modelGate }, 409);
-          // P3b 双线制写闸(同 /chat/send)。
-          if (!canWriteLine(currentActor(), getLineOwnership(getActiveLoopSessionId()))) {
+          // 写权限按请求目标线判定，不按共享活跃线猜测。
+          if (!canWriteLine(currentActor(), getLineOwnership(resolveControlLine(payload?.sessionId)))) {
             return jsonResponse({ success: false, error: 'forbidden' }, 403);
           }
           const model = typeof payload?.model === 'string' ? payload.model.trim() : '';
@@ -1156,13 +1144,16 @@ if (pathname === '/chat/model' && request.method === 'POST') {
       if (pathname === '/chat/stop' && request.method === 'POST') {
         try {
           console.log('[chat] stop');
-          // P3a 按线寻址闸(同 /chat/send;body 可空,解析失败按无 sessionId)。
           const stopBody = (await request.json().catch(() => ({}))) as Record<string, unknown>;
           const stopGate = controlLineGate(stopBody.sessionId);
           if (stopGate) return jsonResponse({ success: false, ...stopGate }, 409);
-          // M4a — pi 引擎:abort 当前 runLoop(pi signal 语义)。
+          const targetLine = resolveControlLine(stopBody.sessionId);
+          if (!canWriteLine(currentActor(), getLineOwnership(targetLine))) {
+            return jsonResponse({ success: false, error: 'forbidden' }, 403);
+          }
+          // M4a — pi 引擎:abort 目标 runLoop(pi signal 语义)。
           if (isPiEngine()) {
-            const piStopped = stopPiChat();
+            const piStopped = stopPiChat(targetLine);
             return jsonResponse(piStopped ? { success: true } : { success: true, alreadyStopped: true });
           }
           // M4c — pi 是唯一引擎,上面的分支恒命中。
@@ -1177,11 +1168,10 @@ if (pathname === '/chat/model' && request.method === 'POST') {
 // Rewind session to a specific user message (time travel)
       if (pathname === '/chat/rewind' && request.method === 'POST') {
         const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-        // P3a 按线寻址闸(同 /chat/send)。
         const rewindGate = controlLineGate(body.sessionId);
         if (rewindGate) return jsonResponse({ success: false, ...rewindGate }, 409);
-        // P3b 双线制写闸(同 /chat/send)。
-        if (!canWriteLine(currentActor(), getLineOwnership(getActiveLoopSessionId()))) {
+        const targetLine = resolveControlLine(body.sessionId);
+        if (!canWriteLine(currentActor(), getLineOwnership(targetLine))) {
           return jsonResponse({ success: false, error: 'forbidden' }, 403);
         }
         const userMessageId = typeof body.userMessageId === 'string' ? body.userMessageId : '';
@@ -1190,7 +1180,7 @@ if (pathname === '/chat/model' && request.method === 'POST') {
         }
         // M4b — pi 引擎:loop-sessions 截断(追加日志,截断即时间回溯)。
         if (isPiEngine()) {
-          return jsonResponse(await rewindPiChat(userMessageId));
+          return jsonResponse(await rewindPiChat(userMessageId, targetLine));
         }
         // M4c — pi 是唯一引擎,上面的分支恒命中。
         return jsonResponse({ success: false, error: 'unreachable' }, 500);
@@ -1203,16 +1193,19 @@ if (pathname === '/chat/model' && request.method === 'POST') {
 // Cancel a queued message
       if (pathname === '/chat/queue/cancel' && request.method === 'POST') {
         const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-        // P3a 按线寻址闸(同 /chat/send)。
         const cancelGate = controlLineGate(body.sessionId);
         if (cancelGate) return jsonResponse({ success: false, ...cancelGate }, 409);
+        const targetLine = resolveControlLine(body.sessionId);
+        if (!canWriteLine(currentActor(), getLineOwnership(targetLine))) {
+          return jsonResponse({ success: false, error: 'forbidden' }, 403);
+        }
         const queueId = body?.queueId as string;
         if (!queueId) {
           return jsonResponse({ success: false, error: 'queueId is required' }, 400);
         }
         // M4b — pi 引擎队列。
         if (isPiEngine()) {
-          const piCancelled = cancelPiQueueItem(queueId);
+          const piCancelled = cancelPiQueueItem(queueId, targetLine);
           if (piCancelled === null) {
             return jsonResponse({ success: false, error: 'Queue item not found' }, 404);
           }
@@ -1382,18 +1375,18 @@ if (pathname === '/chat/model' && request.method === 'POST') {
       if (pathname === '/chat/reset' && request.method === 'POST') {
         try {
           console.log('[chat] reset (new conversation)');
-          // P3a 按线寻址闸(同 /chat/send;body 可空,解析失败按无 sessionId)。
           const resetBody = (await request.json().catch(() => ({}))) as Record<string, unknown>;
           const resetGate = controlLineGate(resetBody.sessionId);
           if (resetGate) return jsonResponse({ success: false, ...resetGate }, 409);
-          // P3b 双线制写闸(同 /chat/send)。
-          if (!canWriteLine(currentActor(), getLineOwnership(getActiveLoopSessionId()))) {
+          const targetLine = resolveControlLine(resetBody.sessionId);
+          if (!canWriteLine(currentActor(), getLineOwnership(targetLine))) {
             return jsonResponse({ success: false, error: 'forbidden' }, 403);
           }
           // M4a — pi 引擎:新 loop 会话 id + 清内存态(旧 jsonl 保留可审计)。
           if (isPiEngine()) {
-            resetPiChat();
-            return jsonResponse({ success: true });
+            const explicitLine = typeof resetBody.sessionId === 'string' && resetBody.sessionId.trim() ? targetLine : undefined;
+            const sessionId = resetPiChat(explicitLine);
+            return jsonResponse({ success: true, sessionId });
           }
           // M4c — pi 是唯一引擎,上面的分支恒命中。
           return jsonResponse({ success: true });
@@ -1418,11 +1411,20 @@ if (pathname === '/chat/model' && request.method === 'POST') {
       // Handlers extracted to ./routes/sessions (1.1.7 ③ — pure move);
       // `jsonResponse`/`pathname`/`url` are passed in as params.
       // (1.5.4 死路由清理:POST /sessions、/sessions/:id/since/:lastMessageId、
-      //  /sessions/:id/stats、/api/generate-session-title 已删——全仓零调用,
-      //  标题已全走 session-title-service 后端钩子。)
+      //  /sessions/:id/stats、/api/generate-session-title 已删；2.2 新增
+      //  POST /sessions/new，专供 TUI 实例创建独立空线。)
       // GET /sessions - List all sessions or filter by agentDir
       if (pathname === '/sessions' && request.method === 'GET') {
         return await handleListSessions(url, jsonResponse);
+      }
+      // POST /sessions/new - 每个 TUI 实例一条独立空线，不改共享活跃指针。
+      if (pathname === '/sessions/new' && request.method === 'POST') {
+        try {
+          const sessionId = await createPiSession();
+          return jsonResponse({ success: true, sessionId });
+        } catch (error) {
+          return jsonResponse({ success: false, error: error instanceof Error ? error.message : String(error) }, 500);
+        }
       }
       // GET /sessions/:id - Get session details
       if (pathname.startsWith('/sessions/') && request.method === 'GET') {

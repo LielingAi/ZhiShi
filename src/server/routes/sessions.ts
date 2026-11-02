@@ -5,8 +5,8 @@
 // captured were `jsonResponse`, `pathname` and `url` (all passed in as params)
 // plus the session-metadata helpers below.
 // 1.5.4 死路由清理：POST /sessions、/sessions/:id/since/:lastMessageId、
-// /sessions/:id/stats、/api/generate-session-title 已删（全仓零调用；标题
-// 已全走 session-title-service 后端钩子）。
+// /sessions/:id/stats、/api/generate-session-title 已删；独立空线创建
+// 由 index.ts 的 POST /sessions/new 承担（2.2 多 TUI 持线）。
 
 import {
   deleteSession,
@@ -24,7 +24,7 @@ import { resolveLastRealUserMessagePreview, shrinkSessionMessagesForClient } fro
 
 import { getSessionId } from '../agent-session';
 
-import { applyPiMissionChange, forkPiChat, getActiveLoopSessionId, getPiMessages, switchPiSession } from '../loop/chat-engine';
+import { applyPiMissionChange, controlLineGate, forkPiChat, getPiMessages, resolveControlLine, switchPiSession } from '../loop/chat-engine';
 import { isMissionKind, MISSION_KINDS } from '../../shared/mission';
 
 // 1.8.7 P3b 双线制:fork/switch 的线权限闸（私有线:非主写 403 / 非主且非
@@ -125,15 +125,18 @@ export async function handleForkSession(request: Request, jsonResponse: JsonResp
 
         }
 
-        // P3b 双线制写闸:fork 写的是调用方当前线——私有线非主 403。
-        if (!canWriteLine(currentActor(), getLineOwnership(getActiveLoopSessionId()))) {
+        const lineGate = controlLineGate(body.sessionId);
+        if (lineGate) return jsonResponse({ success: false, ...lineGate }, 409);
+        const targetLine = resolveControlLine(body.sessionId);
+        if (!canWriteLine(currentActor(), getLineOwnership(targetLine))) {
           return jsonResponse({ success: false, error: 'forbidden' }, 403);
         }
 
         // pi 引擎:fork 已实现(forkPiChat——复制前半段到新 loop session,
         // 当前 loop 原地换血)。
 
-        return jsonResponse(await forkPiChat(messageId));
+        const explicitLine = typeof body.sessionId === 'string' && body.sessionId.trim() ? targetLine : undefined;
+        return jsonResponse(explicitLine ? await forkPiChat(messageId, explicitLine) : await forkPiChat(messageId));
 
 }
 

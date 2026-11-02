@@ -111,15 +111,15 @@ func (o *sessionOverlay) Handle(m *Model, msg tea.KeyMsg) tea.Cmd {
 		switch it.action {
 		case sessionReset:
 			m.PopOverlay()
-			return sessionOpCmd(m.Ctx, m.sessionClient(), "reset", "")
+			return sessionOpCmd(m.Ctx, m.sessionClient(), "reset", m.SessionID, "")
 		case sessionRewind:
 			id, _ := selectedWireMessage(*m)
 			m.PopOverlay()
-			return sessionOpCmd(m.Ctx, m.sessionClient(), "rewind", id)
+			return sessionOpCmd(m.Ctx, m.sessionClient(), "rewind", m.SessionID, id)
 		case sessionFork:
 			id, _ := selectedWireMessage(*m)
 			m.PopOverlay()
-			return sessionOpCmd(m.Ctx, m.sessionClient(), "fork", id)
+			return sessionOpCmd(m.Ctx, m.sessionClient(), "fork", m.SessionID, id)
 		case sessionModel:
 			m.PopOverlay()
 			mo := newModelOverlay()
@@ -215,7 +215,7 @@ func (o *modelOverlay) Handle(m *Model, msg tea.KeyMsg) tea.Cmd {
 		}
 		provider, model := splitModelKey(r.Key)
 		m.PopOverlay()
-		return modelSwitchCmd(m.Ctx, m.sessionClient(), provider, model)
+		return modelSwitchCmd(m.Ctx, m.sessionClient(), m.SessionID, provider, model)
 	}
 	return nil
 }
@@ -239,27 +239,29 @@ func splitModelKey(key string) (string, string) {
 // ── 命令 ────────────────────────────────────────────────────────────────
 
 type sessionOpDoneMsg struct {
-	op  string
-	err error
+	op        string
+	sessionID string
+	err       error
 }
 
-func sessionOpCmd(ctx context.Context, client sessionOps, op, id string) tea.Cmd {
+func sessionOpCmd(ctx context.Context, client sessionOps, op, sessionID, id string) tea.Cmd {
 	return func() tea.Msg {
 		if client == nil {
 			return sessionOpDoneMsg{op: op, err: fmt.Errorf("没有可用的 sidecar 连接")}
 		}
 		reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
+		var nextSessionID string
 		var err error
 		switch op {
 		case "reset":
-			err = client.ResetChat(reqCtx)
+			nextSessionID, err = client.ResetChat(reqCtx, sessionID)
 		case "rewind":
-			err = client.Rewind(reqCtx, id)
+			err = client.Rewind(reqCtx, sessionID, id)
 		case "fork":
-			err = client.Fork(reqCtx, id)
+			nextSessionID, err = client.Fork(reqCtx, sessionID, id)
 		}
-		return sessionOpDoneMsg{op: op, err: err}
+		return sessionOpDoneMsg{op: op, sessionID: nextSessionID, err: err}
 	}
 }
 
@@ -268,14 +270,14 @@ type modelSwitchDoneMsg struct {
 	err             error
 }
 
-func modelSwitchCmd(ctx context.Context, client sessionOps, provider, model string) tea.Cmd {
+func modelSwitchCmd(ctx context.Context, client sessionOps, sessionID, provider, model string) tea.Cmd {
 	return func() tea.Msg {
 		if client == nil {
 			return modelSwitchDoneMsg{provider: provider, model: model, err: fmt.Errorf("没有可用的 sidecar 连接")}
 		}
 		reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		err := client.ChatModel(reqCtx, provider, model)
+		err := client.ChatModel(reqCtx, sessionID, provider, model)
 		return modelSwitchDoneMsg{provider: provider, model: model, err: err}
 	}
 }
@@ -293,11 +295,11 @@ func (m Model) sessionClient() sessionOps {
 
 // sessionOps 是这两个命令需要的最小客户端面（Model.Client 与测试桩都满足）。
 type sessionOps interface {
-	ResetChat(ctx context.Context) error
-	Rewind(ctx context.Context, userMessageID string) error
-	Fork(ctx context.Context, messageID string) error
-	ChatModel(ctx context.Context, providerID, model string) error
-	CancelQueueItem(ctx context.Context, queueID string) error
+	ResetChat(ctx context.Context, sessionID string) (string, error)
+	Rewind(ctx context.Context, sessionID, userMessageID string) error
+	Fork(ctx context.Context, sessionID, messageID string) (string, error)
+	ChatModel(ctx context.Context, sessionID, providerID, model string) error
+	CancelQueueItem(ctx context.Context, sessionID, queueID string) error
 }
 
 func loadModelsCmd(ctx context.Context, admin adminAPI) tea.Cmd {

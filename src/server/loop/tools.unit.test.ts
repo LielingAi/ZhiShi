@@ -36,9 +36,11 @@ const VM_ENTRY: EnvironmentEntry = {
   createdAt: '2026-01-01T00:00:00Z',
 };
 
-/** 2.0.6：剥远端超时杀包装还原原命令（calls 内容断言先剥再断）。
- *  包装形态 = `sh -c "C=\"<两层转义>\"; …"`。 */
+/** 剥远端超时杀包装还原原命令（calls 内容断言先剥再断）。
+ *  兼容当前 heredoc 形态与旧 `sh -c "C=\"<两层转义>\"; …"` 形态。 */
 function unwrapRemote(cmd: string): string {
+  const heredoc = /<<'([A-Za-z0-9_]+)'\n([\s\S]*)\n\1$/.exec(cmd);
+  if (heredoc) return heredoc[2];
   const m = /C=\\"([\s\S]*?)\\"; /.exec(cmd);
   if (!m) return cmd;
   return m[1].replace(/\\(["\\$`])/g, '$1').replace(/\\(["\\$`])/g, '$1');
