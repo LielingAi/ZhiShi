@@ -2371,6 +2371,8 @@ function buildRequestBody(
         apiProtocol: flags.protocol,    // --protocol maps to apiProtocol
         upstreamFormat: flags.upstreamFormat,
         maxOutputTokens: flags.maxOutputTokens,
+        // 串行工具调用（见 Provider.serialToolCalls）
+        serialToolCalls: flags.serialToolCalls === true || flags.serialToolCalls === 'true',
         vendor: flags.vendor,
         websiteUrl: flags.websiteUrl,
         timeout: flags.timeout,

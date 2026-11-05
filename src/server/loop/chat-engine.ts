@@ -491,6 +491,21 @@ const PI_SYSTEM_PROMPT =
   '无法执行的请求(边界规则拦截)如实告知用户。';
 
 /**
+ * 串行工具调用追加段(provider.serialToolCalls 为真时拼进系统提示)。
+ *
+ * 由来(2026-11-05 实机):freebuf-tapi 这类聚合网关把 OpenAI 请求转成
+ * Anthropic 上游时,对「一条 assistant 消息里并发多个 tool_call」只配对
+ * 第一个 tool_result,其余报 400 `tool_use ids were found without
+ * tool_result blocks`。实测同一请求 8 次里 1~2 次命中坏节点;而把并行调用
+ * 拆成多条串行消息反而更糟(2/6 通过)——合成 assistant 消息缺 thinking
+ * 签名,上游直接拒。所以从源头掐:提示模型一次只调一个工具(实测并发率
+ * 2/6 → 0/6),消息结构原样不动。
+ */
+export const SERIAL_TOOL_CALL_RULE =
+  '工具调用规则:一次只发起一个工具调用,拿到结果后再决定下一步;' +
+  '绝不在同一条消息里并发多个工具调用(本端点不支持)。';
+
+/**
  * 溢出重试的强制压缩预算(1.2.7 活体实测修正):0.25 × 窗口。初版用 0
  * (无视阈值往死里压),活体证据是把 226K 估压到 6K 残渣——模型只剩 stub
  * 可读,回答质量劣化;0.25 既保证重试视图远小于窗口(装得下),又保留
@@ -1648,6 +1663,9 @@ class ChatEngine {
       { caps, domain },
       turnSessionId,
     );
+    // provider 级串行工具调用(见 SERIAL_TOOL_CALL_RULE):并发 tool_call 会撞
+    // 上不支持并行配对的网关,提示层先掐掉。
+    if (resolution.serialToolCalls) systemPrompt += `\n\n${SERIAL_TOOL_CALL_RULE}`;
     const contextWindow = resolution.model.contextWindow || 200_000;
     // 1.7.2 M2a:交互档案检查点——轮数确定性注入 + 工作记忆即将置换时强制
     // 一轮（程序决定时机,模型执行整理;实机:交互线无检查点 archive 欠维护）。
@@ -2095,7 +2113,7 @@ class ChatEngine {
         // S6：research_log 归属锚 = 显式锚 > 本 invoke 工作区 > engine agentDir。
         options.workspaceAnchor ?? invokeWorkspace,
       );
-    const systemPrompt = await this.assemblePiSystemPrompt(
+    let systemPrompt = await this.assemblePiSystemPrompt(
       env,
       scenario,
       // A2-2(1.5.4):与交互 turn 同——注入锚点补当前轮用户消息。
@@ -2103,6 +2121,8 @@ class ChatEngine {
       { caps, domain },
       loopSessionId,
     );
+    // provider 级串行工具调用(与交互 turn 同规,见 SERIAL_TOOL_CALL_RULE)。
+    if (resolution.serialToolCalls) systemPrompt += `\n\n${SERIAL_TOOL_CALL_RULE}`;
     // 系统提示落盘(轨迹完整性,与交互 turn 同规):先于本批消息、先于
     // LLM 调用;hash 去重,不变不写。
     await persistSystemPromptRecord(loopSessionId, systemPrompt, storedInvoke.systemPrompts, history.length);

@@ -48,6 +48,8 @@ export interface LoopProviderEnv {
   maxOutputTokens?: number;
   maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
   upstreamFormat?: 'chat_completions' | 'responses';
+  /** 串行工具调用：为 true 时系统提示禁止并发多个 tool_call（见 Provider.serialToolCalls）。 */
+  serialToolCalls?: boolean;
 }
 
 export interface LoopModelResolution {
@@ -58,6 +60,8 @@ export interface LoopModelResolution {
   getApiKey: () => string | undefined;
   providerId?: string;
   modelId: string;
+  /** 串行工具调用开关（provider 级，缺省关）。 */
+  serialToolCalls?: boolean;
 }
 
 /** kimi 系判定：providerId 或 baseUrl 命中即走内置 kimi-coding。 */
@@ -169,12 +173,12 @@ export function buildLoopModel(opts: BuildLoopModelOptions): LoopModelResolution
         api: openAICompletionsApi(),
       });
       openaiModels.setProvider(openaiProvider);
-      return { models: openaiModels, model, getApiKey: () => opts.apiKey, providerId: opts.providerId ?? 'kimi-coding', modelId: opts.modelId };
+      return { models: openaiModels, model, getApiKey: () => opts.apiKey, providerId: opts.providerId ?? 'kimi-coding', modelId: opts.modelId, serialToolCalls: opts.serialToolCalls };
     }
 
     models.setProvider(provider);
     const model = (found ?? { ...catalog[0], id: opts.modelId, name: opts.modelId }) as Model<Api>;
-    return { models, model, getApiKey: () => opts.apiKey, providerId: opts.providerId ?? 'kimi-coding', modelId: opts.modelId };
+    return { models, model, getApiKey: () => opts.apiKey, providerId: opts.providerId ?? 'kimi-coding', modelId: opts.modelId, serialToolCalls: opts.serialToolCalls };
   }
 
   const baseUrl = normalizeBaseUrl(
@@ -210,5 +214,5 @@ export function buildLoopModel(opts: BuildLoopModelOptions): LoopModelResolution
         : openAICompletionsApi(),
   });
   models.setProvider(provider);
-  return { models, model, getApiKey: () => opts.apiKey, providerId, modelId: opts.modelId };
+  return { models, model, getApiKey: () => opts.apiKey, providerId, modelId: opts.modelId, serialToolCalls: opts.serialToolCalls };
 }

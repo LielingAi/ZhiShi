@@ -541,6 +541,8 @@ const providerObj = {
       ...(p.maxOutputTokens ? { maxOutputTokens: Number(p.maxOutputTokens) } : {}),
       ...(p.maxOutputTokensParamName ? { maxOutputTokensParamName: String(p.maxOutputTokensParamName) } : {}),
       upstreamFormat: String(p.upstreamFormat ?? 'chat_completions') as 'chat_completions' | 'responses',
+      // 串行工具调用：并发 tool_call 会被只认单配对的聚合网关拒（见 Provider.serialToolCalls）。
+      ...(p.serialToolCalls ? { serialToolCalls: true } : {}),
     } : {}),
     websiteUrl: p.websiteUrl ? String(p.websiteUrl) : undefined,
     models,
@@ -762,6 +764,7 @@ Options for 'add':
   --protocol      anthropic | openai (default: anthropic)
   --upstream-format  chat_completions | responses (openai only)
   --max-output-tokens  Max output limit (openai only)
+  --serial-tool-calls  禁并发工具调用：系统提示要求一次只调一个工具（聚合网关并发会丢 tool_result 配对）
   --aliases       SDK alias mapping: sonnet=model,opus=model,haiku=model
   --vendor        Vendor name
   --website-url   Provider website`,

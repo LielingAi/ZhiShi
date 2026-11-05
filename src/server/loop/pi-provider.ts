@@ -94,6 +94,7 @@ export function resolveLoopModel(config?: AdminAppConfig): LoopModelResolution |
     apiProtocol: provider?.apiProtocol as LoopProviderEnv['apiProtocol'],
     upstreamFormat: provider?.upstreamFormat as LoopProviderEnv['upstreamFormat'],
     maxOutputTokensParamName: provider?.maxOutputTokensParamName as LoopProviderEnv['maxOutputTokensParamName'],
+    serialToolCalls: provider?.serialToolCalls === true,
     modelId,
     contextWindow: cap?.contextLength,
     maxOutputTokens: cap?.maxOutputTokens,

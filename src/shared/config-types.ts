@@ -342,6 +342,19 @@ export interface Provider {
 
 
 
+  // 串行工具调用（仅 apiProtocol === 'openai' 时生效）
+
+  // 部分聚合网关把 OpenAI 请求转成 Anthropic 上游时，对「一条 assistant 里并发
+  // 多个 tool_call」只配对第一个 tool_result，其余报
+  // `tool_use ids were found without tool_result blocks`（实测 freebuf-tapi：
+  // 同一请求 8 次里有 1~2 次 400；把并行调用拆成串行消息反而更糟）。
+  // 开启后系统提示追加「一次只调一个工具」的硬规则，从源头掐掉并发
+  // （实测并发率 2/6 → 0/6），不动消息结构。
+
+  serialToolCalls?: boolean;
+
+
+
   // 官网链接 (用于"去官网"入口)
 
   websiteUrl?: string;

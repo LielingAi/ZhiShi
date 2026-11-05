@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.9] - 2026-11-05
+
+> **串行工具调用开关**：若干聚合网关把 OpenAI 请求转成 Anthropic 上游时，对「一条 assistant 里并发多个 tool_call」只配对第一个 tool_result，其余报 `tool_use ids were found without tool_result blocks`（freebuf-tapi 实测：同一请求 8 次里 1~2 次 400）。新增 provider 级 `serialToolCalls`，从提示层掐掉并发。
+
+### Added
+
+- provider 级 `serialToolCalls`（`zhishi model add --serial-tool-calls`，或手写 `providers/<id>.json`）：为真时系统提示追加「一次只调一个工具」的硬规则。实测把并发工具调用率从 2/6 降到 0/6，消息结构不动。
+- 该开关经 `LoopModelResolution` 透传给交互 turn 与 invoke 两条装配路径，系统提示落盘记录也含该追加段。
+
+### Notes
+
+- 试过另一条路（把并发的 tool_call 拆成多条串行 assistant 消息）：实测更糟（6 次里只过 2 次），因为合成的 assistant 消息缺 thinking 签名，上游直接拒。故改为提示层约束。
+
 ## [2.2.8] - 2026-11-02
 
 > **TUI 清屏与会话重置恢复**：补回本地 `/clear`、`/reset`，并修复 reset/rewind/fork 后旧内容仍留在屏幕上的问题。
