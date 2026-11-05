@@ -18,6 +18,7 @@ import {
   inferPhase,
   isKeyMessage,
   keyHitLines,
+  MAX_SEGMENT_TOKENS,
   segmentContext,
 } from './context-manager';
 
@@ -238,5 +239,28 @@ describe('isKeyMessage — 1.2.7 新三族', () => {
     expect(hasErrorSignal('这条路径的 error handling 已覆盖')).toBe(false);
     expect(hasErrorSignal('Error: segfault at 0x0')).toBe(true);
     expect(hasErrorSignal('ret: no error; later: error: timeout')).toBe(true);
+  });
+});
+
+describe('按 token 切段（2026-11-05 实机）', () => {
+  const fat = 'A'.repeat(2000); // ≈ 800 tok
+  const user = (t: string) => ({ role: 'user', content: t, timestamp: 1 }) as AgentMessage;
+  const assistant = (t: string, id: string) =>
+    ({ role: 'assistant', content: [{ type: 'text', text: t }, { type: 'toolCall', id, name: 'env_exec', arguments: {} }], timestamp: 1 }) as unknown as AgentMessage;
+  const toolResult = (id: string, t: string) =>
+    ({ role: 'toolResult', toolCallId: id, content: [{ type: 'text', text: t }], timestamp: 1 }) as AgentMessage;
+
+  it('巨型工具输出不再撑成「12 条消息 = 2 万 token」的肥段', () => {
+    const msgs: AgentMessage[] = [user('目标')];
+    for (let i = 0; i < 30; i++) {
+      msgs.push(user(`指令 ${i}`));
+      msgs.push(assistant(`分析 ${i}`, `c${i}`));
+      msgs.push(toolResult(`c${i}`, `${fat}${fat}`)); // 单条 ≈ 1600 tok
+    }
+    const segs = segmentContext(msgs);
+    const biggest = Math.max(...segs.map((s) => s.tokens));
+    expect(biggest).toBeLessThanOrEqual(MAX_SEGMENT_TOKENS + 2000);
+    // 段数明显多于「每 12 条一段」的旧口径能给出的 8 段
+    expect(segs.length).toBeGreaterThan(8);
   });
 });

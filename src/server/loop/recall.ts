@@ -71,8 +71,8 @@ function renderHarvestEntry(entry: HarvestEntry): string {
   return parts.join('\n');
 }
 
-/** 解析 "x-y" 行区间（容错:倒序自动交换;非法 → null）。 */
-function parseLineRange(raw: string): { start: number; end: number } | null {
+/** 解析 "x-y" 行区间（容错:倒序自动交换;非法 → null）。导出给 recall-pins 复用。 */
+export function parseRecallLineRange(raw: string): { start: number; end: number } | null {
   const hit = /^\s*(\d+)\s*-\s*(\d+)\s*$/.exec(raw);
   if (!hit) return null;
   let start = Number(hit[1]);
@@ -115,7 +115,7 @@ export function createRecallTool(
           details: { source: 'lines' },
         };
       }
-      const range = parseLineRange(params.lines);
+      const range = parseRecallLineRange(params.lines);
       if (!range) {
         return {
           content: [{ type: 'text', text: `行区间格式非法:"${params.lines}"——应为 "x-y"（如 "120-145"）` }],

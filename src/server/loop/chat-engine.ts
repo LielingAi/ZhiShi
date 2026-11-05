@@ -123,6 +123,7 @@ import { buildArchiveCheckpointLine } from './archive-discipline';
 import { estimateMessagesTokens } from 'zhishi-loop-core/context-manager';
 import { runLoop } from 'zhishi-loop-core/loop';
 import { makeOutputGuardHook } from 'zhishi-loop-core/output-guard';
+import { clearRecallPins, getRecallPins, pinRecallLines } from './recall-pins';
 import { createRecallTool, RECALL_TOOL_NAME } from './recall';
 import { parseChatRefs, resolveChatRefs } from './refs';
 import { firePostTurnTitleHook } from '../turn-hooks';
@@ -1604,7 +1605,17 @@ class ChatEngine {
       }
       return r;
     };
-    const afterToolCall = makeOutputGuardHook();
+    // recall 取回的内容要钉住（见 recall-pins）：否则下一轮就被窗口置换
+    // 挤出去，模型只好再取一次——「对账不干活」的自循环就是这么来的。
+    const baseAfterToolCall = makeOutputGuardHook();
+    const afterToolCall: typeof baseAfterToolCall = async (ctx) => {
+      const out = await baseAfterToolCall(ctx);
+      if (ctx.toolCall.name === 'recall' && !ctx.isError) {
+        const lines = (ctx.toolCall as { arguments?: { lines?: unknown } }).arguments?.lines;
+        if (typeof lines === 'string') pinRecallLines(sessionId, lines);
+      }
+      return out;
+    };
     return { tools: registeredTools, beforeToolCall, afterToolCall, blockedToolNames };
   }
 
@@ -1689,7 +1700,13 @@ class ChatEngine {
       void markLoopSessionCompacted(turnSessionId).catch(() => {});
     };
     const transformContext = makeWindowTransform(
-      { contextWindow, systemPromptChars: systemPrompt.length, sessionId: turnSessionId, persistedMessageCount: history.length },
+      {
+        contextWindow,
+        systemPromptChars: systemPrompt.length,
+        sessionId: turnSessionId,
+        persistedMessageCount: history.length,
+        pinnedRanges: () => getRecallPins(turnSessionId),
+      },
       onCompactMark,
     );
 
@@ -1749,7 +1766,13 @@ class ChatEngine {
       const attemptTransform = overflowRetried
         ? makeWindowTransform(
             // 溢出兜底重试：窗口预算再收紧（1.2.7 FORCE 口径改走窗口置换）。
-            { contextWindow, systemPromptChars: systemPrompt.length, targetRatio: WINDOW_OVERFLOW_RETRY_RATIO, persistedMessageCount: history.length },
+            {
+              contextWindow,
+              systemPromptChars: systemPrompt.length,
+              targetRatio: WINDOW_OVERFLOW_RETRY_RATIO,
+              persistedMessageCount: history.length,
+              pinnedRanges: () => getRecallPins(turnSessionId),
+            },
             onCompactMark,
           )
         : transformContext;
@@ -2135,7 +2158,13 @@ class ChatEngine {
       void markLoopSessionCompacted(loopSessionId).catch(() => {});
     };
     const transformContext = makeWindowTransform(
-      { contextWindow, systemPromptChars: systemPrompt.length, sessionId: loopSessionId, persistedMessageCount: history.length },
+      {
+        contextWindow,
+        systemPromptChars: systemPrompt.length,
+        sessionId: loopSessionId,
+        persistedMessageCount: history.length,
+        pinnedRanges: () => getRecallPins(loopSessionId),
+      },
       onCompactMark,
     );
 
@@ -2152,7 +2181,13 @@ class ChatEngine {
         failed = null;
         const attemptTransform = overflowRetried
           ? makeWindowTransform(
-              { contextWindow, systemPromptChars: systemPrompt.length, targetRatio: WINDOW_OVERFLOW_RETRY_RATIO, persistedMessageCount: history.length },
+              {
+              contextWindow,
+              systemPromptChars: systemPrompt.length,
+              targetRatio: WINDOW_OVERFLOW_RETRY_RATIO,
+              persistedMessageCount: history.length,
+              pinnedRanges: () => getRecallPins(loopSessionId),
+            },
               onCompactMark,
             )
           : transformContext;
@@ -2484,6 +2519,8 @@ class ChatEngine {
     // finally 钩子幂等——turn-end 回收先跑一轮,这里只处理残留(通道
     // 失败被保留的登记)。fire-and-forget,不阻塞 reset 返回。
     void reapBgOnLifecyclePoint('reset');
+    // reset 换线：旧线的取回钉住不再有意义（消息下标整份作废）。
+    clearRecallPins();
     // W1 — reset 后状态回 idle(此时 sessionId 已是新线——idle 属于新线)。
     broadcast('chat:status', { sessionState: 'idle', sessionId: this.sessionId });
   }

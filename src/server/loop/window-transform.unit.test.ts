@@ -11,6 +11,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import {
   buildWorkingWindow,
   buildWindowPointer,
+  buildWindowPointerRun,
   clipMiddle,
   isToolResultMessage,
   jsonlLineRange,
@@ -120,6 +121,42 @@ describe('buildWorkingWindow（窗口置换纯函数）', () => {
     expect(p).toContain('尚在本轮未落盘');
     // 在范围内 → 照常印行号
     expect(buildWindowPointer(seg, seg.end)).toContain('recall({lines:');
+  });
+
+  it('相邻段合并成一张目录卡（298 张 → 十几张的那条路）', () => {
+    const msgs = makeHistory(20);
+    const r = buildWorkingWindow(msgs, { contextWindow: 10_000, systemPromptChars: 0 });
+    const cards = r.messages.filter((m) => typeof m.content === 'string' && m.content.includes('已沉淀'));
+    expect(cards.length).toBeGreaterThan(0);
+    // 合并后卡数必须远少于被挤出的段数
+    expect(cards.length).toBeLessThan(r.pointerCount + 1);
+    // 每张卡带段号区间与 recall 行区间提示
+    const merged = cards.find((c) => String(c.content).includes('-') && String(c.content).includes('已沉淀×'));
+    expect(merged).toBeTruthy();
+    expect(String(merged!.content)).toContain('recall({lines:');
+  });
+
+  it('合并卡：多段共享一段行区间，且跨度不超过 recall 上限 200 行', () => {
+    const msgs = makeHistory(6);
+    const segs = segmentContext(msgs).slice(1, 5);
+    const card = buildWindowPointerRun(segs);
+    expect(card).toContain(`段#${segs[0]!.index}-${segs[segs.length - 1]!.index}`);
+    const m = /recall\(\{lines:"(\d+)-(\d+)"\}\)/.exec(card);
+    expect(m).toBeTruthy();
+    expect(Number(m![2]) - Number(m![1]) + 1).toBeLessThanOrEqual(200);
+  });
+
+  it('取回钉住：命中区间的段不被挤出，且不受收缩影响', () => {
+    const msgs = makeHistory(20);
+    const plain = buildWorkingWindow(msgs, { contextWindow: 10_000, systemPromptChars: 0 });
+    // 钉住最早的一段（预算从新往旧数，本来必然被挤出）
+    const pinned = buildWorkingWindow(msgs, {
+      contextWindow: 10_000,
+      systemPromptChars: 0,
+      pinnedRanges: [{ start: 1, end: 4 }],
+    });
+    expect(JSON.stringify(plain.messages)).not.toContain('指令 #1');
+    expect(JSON.stringify(pinned.messages)).toContain('指令 #1');
   });
 
   it('空消息 → 空结果', () => {

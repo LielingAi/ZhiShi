@@ -231,7 +231,16 @@ export type ResearchPhase =
  * **工具轮边界**再切子段(assistant 含 toolCall 起新轮;toolResult 永不
  * 作子段起点,配对不拆),相位逐子段推断(链内继承粘性同段间规则)。
  */
-export const MAX_SEGMENT_MESSAGES = 12;
+export const MAX_SEGMENT_MESSAGES = 40;
+
+/**
+ * 段内 token 上限（2026-11-05 实机）：只按消息条数切段时，一条 env_exec
+ * 输出 20~30KB，12 条消息就是 2 万 token——段肥到「保留窗口塞不进一段」，
+ * 而 300 个小段又各印一张指针卡，目录开销（64%）反超正文。改成按 token
+ * 切：单段压到几千 token，保留区能放下十几段真实内容，模型才推得动。
+ * 切点仍只在工具轮边界（toolResult 永不作起点，配对不拆）。
+ */
+export const MAX_SEGMENT_TOKENS = 3_000;
 
 /**
  * 相位信号:段内 toolCall 名 + 命令/正文关键词(messageText 已把
@@ -335,19 +344,25 @@ export function segmentContext(messages: AgentMessage[], resume?: SegmentResume)
   // 仅当前子段已达上限才切);toolResult 永不作起点(配对不拆)。
   const starts: number[] = [];
   let chunkLen = 0;
+  let chunkTokens = 0;
   for (let i = resumeFrom; i < messages.length; i++) {
     const m = messages[i];
     const isUser = m.role === 'user';
     const isToolTurn = toolCallIdsOf(m).length > 0;
+    // 到达任一上限就在工具轮边界开新子段：条数是硬顶，token 是主口径。
+    const atLimit = chunkLen >= MAX_SEGMENT_MESSAGES || chunkTokens >= MAX_SEGMENT_TOKENS;
     if (reusable && i === resumeFrom) {
-      // 续扫起点本身就是段界（chunkLen 在该处由上一轮重置为 0）
+      // 续扫起点本身就是段界（chunkLen/chunkTokens 在该处由上一轮重置为 0）
       starts.push(i);
       chunkLen = 0;
-    } else if (isUser || (isToolTurn && chunkLen >= MAX_SEGMENT_MESSAGES)) {
+      chunkTokens = 0;
+    } else if (isUser || (isToolTurn && atLimit)) {
       starts.push(i);
       chunkLen = 0;
+      chunkTokens = 0;
     }
     chunkLen++;
+    chunkTokens += estimateMessageTokens(m);
   }
   if (messages.length > 0 && !reusable) {
     if (starts.length === 0) starts.push(0);

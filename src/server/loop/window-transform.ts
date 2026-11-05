@@ -34,8 +34,12 @@ import {
 // 常量（dogfood 后调参）
 // ---------------------------------------------------------------------------
 
-/** 工作记忆目标 = contextWindow × 本比率（1M 窗口 → 250k 估算）。 */
-export const WORKING_MEMORY_TARGET_RATIO = 0.25;
+/** 工作记忆目标 = contextWindow × 本比率（1M 窗口 → 400k 估算）。
+ *
+ * 0.25 → 0.4（2026-11-05 实机）：200k 窗口只给 50k，长会话里目录卡又占掉
+ * 六成，正文只剩 2.5k——模型每轮只能「先对账」。提到 0.4（200k → 80k）
+ * 给正文留出实际可用的空间；仍留 60% 余量给单轮工具输出增长。 */
+export const WORKING_MEMORY_TARGET_RATIO = 0.4;
 /** 工作记忆内 user 消息原文保留上限（超出的最老 user 消息随段移出）。 */
 export const KEEP_RECENT_USER_MESSAGES = 20;
 /** 溢出兜底重试的更紧预算（同 1.2.7 FORCE 口径，改走窗口置换）。 */
@@ -158,6 +162,11 @@ export interface WorkingWindowOptions {
    * 缺省 = 不设限（旧行为）。
    */
   persistedMessageCount?: number;
+  /**
+   * 取回钉住的消息下标区间（recall 刚取回的原文）：命中的段强制保留，
+   * 且不参与剪枝——否则「取回 → 下一轮被挤出 → 再取回」的循环无从打破。
+   */
+  pinnedRanges?: Array<{ start: number; end: number }>;
 }
 
 export interface WorkingWindowResult {
@@ -198,6 +207,57 @@ export function buildWindowPointer(seg: ContextSegment, persistedMessageCount?: 
   return head + `原文在会话存档第 ${range.start}-${range.end} 行（recall({lines:"${range.start}-${range.end}"}) 按行区间取回）。`;
 }
 
+/** 合并指针卡：单卡最多覆盖的段数。 */
+export const POINTER_MERGE_MAX_SEGMENTS = 12;
+/** 合并指针卡：单卡最多覆盖的行数（recall 单次跨度上限 200 行，超了取不回）。 */
+export const POINTER_MERGE_MAX_LINES = 200;
+
+/**
+ * 多段合并成一张目录卡（2026-11-05 实机）：长会话里被挤出的段几百个，
+ * 每段一张卡的话目录本身吃掉窗口的 64%（实测 298 张 = 22k tokens，正文
+ * 只剩 2.5k），模型每轮只能「先对账」。相邻段合并后 298 张 → 十几张，
+ * 省下的预算全给正文。
+ */
+export function buildWindowPointerRun(run: ContextSegment[], persistedMessageCount?: number): string {
+  if (run.length === 1) return buildWindowPointer(run[0]!, persistedMessageCount);
+  const first = run[0]!;
+  const last = run[run.length - 1]!;
+  const phases = [...new Set(run.map((s) => s.phase))];
+  const phase = phases.length === 1 ? phases[0]! : `${first.phase}→${last.phase}`;
+  const keys = [...new Set(run.flatMap((s) => s.keyHits))].slice(0, 5);
+  const tools = [...new Set(run.flatMap((s) => s.toolNames))].slice(0, 6);
+  const head =
+    `[段#${first.index}-${last.index} ${phase} 已沉淀×${run.length}] ` +
+    `关键行:${keys.length > 0 ? keys.map((l) => `「${l}」`).join(' ') : '无关键行命中'};` +
+    `工具:${tools.length > 0 ? tools.join('/') : '无工具调用'};`;
+  if (persistedMessageCount !== undefined && last.end > persistedMessageCount) {
+    return head + '原文尚在本轮未落盘的部分（存档按轮收尾写入），本轮结束后才能按行区间取回。';
+  }
+  const start = first.start + 2;
+  const end = last.end - 1 + 2;
+  return head + `原文在会话存档第 ${start}-${end} 行（recall({lines:"${start}-${end}"}) 按行区间取回）。`;
+}
+
+/** 把连续被挤出的段合并成 run（数量与行跨度双上限）。 */
+function mergePointerRuns(segs: ContextSegment[]): ContextSegment[][] {
+  const runs: ContextSegment[][] = [];
+  for (const seg of [...segs].sort((a, b) => a.index - b.index)) {
+    const last = runs[runs.length - 1];
+    const tail = last?.[last.length - 1];
+    if (
+      last && tail
+      && seg.index === tail.index + 1
+      && last.length < POINTER_MERGE_MAX_SEGMENTS
+      && seg.end - last[0]!.start <= POINTER_MERGE_MAX_LINES
+    ) {
+      last.push(seg);
+    } else {
+      runs.push([seg]);
+    }
+  }
+  return runs;
+}
+
 /**
  * 窗口选择（纯函数）：从最新消息起按段原子向前累积，估算 ≤ 预算即停；
  * kept 范围 user 消息超上限 → 继续向前整段移出直到达标。anchor 段（段 0，
@@ -228,10 +288,29 @@ export function buildWorkingWindow(
   const anchorUser = messages.slice(anchor.start, anchor.end).filter((m) => m.role === 'user').length;
   let keptTokens = anchor.tokens;
   let keptUserCount = anchorUser;
+  // 取回钉住（recall 刚取回的内容）：被钉住的段直接进 kept，
+  // 且第二遍收缩不动它们——否则「取回 → 下一轮立刻被挤出 → 再取回」，
+  // 白烧 token 还让模型以为进度丢了。
+  const pinned = new Set<number>();
+  for (const range of options.pinnedRanges ?? []) {
+    for (const seg of segments) {
+      if (seg.index === 0) continue;
+      if (seg.start < range.end && seg.end > range.start) pinned.add(seg.index);
+    }
+  }
   // 从最新段起向前累积 kept 段（段 0 不参与循环——已强制保留）。
   const kept: ContextSegment[] = [];
+  // 钉住段先入账：它们可能在预算耗尽点之前（老段），靠循环永远轮不到；
+  // 先塞进去，累积循环跳过它们即可。
+  for (const seg of segments) {
+    if (seg.index === 0 || !pinned.has(seg.index)) continue;
+    kept.push(seg);
+    keptTokens += seg.tokens;
+    keptUserCount += messages.slice(seg.start, seg.end).filter((m) => m.role === 'user').length;
+  }
   for (let i = segments.length - 1; i >= 1; i--) {
     const seg = segments[i];
+    if (pinned.has(seg.index)) continue; // 已在 kept
     const segUser = messages.slice(seg.start, seg.end).filter((m) => m.role === 'user').length;
     const wouldUser = keptUserCount + segUser;
     if (keptTokens + seg.tokens > messageBudget || wouldUser > keepRecentUser) break;
@@ -275,9 +354,10 @@ export function buildWorkingWindow(
     return m;
   };
   const buildOut = (keptSegs: ContextSegment[], evictedSegs: ContextSegment[]): AgentMessage[] => {
-    const pointers = evictedSegs.map((seg) => ({
+    const pointerRuns = mergePointerRuns(evictedSegs);
+    const pointers = pointerRuns.map((run) => ({
       role: 'user',
-      content: buildWindowPointer(seg, options.persistedMessageCount),
+      content: buildWindowPointerRun(run, options.persistedMessageCount),
       timestamp: Date.now(),
     }) as AgentMessage);
     const keptSorted = [...keptSegs].sort((a, b) => a.index - b.index);
@@ -313,7 +393,10 @@ export function buildWorkingWindow(
   while (result.length > 0
     && estimateMessagesTokens(result, options.systemPromptChars ?? 0) > budgetTokens
     && keptMutable.length > 0) {
-    keptMutable = keptMutable.slice(0, -1); // 去掉最老 kept 段
+    // 去掉最老的非钉住 kept 段（钉住的是刚 recall 回来的，动了等于白取）。
+    const dropAt = keptMutable.findIndex((s) => !pinned.has(s.index));
+    if (dropAt < 0) break; // kept 全是钉住段：宁可略超预算也不再丢
+    keptMutable = [...keptMutable.slice(0, dropAt), ...keptMutable.slice(dropAt + 1)];
     evicted = segments.filter((s) => s.index > 0 && !keptMutable.some((k) => k.index === s.index));
     rebuildKeptToolSet(keptMutable);
     result = buildOut(keptMutable, evicted);
@@ -346,6 +429,8 @@ export interface WindowTransformPolicy {
   systemPromptChars?: number;
   /** 已落盘消息条数（turn 起跑时的 history.length）——见 WorkingWindowOptions.persistedMessageCount。 */
   persistedMessageCount?: number;
+  /** 取回钉住的区间（每次调用时现取，因为 turn 内 recall 会新增）——见 WorkingWindowOptions.pinnedRanges。 */
+  pinnedRanges?: () => Array<{ start: number; end: number }>;
   /** M6 自动检索注入:提供则按当前轮内容检索该会话的 session-claims。 */
   sessionId?: string;
   /** 测试注入:claims 目录(缺省 ~/.zhishi/loop-sessions)。 */
@@ -389,6 +474,7 @@ export function makeWindowTransform(
         ...(policy.keepRecentUser !== undefined ? { keepRecentUser: policy.keepRecentUser } : {}),
         ...(policy.systemPromptChars !== undefined ? { systemPromptChars: policy.systemPromptChars } : {}),
         ...(policy.persistedMessageCount !== undefined ? { persistedMessageCount: policy.persistedMessageCount } : {}),
+        ...(policy.pinnedRanges ? { pinnedRanges: policy.pinnedRanges() } : {}),
         ...(canResume
           ? { resumeSegments: { segments: segCache!.segments, messageCount: segCache!.messageCount } }
           : {}),
