@@ -110,6 +110,18 @@ describe('buildWorkingWindow（窗口置换纯函数）', () => {
     expect(p).toContain('SIGSEGV');
   });
 
+  it('未落盘的段：指针不印行号（长回合内存跑在存档前面的场景）', () => {
+    const msgs = makeHistory(8);
+    const segments = segmentContext(msgs);
+    const seg = segments[segments.length - 2];
+    // 段尾超过「已落盘条数」→ 行号还不存在，别印假行号
+    const p = buildWindowPointer(seg, seg.end - 1);
+    expect(p).not.toContain('recall({lines:');
+    expect(p).toContain('尚在本轮未落盘');
+    // 在范围内 → 照常印行号
+    expect(buildWindowPointer(seg, seg.end)).toContain('recall({lines:');
+  });
+
   it('空消息 → 空结果', () => {
     const r = buildWorkingWindow([], opts);
     expect(r.evicted).toBe(false);

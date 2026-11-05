@@ -78,7 +78,11 @@ describe('recall 工具', () => {
     expect(await call(tool, {})).toContain('二选一');
     expect(await call(tool, { lines: 'abc' })).toContain('格式非法');
     expect(await call(tool, { lines: '2-999' })).toContain('跨度过大');
-    expect(await call(tool, { lines: '50-60' })).toContain('越界');
+    const over = await call(tool, { lines: '50-60' });
+    expect(over).toContain('越界');
+    // 越界不再空手回：回存档末尾 + 差多少行（模型据此换段或等本轮收尾）
+    expect(over).toContain('下面是存档末尾');
+    expect(over).toContain('行2 [user] x');
     const ghost = createRecallTool({ getSessionId: () => 'no-such-line', dir: DIR });
     expect(await call(ghost, { lines: '2-5' })).toContain('不存在');
   });

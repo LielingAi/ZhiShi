@@ -148,6 +148,16 @@ export interface WorkingWindowOptions {
   resumeSegments?: import('zhishi-loop-core/context-manager').SegmentResume;
   /** 2.0.7 大块工具输出截断开关（缺省开；关掉=旧行为，供对比/测试）。 */
   truncateToolResults?: boolean;
+  /**
+   * 已落盘的消息条数（turn 起跑时的 history.length）。
+   *
+   * 存档（jsonl）是按 turn 收尾写的，长回合里内存数组会跑在文件前面；
+   * 指针卡上的行号是「消息下标 + 2」，对还没落盘的段就是假行号——模型拿去
+   * recall 必然越界（实测一次 turn 里连问 6 次 3320/3392/3404…）。
+   * 给了这个上限，超出部分不再印行号，改说明「本轮尚未落盘」。
+   * 缺省 = 不设限（旧行为）。
+   */
+  persistedMessageCount?: number;
 }
 
 export interface WorkingWindowResult {
@@ -176,14 +186,16 @@ export function jsonlLineRange(seg: ContextSegment): { start: number; end: numbe
  * 目录指针块文本（语义不在指针里——关键行只作目录提示，语义在 Claim 层）。
  * 行区间直接印在卡上：模型可 recall({lines:"x-y"}) 取回原文。
  */
-export function buildWindowPointer(seg: ContextSegment): string {
+export function buildWindowPointer(seg: ContextSegment, persistedMessageCount?: number): string {
   const keys = seg.keyHits.length > 0 ? seg.keyHits.map((l) => `「${l}」`).join(' ') : '无关键行命中';
   const tools = seg.toolNames.length > 0 ? seg.toolNames.join('/') : '无工具调用';
+  const head = `[段#${seg.index} ${seg.phase} 已沉淀] 关键行:${keys};工具:${tools};`;
+  // 段尾超出已落盘范围 → 行号还不存在，别印（印了模型就只能猜、只会撞越界）。
+  if (persistedMessageCount !== undefined && seg.end > persistedMessageCount) {
+    return head + '原文尚在本轮未落盘的部分（存档按轮收尾写入），本轮结束后才能按行区间取回。';
+  }
   const range = jsonlLineRange(seg);
-  return (
-    `[段#${seg.index} ${seg.phase} 已沉淀] 关键行:${keys};工具:${tools};` +
-    `原文在会话存档第 ${range.start}-${range.end} 行（recall({lines:"${range.start}-${range.end}"}) 按行区间取回）。`
-  );
+  return head + `原文在会话存档第 ${range.start}-${range.end} 行（recall({lines:"${range.start}-${range.end}"}) 按行区间取回）。`;
 }
 
 /**
@@ -265,7 +277,7 @@ export function buildWorkingWindow(
   const buildOut = (keptSegs: ContextSegment[], evictedSegs: ContextSegment[]): AgentMessage[] => {
     const pointers = evictedSegs.map((seg) => ({
       role: 'user',
-      content: buildWindowPointer(seg),
+      content: buildWindowPointer(seg, options.persistedMessageCount),
       timestamp: Date.now(),
     }) as AgentMessage);
     const keptSorted = [...keptSegs].sort((a, b) => a.index - b.index);
@@ -332,6 +344,8 @@ export interface WindowTransformPolicy {
   targetRatio?: number;
   keepRecentUser?: number;
   systemPromptChars?: number;
+  /** 已落盘消息条数（turn 起跑时的 history.length）——见 WorkingWindowOptions.persistedMessageCount。 */
+  persistedMessageCount?: number;
   /** M6 自动检索注入:提供则按当前轮内容检索该会话的 session-claims。 */
   sessionId?: string;
   /** 测试注入:claims 目录(缺省 ~/.zhishi/loop-sessions)。 */
@@ -374,6 +388,7 @@ export function makeWindowTransform(
         ...(policy.targetRatio !== undefined ? { targetRatio: policy.targetRatio } : {}),
         ...(policy.keepRecentUser !== undefined ? { keepRecentUser: policy.keepRecentUser } : {}),
         ...(policy.systemPromptChars !== undefined ? { systemPromptChars: policy.systemPromptChars } : {}),
+        ...(policy.persistedMessageCount !== undefined ? { persistedMessageCount: policy.persistedMessageCount } : {}),
         ...(canResume
           ? { resumeSegments: { segments: segCache!.segments, messageCount: segCache!.messageCount } }
           : {}),

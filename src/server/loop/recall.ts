@@ -142,10 +142,35 @@ export function createRecallTool(
         };
       }
       if (range.start >= rawLines.length) {
-        return {
-          content: [{ type: 'text', text: `行区间越界:存档共 ${rawLines.length - 1} 行（含 meta 行 1）,起始行 ${range.start} 超出` }],
-          details: { source: 'lines' },
-        };
+        // 越界兜底:行号是「内存里的消息下标 + 2」,而存档是按轮收尾写的
+        // ——长回合里内存跑在文件前面,指针卡标的行还不存在。回整体失败
+        // 会让模型反复猜区间(实测一次 turn 里连问 6 次 3320/3392/3404…),
+        // 所以改为「回存档末尾 + 说明差多少」,让模型知道该往下等还是换段。
+        const total = rawLines.length - 1;
+        const span = Math.min(range.end - range.start + 1, RECALL_MAX_SPAN);
+        const tailStart = Math.max(2, total - span + 1);
+        const out: string[] = [
+          `行区间越界:存档共 ${total} 行（含 meta 行 1）,起始行 ${range.start} 超出 ${Math.max(0, range.start - total)} 行——` +
+          `多半是该段还在本轮未落盘（存档按 turn 收尾写入）,下面是存档末尾 ${tailStart}-${total} 行:`,
+        ];
+        let budget = RECALL_MAX_CHARS - out[0]!.length - 1;
+        let truncated = false;
+        for (let n = tailStart; n <= total; n++) {
+          const raw = rawLines[n - 1] ?? '';
+          if (!raw.trim()) continue;
+          let rendered: string;
+          try {
+            const msg = JSON.parse(raw) as { role?: string };
+            rendered = `行${n} [${msg.role ?? '?'}] ${clip(messageText(msg as never), RECALL_PER_MESSAGE_MAX)}`;
+          } catch {
+            rendered = `行${n} [raw] ${clip(raw, 200)}`;
+          }
+          if (rendered.length + 1 > budget) { truncated = true; break; }
+          out.push(rendered);
+          budget -= rendered.length + 1;
+        }
+        if (truncated) out.push('⟦recall 预算截断——缩小行区间分次取回⟧');
+        return { content: [{ type: 'text', text: out.join('\n') }], details: { source: 'lines' } };
       }
       const end = Math.min(range.end, rawLines.length - 1);
       const out: string[] = [];

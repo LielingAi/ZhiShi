@@ -1689,7 +1689,7 @@ class ChatEngine {
       void markLoopSessionCompacted(turnSessionId).catch(() => {});
     };
     const transformContext = makeWindowTransform(
-      { contextWindow, systemPromptChars: systemPrompt.length, sessionId: turnSessionId },
+      { contextWindow, systemPromptChars: systemPrompt.length, sessionId: turnSessionId, persistedMessageCount: history.length },
       onCompactMark,
     );
 
@@ -1749,7 +1749,7 @@ class ChatEngine {
       const attemptTransform = overflowRetried
         ? makeWindowTransform(
             // 溢出兜底重试：窗口预算再收紧（1.2.7 FORCE 口径改走窗口置换）。
-            { contextWindow, systemPromptChars: systemPrompt.length, targetRatio: WINDOW_OVERFLOW_RETRY_RATIO },
+            { contextWindow, systemPromptChars: systemPrompt.length, targetRatio: WINDOW_OVERFLOW_RETRY_RATIO, persistedMessageCount: history.length },
             onCompactMark,
           )
         : transformContext;
@@ -2135,7 +2135,7 @@ class ChatEngine {
       void markLoopSessionCompacted(loopSessionId).catch(() => {});
     };
     const transformContext = makeWindowTransform(
-      { contextWindow, systemPromptChars: systemPrompt.length, sessionId: loopSessionId },
+      { contextWindow, systemPromptChars: systemPrompt.length, sessionId: loopSessionId, persistedMessageCount: history.length },
       onCompactMark,
     );
 
@@ -2152,7 +2152,7 @@ class ChatEngine {
         failed = null;
         const attemptTransform = overflowRetried
           ? makeWindowTransform(
-              { contextWindow, systemPromptChars: systemPrompt.length, targetRatio: WINDOW_OVERFLOW_RETRY_RATIO },
+              { contextWindow, systemPromptChars: systemPrompt.length, targetRatio: WINDOW_OVERFLOW_RETRY_RATIO, persistedMessageCount: history.length },
               onCompactMark,
             )
           : transformContext;

@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.10] - 2026-11-05
+
+> **指针卡行号与 recall 越界修复**：指针卡的行号是「内存消息下标 + 2」，而存档 jsonl 按 turn 收尾才写——长回合里内存跑在文件前面，指针卡印出的行号在文件里根本不存在，模型 recall 必然越界（实测一轮里连问 6 次 3320/3392/3404…）。
+
+### Fixed
+
+- 窗口置换接收 `persistedMessageCount`（turn 起跑的 `history.length`）：段尾超出已落盘范围的指针卡不再印行号，改为「原文尚在本轮未落盘」。
+- `recall` 行区间越界不再空手报错：返回存档末尾（受原字符预算约束）+ 越界行数与差额，模型可立即用末尾内容或换更早的段。
+
+### Notes
+
+- 实测同一个会话：turn 中途报「存档共 2390 行」，turn 收尾后文件 3507 行——错位来自落盘时机，不是丢数据。
+- 根治方向（回合内增量落盘）未做：`appendLoopMessages` 目前是整文件原子重写，改成 append 需要配套整理策略。
+
 ## [2.2.9] - 2026-11-05
 
 > **串行工具调用开关**：若干聚合网关把 OpenAI 请求转成 Anthropic 上游时，对「一条 assistant 里并发多个 tool_call」只配对第一个 tool_result，其余报 `tool_use ids were found without tool_result blocks`（freebuf-tapi 实测：同一请求 8 次里 1~2 次 400）。新增 provider 级 `serialToolCalls`，从提示层掐掉并发。
